@@ -110,9 +110,7 @@ impl SenpiSubprocessRunner {
             hard_deadline_at: (input.now_ms)() as f64 + deadline,
             options: options.child,
             finalization: &context,
-            memory_root: options
-                .memory_root
-                .or(admission_memory_root.as_deref()),
+            memory_root: options.memory_root.or(admission_memory_root.as_deref()),
         };
         let identity = input.identity;
         self.launch(

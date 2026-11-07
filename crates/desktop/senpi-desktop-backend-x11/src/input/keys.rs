@@ -40,7 +40,10 @@ impl Keymap {
     /// `InvalidKey` when no keycode produces the keysym.
     pub fn lookup(&self, keysym: u32) -> CoreResult<(u8, bool)> {
         for column in 0..2 {
-            if let Some((code, _)) = self.rows().find(|(_, row)| row.get(column) == Some(&keysym)) {
+            if let Some((code, _)) = self
+                .rows()
+                .find(|(_, row)| row.get(column) == Some(&keysym))
+            {
                 return Ok((code, column == 1));
             }
         }

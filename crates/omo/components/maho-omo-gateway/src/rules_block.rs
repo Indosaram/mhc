@@ -20,15 +20,19 @@ pub fn render_operating_rules_block(version: &str, behavioral: &[String]) -> Str
         lines.push(format!("- {}", escape_rule_text(text)));
     }
     lines.push("</operating-rules>".to_string());
-    lines.join("
-")
+    lines.join(
+        "
+",
+    )
 }
 
 /// Wrap a rendered operating-rules block with sentinel comments.
 pub fn mark_gateway_rules_block(block: &str) -> String {
-    format!("{GATEWAY_RULES_SENTINEL_BEGIN}
+    format!(
+        "{GATEWAY_RULES_SENTINEL_BEGIN}
 {block}
-{GATEWAY_RULES_SENTINEL_END}")
+{GATEWAY_RULES_SENTINEL_END}"
+    )
 }
 
 /// Compose the rules block into the system prompt.
@@ -47,7 +51,11 @@ pub fn compose_gateway_rules_block(system_prompt: &str, block: &str) -> String {
         result.push_str(&system_prompt[end_idx..]);
         return result;
     }
-    format!("{}
+    format!(
+        "{}
 
-{}", system_prompt.trim_end(), marked)
+{}",
+        system_prompt.trim_end(),
+        marked
+    )
 }

@@ -17,13 +17,15 @@ async fn test_daemon_ok_with_missing_or_nonobject_details_returns_unchanged() {
     };
 
     // Daemon returns Ok but details is None (or null)
-    let daemon_format: DaemonFormatFn = Box::new(|_| Box::pin(async {
-        Ok(DaemonFormatResult {
-            content: None,
-            details: None,
-            is_error: false,
+    let daemon_format: DaemonFormatFn = Box::new(|_| {
+        Box::pin(async {
+            Ok(DaemonFormatResult {
+                content: None,
+                details: None,
+                is_error: false,
+            })
         })
-    }));
+    });
 
     let result = format_one(
         &file_path,
@@ -32,7 +34,8 @@ async fn test_daemon_ok_with_missing_or_nonobject_details_returns_unchanged() {
         1_000,
         Some(&daemon_format),
         None,
-    ).await;
+    )
+    .await;
 
     // Upstream semantics: details is undefined -> returns unchanged, does NOT fall through to CLI
     assert_eq!(result.status, FormatStatus::Unchanged);

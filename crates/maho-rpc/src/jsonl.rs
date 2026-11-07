@@ -31,15 +31,25 @@ pub struct JsonlLineReader {
 
 impl Default for JsonlLineReader {
     fn default() -> Self {
-        Self { max_line_length: usize::MAX, buffer: String::new(), characters: 0,
-            undecoded: Vec::new(), discarding: false }
+        Self {
+            max_line_length: usize::MAX,
+            buffer: String::new(),
+            characters: 0,
+            undecoded: Vec::new(),
+            discarding: false,
+        }
     }
 }
 
 impl JsonlLineReader {
     pub fn new(max_line_length: usize) -> Result<Self, InvalidLineLimit> {
-        if max_line_length == 0 { return Err(InvalidLineLimit); }
-        Ok(Self { max_line_length, ..Self::default() })
+        if max_line_length == 0 {
+            return Err(InvalidLineLimit);
+        }
+        Ok(Self {
+            max_line_length,
+            ..Self::default()
+        })
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Vec<LineRecord> {
@@ -58,7 +68,8 @@ impl JsonlLineReader {
                     let valid = error.valid_up_to();
                     let text = String::from_utf8_lossy(&self.undecoded[..valid]).into_owned();
                     let invalid = error.error_len();
-                    self.undecoded.drain(..valid.saturating_add(invalid.unwrap_or(0)));
+                    self.undecoded
+                        .drain(..valid.saturating_add(invalid.unwrap_or(0)));
                     self.consume(&text, &mut records);
                     match invalid {
                         Some(_) => self.consume("\u{fffd}", &mut records),
@@ -87,7 +98,9 @@ impl JsonlLineReader {
     }
 
     fn emit(&mut self, records: &mut Vec<LineRecord>) {
-        if self.buffer.ends_with('\r') { self.buffer.pop(); }
+        if self.buffer.ends_with('\r') {
+            self.buffer.pop();
+        }
         records.push(LineRecord::Line(std::mem::take(&mut self.buffer)));
         self.characters = 0;
     }
@@ -100,7 +113,11 @@ impl JsonlLineReader {
                 None => (segment, false),
             };
             if !self.discarding && !body.is_empty() {
-                let units = if body.is_ascii() { body.len() } else { body.encode_utf16().count() };
+                let units = if body.is_ascii() {
+                    body.len()
+                } else {
+                    body.encode_utf16().count()
+                };
                 let total = self.characters.saturating_add(units);
                 if total > self.max_line_length {
                     self.buffer.clear();
@@ -113,19 +130,26 @@ impl JsonlLineReader {
                 }
             }
             if newline {
-                if self.discarding { self.discarding = false; }
-                else { self.emit(records); }
+                if self.discarding {
+                    self.discarding = false;
+                } else {
+                    self.emit(records);
+                }
             }
         }
     }
 }
 
 /// Handle for the reader task `attach_jsonl_line_reader` spawns. Dropping it stops reading.
-pub struct JsonlLineReaderTask { task: tokio::task::JoinHandle<()> }
+pub struct JsonlLineReaderTask {
+    task: tokio::task::JoinHandle<()>,
+}
 
 impl JsonlLineReaderTask {
     /// Stop the reader without waiting for the stream to end (senpi's returned detach function).
-    pub fn detach(self) { self.task.abort(); }
+    pub fn detach(self) {
+        self.task.abort();
+    }
 }
 
 /// Attach an LF-only JSONL reader to an async stream, mirroring senpi's `attachJsonlLineReader`.
@@ -150,13 +174,21 @@ where
         let mut stream = stream;
         let mut chunk = [0u8; 8192];
         while let Ok(count) = stream.read(&mut chunk).await {
-            if count == 0 { break; }
+            if count == 0 {
+                break;
+            }
             for record in reader.push(&chunk[..count]) {
-                match record { LineRecord::Line(line) => on_line(line), LineRecord::Oversized => on_oversized() }
+                match record {
+                    LineRecord::Line(line) => on_line(line),
+                    LineRecord::Oversized => on_oversized(),
+                }
             }
         }
         for record in reader.finish() {
-            match record { LineRecord::Line(line) => on_line(line), LineRecord::Oversized => on_oversized() }
+            match record {
+                LineRecord::Line(line) => on_line(line),
+                LineRecord::Oversized => on_oversized(),
+            }
         }
     });
     Ok(JsonlLineReaderTask { task })
@@ -172,12 +204,24 @@ mod tests {
         let (mut client, host) = tokio::io::duplex(64);
         let (lines_tx, mut lines_rx) = tokio::sync::mpsc::unbounded_channel();
         let (oversized_tx, mut oversized_rx) = tokio::sync::mpsc::unbounded_channel();
-        let _handle = attach_jsonl_line_reader(host, move |line| { let _ = lines_tx.send(line); }, 4, move || { let _ = oversized_tx.send(()); }).unwrap();
+        let _handle = attach_jsonl_line_reader(
+            host,
+            move |line| {
+                let _ = lines_tx.send(line);
+            },
+            4,
+            move || {
+                let _ = oversized_tx.send(());
+            },
+        )
+        .unwrap();
         client.write_all(b"ab\ncd\r\nefghij\nkl\n").await.unwrap();
         client.shutdown().await.unwrap();
         drop(client);
         let mut lines = Vec::new();
-        while let Some(line) = lines_rx.recv().await { lines.push(line); }
+        while let Some(line) = lines_rx.recv().await {
+            lines.push(line);
+        }
         assert_eq!(lines, vec!["ab".to_string(), "cd".into(), "kl".into()]);
         assert_eq!(oversized_rx.try_recv(), Ok(()));
         assert!(oversized_rx.try_recv().is_err());
@@ -187,7 +231,15 @@ mod tests {
         use tokio::io::AsyncWriteExt;
         let (mut client, host) = tokio::io::duplex(64);
         let (lines_tx, mut lines_rx) = tokio::sync::mpsc::unbounded_channel();
-        let _handle = attach_jsonl_line_reader(host, move |line| { let _ = lines_tx.send(line); }, MAX_RPC_LINE_CHARACTERS, || {}).unwrap();
+        let _handle = attach_jsonl_line_reader(
+            host,
+            move |line| {
+                let _ = lines_tx.send(line);
+            },
+            MAX_RPC_LINE_CHARACTERS,
+            || {},
+        )
+        .unwrap();
         client.write_all(b"{\r").await.unwrap();
         drop(client);
         assert_eq!(lines_rx.recv().await, Some("{".into()));
@@ -207,47 +259,66 @@ mod tests {
     #[test]
     fn splits_only_lf() {
         let mut reader = JsonlLineReader::default();
-        assert_eq!(reader.push("a\u{2028}b\u{2029}c\n".as_bytes()), vec![LineRecord::Line("a\u{2028}b\u{2029}c".into())]);
+        assert_eq!(
+            reader.push("a\u{2028}b\u{2029}c\n".as_bytes()),
+            vec![LineRecord::Line("a\u{2028}b\u{2029}c".into())]
+        );
     }
     #[test]
     fn handles_crlf() {
         let mut reader = JsonlLineReader::default();
-        assert_eq!(reader.push(b"a\r\nb\r\n"), vec![LineRecord::Line("a".into()),LineRecord::Line("b".into())]);
+        assert_eq!(
+            reader.push(b"a\r\nb\r\n"),
+            vec![LineRecord::Line("a".into()), LineRecord::Line("b".into())]
+        );
     }
     #[test]
     fn emits_unterminated_record_at_eof() {
         let mut reader = JsonlLineReader::default();
         assert!(reader.push(b"{}\r").is_empty());
-        assert_eq!(reader.finish(),vec![LineRecord::Line("{}".into())]);
+        assert_eq!(reader.finish(), vec![LineRecord::Line("{}".into())]);
     }
     #[test]
     fn resynchronizes_once_after_oversized_record() {
         let mut reader = JsonlLineReader::new(8).unwrap();
-        assert_eq!(reader.push(b"123456789"),vec![LineRecord::Oversized]);
-        assert_eq!(reader.push(b"discarded\n{}\n"),vec![LineRecord::Line("{}".into())]);
+        assert_eq!(reader.push(b"123456789"), vec![LineRecord::Oversized]);
+        assert_eq!(
+            reader.push(b"discarded\n{}\n"),
+            vec![LineRecord::Line("{}".into())]
+        );
     }
     #[test]
     fn accepts_fully_escaped_maximum_message() {
-        let line = serialize_json_line(&json!({"type":"prompt","message":"\0".repeat(1_000_000)})).unwrap();
+        let line = serialize_json_line(&json!({"type":"prompt","message":"\0".repeat(1_000_000)}))
+            .unwrap();
         let mut reader = JsonlLineReader::new(MAX_RPC_LINE_CHARACTERS).unwrap();
-        assert_eq!(reader.push(line.as_bytes()),vec![LineRecord::Line(line.trim_end_matches('\n').into())]);
+        assert_eq!(
+            reader.push(line.as_bytes()),
+            vec![LineRecord::Line(line.trim_end_matches('\n').into())]
+        );
     }
     #[test]
     fn split_utf8_is_decoded_before_counting_utf16() {
         let mut reader = JsonlLineReader::new(2).unwrap();
         let bytes = "😀\n".as_bytes();
         assert!(reader.push(&bytes[..2]).is_empty());
-        assert_eq!(reader.push(&bytes[2..]),vec![LineRecord::Line("😀".into())]);
+        assert_eq!(
+            reader.push(&bytes[2..]),
+            vec![LineRecord::Line("😀".into())]
+        );
     }
     #[test]
     fn unfinished_utf8_becomes_replacement_at_eof() {
         let mut reader = JsonlLineReader::default();
-        assert!(reader.push(&[0xf0,0x9f]).is_empty());
-        assert_eq!(reader.finish(),vec![LineRecord::Line("\u{fffd}".into())]);
+        assert!(reader.push(&[0xf0, 0x9f]).is_empty());
+        assert_eq!(reader.finish(), vec![LineRecord::Line("\u{fffd}".into())]);
     }
     #[test]
     fn utf16_limit_rejects_astral_scalar_and_recovers() {
         let mut reader = JsonlLineReader::new(1).unwrap();
-        assert_eq!(reader.push("😀\na\n".as_bytes()),vec![LineRecord::Oversized,LineRecord::Line("a".into())]);
+        assert_eq!(
+            reader.push("😀\na\n".as_bytes()),
+            vec![LineRecord::Oversized, LineRecord::Line("a".into())]
+        );
     }
 }

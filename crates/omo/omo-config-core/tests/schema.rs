@@ -258,8 +258,17 @@ fn agent_permission_and_prompt_append_are_accepted() {
 #[test]
 fn memory_facts_accepts_optional_nonempty_model_in_full_and_layer_schemas() {
     let input = json!({ "model": "openai/gpt-5" });
-    assert_eq!(parsed(&omo_config_core::omo_memory_facts_schema(), input.clone())["model"], input["model"]);
-    assert_eq!(parsed(&omo_config_core::omo_memory_facts_layer_schema(), input.clone()), input);
+    assert_eq!(
+        parsed(&omo_config_core::omo_memory_facts_schema(), input.clone())["model"],
+        input["model"]
+    );
+    assert_eq!(
+        parsed(
+            &omo_config_core::omo_memory_facts_layer_schema(),
+            input.clone()
+        ),
+        input
+    );
 }
 
 #[test]
@@ -269,7 +278,13 @@ fn task_host_runner_options_are_accepted_with_upstream_defaults() {
     assert_eq!(value["host_engine_policy"], json!("upgrade"));
     assert_eq!(value["host_shard_prewarm"], json!("first-turn"));
     let partial = json!({ "process_runner": "child-process", "host_idle_exit_ms": 9000, "host_shard_prewarm": "off" });
-    assert_eq!(parsed(&omo_config_core::omo_task_settings_layer_schema(), partial.clone()), partial);
+    assert_eq!(
+        parsed(
+            &omo_config_core::omo_task_settings_layer_schema(),
+            partial.clone()
+        ),
+        partial
+    );
 }
 
 #[test]
@@ -1490,7 +1505,10 @@ fn git_master_resolver_always_returns_both_keys() {
 
 #[test]
 fn git_master_harness_support_is_native_only() {
-    for setting_path in ["git_master.commit_footer", "git_master.include_co_authored_by"] {
+    for setting_path in [
+        "git_master.commit_footer",
+        "git_master.include_co_authored_by",
+    ] {
         let supported = omo_config_core::git_master_setting_harness_support(setting_path);
         assert_eq!(
             supported.map(<[&str]>::to_vec),
@@ -1888,7 +1906,10 @@ fn native_harness_block_applies_to_the_native_view() {
         Some("native"),
     );
     assert_eq!(result.diagnostics, Vec::new());
-    assert_eq!(result.config["categories"]["quick"]["model"], json!("native/model"));
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("native/model")
+    );
     assert_eq!(result.config["model_profile"], json!("native-profile"));
 }
 
@@ -1908,8 +1929,14 @@ fn legacy_senpi_harness_block_survives_and_is_reported() {
         }"#,
         Some("native"),
     );
-    assert_eq!(result.config["categories"]["quick"]["model"], json!("legacy/model"));
-    assert_eq!(result.config["categories"]["quick"]["reasoning"], json!("high"));
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("legacy/model")
+    );
+    assert_eq!(
+        result.config["categories"]["quick"]["reasoning"],
+        json!("high")
+    );
     assert_eq!(result.config["git_master"]["commit_footer"], json!(true));
     assert_eq!(result.config["telemetry"]["enabled"], json!(false));
     assert_eq!(result.config["model_profile"], json!("legacy-profile"));
@@ -1983,7 +2010,10 @@ fn memory_write_notice_rejects_an_unknown_key() {
 fn memory_write_notice_layer_accepts_a_per_agent_override() {
     let input = json!({ "write_notice": { "enabled": false }, "agents": { "backend-lead": { "write_notice": { "enabled": true } } } });
     assert_eq!(
-        parsed(&omo_config_core::omo_memory_settings_layer_schema(), input.clone()),
+        parsed(
+            &omo_config_core::omo_memory_settings_layer_schema(),
+            input.clone()
+        ),
         input
     );
 }
@@ -2036,7 +2066,10 @@ fn memory_recall_preserves_an_explicit_override() {
         },
     });
     assert_eq!(
-        parsed(&omo_config_core::omo_memory_settings_schema(), input.clone())["recall"],
+        parsed(
+            &omo_config_core::omo_memory_settings_schema(),
+            input.clone()
+        )["recall"],
         input["recall"]
     );
 }
@@ -2103,7 +2136,10 @@ fn memory_recall_rejects_a_malformed_event_cap() {
 fn memory_recall_layer_accepts_a_per_agent_override() {
     let input = json!({ "recall": { "enabled": false }, "agents": { "backend-lead": { "recall": { "max_items": 1 } } } });
     assert_eq!(
-        parsed(&omo_config_core::omo_memory_settings_layer_schema(), input.clone()),
+        parsed(
+            &omo_config_core::omo_memory_settings_layer_schema(),
+            input.clone()
+        ),
         input
     );
 }
@@ -2135,13 +2171,7 @@ fn memory_recall_query_expansion_rejects_a_non_boolean() {
         )
         .is_err()
     );
-    assert!(
-        safe_parse(
-            &omo_config_core::omo_memory_recall_layer_schema(),
-            &recall
-        )
-        .is_err()
-    );
+    assert!(safe_parse(&omo_config_core::omo_memory_recall_layer_schema(), &recall).is_err());
     assert!(
         safe_parse(
             &omo_config_core::omo_memory_settings_layer_schema(),
@@ -2198,9 +2228,7 @@ fn task_isolation_root_accepts_overrides_and_rejects_an_invalid_backend() {
         )["isolation"],
         json!({ "enabled": true, "backend": "rcopy", "apply": false, "merge": "branch", "commits": "ai" })
     );
-    assert!(
-        safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err()
-    );
+    assert!(safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err());
 }
 
 #[test]
@@ -2213,9 +2241,7 @@ fn task_isolation_layer_accepts_overrides_and_rejects_an_invalid_backend() {
         ),
         json!({ "isolation": { "enabled": true, "backend": "rcopy", "apply": false, "merge": "branch", "commits": "ai" } })
     );
-    assert!(
-        safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err()
-    );
+    assert!(safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err());
 }
 
 fn provenance_settings() -> Value {
@@ -2402,11 +2428,7 @@ fn memory_reflection_concurrency_rejects_values_a_supervisor_cannot_use() {
             "{value}"
         );
         assert!(
-            safe_parse(
-                &omo_config_core::omo_memory_settings_layer_schema(),
-                &input
-            )
-            .is_err(),
+            safe_parse(&omo_config_core::omo_memory_settings_layer_schema(), &input).is_err(),
             "{value}"
         );
     }
@@ -2415,7 +2437,10 @@ fn memory_reflection_concurrency_rejects_values_a_supervisor_cannot_use() {
 #[test]
 fn memory_project_scope_defaults_on_and_round_trips_explicit_switches() {
     let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
-    assert_eq!(value["project_scope"], json!({ "nudge": true, "recall": true }));
+    assert_eq!(
+        value["project_scope"],
+        json!({ "nudge": true, "recall": true })
+    );
     let switched = parsed(
         &omo_config_core::omo_memory_settings_schema(),
         json!({ "project_scope": { "nudge": false, "recall": false } }),
@@ -2434,7 +2459,10 @@ fn memory_project_scope_defaults_on_and_round_trips_explicit_switches() {
     );
     let layer = json!({ "project_scope": { "recall": false } });
     assert_eq!(
-        parsed(&omo_config_core::omo_memory_settings_layer_schema(), layer.clone()),
+        parsed(
+            &omo_config_core::omo_memory_settings_layer_schema(),
+            layer.clone()
+        ),
         layer
     );
 }
@@ -2464,7 +2492,10 @@ fn model_profile_keeps_an_optional_caution_string_through_strict_parsing() {
 fn model_pad_shapes() -> Vec<(&'static str, Node)> {
     vec![
         ("config", omo_config_core::omo_config_schema()),
-        ("harness", omo_config_core::omo_typed_harness_config_schema()),
+        (
+            "harness",
+            omo_config_core::omo_typed_harness_config_schema(),
+        ),
         ("layer", omo_config_core::omo_config_layer_schema()),
         ("profile", omo_config_core::omo_config_profile_schema()),
     ]
@@ -2482,7 +2513,12 @@ fn model_pad_labels_for_every_axis_word_are_accepted_by_all_four_strict_shapes()
 
     assert_eq!(
         results,
-        vec![("config", true), ("harness", true), ("layer", true), ("profile", true)]
+        vec![
+            ("config", true),
+            ("harness", true),
+            ("layer", true),
+            ("profile", true)
+        ]
     );
     assert_eq!(
         value["model_pad"],
@@ -2503,9 +2539,21 @@ fn model_pad_labels_for_only_some_axis_words_keep_the_unset_words_absent() {
 #[test]
 fn model_pad_invalid_blocks_are_rejected_by_every_strict_shape_at_their_own_path() {
     for (name, block, path) in [
-        ("an unknown axis word", json!({ "model_pad": { "labels": { "obsessive": "GPT" } } }), "model_pad.labels"),
-        ("an unknown model_pad key", json!({ "model_pad": { "slots": {} } }), "model_pad"),
-        ("a non-string label", json!({ "model_pad": { "labels": { "daily": 1 } } }), "model_pad.labels.daily"),
+        (
+            "an unknown axis word",
+            json!({ "model_pad": { "labels": { "obsessive": "GPT" } } }),
+            "model_pad.labels",
+        ),
+        (
+            "an unknown model_pad key",
+            json!({ "model_pad": { "slots": {} } }),
+            "model_pad",
+        ),
+        (
+            "a non-string label",
+            json!({ "model_pad": { "labels": { "daily": 1 } } }),
+            "model_pad.labels.daily",
+        ),
     ] {
         for (shape, schema) in model_pad_shapes() {
             let reported = issues(&schema, block.clone());

@@ -84,8 +84,12 @@ pub fn host_platform() -> String {
 pub fn use_windows_keybindings(platform: &str, env: &HashMap<String, String>) -> bool {
     platform == "win32"
         || (platform == "linux"
-            && (env.get("WSL_DISTRO_NAME").is_some_and(|value| !value.is_empty())
-                || env.get("WSL_INTEROP").is_some_and(|value| !value.is_empty())))
+            && (env
+                .get("WSL_DISTRO_NAME")
+                .is_some_and(|value| !value.is_empty())
+                || env
+                    .get("WSL_INTEROP")
+                    .is_some_and(|value| !value.is_empty())))
 }
 
 /// `KEYBINDINGS`: the TUI table plus the core overrides and `app.*` entries.
@@ -103,20 +107,36 @@ pub fn keybindings_for(platform: &str, windows: bool) -> KeybindingDefinitions {
     override_defaults(
         &mut definitions,
         "tui.altScreen.previousPrompt",
-        if windows { "ctrl+up".into() } else { ["ctrl+shift+up", "ctrl+up"].into() },
+        if windows {
+            "ctrl+up".into()
+        } else {
+            ["ctrl+shift+up", "ctrl+up"].into()
+        },
     );
     override_defaults(
         &mut definitions,
         "tui.altScreen.nextPrompt",
-        if windows { "ctrl+down".into() } else { ["ctrl+shift+down", "ctrl+down"].into() },
+        if windows {
+            "ctrl+down".into()
+        } else {
+            ["ctrl+shift+down", "ctrl+down"].into()
+        },
     );
     override_defaults(
         &mut definitions,
         "tui.altScreen.search",
-        if windows { "ctrl+f".into() } else { "ctrl+shift+f".into() },
+        if windows {
+            "ctrl+f".into()
+        } else {
+            "ctrl+shift+f".into()
+        },
     );
 
-    let suspend_keys: Keys = if platform == "win32" { Keys::Many(Vec::new()) } else { "ctrl+z".into() };
+    let suspend_keys: Keys = if platform == "win32" {
+        Keys::Many(Vec::new())
+    } else {
+        "ctrl+z".into()
+    };
     let fold_or_up: Keys = if platform == "darwin" {
         ["alt+left", "ctrl+left"].into()
     } else {
@@ -134,29 +154,69 @@ pub fn keybindings_for(platform: &str, windows: bool) -> KeybindingDefinitions {
         ("app.clear", "ctrl+c".into(), "Clear editor"),
         ("app.exit", "ctrl+d".into(), "Exit when editor is empty"),
         ("app.suspend", suspend_keys, "Suspend to background"),
-        ("app.thinking.cycle", "shift+tab".into(), "Cycle thinking level"),
+        (
+            "app.thinking.cycle",
+            "shift+tab".into(),
+            "Cycle thinking level",
+        ),
         ("app.thinking.save", "ctrl+s".into(), "Save thinking level"),
-        ("app.model.cycleForward", "ctrl+p".into(), "Cycle to next model"),
+        (
+            "app.model.cycleForward",
+            "ctrl+p".into(),
+            "Cycle to next model",
+        ),
         (
             "app.model.cycleBackward",
-            if windows { "alt+p".into() } else { "shift+ctrl+p".into() },
+            if windows {
+                "alt+p".into()
+            } else {
+                "shift+ctrl+p".into()
+            },
             "Cycle to previous model",
         ),
         ("app.model.select", "ctrl+l".into(), "Open model selector"),
-        ("app.history.search", "ctrl+r".into(), "Search prompt history across sessions"),
+        (
+            "app.history.search",
+            "ctrl+r".into(),
+            "Search prompt history across sessions",
+        ),
         ("app.tools.expand", "ctrl+o".into(), "Toggle tool output"),
-        ("app.thinking.toggle", "ctrl+t".into(), "Toggle thinking blocks"),
-        ("app.session.toggleNamedFilter", "ctrl+n".into(), "Toggle named session filter"),
-        ("app.editor.external", "ctrl+g".into(), "Open external editor"),
-        ("app.message.copy", "ctrl+x".into(), "Copy message to clipboard"),
+        (
+            "app.thinking.toggle",
+            "ctrl+t".into(),
+            "Toggle thinking blocks",
+        ),
+        (
+            "app.session.toggleNamedFilter",
+            "ctrl+n".into(),
+            "Toggle named session filter",
+        ),
+        (
+            "app.editor.external",
+            "ctrl+g".into(),
+            "Open external editor",
+        ),
+        (
+            "app.message.copy",
+            "ctrl+x".into(),
+            "Copy message to clipboard",
+        ),
         (
             "app.message.followUp",
-            if windows { "ctrl+q".into() } else { "alt+enter".into() },
+            if windows {
+                "ctrl+q".into()
+            } else {
+                "alt+enter".into()
+            },
             "Queue follow-up message",
         ),
         (
             "app.message.dequeue",
-            if windows { "alt+q".into() } else { "alt+up".into() },
+            if windows {
+                "alt+q".into()
+            } else {
+                "alt+up".into()
+            },
             "Restore queued messages",
         ),
         (
@@ -164,51 +224,134 @@ pub fn keybindings_for(platform: &str, windows: bool) -> KeybindingDefinitions {
             [QUESTION_ANSWER_PRIMARY_KEY, QUESTION_ANSWER_FALLBACK_KEY].into(),
             "Open the pending question",
         ),
-        ("app.question.next", "alt+down".into(), "Show the next pending question"),
+        (
+            "app.question.next",
+            "alt+down".into(),
+            "Show the next pending question",
+        ),
         (
             "app.clipboard.pasteImage",
-            if windows { "alt+v".into() } else { "ctrl+v".into() },
+            if windows {
+                "alt+v".into()
+            } else {
+                "ctrl+v".into()
+            },
             "Paste image from clipboard (text fallback)",
         ),
         ("app.session.new", empty.clone(), "Start a new session"),
         ("app.session.tree", empty.clone(), "Open session tree"),
         ("app.session.fork", empty.clone(), "Fork current session"),
         ("app.session.resume", empty.clone(), "Resume a session"),
-        ("app.session.renameCurrent", empty.clone(), "Rename the current session"),
-        ("app.tree.foldOrUp", fold_or_up, "Fold tree branch or move up"),
-        ("app.tree.unfoldOrDown", unfold_or_down, "Unfold tree branch or move down"),
+        (
+            "app.session.renameCurrent",
+            empty.clone(),
+            "Rename the current session",
+        ),
+        (
+            "app.tree.foldOrUp",
+            fold_or_up,
+            "Fold tree branch or move up",
+        ),
+        (
+            "app.tree.unfoldOrDown",
+            unfold_or_down,
+            "Unfold tree branch or move down",
+        ),
         ("app.tree.editLabel", "shift+l".into(), "Edit tree label"),
         (
             "app.tree.editMessage",
             "ctrl+e".into(),
             "Edit the selected assistant response, or reopen a user message in the editor",
         ),
-        ("app.tree.toggleLabelTimestamp", "shift+t".into(), "Toggle tree label timestamps"),
-        ("app.session.togglePath", "ctrl+p".into(), "Toggle session path display"),
-        ("app.session.toggleSort", "ctrl+s".into(), "Toggle session sort mode"),
+        (
+            "app.tree.toggleLabelTimestamp",
+            "shift+t".into(),
+            "Toggle tree label timestamps",
+        ),
+        (
+            "app.session.togglePath",
+            "ctrl+p".into(),
+            "Toggle session path display",
+        ),
+        (
+            "app.session.toggleSort",
+            "ctrl+s".into(),
+            "Toggle session sort mode",
+        ),
         ("app.session.rename", "ctrl+r".into(), "Rename session"),
         ("app.session.delete", "ctrl+d".into(), "Delete session"),
-        ("app.session.deleteNoninvasive", "ctrl+backspace".into(), "Delete session when query is empty"),
+        (
+            "app.session.deleteNoninvasive",
+            "ctrl+backspace".into(),
+            "Delete session when query is empty",
+        ),
         ("app.models.save", "ctrl+s".into(), "Save model selection"),
-        ("app.models.toggleFavorite", "ctrl+f".into(), "Toggle favorite model"),
+        (
+            "app.models.toggleFavorite",
+            "ctrl+f".into(),
+            "Toggle favorite model",
+        ),
         ("app.models.enableAll", "ctrl+a".into(), "Enable all models"),
         ("app.models.clearAll", "ctrl+x".into(), "Clear all models"),
-        ("app.models.toggleProvider", "ctrl+p".into(), "Toggle all models for provider"),
-        ("app.models.reorderUp", "alt+up".into(), "Move model up in order"),
-        ("app.models.reorderDown", "alt+down".into(), "Move model down in order"),
-        ("app.tree.filter.default", "ctrl+d".into(), "Tree filter: default view"),
-        ("app.tree.filter.noTools", "ctrl+t".into(), "Tree filter: hide tool results"),
-        ("app.tree.filter.userOnly", "ctrl+u".into(), "Tree filter: user messages only"),
-        ("app.tree.filter.labeledOnly", "ctrl+l".into(), "Tree filter: labeled entries only"),
-        ("app.tree.filter.all", "ctrl+a".into(), "Tree filter: show all entries"),
-        ("app.tree.filter.cycleForward", "ctrl+o".into(), "Tree filter: cycle forward"),
-        ("app.tree.filter.cycleBackward", "shift+ctrl+o".into(), "Tree filter: cycle backward"),
+        (
+            "app.models.toggleProvider",
+            "ctrl+p".into(),
+            "Toggle all models for provider",
+        ),
+        (
+            "app.models.reorderUp",
+            "alt+up".into(),
+            "Move model up in order",
+        ),
+        (
+            "app.models.reorderDown",
+            "alt+down".into(),
+            "Move model down in order",
+        ),
+        (
+            "app.tree.filter.default",
+            "ctrl+d".into(),
+            "Tree filter: default view",
+        ),
+        (
+            "app.tree.filter.noTools",
+            "ctrl+t".into(),
+            "Tree filter: hide tool results",
+        ),
+        (
+            "app.tree.filter.userOnly",
+            "ctrl+u".into(),
+            "Tree filter: user messages only",
+        ),
+        (
+            "app.tree.filter.labeledOnly",
+            "ctrl+l".into(),
+            "Tree filter: labeled entries only",
+        ),
+        (
+            "app.tree.filter.all",
+            "ctrl+a".into(),
+            "Tree filter: show all entries",
+        ),
+        (
+            "app.tree.filter.cycleForward",
+            "ctrl+o".into(),
+            "Tree filter: cycle forward",
+        ),
+        (
+            "app.tree.filter.cycleBackward",
+            "shift+ctrl+o".into(),
+            "Tree filter: cycle backward",
+        ),
     ];
 
     for (id, default_keys, description) in app_entries {
         definitions.insert(
             id.to_string(),
-            KeybindingDefinition { default_keys, description: Some(description.to_string()) },
+            KeybindingDefinition {
+                default_keys,
+                description: Some(description.to_string()),
+            },
         );
     }
 
@@ -223,8 +366,12 @@ fn override_defaults(definitions: &mut KeybindingDefinitions, id: &str, default_
 
 /// `KEYBINDINGS` built for this host, once.
 pub fn keybindings() -> &'static KeybindingDefinitions {
-    static KEYBINDINGS: LazyLock<KeybindingDefinitions> =
-        LazyLock::new(|| keybindings_for(&host_platform(), use_windows_keybindings(&host_platform(), &current_env())));
+    static KEYBINDINGS: LazyLock<KeybindingDefinitions> = LazyLock::new(|| {
+        keybindings_for(
+            &host_platform(),
+            use_windows_keybindings(&host_platform(), &current_env()),
+        )
+    });
     &KEYBINDINGS
 }
 
@@ -297,7 +444,10 @@ pub const KEYBINDING_NAME_MIGRATIONS: [(&str, &str); 60] = [
 ];
 
 fn is_legacy_keybinding_name(key: &str) -> Option<&'static str> {
-    KEYBINDING_NAME_MIGRATIONS.iter().find(|(legacy, _)| *legacy == key).map(|(_, next)| *next)
+    KEYBINDING_NAME_MIGRATIONS
+        .iter()
+        .find(|(legacy, _)| *legacy == key)
+        .map(|(_, next)| *next)
 }
 
 /// `migrateKeybindingsConfig`.
@@ -323,7 +473,10 @@ pub fn migrate_keybindings_config(raw_config: &Map<String, Value>) -> MigrateKey
         config.insert(next_key.to_string(), value.clone());
     }
 
-    MigrateKeybindingsResult { config: order_keybindings_config(&config), migrated }
+    MigrateKeybindingsResult {
+        config: order_keybindings_config(&config),
+        migrated,
+    }
 }
 
 /// `orderKeybindingsConfig`: known ids in table order, then the remaining keys sorted.
@@ -335,8 +488,10 @@ pub fn order_keybindings_config(config: &Map<String, Value>) -> Map<String, Valu
         }
     }
 
-    let mut extras: Vec<&String> =
-        config.keys().filter(|key| !ordered.contains_key(*key)).collect();
+    let mut extras: Vec<&String> = config
+        .keys()
+        .filter(|key| !ordered.contains_key(*key))
+        .collect();
     extras.sort();
     for key in extras {
         if let Some(value) = config.get(key) {
@@ -389,7 +544,10 @@ pub struct KeybindingsManager {
 impl KeybindingsManager {
     pub fn new(user_bindings: KeybindingsConfig, config_path: Option<String>) -> Self {
         Self {
-            inner: maho_tui::keybindings::KeybindingsManager::new(keybindings().clone(), user_bindings),
+            inner: maho_tui::keybindings::KeybindingsManager::new(
+                keybindings().clone(),
+                user_bindings,
+            ),
             config_path,
         }
     }
@@ -397,7 +555,10 @@ impl KeybindingsManager {
     /// `KeybindingsManager.create(agentDir)`.
     pub fn create(agent_dir: Option<&str>) -> Self {
         let agent_dir = agent_dir.map(str::to_string).unwrap_or_else(get_agent_dir);
-        let config_path = Path::new(&agent_dir).join("keybindings.json").to_string_lossy().into_owned();
+        let config_path = Path::new(&agent_dir)
+            .join("keybindings.json")
+            .to_string_lossy()
+            .into_owned();
         let user_bindings = Self::load_from_file(&config_path);
         Self::new(user_bindings, Some(config_path))
     }
@@ -407,7 +568,8 @@ impl KeybindingsManager {
         let Some(config_path) = self.config_path.clone() else {
             return;
         };
-        self.inner.set_user_bindings(Self::load_from_file(&config_path));
+        self.inner
+            .set_user_bindings(Self::load_from_file(&config_path));
     }
 
     /// `getEffectiveConfig`.
@@ -444,29 +606,59 @@ mod tests {
     #[test]
     fn app_ids_are_all_present_with_their_defaults() {
         let definitions = keybindings();
-        assert_eq!(definitions["app.interrupt"].default_keys, Keys::One("escape".to_string()));
+        assert_eq!(
+            definitions["app.interrupt"].default_keys,
+            Keys::One("escape".to_string())
+        );
         let expected_follow_up = if cfg!(windows) { "ctrl+q" } else { "alt+enter" };
-        assert_eq!(definitions["app.message.followUp"].default_keys, Keys::One(expected_follow_up.to_string()));
+        assert_eq!(
+            definitions["app.message.followUp"].default_keys,
+            Keys::One(expected_follow_up.to_string())
+        );
         assert_eq!(
             definitions["app.question.answer"].default_keys,
             Keys::Many(vec!["alt+up".to_string(), "alt+a".to_string()])
         );
-        assert_eq!(definitions["app.session.new"].default_keys, Keys::Many(Vec::new()));
+        assert_eq!(
+            definitions["app.session.new"].default_keys,
+            Keys::Many(Vec::new())
+        );
         for id in APP_KEYBINDING_IDS {
             assert!(definitions.contains_key(id), "{id} is defined");
         }
-        assert!(definitions.contains_key("tui.editor.cursorUp"), "the tui table is kept");
+        assert!(
+            definitions.contains_key("tui.editor.cursorUp"),
+            "the tui table is kept"
+        );
     }
 
     #[test]
     fn windows_dialect_swaps_the_platform_specific_defaults() {
         let definitions = keybindings_for("linux", true);
-        assert_eq!(definitions["app.model.cycleBackward"].default_keys, Keys::One("alt+p".to_string()));
-        assert_eq!(definitions["app.message.dequeue"].default_keys, Keys::One("alt+q".to_string()));
-        assert_eq!(definitions["app.clipboard.pasteImage"].default_keys, Keys::One("alt+v".to_string()));
-        assert_eq!(definitions["tui.editor.undo"].default_keys, Keys::One("alt+z".to_string()));
-        assert_eq!(definitions["tui.altScreen.search"].default_keys, Keys::One("ctrl+f".to_string()));
-        assert_eq!(definitions["app.suspend"].default_keys, Keys::One("ctrl+z".to_string()));
+        assert_eq!(
+            definitions["app.model.cycleBackward"].default_keys,
+            Keys::One("alt+p".to_string())
+        );
+        assert_eq!(
+            definitions["app.message.dequeue"].default_keys,
+            Keys::One("alt+q".to_string())
+        );
+        assert_eq!(
+            definitions["app.clipboard.pasteImage"].default_keys,
+            Keys::One("alt+v".to_string())
+        );
+        assert_eq!(
+            definitions["tui.editor.undo"].default_keys,
+            Keys::One("alt+z".to_string())
+        );
+        assert_eq!(
+            definitions["tui.altScreen.search"].default_keys,
+            Keys::One("ctrl+f".to_string())
+        );
+        assert_eq!(
+            definitions["app.suspend"].default_keys,
+            Keys::One("ctrl+z".to_string())
+        );
     }
 
     #[test]
@@ -476,14 +668,23 @@ mod tests {
             definitions["app.tree.foldOrUp"].default_keys,
             Keys::Many(vec!["alt+left".to_string(), "ctrl+left".to_string()])
         );
-        assert_eq!(definitions["tui.editor.undo"].default_keys, Keys::One("ctrl+-".to_string()));
+        assert_eq!(
+            definitions["tui.editor.undo"].default_keys,
+            Keys::One("ctrl+-".to_string())
+        );
     }
 
     #[test]
     fn win32_disables_suspend() {
         let definitions = keybindings_for("win32", true);
-        assert_eq!(definitions["app.suspend"].default_keys, Keys::Many(Vec::new()));
-        assert_eq!(definitions["tui.editor.undo"].default_keys, Keys::One("ctrl+z".to_string()));
+        assert_eq!(
+            definitions["app.suspend"].default_keys,
+            Keys::Many(Vec::new())
+        );
+        assert_eq!(
+            definitions["tui.editor.undo"].default_keys,
+            Keys::One("ctrl+z".to_string())
+        );
     }
 
     #[test]
@@ -543,10 +744,16 @@ mod tests {
             ("app.exit", json!(5)),
             ("app.suspend", json!(["ctrl+z", 1])),
         ]));
-        assert_eq!(config.get("app.interrupt"), Some(&Some(Keys::One("escape".to_string()))));
+        assert_eq!(
+            config.get("app.interrupt"),
+            Some(&Some(Keys::One("escape".to_string())))
+        );
         assert_eq!(
             config.get("app.clear"),
-            Some(&Some(Keys::Many(vec!["ctrl+c".to_string(), "ctrl+x".to_string()])))
+            Some(&Some(Keys::Many(vec![
+                "ctrl+c".to_string(),
+                "ctrl+x".to_string()
+            ])))
         );
         assert_eq!(config.get("app.exit"), None);
         assert_eq!(config.get("app.suspend"), None);
@@ -556,7 +763,10 @@ mod tests {
     fn a_manager_created_without_a_file_has_no_user_bindings() {
         let manager = KeybindingsManager::create(Some("/nonexistent-agent-dir-for-tests"));
         let effective = manager.get_effective_config();
-        assert_eq!(effective.get("app.interrupt"), Some(&Some(Keys::One("escape".to_string()))));
+        assert_eq!(
+            effective.get("app.interrupt"),
+            Some(&Some(Keys::One("escape".to_string())))
+        );
         assert_eq!(effective.len(), keybindings().len());
     }
 
@@ -565,17 +775,30 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("keybindings.json");
         std::fs::write(&path, "{not json").expect("write");
-        assert_eq!(KeybindingsManager::load_from_file(&path.to_string_lossy()), KeybindingsConfig::new());
+        assert_eq!(
+            KeybindingsManager::load_from_file(&path.to_string_lossy()),
+            KeybindingsConfig::new()
+        );
     }
 
     #[test]
     fn loading_a_file_applies_migration_and_ordering() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("keybindings.json");
-        std::fs::write(&path, "{\n  \"interrupt\": \"ctrl+q\",\n  \"app.clear\": \"ctrl+b\"\n}").expect("write");
+        std::fs::write(
+            &path,
+            "{\n  \"interrupt\": \"ctrl+q\",\n  \"app.clear\": \"ctrl+b\"\n}",
+        )
+        .expect("write");
         let config = KeybindingsManager::load_from_file(&path.to_string_lossy());
         let keys: Vec<&String> = config.keys().collect();
-        assert_eq!(keys, vec![&"app.interrupt".to_string(), &"app.clear".to_string()]);
-        assert_eq!(config.get("app.interrupt"), Some(&Some(Keys::One("ctrl+q".to_string()))));
+        assert_eq!(
+            keys,
+            vec![&"app.interrupt".to_string(), &"app.clear".to_string()]
+        );
+        assert_eq!(
+            config.get("app.interrupt"),
+            Some(&Some(Keys::One("ctrl+q".to_string())))
+        );
     }
 }

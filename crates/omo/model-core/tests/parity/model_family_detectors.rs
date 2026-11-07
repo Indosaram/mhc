@@ -13,9 +13,9 @@ use model_core::is_grok45_model;
 use model_core::is_grok46_model;
 use model_core::is_kimi_k2_code_model;
 use model_core::is_kimi_k2_model;
+use model_core::is_kimi_k3_model;
 use model_core::is_kimi_k27_model;
 use model_core::is_kimi_k28_model;
-use model_core::is_kimi_k3_model;
 use model_core::is_kimi_k31_model;
 use model_core::is_mini_max_model;
 use model_core::is_swe2_model;
@@ -98,7 +98,9 @@ fn kimi_k2_8_model_ids_detect_k2_8_and_the_kimi_code_rolling_ids_by_version() {
             ("anthropic/claude-opus-4-7", false),
         ],
     );
-    assert!(is_kimi_k27_model("kimi-for-coding/kimi-for-coding-highspeed"));
+    assert!(is_kimi_k27_model(
+        "kimi-for-coding/kimi-for-coding-highspeed"
+    ));
     assert!(!is_kimi_k27_model("kimi-for-coding/kimi-for-coding"));
 }
 
@@ -170,7 +172,10 @@ fn kimi_k31_model_ids_detect_k31_and_leave_k3_alone() {
 
 #[test]
 fn devin_selectors_only_an_explicit_devin_swe2_id_outside_the_served_lanes_is_unserved() {
-    assert_eq!(DEVIN_SWE2_SERVED_LANES, ["swe-2-medium", "swe-2-high", "swe-2-max"]);
+    assert_eq!(
+        DEVIN_SWE2_SERVED_LANES,
+        ["swe-2-medium", "swe-2-high", "swe-2-max"]
+    );
     check(
         is_unserved_devin_swe2_selector,
         &[

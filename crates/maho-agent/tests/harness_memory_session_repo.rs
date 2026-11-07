@@ -1,7 +1,7 @@
 //! Port of senpi packages/agent/test/harness/memory-session-repo.test.ts.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use maho_agent::harness::context::BACKGROUND_CONTEXT;
 use maho_agent::harness::session::types::{SessionCreateOptions, SessionRepo, StorageBranchScan};
@@ -48,23 +48,39 @@ async fn returns_a_fresh_facade_after_close_while_retaining_one_session_and_stor
     let context = BACKGROUND_CONTEXT.clone();
     let options = create_options("session");
     let first = repo.create(options, &context).await.expect("create");
-    let first_branch = first.create_branch("main", None, &context).await.expect("branch");
+    let first_branch = first
+        .create_branch("main", None, &context)
+        .await
+        .expect("branch");
     let admitted = first.set_name(Some("preserved".to_owned()), &context);
 
     let metadata = first.metadata().clone();
-    let open_error = repo.open(metadata.clone(), &context).await.err().expect("already open");
-    assert!(open_error.message.contains("already open"), "{}", open_error.message);
+    let open_error = repo
+        .open(metadata.clone(), &context)
+        .await
+        .err()
+        .expect("already open");
+    assert!(
+        open_error.message.contains("already open"),
+        "{}",
+        open_error.message
+    );
 
     admitted.await.expect("admitted write");
     first.close(&context).await;
     assert!(first.get_name(&BACKGROUND_CONTEXT).await.is_err());
-    assert!(first
-        .scan_branch(StorageBranchScan::new("entry"), &BACKGROUND_CONTEXT)
-        .await
-        .is_err());
+    assert!(
+        first
+            .scan_branch(StorageBranchScan::new("entry"), &BACKGROUND_CONTEXT)
+            .await
+            .is_err()
+    );
     assert!(first_branch.get_tip_id(&BACKGROUND_CONTEXT).await.is_err());
 
-    let second = repo.open(metadata, &BACKGROUND_CONTEXT).await.expect("reopen");
+    let second = repo
+        .open(metadata, &BACKGROUND_CONTEXT)
+        .await
+        .expect("reopen");
     assert_eq!(
         second.get_name(&BACKGROUND_CONTEXT).await.expect("name"),
         Some("preserved".to_owned())

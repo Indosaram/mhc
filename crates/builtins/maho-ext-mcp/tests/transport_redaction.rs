@@ -1,12 +1,27 @@
-use std::{sync::{Arc, Mutex}, time::Duration};
-use maho_ext_mcp::{log::{McpLogger, redact_url, redact_urls_in_text}, transport_sdk::{McpClient, McpTransportSpec}};
+use maho_ext_mcp::{
+    log::{McpLogger, redact_url, redact_urls_in_text},
+    transport_sdk::{McpClient, McpTransportSpec},
+};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 #[test]
 fn sensitive_query_values_are_masked_and_the_rest_is_untouched() {
-    assert_eq!(redact_url("https://a.test/mcp?api_key=s1&x=1&Token=s2&client_SECRET=s3"), "https://a.test/mcp?api_key=***REDACTED***&x=1&Token=***REDACTED***&client_SECRET=***REDACTED***");
-    assert_eq!(redact_url("https://a.test/mcp?x=1&y=2"), "https://a.test/mcp?x=1&y=2");
+    assert_eq!(
+        redact_url("https://a.test/mcp?api_key=s1&x=1&Token=s2&client_SECRET=s3"),
+        "https://a.test/mcp?api_key=***REDACTED***&x=1&Token=***REDACTED***&client_SECRET=***REDACTED***"
+    );
+    assert_eq!(
+        redact_url("https://a.test/mcp?x=1&y=2"),
+        "https://a.test/mcp?x=1&y=2"
+    );
     assert_eq!(redact_url("https://a.test/mcp"), "https://a.test/mcp");
-    assert_eq!(redact_url("https://a.test/mcp?token=s#frag"), "https://a.test/mcp?token=***REDACTED***#frag");
+    assert_eq!(
+        redact_url("https://a.test/mcp?token=s#frag"),
+        "https://a.test/mcp?token=***REDACTED***#frag"
+    );
 }
 
 #[test]
@@ -25,9 +40,25 @@ async fn http_send_failures_do_not_leak_url_secrets() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let root = tempfile::tempdir().unwrap();
-    let logger = Arc::new(Mutex::new(McpLogger::new("redact", root.path(), None).unwrap()));
-    let spec = McpTransportSpec::Http { url: url::Url::parse(&format!("http://127.0.0.1:{port}/mcp?api_key=SUPERSECRET&v=1")).unwrap(), headers: Default::default() };
-    let client = McpClient::materialize("redact", &spec, logger).await.unwrap();
-    let error = tokio::time::timeout(Duration::from_secs(10), client.request("ping", serde_json::json!({}), Duration::from_secs(5))).await.unwrap().unwrap_err();
+    let logger = Arc::new(Mutex::new(
+        McpLogger::new("redact", root.path(), None).unwrap(),
+    ));
+    let spec = McpTransportSpec::Http {
+        url: url::Url::parse(&format!(
+            "http://127.0.0.1:{port}/mcp?api_key=SUPERSECRET&v=1"
+        ))
+        .unwrap(),
+        headers: Default::default(),
+    };
+    let client = McpClient::materialize("redact", &spec, logger)
+        .await
+        .unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.request("ping", serde_json::json!({}), Duration::from_secs(5)),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
     assert!(!error.message.contains("SUPERSECRET"), "{}", error.message);
 }

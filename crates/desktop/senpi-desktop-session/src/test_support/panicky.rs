@@ -1,8 +1,8 @@
 //! The fake backend plus injected panics: the fake itself can only fail a
 //! call, and a transaction must also survive a backend that unwinds.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use image::RgbaImage;
 use parking_lot::Mutex;
@@ -13,7 +13,8 @@ use senpi_desktop_core::error::{CoreResult, DesktopError, PermissionDeniedData, 
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{
-    CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow, Target,
+    CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow,
+    Target,
 };
 
 /// Makes the next call of one method panic; clones share the slot.
@@ -49,12 +50,17 @@ pub(crate) struct PanickyFake {
 
 impl Backend for PanickyFake {
     fn permission_denied(&mut self, permission: TccPermission) -> DesktopError {
-        DesktopError::permission_denied_with(PermissionDeniedData {
-            permission,
-            settings_url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility".to_owned(),
-            app: "Marked fake launcher".to_owned(),
-            relaunch_required: true,
-        }, "backend-enriched permission refusal")
+        DesktopError::permission_denied_with(
+            PermissionDeniedData {
+                permission,
+                settings_url:
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                        .to_owned(),
+                app: "Marked fake launcher".to_owned(),
+                relaunch_required: true,
+            },
+            "backend-enriched permission refusal",
+        )
     }
 
     fn capabilities(&mut self) -> DesktopCapabilities {
@@ -66,7 +72,11 @@ impl Backend for PanickyFake {
     fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>> {
         self.inner.windows()
     }
-    fn capture(&mut self, target: &Target, caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         self.inner.capture(target, caps)
     }
     fn pointer(
@@ -95,9 +105,15 @@ impl Backend for PanickyFake {
         check_stop: &dyn Fn() -> CoreResult<()>,
         delivered: &mut dyn FnMut(),
     ) -> CoreResult<()> {
-        self.inner.type_text_interruptible(target, text, mode, check_stop, delivered)
+        self.inner
+            .type_text_interruptible(target, text, mode, check_stop, delivered)
     }
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         self.inner.key_chord(target, keys, mode)
     }
     fn raise_window(&mut self, id: &str) -> CoreResult<()> {

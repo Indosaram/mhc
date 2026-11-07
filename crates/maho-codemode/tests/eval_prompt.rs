@@ -1,4 +1,8 @@
-use maho_codemode::{prompt::eval_prompt::{eval_emphasis_style, is_gpt_code_mode_model, EvalEmphasisStyle}, config::settings::Languages, prompt::eval_prompt::{build_eval_prompt, EvalPromptOptions}};
+use maho_codemode::{
+    config::settings::Languages,
+    prompt::eval_prompt::{EvalEmphasisStyle, eval_emphasis_style, is_gpt_code_mode_model},
+    prompt::eval_prompt::{EvalPromptOptions, build_eval_prompt},
+};
 
 #[test]
 fn model_dialect_selection_preserves_family_boundaries() {
@@ -13,23 +17,30 @@ fn model_dialect_selection_preserves_family_boundaries() {
         (Some("chatgpt-5"), EvalEmphasisStyle::Codex),
         (Some("notgpt-6"), EvalEmphasisStyle::Default),
         (Some("o3 invalid"), EvalEmphasisStyle::Default),
-    ] { assert_eq!(eval_emphasis_style(model), expected); }
+    ] {
+        assert_eq!(eval_emphasis_style(model), expected);
+    }
     assert!(is_gpt_code_mode_model(Some("openai/gpt-6")));
     assert!(!is_gpt_code_mode_model(Some("openai/chatgpt-6")));
 }
 
 #[test]
 fn disabled_languages_are_rejected() {
-    assert!(build_eval_prompt(&Languages {js:false}, &EvalPromptOptions::default()).is_err());
+    assert!(build_eval_prompt(&Languages { js: false }, &EvalPromptOptions::default()).is_err());
 }
 
 #[test]
 fn every_enabled_language_combination_resolves_template_tags() {
     for enabled in [true] {
-        let enabled = Languages { js:enabled };
+        let enabled = Languages { js: enabled };
         for model in ["unknown", "claude-sonnet", "gpt-6", "codex-6", "kimi-k2"] {
             for spawns in [false, true] {
-                let options = EvalPromptOptions { model_id:Some(model.into()), spawns, monitor:true, ..Default::default() };
+                let options = EvalPromptOptions {
+                    model_id: Some(model.into()),
+                    spawns,
+                    monitor: true,
+                    ..Default::default()
+                };
                 let prompt = build_eval_prompt(&enabled, &options).unwrap();
                 assert!(!prompt.description.contains("{{"));
                 assert!(!prompt.description.contains("}}"));
@@ -39,23 +50,58 @@ fn every_enabled_language_combination_resolves_template_tags() {
     }
 }
 
-fn all_languages() -> Languages { Languages { js:true } }
+fn all_languages() -> Languages {
+    Languages { js: true }
+}
 
 #[test]
 fn monitor_guidance_appears_only_when_monitor_is_registered() {
     for model in ["unknown", "claude-sonnet", "gpt-6", "codex-6", "kimi-k2"] {
-        let without = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some(model.into()), ..Default::default() }).unwrap();
+        let without = build_eval_prompt(
+            &all_languages(),
+            &EvalPromptOptions {
+                model_id: Some(model.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(!without.description.contains("tool.monitor"), "{model}");
-        let with = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some(model.into()), monitor:true, ..Default::default() }).unwrap();
-        assert!(with.description.contains("tool.monitor({ command, filter })"), "{model}");
+        let with = build_eval_prompt(
+            &all_languages(),
+            &EvalPromptOptions {
+                model_id: Some(model.into()),
+                monitor: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            with.description
+                .contains("tool.monitor({ command, filter })"),
+            "{model}"
+        );
     }
 }
 
 #[test]
 fn dialect_blocks_follow_model_family() {
-    let claude = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some("claude-sonnet".into()), ..Default::default() }).unwrap();
+    let claude = build_eval_prompt(
+        &all_languages(),
+        &EvalPromptOptions {
+            model_id: Some("claude-sonnet".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(claude.description.contains("<eval_first_batching>"));
-    let gpt = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some("gpt-6".into()), ..Default::default() }).unwrap();
+    let gpt = build_eval_prompt(
+        &all_languages(),
+        &EvalPromptOptions {
+            model_id: Some("gpt-6".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(gpt.description.contains("<gpt_eval_dialect>"));
     assert!(!gpt.description.contains("<eval_first_batching>"));
 }
@@ -64,15 +110,31 @@ fn dialect_blocks_follow_model_family() {
 fn output_helper_and_spawn_default_agent_require_spawns() {
     let plain = build_eval_prompt(&all_languages(), &EvalPromptOptions::default()).unwrap();
     assert!(!plain.description.contains("output(*ids"));
-    let spawning = build_eval_prompt(&all_languages(), &EvalPromptOptions { spawns:true, spawn_default_agent:Some("sisyphus".into()), ..Default::default() }).unwrap();
+    let spawning = build_eval_prompt(
+        &all_languages(),
+        &EvalPromptOptions {
+            spawns: true,
+            spawn_default_agent: Some("sisyphus".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(spawning.description.contains("output(*ids"));
-    assert!(spawning.description.contains("agent(prompt, agent?=\"sisyphus\""));
+    assert!(
+        spawning
+            .description
+            .contains("agent(prompt, agent?=\"sisyphus\"")
+    );
 }
 
 #[test]
 fn language_line_offers_only_javascript() {
     let prompt = build_eval_prompt(&all_languages(), &EvalPromptOptions::default()).unwrap();
-    assert!(prompt.description.contains("`language`: `\"js\"` persistent JavaScript VM."));
+    assert!(
+        prompt
+            .description
+            .contains("`language`: `\"js\"` persistent JavaScript VM.")
+    );
     assert!(!prompt.description.contains("Python"));
     assert!(!prompt.description.contains("Ruby"));
     assert!(!prompt.description.contains("Julia"));

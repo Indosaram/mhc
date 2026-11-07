@@ -1,12 +1,24 @@
-use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
-use tokio::{sync::watch, task::JoinHandle};
 use crate::timeouts::{idle_timeout::TimeoutPauseHandle, run_budget::RunBudget};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{sync::watch, task::JoinHandle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CellDeadlineKind { HardLimit, RunBudget }
+pub enum CellDeadlineKind {
+    HardLimit,
+    RunBudget,
+}
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CellDeadlineExpiry { pub kind: CellDeadlineKind, pub error: String }
+pub struct CellDeadlineExpiry {
+    pub kind: CellDeadlineKind,
+    pub error: String,
+}
 
 pub fn hard_limit_error(cell_id: &str, seconds: f64) -> String {
     format!("Eval cell {cell_id} was killed at the {seconds}s hard limit.")
@@ -52,23 +64,41 @@ impl CellDeadlines {
                 sender.send_replace(Some(expiry));
             }
         });
-        Self { hard_limit_seconds, run_budget_seconds, budget, settled, signal, task }
+        Self {
+            hard_limit_seconds,
+            run_budget_seconds,
+            budget,
+            settled,
+            signal,
+            task,
+        }
     }
 
-    pub fn signal(&self) -> watch::Receiver<Option<CellDeadlineExpiry>> { self.signal.clone() }
+    pub fn signal(&self) -> watch::Receiver<Option<CellDeadlineExpiry>> {
+        self.signal.clone()
+    }
 
     pub fn clear(&self) {
-        if self.settled.swap(true, Ordering::SeqCst) { return; }
+        if self.settled.swap(true, Ordering::SeqCst) {
+            return;
+        }
         self.budget.dispose();
         self.task.abort();
     }
 }
 
 impl TimeoutPauseHandle for CellDeadlines {
-    fn pause(&self) { self.budget.pause(); }
-    fn resume(&self) { self.budget.resume(); }
+    fn pause(&self) {
+        self.budget.pause();
+    }
+    fn resume(&self) {
+        self.budget.resume();
+    }
 }
 
 impl Drop for CellDeadlines {
-    fn drop(&mut self) { self.clear(); self.task.abort(); }
+    fn drop(&mut self) {
+        self.clear();
+        self.task.abort();
+    }
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use zbus::message::Header;
 use zbus::zvariant::{ObjectPath, OwnedFd, OwnedObjectPath, OwnedValue, Value};
-use zbus::{Connection, fdo, interface};
+use zbus::{fdo, interface, Connection};
 
 use super::fake_portal::{Reply, State};
 

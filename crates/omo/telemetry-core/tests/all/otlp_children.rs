@@ -50,7 +50,8 @@ fn spawn_crashing_writer(dir: &Path, pid: u32, boot_id: &str) -> io::Result<()> 
         write: None,
         truncate: None,
     });
-    let mut processor = WalLogRecordProcessor::new(writer, Box::new(|_writer: &mut SpoolWriter| {}));
+    let mut processor =
+        WalLogRecordProcessor::new(writer, Box::new(|_writer: &mut SpoolWriter| {}));
     for index in 1..=7u32 {
         let mut attributes = Map::new();
         attributes.insert("log.record.uid".into(), Value::from(index));
@@ -94,8 +95,8 @@ fn a_dead_writers_idle_active_file_is_sealed_by_the_sweep() {
     assert!(active[0].starts_with("active-logs-4242-"), "got {active:?}");
 
     // The writer died and its file has been idle past the dead-owner threshold.
-    let old = std::time::SystemTime::now()
-        - std::time::Duration::from_millis(DEAD_OWNER_IDLE_MS + 1_000);
+    let old =
+        std::time::SystemTime::now() - std::time::Duration::from_millis(DEAD_OWNER_IDLE_MS + 1_000);
     filetime::set_file_mtime(
         root.dir.join(&active[0]),
         filetime::FileTime::from_system_time(old),
@@ -135,9 +136,7 @@ async fn a_collector_that_never_answers_ends_the_attempt_at_the_request_timeout(
 
     let deps = PostDeps {
         fetch: create_reqwest_fetch(),
-        sleep: Arc::new(|_ms: u64, _abort: AbortSignal| {
-            futures::future::ready(()).boxed()
-        }),
+        sleep: Arc::new(|_ms: u64, _abort: AbortSignal| futures::future::ready(()).boxed()),
         random: Arc::new(|| 0.0),
         endpoint: format!("http://127.0.0.1:{port}"),
         ingest_key: "test-ingest-key".to_string(),

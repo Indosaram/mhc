@@ -1,7 +1,10 @@
 //! Default memory seeding logic and file generation.
 
 use crate::memfs::frontmatter::{MemoryFrontmatter, render_memory_file};
-use crate::seeds::default_memory::{DEFAULT_BOUNDARIES_BODY, DEFAULT_HUMAN_BODY, DEFAULT_PERSONA_BODY, DEFAULT_SELF_AWARE_BODY, DEFAULT_SELF_OBSERVATIONS_BODY};
+use crate::seeds::default_memory::{
+    DEFAULT_BOUNDARIES_BODY, DEFAULT_HUMAN_BODY, DEFAULT_PERSONA_BODY, DEFAULT_SELF_AWARE_BODY,
+    DEFAULT_SELF_OBSERVATIONS_BODY,
+};
 use crate::seeds::memory_discipline::{
     MEMORY_DISCIPLINE_SKILL_CONTENT, MEMORY_DISCIPLINE_SKILL_PATH,
 };

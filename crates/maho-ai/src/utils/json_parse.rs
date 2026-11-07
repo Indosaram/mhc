@@ -36,7 +36,12 @@ pub fn repair_json(json: &str) -> String {
         } else if c == '\\' {
             match chars.get(index + 1).copied() {
                 None => repaired.push_str("\\\\"),
-                Some('u') if chars.len() >= index + 6 && chars[index + 2..index + 6].iter().all(char::is_ascii_hexdigit) => {
+                Some('u')
+                    if chars.len() >= index + 6
+                        && chars[index + 2..index + 6]
+                            .iter()
+                            .all(char::is_ascii_hexdigit) =>
+                {
                     repaired.push_str("\\u");
                     repaired.extend(&chars[index + 2..index + 6]);
                     index += 5;
@@ -63,7 +68,11 @@ pub fn parse_json_with_repair<T: DeserializeOwned>(json: &str) -> Result<T, serd
         Ok(value) => Ok(value),
         Err(error) => {
             let repaired = repair_json(json);
-            if repaired != json { serde_json::from_str(&repaired) } else { Err(error) }
+            if repaired != json {
+                serde_json::from_str(&repaired)
+            } else {
+                Err(error)
+            }
         }
     }
 }
@@ -81,10 +90,17 @@ pub fn should_reparse_streaming_json(total_len: usize, last_parsed_len: usize) -
 
 /// Parses possibly incomplete streamed tool-call JSON; anything unparseable yields `{}`.
 pub fn parse_streaming_json(partial_json: Option<&str>) -> Value {
-    let Some(partial_json) = partial_json.filter(|json| !crate::utils::js::trim(json).is_empty()) else {
+    let Some(partial_json) = partial_json.filter(|json| !crate::utils::js::trim(json).is_empty())
+    else {
         return Value::Object(Map::new());
     };
-    let or_empty = |value: Value| if value.is_null() { Value::Object(Map::new()) } else { value };
+    let or_empty = |value: Value| {
+        if value.is_null() {
+            Value::Object(Map::new())
+        } else {
+            value
+        }
+    };
     parse_json_with_repair::<Value>(partial_json)
         .ok()
         .or_else(|| partial_parse(partial_json).ok().map(or_empty))
@@ -105,7 +121,10 @@ pub fn partial_parse(json: &str) -> Result<Value, PartialJsonError> {
     if trimmed.is_empty() {
         return Err(PartialJsonError::Malformed(format!("{json} is empty")));
     }
-    let mut parser = PartialParser { s: trimmed.chars().collect(), index: 0 };
+    let mut parser = PartialParser {
+        s: trimmed.chars().collect(),
+        index: 0,
+    };
     parser.parse_any()
 }
 
@@ -132,7 +151,10 @@ impl PartialParser {
     }
 
     fn last_index_of(&self, c: char) -> isize {
-        self.s.iter().rposition(|&x| x == c).map_or(-1, |i| i as isize)
+        self.s
+            .iter()
+            .rposition(|&x| x == c)
+            .map_or(-1, |i| i as isize)
     }
 
     fn partial(&self, message: &str) -> PartialJsonError {
@@ -152,7 +174,14 @@ impl PartialParser {
         let remaining = self.len() - self.index;
         let full = self.substring(self.index as isize, (self.index + word_len) as isize) == word;
         let min_remaining = if word == "-Infinity" { 2 } else { 0 };
-        if full || (remaining < word_len && remaining >= min_remaining && word.starts_with(self.substring(self.index as isize, self.len() as isize).as_str())) {
+        if full
+            || (remaining < word_len
+                && remaining >= min_remaining
+                && word.starts_with(
+                    self.substring(self.index as isize, self.len() as isize)
+                        .as_str(),
+                ))
+        {
             self.index += word_len;
             return true;
         }
@@ -188,8 +217,14 @@ impl PartialParser {
         let start = self.index;
         let mut escape = false;
         self.index += 1;
-        while self.index < self.len() && (self.s[self.index] != '"' || (escape && self.s[self.index - 1] == '\\')) {
-            escape = if self.s[self.index] == '\\' { !escape } else { false };
+        while self.index < self.len()
+            && (self.s[self.index] != '"' || (escape && self.s[self.index - 1] == '\\'))
+        {
+            escape = if self.s[self.index] == '\\' {
+                !escape
+            } else {
+                false
+            };
             self.index += 1;
         }
         let escape_offset = isize::from(escape);
@@ -217,7 +252,9 @@ impl PartialParser {
             if self.index >= self.len() {
                 return Ok(Value::Object(object));
             }
-            let Ok(key) = self.parse_str() else { return Ok(Value::Object(object)) };
+            let Ok(key) = self.parse_str() else {
+                return Ok(Value::Object(object));
+            };
             let key = match key {
                 Value::String(key) => key,
                 other => other.to_string(),
@@ -289,7 +326,10 @@ impl PartialParser {
     }
 
     fn skip_blank(&mut self) {
-        while self.at(self.index).is_some_and(|c| matches!(c, ' ' | '\n' | '\r' | '\t')) {
+        while self
+            .at(self.index)
+            .is_some_and(|c| matches!(c, ' ' | '\n' | '\r' | '\t'))
+        {
             self.index += 1;
         }
     }
@@ -302,7 +342,10 @@ mod tests {
 
     #[test]
     fn repairs_control_characters_and_bad_escapes() {
-        assert_eq!(repair_json("{\"a\":\"x\ny\\q\\u00e9\"}"), "{\"a\":\"x\\ny\\\\q\\u00e9\"}");
+        assert_eq!(
+            repair_json("{\"a\":\"x\ny\\q\\u00e9\"}"),
+            "{\"a\":\"x\\ny\\\\q\\u00e9\"}"
+        );
         let value: Value = parse_json_with_repair("{\"path\":\"C:\\dir\ttab\"}").expect("repaired");
         assert_eq!(value, json!({"path": "C:\\dir\ttab"}));
         assert!(parse_json_with_repair::<Value>("{").is_err());
@@ -319,13 +362,28 @@ mod tests {
     fn streaming_json_parses_partial_prefixes() {
         assert_eq!(parse_streaming_json(None), json!({}));
         assert_eq!(parse_streaming_json(Some("  ")), json!({}));
-        assert_eq!(parse_streaming_json(Some(r#"{"a": 1, "b": "hel"#)), json!({"a": 1, "b": "hel"}));
-        assert_eq!(parse_streaming_json(Some(r#"{"a": [1, 2, {"c": tr"#)), json!({"a": [1, 2, {"c": true}]}));
+        assert_eq!(
+            parse_streaming_json(Some(r#"{"a": 1, "b": "hel"#)),
+            json!({"a": 1, "b": "hel"})
+        );
+        assert_eq!(
+            parse_streaming_json(Some(r#"{"a": [1, 2, {"c": tr"#)),
+            json!({"a": [1, 2, {"c": true}]})
+        );
         assert_eq!(parse_streaming_json(Some(r#"{"a": 12"#)), json!({"a": 12}));
-        assert_eq!(parse_streaming_json(Some(r#"{"a": "x\u12"#)), json!({"a": "x"}));
+        assert_eq!(
+            parse_streaming_json(Some(r#"{"a": "x\u12"#)),
+            json!({"a": "x"})
+        );
         // senpi fe8c564b: an unterminated string with a raw newline yields {}; the closed one repairs.
-        assert_eq!(parse_streaming_json(Some("{\"a\": \"line\nbreak")), json!({}));
-        assert_eq!(parse_streaming_json(Some("{\"a\": \"line\nbreak\"}")), json!({"a": "line\nbreak"}));
+        assert_eq!(
+            parse_streaming_json(Some("{\"a\": \"line\nbreak")),
+            json!({})
+        );
+        assert_eq!(
+            parse_streaming_json(Some("{\"a\": \"line\nbreak\"}")),
+            json!({"a": "line\nbreak"})
+        );
         assert_eq!(parse_streaming_json(Some(r#"{"k"#)), json!({}));
         // senpi fe8c564b: `parseJsonWithRepair` succeeds on "null" and its result is returned
         // as-is (only the partial-json fallback path defaults nullish results to {}).
@@ -343,7 +401,10 @@ mod tests {
 
     #[test]
     fn partial_parse_errors() {
-        assert!(matches!(partial_parse("-"), Err(PartialJsonError::Malformed(_))));
+        assert!(matches!(
+            partial_parse("-"),
+            Err(PartialJsonError::Malformed(_))
+        ));
         assert!(matches!(partial_parse("\"abc"), Ok(Value::String(s)) if s == "abc"));
         assert_eq!(partial_parse("[1, -"), Ok(json!([1])));
     }

@@ -11,9 +11,15 @@ pub fn short_hash(input: &str) -> String {
         h1 = (h1 ^ ch).wrapping_mul(2_654_435_761);
         h2 = (h2 ^ ch).wrapping_mul(1_597_334_677);
     }
-    h1 = (h1 ^ (h1 >> 16)).wrapping_mul(2_246_822_507) ^ (h2 ^ (h2 >> 13)).wrapping_mul(3_266_489_909);
-    h2 = (h2 ^ (h2 >> 16)).wrapping_mul(2_246_822_507) ^ (h1 ^ (h1 >> 13)).wrapping_mul(3_266_489_909);
-    format!("{}{}", to_radix_36(u64::from(h2)), to_radix_36(u64::from(h1)))
+    h1 = (h1 ^ (h1 >> 16)).wrapping_mul(2_246_822_507)
+        ^ (h2 ^ (h2 >> 13)).wrapping_mul(3_266_489_909);
+    h2 = (h2 ^ (h2 >> 16)).wrapping_mul(2_246_822_507)
+        ^ (h1 ^ (h1 >> 13)).wrapping_mul(3_266_489_909);
+    format!(
+        "{}{}",
+        to_radix_36(u64::from(h2)),
+        to_radix_36(u64::from(h1))
+    )
 }
 
 #[cfg(test)]

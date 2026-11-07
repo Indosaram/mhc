@@ -1,12 +1,12 @@
 //! Production selection of a worker session on the parent's task-host shard.
 pub type OpenedHostResult = Result<
-        (
-            Arc<dyn handle_port::HostSessionPort>,
-            open_session::OpenedHostSession,
-            Arc<dyn Fn() -> senpi_task::runners::RunnerOutcome + Send + Sync>,
-        ),
-        HostSessionOpenError,
-    >;
+    (
+        Arc<dyn handle_port::HostSessionPort>,
+        open_session::OpenedHostSession,
+        Arc<dyn Fn() -> senpi_task::runners::RunnerOutcome + Send + Sync>,
+    ),
+    HostSessionOpenError,
+>;
 #[path = "task_host_connection.rs"]
 mod connection;
 use senpi_task::{
@@ -30,14 +30,11 @@ pub fn open_error_from_rpc_cause(
     match cause {
         maho_rpc::rpc_client::RpcClientError::Command(cmd_err) => {
             let code = cmd_err.error_code.as_deref().unwrap_or("");
-            let retry_after_ms = cmd_err
-                .error_data
-                .as_ref()
-                .and_then(|d| {
-                    d.get("retry_after_ms")
-                        .or_else(|| d.get("retryAfterMs"))
-                        .and_then(|v| v.as_u64())
-                });
+            let retry_after_ms = cmd_err.error_data.as_ref().and_then(|d| {
+                d.get("retry_after_ms")
+                    .or_else(|| d.get("retryAfterMs"))
+                    .and_then(|v| v.as_u64())
+            });
             let owner = cmd_err
                 .error_data
                 .as_ref()
@@ -62,11 +59,9 @@ pub fn open_error_from_rpc_cause(
                 }
             }
         }
-        maho_rpc::rpc_client::RpcClientError::Transport(io_err) => {
-            HostSessionOpenError::Host {
-                message: io_err.to_string(),
-            }
-        }
+        maho_rpc::rpc_client::RpcClientError::Transport(io_err) => HostSessionOpenError::Host {
+            message: io_err.to_string(),
+        },
     }
 }
 #[derive(Clone)]
@@ -174,9 +169,8 @@ impl HostAssembly {
     ) -> Result<T, E> {
         // Callers include synchronous extension hooks on a current-thread runtime. Borrowing
         // that runtime's handle while joining this thread stalls its I/O driver forever.
-        static HOST_RUNTIME: std::sync::OnceLock<
-            Result<tokio::runtime::Runtime, std::io::Error>,
-        > = std::sync::OnceLock::new();
+        static HOST_RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, std::io::Error>> =
+            std::sync::OnceLock::new();
         let runtime = HOST_RUNTIME
             .get_or_init(|| {
                 tokio::runtime::Builder::new_multi_thread()
@@ -267,7 +261,8 @@ impl HostAssembly {
         if let Some((_, key)) = maho_rpc::host_endpoints::parse_shard_socket(&socket) {
             context.context.insert("shard_key".into(), key);
         }
-        self.admit(spec.state_dir.clone()).map_err(HostSessionOpenError::from)?;
+        self.admit(spec.state_dir.clone())
+            .map_err(HostSessionOpenError::from)?;
         let turn = self
             .turns
             .lock()
@@ -480,10 +475,14 @@ fn build_host_runner(
         },
         admit: Arc::new(move |spec| admission.admit(spec.state_dir.clone())),
         open: Arc::new(move |spec, context| {
-            let socket = open_assembly.ensure(
-                open_assembly.recorded_socket(spec).map_err(HostSessionOpenError::from)?,
-                spec.extensions.clone().unwrap_or_default(),
-            ).map_err(HostSessionOpenError::from)?;
+            let socket = open_assembly
+                .ensure(
+                    open_assembly
+                        .recorded_socket(spec)
+                        .map_err(HostSessionOpenError::from)?,
+                    spec.extensions.clone().unwrap_or_default(),
+                )
+                .map_err(HostSessionOpenError::from)?;
             let path = spec.resume_session_path.clone().unwrap_or_else(|| {
                 session_context::resolve_child_session_path(
                     std::path::Path::new(&spec.state_dir),
@@ -540,10 +539,8 @@ mod blocking_tests {
                     .await
                     .map_err(super::error)?;
                 let address = listener.local_addr().map_err(super::error)?;
-                let (accepted, connected) = tokio::join!(
-                    listener.accept(),
-                    tokio::net::TcpStream::connect(address)
-                );
+                let (accepted, connected) =
+                    tokio::join!(listener.accept(), tokio::net::TcpStream::connect(address));
                 accepted.map_err(super::error)?;
                 connected.map_err(super::error)?;
                 Ok(())
@@ -559,7 +556,7 @@ mod blocking_tests {
 
     #[test]
     fn rpc_cause_with_session_path_in_use_retains_hold_and_retry_after() {
-        use maho_rpc::rpc_client::{RpcCommandError, RpcClientError};
+        use maho_rpc::rpc_client::{RpcClientError, RpcCommandError};
         let cause = RpcClientError::Command(RpcCommandError {
             message: "session_path_in_use: generation 1 holds path".into(),
             error_code: Some("session_path_in_use".into()),
@@ -587,7 +584,7 @@ mod blocking_tests {
 
     #[test]
     fn rpc_cause_non_drain_error_is_never_mapped_to_session_path_in_use() {
-        use maho_rpc::rpc_client::{RpcCommandError, RpcClientError};
+        use maho_rpc::rpc_client::{RpcClientError, RpcCommandError};
         let cause = RpcClientError::Command(RpcCommandError {
             message: "session_path_in_use: mentioned in an invalid launch profile".into(),
             error_code: Some("invalid_profile".into()),
@@ -600,10 +597,13 @@ mod blocking_tests {
 
     #[test]
     fn transport_message_cannot_become_a_drain_refusal() {
-        let cause = maho_rpc::rpc_client::RpcClientError::Transport(
-            std::io::Error::other("session_path_in_use: transport diagnostic"),
-        );
+        let cause = maho_rpc::rpc_client::RpcClientError::Transport(std::io::Error::other(
+            "session_path_in_use: transport diagnostic",
+        ));
         let open_error = super::open_error_from_rpc_cause(cause, "/tmp/task.jsonl");
-        assert!(matches!(open_error, super::HostSessionOpenError::Host { .. }));
+        assert!(matches!(
+            open_error,
+            super::HostSessionOpenError::Host { .. }
+        ));
     }
 }

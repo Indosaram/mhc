@@ -1,10 +1,13 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/protocols/anthropic-xml/invoke-tag-scanner.ts.
 
 pub use super::invoke_tag_syntax::{
-    find_incomplete_invoke_open_tag, find_invoke_open_tag, is_potential_protocol_start, scan_invoke_block,
-    InvokeBlockMatch, InvokeOpenTagMatch, InvokeParameter,
+    InvokeBlockMatch, InvokeOpenTagMatch, InvokeParameter, find_incomplete_invoke_open_tag,
+    find_invoke_open_tag, is_potential_protocol_start, scan_invoke_block,
 };
-use super::invoke_tag_syntax::{find_parameter_boundary, find_parameter_markup_pub, find_parameter_open_tag_at, ParameterBoundary};
+use super::invoke_tag_syntax::{
+    ParameterBoundary, find_parameter_boundary, find_parameter_markup_pub,
+    find_parameter_open_tag_at,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TruncatedInvokeBlockMatch {
@@ -15,46 +18,82 @@ pub struct TruncatedInvokeBlockMatch {
 // Scans an invoke whose closing tag may be missing at stream end. A result is
 // structurally complete only when every parameter closed and the residue is
 // whitespace or a proper prefix of the invoke closing tag.
-pub fn scan_truncated_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> TruncatedInvokeBlockMatch {
+pub fn scan_truncated_invoke_block(
+    text: &str,
+    opening_tag: &InvokeOpenTagMatch,
+) -> TruncatedInvokeBlockMatch {
     let mut parameters: Vec<InvokeParameter> = Vec::new();
     let mut cursor = opening_tag.index + opening_tag.length;
 
     loop {
         if cursor > text.len() {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: false };
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: false,
+            };
         }
         let remainder = &text[cursor.min(text.len())..];
         if super::invoke_tag_syntax::is_whitespace_or_invoke_close_prefix(remainder) {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: true };
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: true,
+            };
         }
 
-        let leading_ws_len = remainder.chars().take_while(|c| c.is_whitespace()).map(|c| c.len_utf8()).sum::<usize>();
-        let Some(parameter_markup) = find_parameter_markup_pub(text, cursor + leading_ws_len) else {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: false };
+        let leading_ws_len = remainder
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(|c| c.len_utf8())
+            .sum::<usize>();
+        let Some(parameter_markup) = find_parameter_markup_pub(text, cursor + leading_ws_len)
+        else {
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: false,
+            };
         };
         if parameter_markup.index != cursor + leading_ws_len {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: false };
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: false,
+            };
         }
 
         let char_index = text[..parameter_markup.index].chars().count();
         let Some(parameter_open) = find_parameter_open_tag_at(text, char_index) else {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: false };
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: false,
+            };
         };
 
         let value_start_char = char_index + parameter_open.length;
         let Some(boundary) = find_parameter_boundary(text, value_start_char) else {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: false };
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: false,
+            };
         };
         let ParameterBoundary::ParameterClose(close) = boundary else {
-            return TruncatedInvokeBlockMatch { parameters, is_structurally_complete: false };
+            return TruncatedInvokeBlockMatch {
+                parameters,
+                is_structurally_complete: false,
+            };
         };
 
         let chars: Vec<char> = text.chars().collect();
         let raw_value: String = chars[value_start_char..close.index].iter().collect();
-        parameters.push(InvokeParameter { name: parameter_open.name, raw_value });
+        parameters.push(InvokeParameter {
+            name: parameter_open.name,
+            raw_value,
+        });
 
         let close_end_char = close.index + close.length;
-        cursor = text.char_indices().nth(close_end_char).map(|(b, _)| b).unwrap_or(text.len());
+        cursor = text
+            .char_indices()
+            .nth(close_end_char)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
     }
 }
 
@@ -73,9 +112,11 @@ pub fn get_safe_invoke_text_length(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::invoke_tag_syntax::{find_invoke_open_tag, InvokeOpenTagMatch, InvokeParameter};
     use super::super::invoke_tag_syntax::scan_invoke_block;
+    use super::super::invoke_tag_syntax::{
+        InvokeOpenTagMatch, InvokeParameter, find_invoke_open_tag,
+    };
+    use super::*;
 
     #[test]
     fn scan_truncated_invoke_block_is_complete_when_residue_is_whitespace() {
@@ -109,7 +150,11 @@ mod tests {
         assert_eq!(get_safe_invoke_text_length("no tags"), 7);
     }
     fn open_tag(index: usize) -> InvokeOpenTagMatch {
-        InvokeOpenTagMatch { index, length: 0, tool_name: String::new() }
+        InvokeOpenTagMatch {
+            index,
+            length: 0,
+            tool_name: String::new(),
+        }
     }
 
     fn find_invoke_close_index(text: &str, from_index: usize) -> isize {
@@ -146,7 +191,10 @@ mod tests {
     fn starts_searching_at_the_requested_index() {
         let text = "<invoke name=\"first\"></invoke><invoke name=\"second\">";
         let from = text.find("</invoke>").expect("close") + "</invoke>".len();
-        assert_eq!(find_invoke_open_tag(text, from).map(|found| found.tool_name), Some("second".to_string()));
+        assert_eq!(
+            find_invoke_open_tag(text, from).map(|found| found.tool_name),
+            Some("second".to_string())
+        );
     }
 
     #[test]
@@ -160,7 +208,10 @@ mod tests {
     fn ignores_prompt_like_invoke_text_inside_a_parameter_value() {
         let text = "<invoke name=\"Bash\"><parameter name=\"command\">show <invoke name=\"Other\">example</invoke> literally</parameter></invoke>";
         let close_index = find_invoke_close_index(text, "<invoke name=\"Bash\">".len());
-        assert_eq!(close_index, text.rfind("</invoke>").expect("close") as isize);
+        assert_eq!(
+            close_index,
+            text.rfind("</invoke>").expect("close") as isize
+        );
     }
 
     #[test]
@@ -179,25 +230,44 @@ mod tests {
 
     #[test]
     fn returns_an_empty_list_when_no_parameter_tags_are_present() {
-        assert_eq!(parse_parameter_tags("plain invoke content"), Some(Vec::new()));
+        assert_eq!(
+            parse_parameter_tags("plain invoke content"),
+            Some(Vec::new())
+        );
     }
 
     #[test]
     fn rejects_unclosed_parameter_markup_instead_of_returning_partial_parameters() {
-        assert_eq!(parse_parameter_tags("<parameter name=\"ignored\">unterminated"), None);
+        assert_eq!(
+            parse_parameter_tags("<parameter name=\"ignored\">unterminated"),
+            None
+        );
     }
 
     #[test]
     fn withholds_a_partial_invoke_start_from_the_text_prefix() {
         let text = "prefix text <inv";
-        assert_eq!(get_safe_invoke_text_length(text), text.find("<inv").expect("partial"));
+        assert_eq!(
+            get_safe_invoke_text_length(text),
+            text.find("<inv").expect("partial")
+        );
     }
 
     #[test]
     fn withholds_partial_parameter_function_calls_and_invoke_starts() {
-        for partial_start in ["<parameter", "<function_calls", "< invoke name=", "<invoke name=\"Bash", "<invoke name='Bash'"] {
+        for partial_start in [
+            "<parameter",
+            "<function_calls",
+            "< invoke name=",
+            "<invoke name=\"Bash",
+            "<invoke name='Bash'",
+        ] {
             let text = format!("prefix {partial_start}");
-            assert_eq!(get_safe_invoke_text_length(&text), text.find('<').expect("angle"), "{partial_start}");
+            assert_eq!(
+                get_safe_invoke_text_length(&text),
+                text.find('<').expect("angle"),
+                "{partial_start}"
+            );
         }
     }
 
@@ -220,5 +290,4 @@ mod tests {
             assert_eq!(get_safe_invoke_text_length(text), text.len(), "{text}");
         }
     }
-
 }

@@ -118,11 +118,15 @@ mod tests {
         for (width, options, expected) in [
             (101, MainPaneWidthOptions::from(29), 28),
             (100, MainPaneWidthOptions::from(95), 79),
-            (100, MainPaneWidthOptions {
-                main_pane_size: Some(50),
-                main_pane_min_width: Some(90),
-                agent_pane_min_width: Some(20),
-            }, 79),
+            (
+                100,
+                MainPaneWidthOptions {
+                    main_pane_size: Some(50),
+                    main_pane_min_width: Some(90),
+                    agent_pane_min_width: Some(20),
+                },
+                79,
+            ),
             (0, MainPaneWidthOptions::default(), 0),
         ] {
             assert_eq!(calculate_main_pane_width(width, options), expected);
@@ -136,22 +140,32 @@ mod tests {
         let mut deps = EnforceMainPaneWidthDeps {
             get_tmux_path: Arc::new(|| Some("tmux".to_owned())),
             run_tmux_command: Arc::new(move |_, args| {
-                sink.lock().expect("recorded calls lock").push(args.to_vec());
+                sink.lock()
+                    .expect("recorded calls lock")
+                    .push(args.to_vec());
                 crate::runner::TmuxCommandResult::new("", "", 0)
             }),
             ..EnforceMainPaneWidthDeps::default()
         };
         enforce_main_pane_width("%1", 100, 95, &deps);
-        enforce_main_pane_width("%1", 100, MainPaneWidthOptions {
-            main_pane_size: Some(50),
-            main_pane_min_width: Some(90),
-            agent_pane_min_width: Some(20),
-        }, &deps);
+        enforce_main_pane_width(
+            "%1",
+            100,
+            MainPaneWidthOptions {
+                main_pane_size: Some(50),
+                main_pane_min_width: Some(90),
+                agent_pane_min_width: Some(20),
+            },
+            &deps,
+        );
         deps.get_tmux_path = Arc::new(|| None);
         enforce_main_pane_width("%1", 100, 50, &deps);
-        assert_eq!(*calls.lock().expect("recorded calls lock"), vec![
-            strings(&["resize-pane", "-t", "%1", "-x", "79"]),
-            strings(&["resize-pane", "-t", "%1", "-x", "79"]),
-        ]);
+        assert_eq!(
+            *calls.lock().expect("recorded calls lock"),
+            vec![
+                strings(&["resize-pane", "-t", "%1", "-x", "79"]),
+                strings(&["resize-pane", "-t", "%1", "-x", "79"]),
+            ]
+        );
     }
 }

@@ -4,7 +4,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use maho_ext_hooks::claude_plugins::{ClaudeLocations, derive_plugin_name, discover_plugins, path_contains};
+use maho_ext_hooks::claude_plugins::{
+    ClaudeLocations, derive_plugin_name, discover_plugins, path_contains,
+};
 use maho_ext_hooks::config_loader::{HookConfigLoaderOptions, load_hook_config_files_in};
 use maho_ext_hooks::types::{HookDiscoveryTiming, HookSourceScope, ParsedHookConfig};
 use serde_json::{Value, json};
@@ -26,8 +28,16 @@ impl Fixture {
         let cwd = base.join("project");
         std::fs::create_dir_all(&home)?;
         std::fs::create_dir_all(&cwd)?;
-        let locations = ClaudeLocations { claude_dir: base.join("claude"), home };
-        Ok(Self { _root: root, base, locations, cwd })
+        let locations = ClaudeLocations {
+            claude_dir: base.join("claude"),
+            home,
+        };
+        Ok(Self {
+            _root: root,
+            base,
+            locations,
+            cwd,
+        })
     }
 
     fn options(&self) -> HookConfigLoaderOptions {
@@ -51,7 +61,12 @@ impl Fixture {
     }
 
     /// A plugin install directory with an optional manifest and hooks file.
-    fn plugin(&self, relative: &str, manifest: Option<Value>, hooks: Option<Value>) -> std::io::Result<PathBuf> {
+    fn plugin(
+        &self,
+        relative: &str,
+        manifest: Option<Value>,
+        hooks: Option<Value>,
+    ) -> std::io::Result<PathBuf> {
         let dir = self.base.join("installs").join(relative);
         std::fs::create_dir_all(&dir)?;
         if let Some(manifest) = manifest {
@@ -86,8 +101,16 @@ fn v1(key: &str, entry: Value) -> Value {
 }
 
 fn env_lookup(pairs: &[(&str, &Path)]) -> impl Fn(&str) -> Option<OsString> {
-    let pairs = pairs.iter().map(|(key, value)| ((*key).to_owned(), value.as_os_str().to_owned())).collect::<Vec<_>>();
-    move |key| pairs.iter().find(|(name, _)| name == key).map(|(_, value)| value.clone())
+    let pairs = pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), value.as_os_str().to_owned()))
+        .collect::<Vec<_>>();
+    move |key| {
+        pairs
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+    }
 }
 
 #[test]
@@ -104,22 +127,46 @@ fn t02_claude_config_dir_overrides_home_location() -> TestResult {
     let fixture = Fixture::new()?;
     let custom = fixture.base.join("custom-claude");
     let home = fixture.locations.home.clone();
-    write_json(&custom.join("settings.json"), &pre_tool_hooks("from-custom"))?;
-    write_json(&home.join(".claude/settings.json"), &pre_tool_hooks("from-home"))?;
+    write_json(
+        &custom.join("settings.json"),
+        &pre_tool_hooks("from-custom"),
+    )?;
+    write_json(
+        &home.join(".claude/settings.json"),
+        &pre_tool_hooks("from-home"),
+    )?;
 
-    let set = ClaudeLocations::from_env(env_lookup(&[("CLAUDE_CONFIG_DIR", custom.as_path()), ("HOME", home.as_path())]));
+    let set = ClaudeLocations::from_env(env_lookup(&[
+        ("CLAUDE_CONFIG_DIR", custom.as_path()),
+        ("HOME", home.as_path()),
+    ]));
     assert_eq!(set.claude_dir, custom);
     let parsed = load_hook_config_files_in(&fixture.options(), &set);
     assert_eq!(parsed.executable_handlers.len(), 1);
-    assert_eq!(parsed.executable_handlers[0].source.scope, HookSourceScope::Global);
+    assert_eq!(
+        parsed.executable_handlers[0].source.scope,
+        HookSourceScope::Global
+    );
     assert_eq!(parsed.executable_handlers[0].config.command, "from-custom");
 
-    for unset in [ClaudeLocations::from_env(env_lookup(&[("HOME", home.as_path())])),
-        ClaudeLocations::from_env(env_lookup(&[("CLAUDE_CONFIG_DIR", Path::new("")), ("HOME", home.as_path())])),
-        ClaudeLocations::from_env(env_lookup(&[("USERPROFILE", home.as_path())]))] {
+    for unset in [
+        ClaudeLocations::from_env(env_lookup(&[("HOME", home.as_path())])),
+        ClaudeLocations::from_env(env_lookup(&[
+            ("CLAUDE_CONFIG_DIR", Path::new("")),
+            ("HOME", home.as_path()),
+        ])),
+        ClaudeLocations::from_env(env_lookup(&[("USERPROFILE", home.as_path())])),
+    ] {
         assert_eq!(unset.claude_dir, home.join(".claude"));
         let parsed = load_hook_config_files_in(&fixture.options(), &unset);
-        assert_eq!(parsed.executable_handlers.iter().map(|h| h.config.command.as_str()).collect::<Vec<_>>(), ["from-home"]);
+        assert_eq!(
+            parsed
+                .executable_handlers
+                .iter()
+                .map(|h| h.config.command.as_str())
+                .collect::<Vec<_>>(),
+            ["from-home"]
+        );
     }
     Ok(())
 }
@@ -128,13 +175,32 @@ fn t02_claude_config_dir_overrides_home_location() -> TestResult {
 fn t03_user_then_project_settings_hooks() -> TestResult {
     let fixture = Fixture::new()?;
     fixture.write_user_settings(&pre_tool_hooks("user"))?;
-    write_json(&fixture.cwd.join(".claude/settings.json"), &json!({"permissions": {}}))?;
-    write_json(&fixture.cwd.join(".claude/settings.local.json"), &pre_tool_hooks("local"))?;
+    write_json(
+        &fixture.cwd.join(".claude/settings.json"),
+        &json!({"permissions": {}}),
+    )?;
+    write_json(
+        &fixture.cwd.join(".claude/settings.local.json"),
+        &pre_tool_hooks("local"),
+    )?;
     let parsed = fixture.load();
     assert!(parsed.diagnostics.is_empty());
-    assert_eq!(parsed.executable_handlers.iter().map(|h| (h.source.scope.clone(), h.config.command.as_str())).collect::<Vec<_>>(),
-        [(HookSourceScope::Global, "user"), (HookSourceScope::Project, "local")]);
-    let orders = parsed.executable_handlers.iter().map(|h| h.source.display_order).collect::<Vec<_>>();
+    assert_eq!(
+        parsed
+            .executable_handlers
+            .iter()
+            .map(|h| (h.source.scope.clone(), h.config.command.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (HookSourceScope::Global, "user"),
+            (HookSourceScope::Project, "local")
+        ]
+    );
+    let orders = parsed
+        .executable_handlers
+        .iter()
+        .map(|h| h.source.display_order)
+        .collect::<Vec<_>>();
     assert!(orders[0] < orders[1]);
     Ok(())
 }
@@ -163,13 +229,23 @@ fn t05_database_shapes_each_discover_one_plugin() -> TestResult {
     let mut array_entry = entry.clone();
     array_entry["name"] = json!("demo");
     array_entry["marketplace"] = json!("market");
-    for database in [v1("demo@market", entry.clone()),
+    for database in [
+        v1("demo@market", entry.clone()),
         json!({"version": 2, "plugins": {"demo@market": [entry.clone()]}}),
         json!({"version": "other", "plugins": {"demo@market": [entry.clone()], "empty@market": [], "bad@market": entry.clone()}}),
-        json!([array_entry, {"name": "partial", "installPath": text(&install)}])] {
+        json!([array_entry, {"name": "partial", "installPath": text(&install)}]),
+    ] {
         fixture.write_database(&database)?;
         let discovery = discover_plugins(&fixture.locations, &fixture.cwd);
-        assert_eq!(discovery.plugins.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), ["demo@market"], "{database}");
+        assert_eq!(
+            discovery
+                .plugins
+                .iter()
+                .map(|p| p.key.as_str())
+                .collect::<Vec<_>>(),
+            ["demo@market"],
+            "{database}"
+        );
         assert_eq!(discovery.plugins[0].name, "demo");
         assert_eq!(discovery.plugins[0].version, "1.0.0");
         assert!(discovery.problems.is_empty());
@@ -186,7 +262,11 @@ fn t06_only_first_v2_install_counts() -> TestResult {
         {"scope": "project", "installPath": text(&install), "projectPath": text(&other)},
         {"scope": "project", "installPath": text(&install), "projectPath": text(&fixture.cwd)},
     ]}}))?;
-    assert!(discover_plugins(&fixture.locations, &fixture.cwd).plugins.is_empty());
+    assert!(
+        discover_plugins(&fixture.locations, &fixture.cwd)
+            .plugins
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -211,13 +291,30 @@ fn t07_project_scope_follows_project_path() -> TestResult {
                 entry["projectPath"] = json!(path);
             }
             fixture.write_database(&v1("demo@market", entry))?;
-            assert_eq!(discover_plugins(&fixture.locations, &cwd).plugins.len(), usize::from(loads), "{scope} {project_path:?} {}", cwd.display());
+            assert_eq!(
+                discover_plugins(&fixture.locations, &cwd).plugins.len(),
+                usize::from(loads),
+                "{scope} {project_path:?} {}",
+                cwd.display()
+            );
         }
     }
-    fixture.write_database(&v1("demo@market", json!({"scope": "project", "installPath": text(&install), "projectPath": "~/work/a"})))?;
+    fixture.write_database(&v1(
+        "demo@market",
+        json!({"scope": "project", "installPath": text(&install), "projectPath": "~/work/a"}),
+    ))?;
     let home_project = fixture.locations.home.join("work/a");
-    assert_eq!(discover_plugins(&fixture.locations, &home_project).plugins.len(), 1);
-    assert!(discover_plugins(&fixture.locations, &project).plugins.is_empty());
+    assert_eq!(
+        discover_plugins(&fixture.locations, &home_project)
+            .plugins
+            .len(),
+        1
+    );
+    assert!(
+        discover_plugins(&fixture.locations, &project)
+            .plugins
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -226,17 +323,30 @@ fn t08_enabled_plugins_setting() -> TestResult {
     let fixture = Fixture::new()?;
     let install = fixture.plugin("demo", None, None)?;
     fixture.write_database(&v1("demo@market", user_entry(&install)))?;
-    for (settings, loads) in [(json!({"enabledPlugins": {"demo@market": false}}), false),
+    for (settings, loads) in [
+        (json!({"enabledPlugins": {"demo@market": false}}), false),
         (json!({"enabledPlugins": {"demo@market": true}}), true),
         (json!({"enabledPlugins": {"other@market": false}}), true),
         (json!({"enabledPlugins": {"demo@market": "no"}}), true),
-        (json!({"enabledPlugins": ["demo@market"]}), true)] {
+        (json!({"enabledPlugins": ["demo@market"]}), true),
+    ] {
         fixture.write_user_settings(&settings)?;
-        assert_eq!(discover_plugins(&fixture.locations, &fixture.cwd).plugins.len(), usize::from(loads), "{settings}");
+        assert_eq!(
+            discover_plugins(&fixture.locations, &fixture.cwd)
+                .plugins
+                .len(),
+            usize::from(loads),
+            "{settings}"
+        );
         assert!(fixture.load().diagnostics.is_empty());
     }
     std::fs::write(fixture.locations.user_settings_path(), "{")?;
-    assert_eq!(discover_plugins(&fixture.locations, &fixture.cwd).plugins.len(), 1);
+    assert_eq!(
+        discover_plugins(&fixture.locations, &fixture.cwd)
+            .plugins
+            .len(),
+        1
+    );
     Ok(())
 }
 
@@ -253,7 +363,10 @@ fn t09_missing_install_path_picks_best_sibling_version() -> TestResult {
     std::fs::create_dir_all(malformed.join(".claude-plugin"))?;
     std::fs::write(malformed.join(".claude-plugin/plugin.json"), "{")?;
     let missing = fixture.base.join("installs/cache/1.0.0");
-    fixture.write_database(&v1("demo@market", json!({"installPath": text(&missing), "version": "unknown"})))?;
+    fixture.write_database(&v1(
+        "demo@market",
+        json!({"installPath": text(&missing), "version": "unknown"}),
+    ))?;
     let discovery = discover_plugins(&fixture.locations, &fixture.cwd);
     assert!(discovery.problems.is_empty());
     assert_eq!(discovery.plugins.len(), 1);
@@ -286,9 +399,15 @@ fn t11_primary_manifest_wins_over_root_manifest() -> TestResult {
     let install = fixture.plugin("demo", Some(json!({"name": "primary"})), None)?;
     write_json(&install.join("plugin.json"), &json!({"name": "fallback"}))?;
     fixture.write_database(&v1("demo@market", user_entry(&install)))?;
-    assert_eq!(discover_plugins(&fixture.locations, &fixture.cwd).plugins[0].name, "primary");
+    assert_eq!(
+        discover_plugins(&fixture.locations, &fixture.cwd).plugins[0].name,
+        "primary"
+    );
     std::fs::remove_file(install.join(".claude-plugin/plugin.json"))?;
-    assert_eq!(discover_plugins(&fixture.locations, &fixture.cwd).plugins[0].name, "fallback");
+    assert_eq!(
+        discover_plugins(&fixture.locations, &fixture.cwd).plugins[0].name,
+        "fallback"
+    );
     Ok(())
 }
 
@@ -296,14 +415,24 @@ fn t11_primary_manifest_wins_over_root_manifest() -> TestResult {
 fn t12_name_derivation() -> TestResult {
     assert_eq!(derive_plugin_name("demo@market"), "demo");
     assert_eq!(derive_plugin_name("@acme/kit@2.3.4"), "@acme/kit");
-    assert_eq!(derive_plugin_name("file:///C:/plugins/lib/widget@next"), "widget");
+    assert_eq!(
+        derive_plugin_name("file:///C:/plugins/lib/widget@next"),
+        "widget"
+    );
     assert_eq!(derive_plugin_name("npm:@acme/kit"), "@acme/kit");
     assert_eq!(derive_plugin_name("npm:tool@1.0.0"), "tool");
     assert_eq!(derive_plugin_name("C:\\plugins\\gadget@local"), "gadget");
 
     let fixture = Fixture::new()?;
-    let install = fixture.plugin("unnamed", Some(json!({"name": "", "version": "2.0.0"})), None)?;
-    fixture.write_database(&v1("@acme/kit@2.3.4", json!({"installPath": text(&install)})))?;
+    let install = fixture.plugin(
+        "unnamed",
+        Some(json!({"name": "", "version": "2.0.0"})),
+        None,
+    )?;
+    fixture.write_database(&v1(
+        "@acme/kit@2.3.4",
+        json!({"installPath": text(&install)}),
+    ))?;
     let discovery = discover_plugins(&fixture.locations, &fixture.cwd);
     assert_eq!(discovery.plugins[0].name, "@acme/kit");
     assert_eq!(discovery.plugins[0].version, "2.0.0");
@@ -313,7 +442,11 @@ fn t12_name_derivation() -> TestResult {
 #[test]
 fn t13_plugin_hooks_substitute_root_and_record_plugin_source() -> TestResult {
     let fixture = Fixture::new()?;
-    let install = fixture.plugin("demo", Some(json!({"name": "demo"})), Some(pre_tool_hooks("${CLAUDE_PLUGIN_ROOT}/check")))?;
+    let install = fixture.plugin(
+        "demo",
+        Some(json!({"name": "demo"})),
+        Some(pre_tool_hooks("${CLAUDE_PLUGIN_ROOT}/check")),
+    )?;
     std::fs::write(install.join("check"), "")?;
     fixture.write_database(&v1("demo@market", user_entry(&install)))?;
     let parsed = fixture.load();
@@ -321,11 +454,26 @@ fn t13_plugin_hooks_substitute_root_and_record_plugin_source() -> TestResult {
     assert_eq!(parsed.executable_handlers.len(), 1);
     let handler = &parsed.executable_handlers[0];
     assert_eq!(handler.source.scope, HookSourceScope::Plugin);
-    assert_eq!(handler.config.command, format!("{}/check", install.display()));
-    assert_eq!(handler.source.plugin_root.as_deref(), Some(text(&install).as_str()));
-    assert_eq!(handler.source.discovered_at, HookDiscoveryTiming::PreSession);
-    assert_eq!(handler.source.manifest_path, Some(text(&install.join(".claude-plugin/plugin.json"))));
-    assert_eq!(handler.source.source_path, text(&install.join("hooks/hooks.json")));
+    assert_eq!(
+        handler.config.command,
+        format!("{}/check", install.display())
+    );
+    assert_eq!(
+        handler.source.plugin_root.as_deref(),
+        Some(text(&install).as_str())
+    );
+    assert_eq!(
+        handler.source.discovered_at,
+        HookDiscoveryTiming::PreSession
+    );
+    assert_eq!(
+        handler.source.manifest_path,
+        Some(text(&install.join(".claude-plugin/plugin.json")))
+    );
+    assert_eq!(
+        handler.source.source_path,
+        text(&install.join("hooks/hooks.json"))
+    );
     Ok(())
 }
 
@@ -333,7 +481,10 @@ fn t13_plugin_hooks_substitute_root_and_record_plugin_source() -> TestResult {
 fn t14_placeholders_replaced_everywhere_and_other_handler_types_untagged() -> TestResult {
     let mut nested = json!({"a": "${CLAUDE_PLUGIN_ROOT}:${CLAUDE_PLUGIN_ROOT}", "b": [{"c": ["x ${CLAUDE_PLUGIN_ROOT} y"]}], "d": 3});
     maho_ext_hooks::claude_plugins::substitute_plugin_root(&mut nested, "/root");
-    assert_eq!(nested, json!({"a": "/root:/root", "b": [{"c": ["x /root y"]}], "d": 3}));
+    assert_eq!(
+        nested,
+        json!({"a": "/root:/root", "b": [{"c": ["x /root y"]}], "d": 3})
+    );
 
     let fixture = Fixture::new()?;
     let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
@@ -350,7 +501,12 @@ fn t14_placeholders_replaced_everywhere_and_other_handler_types_untagged() -> Te
     assert_eq!(command.config.command, format!("echo {root} {root}"));
     assert_eq!(command.config.status_message, Some(format!("in {root}")));
     assert_eq!(command.source.plugin_root.as_deref(), Some(root.as_str()));
-    assert!(parsed.executable_handlers.iter().all(|handler| handler.config.kind == "command"));
+    assert!(
+        parsed
+            .executable_handlers
+            .iter()
+            .all(|handler| handler.config.kind == "command")
+    );
     Ok(())
 }
 
@@ -363,7 +519,14 @@ fn t15_malformed_plugin_hooks_file_skips_only_that_plugin() -> TestResult {
     let good = fixture.plugin("good", None, Some(pre_tool_hooks("good")))?;
     fixture.write_database(&json!({"version": 1, "plugins": {"broken@market": user_entry(&broken), "good@market": user_entry(&good)}}))?;
     let parsed = fixture.load();
-    assert_eq!(parsed.executable_handlers.iter().map(|h| h.config.command.as_str()).collect::<Vec<_>>(), ["good"]);
+    assert_eq!(
+        parsed
+            .executable_handlers
+            .iter()
+            .map(|h| h.config.command.as_str())
+            .collect::<Vec<_>>(),
+        ["good"]
+    );
     Ok(())
 }
 
@@ -386,15 +549,37 @@ fn source_order_mhc_then_user_project_local_then_plugins() -> TestResult {
     let own = fixture.base.join("agent/hooks.json");
     write_json(&own, &pre_tool_hooks("own"))?;
     fixture.write_user_settings(&pre_tool_hooks("user"))?;
-    write_json(&fixture.cwd.join(".claude/settings.json"), &pre_tool_hooks("project"))?;
-    write_json(&fixture.cwd.join(".claude/settings.local.json"), &pre_tool_hooks("local"))?;
+    write_json(
+        &fixture.cwd.join(".claude/settings.json"),
+        &pre_tool_hooks("project"),
+    )?;
+    write_json(
+        &fixture.cwd.join(".claude/settings.local.json"),
+        &pre_tool_hooks("local"),
+    )?;
     let first = fixture.plugin("first", None, Some(pre_tool_hooks("plugin-1")))?;
     let second = fixture.plugin("second", None, Some(pre_tool_hooks("plugin-2")))?;
-    fixture.write_database(&json!({"version": 1, "plugins": {"b@m": user_entry(&first), "a@m": user_entry(&second)}}))?;
+    fixture.write_database(
+        &json!({"version": 1, "plugins": {"b@m": user_entry(&first), "a@m": user_entry(&second)}}),
+    )?;
     let parsed = fixture.load();
-    assert_eq!(parsed.executable_handlers.iter().map(|h| h.config.command.as_str()).collect::<Vec<_>>(), ["own", "user", "project", "local", "plugin-1", "plugin-2"]);
-    let orders = parsed.executable_handlers.iter().map(|h| h.source.display_order).collect::<Vec<_>>();
-    assert!(orders.windows(2).all(|pair| pair[1] == pair[0] + 1), "{orders:?}");
+    assert_eq!(
+        parsed
+            .executable_handlers
+            .iter()
+            .map(|h| h.config.command.as_str())
+            .collect::<Vec<_>>(),
+        ["own", "user", "project", "local", "plugin-1", "plugin-2"]
+    );
+    let orders = parsed
+        .executable_handlers
+        .iter()
+        .map(|h| h.source.display_order)
+        .collect::<Vec<_>>();
+    assert!(
+        orders.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "{orders:?}"
+    );
     Ok(())
 }
 
@@ -404,7 +589,10 @@ fn path_containment_compares_whole_components() -> TestResult {
     let base = root.path();
     assert!(path_contains(&base.join("a/proj"), &base.join("a/proj")));
     assert!(path_contains(&base.join("a/proj"), &base.join("a/proj/x")));
-    assert!(!path_contains(&base.join("a/proj"), &base.join("a/project")));
+    assert!(!path_contains(
+        &base.join("a/proj"),
+        &base.join("a/project")
+    ));
     Ok(())
 }
 
@@ -413,8 +601,19 @@ fn path_containment_compares_whole_components() -> TestResult {
 fn windows_backslash_home_expansion() -> TestResult {
     let fixture = Fixture::new()?;
     let install = fixture.plugin("demo", None, None)?;
-    fixture.write_database(&v1("demo@market", json!({"scope": "local", "installPath": text(&install), "projectPath": "~\\work\\a"})))?;
-    assert_eq!(discover_plugins(&fixture.locations, &fixture.locations.home.join("work").join("a")).plugins.len(), 1);
+    fixture.write_database(&v1(
+        "demo@market",
+        json!({"scope": "local", "installPath": text(&install), "projectPath": "~\\work\\a"}),
+    ))?;
+    assert_eq!(
+        discover_plugins(
+            &fixture.locations,
+            &fixture.locations.home.join("work").join("a")
+        )
+        .plugins
+        .len(),
+        1
+    );
     Ok(())
 }
 
@@ -423,20 +622,36 @@ mod end_to_end {
     use super::*;
     use maho_ext_api::types::ToolCallEvent;
     use maho_ext_hooks::command_runner::{CommandHookRunOptions, run_command_hook};
-    use maho_ext_hooks::dispatcher::{HookDispatchDecision, HookDispatchResult, dispatch_hook_event};
+    use maho_ext_hooks::dispatcher::{
+        HookDispatchDecision, HookDispatchResult, dispatch_hook_event,
+    };
     use maho_ext_hooks::tool_adapter::{apply_pre_tool_use_result, build_pre_tool_use_hook_input};
     use maho_ext_hooks::types::{ExecutableHookHandler, HookTrustState};
 
-    fn trusted(handlers: &[ExecutableHookHandler]) -> Result<HookTrustState, Box<dyn std::error::Error>> {
+    fn trusted(
+        handlers: &[ExecutableHookHandler],
+    ) -> Result<HookTrustState, Box<dyn std::error::Error>> {
         let mut state = maho_ext_hooks::trust_state_json::empty_hook_trust_state();
         for handler in handlers {
-            state.hooks.insert(maho_ext_hooks::trust::hook_trust_id(handler), maho_ext_hooks::trust::create_hook_trust_entry(handler, "linux", "fixed")?);
+            state.hooks.insert(
+                maho_ext_hooks::trust::hook_trust_id(handler),
+                maho_ext_hooks::trust::create_hook_trust_entry(handler, "linux", "fixed")?,
+            );
         }
         Ok(state)
     }
 
-    async fn call_tool(handlers: &[ExecutableHookHandler], trust: &HookTrustState, tool: &str, cwd: &Path) -> Result<(ToolCallEvent, HookDispatchResult), Box<dyn std::error::Error>> {
-        let event = ToolCallEvent { tool_call_id: "call-1".to_owned(), tool_name: tool.to_owned(), input: json!({"command": "ls"}) };
+    async fn call_tool(
+        handlers: &[ExecutableHookHandler],
+        trust: &HookTrustState,
+        tool: &str,
+        cwd: &Path,
+    ) -> Result<(ToolCallEvent, HookDispatchResult), Box<dyn std::error::Error>> {
+        let event = ToolCallEvent {
+            tool_call_id: "call-1".to_owned(),
+            tool_name: tool.to_owned(),
+            input: json!({"command": "ls"}),
+        };
         let input = build_pre_tool_use_hook_input(&event, &text(cwd), "session-1");
         let cwd = cwd.to_owned();
         let wire = input.clone();
@@ -444,7 +659,18 @@ mod end_to_end {
             let cwd = cwd.clone();
             let wire = wire.clone();
             async move {
-                run_command_hook(&handler, &wire, CommandHookRunOptions { cwd: &cwd, env_passthrough: &[], output_policy: None, signal: None, source_env: None }).await
+                run_command_hook(
+                    &handler,
+                    &wire,
+                    CommandHookRunOptions {
+                        cwd: &cwd,
+                        env_passthrough: &[],
+                        output_policy: None,
+                        signal: None,
+                        source_env: None,
+                    },
+                )
+                .await
             }
         })
         .await?;
@@ -452,7 +678,11 @@ mod end_to_end {
     }
 
     fn blocking_plugin(fixture: &Fixture) -> std::io::Result<Vec<ExecutableHookHandler>> {
-        let install = fixture.plugin("demo", None, Some(pre_tool_hooks("printf blocked >&2; exit 2")))?;
+        let install = fixture.plugin(
+            "demo",
+            None,
+            Some(pre_tool_hooks("printf blocked >&2; exit 2")),
+        )?;
         fixture.write_database(&v1("demo@market", user_entry(&install)))?;
         Ok(fixture.load().executable_handlers)
     }
@@ -462,13 +692,21 @@ mod end_to_end {
         let fixture = Fixture::new()?;
         let handlers = blocking_plugin(&fixture)?;
         assert_eq!(handlers.len(), 1);
-        assert_eq!(maho_ext_hooks::trust::hook_trust_storage_scope(&handlers[0], false), Some(maho_ext_hooks::trust::HookTrustStorageScope::Global));
+        assert_eq!(
+            maho_ext_hooks::trust::hook_trust_storage_scope(&handlers[0], false),
+            Some(maho_ext_hooks::trust::HookTrustStorageScope::Global)
+        );
         let trust = trusted(&handlers)?;
 
         let (mut bash, result) = call_tool(&handlers, &trust, "bash", &fixture.cwd).await?;
-        assert!(matches!(&result.decision, HookDispatchDecision::Block { reason: Some(reason), .. } if reason == "blocked"), "{:?}", result.decision);
+        assert!(
+            matches!(&result.decision, HookDispatchDecision::Block { reason: Some(reason), .. } if reason == "blocked"),
+            "{:?}",
+            result.decision
+        );
         assert_eq!(result.summaries[0].run.stderr, "blocked");
-        let refused = apply_pre_tool_use_result(&mut bash, &result).ok_or("bash call was not refused")?;
+        let refused =
+            apply_pre_tool_use_result(&mut bash, &result).ok_or("bash call was not refused")?;
         assert_eq!(refused.block, Some(true));
 
         let (mut read, result) = call_tool(&handlers, &trust, "read", &fixture.cwd).await?;
@@ -494,7 +732,13 @@ mod end_to_end {
     #[tokio::test]
     async fn t19_hook_process_sees_plugin_root_variable() -> TestResult {
         let fixture = Fixture::new()?;
-        let install = fixture.plugin("demo", None, Some(pre_tool_hooks("printf '%s|%s' \"$CLAUDE_PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_DATA\"")))?;
+        let install = fixture.plugin(
+            "demo",
+            None,
+            Some(pre_tool_hooks(
+                "printf '%s|%s' \"$CLAUDE_PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_DATA\"",
+            )),
+        )?;
         fixture.write_database(&v1("demo@market", user_entry(&install)))?;
         let handlers = fixture.load().executable_handlers;
         let trust = trusted(&handlers)?;
@@ -511,7 +755,8 @@ mod end_to_end {
 /// maho-cli with `--no-default-features` (which keeps this feature on) and runs this suite.
 #[test]
 fn t20_manifest_has_no_omo_dependency() -> TestResult {
-    let manifest = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))?;
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))?;
     assert!(!manifest.contains("/omo/"));
     assert!(!manifest.contains("claude-code-compat-core"));
     Ok(())

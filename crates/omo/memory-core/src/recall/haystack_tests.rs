@@ -18,10 +18,7 @@ fn the_haystack_is_the_normalized_description_then_body() {
 
 #[test]
 fn the_description_and_body_are_joined_by_a_single_separator() {
-    assert_eq!(
-        normalized_haystack(&document("Desc", "Body")),
-        "desc body"
-    );
+    assert_eq!(normalized_haystack(&document("Desc", "Body")), "desc body");
 }
 
 #[test]

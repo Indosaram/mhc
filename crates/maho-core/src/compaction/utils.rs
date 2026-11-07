@@ -52,7 +52,9 @@ pub fn strip_heredoc(input: &str) -> String {
         return input.to_string();
     }
     let tag = &rest[..length];
-    let rest = rest[length..].strip_prefix(['\'', '"']).unwrap_or(&rest[length..]);
+    let rest = rest[length..]
+        .strip_prefix(['\'', '"'])
+        .unwrap_or(&rest[length..]);
     let newlines = rest
         .char_indices()
         .take_while(|(_, character)| js_whitespace(*character))
@@ -80,10 +82,15 @@ pub fn extract_patched_paths(patch_text: &str) -> Vec<String> {
         .split(['\n', '\u{2028}', '\u{2029}'])
         .filter_map(|line| {
             let trimmed = line.trim_matches(js_whitespace);
-            ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "]
-                .iter()
-                .find_map(|marker| trimmed.strip_prefix(marker))
-                .map(str::to_owned)
+            [
+                "*** Add File: ",
+                "*** Delete File: ",
+                "*** Update File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|marker| trimmed.strip_prefix(marker))
+            .map(str::to_owned)
         })
         .collect()
 }
@@ -125,7 +132,12 @@ fn add_file_op(tool_name: &str, arguments: Option<&Value>, file_ops: &mut FileOp
     let Some(arguments) = arguments.filter(|arguments| !arguments.is_null()) else {
         return;
     };
-    let path = || arguments.get("path").and_then(Value::as_str).map(str::to_string);
+    let path = || {
+        arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     match tool_name {
         "read" => file_ops.read.extend(path()),
         "write" => file_ops.written.extend(path()),
@@ -141,8 +153,18 @@ fn add_file_op(tool_name: &str, arguments: Option<&Value>, file_ops: &mut FileOp
 
 /// `computeFileLists`: files only read, and files modified.
 pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String>) {
-    let modified: IndexSet<String> = file_ops.edited.iter().chain(file_ops.written.iter()).cloned().collect();
-    let mut read_only: Vec<String> = file_ops.read.iter().filter(|path| !modified.contains(*path)).cloned().collect();
+    let modified: IndexSet<String> = file_ops
+        .edited
+        .iter()
+        .chain(file_ops.written.iter())
+        .cloned()
+        .collect();
+    let mut read_only: Vec<String> = file_ops
+        .read
+        .iter()
+        .filter(|path| !modified.contains(*path))
+        .cloned()
+        .collect();
     read_only.sort();
     let mut modified_files: Vec<String> = modified.into_iter().collect();
     modified_files.sort();
@@ -153,10 +175,16 @@ pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String
 pub fn format_file_operations(read_files: &[String], modified_files: &[String]) -> String {
     let mut sections: Vec<String> = Vec::new();
     if !read_files.is_empty() {
-        sections.push(format!("<read-files>\n{}\n</read-files>", read_files.join("\n")));
+        sections.push(format!(
+            "<read-files>\n{}\n</read-files>",
+            read_files.join("\n")
+        ));
     }
     if !modified_files.is_empty() {
-        sections.push(format!("<modified-files>\n{}\n</modified-files>", modified_files.join("\n")));
+        sections.push(format!(
+            "<modified-files>\n{}\n</modified-files>",
+            modified_files.join("\n")
+        ));
     }
     if sections.is_empty() {
         return String::new();
@@ -174,7 +202,10 @@ pub fn truncate_for_summary(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}\n\n[... {} more characters truncated]", length - max_chars)
+    format!(
+        "{truncated}\n\n[... {} more characters truncated]",
+        length - max_chars
+    )
 }
 
 /// `contentTextForSummary`: provider-native replay blocks are dropped before the join.
@@ -201,7 +232,8 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
     for message in messages {
         match message.get("role").and_then(Value::as_str) {
             Some("user") => {
-                let content = content_text_for_summary(message.get("content").unwrap_or(&Value::Null), "");
+                let content =
+                    content_text_for_summary(message.get("content").unwrap_or(&Value::Null), "");
                 if !content.is_empty() {
                     parts.push(format!("[User]: {content}"));
                 }
@@ -215,17 +247,24 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
                     for block in blocks {
                         match block.get("type").and_then(Value::as_str) {
                             Some("thinking") => {
-                                if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
+                                if let Some(thinking) =
+                                    block.get("thinking").and_then(Value::as_str)
+                                {
                                     thinking_parts.push(thinking.to_string());
                                 }
                             }
                             Some("text") => has_text = true,
                             Some("toolCall") => {
-                                let name = block.get("name").and_then(Value::as_str).unwrap_or_default();
+                                let name = block
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default();
                                 let args_str = match block.get("arguments") {
                                     Some(Value::Object(arguments)) => arguments
                                         .iter()
-                                        .map(|(key, value)| format!("{key}={}", compact_json(value)))
+                                        .map(|(key, value)| {
+                                            format!("{key}={}", compact_json(value))
+                                        })
                                         .collect::<Vec<_>>()
                                         .join(", "),
                                     _ => String::new(),
@@ -238,19 +277,32 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
                 }
 
                 if !thinking_parts.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking_parts.join("\n")));
+                    parts.push(format!(
+                        "[Assistant thinking]: {}",
+                        thinking_parts.join("\n")
+                    ));
                 }
                 if has_text {
-                    parts.push(format!("[Assistant]: {}", content_text_for_summary(message.get("content").unwrap_or(&Value::Null), "\n")));
+                    parts.push(format!(
+                        "[Assistant]: {}",
+                        content_text_for_summary(
+                            message.get("content").unwrap_or(&Value::Null),
+                            "\n"
+                        )
+                    ));
                 }
                 if !tool_calls.is_empty() {
                     parts.push(format!("[Assistant tool calls]: {}", tool_calls.join("; ")));
                 }
             }
             Some("toolResult") => {
-                let content = content_text_for_summary(message.get("content").unwrap_or(&Value::Null), "");
+                let content =
+                    content_text_for_summary(message.get("content").unwrap_or(&Value::Null), "");
                 if !content.is_empty() {
-                    parts.push(format!("[Tool result]: {}", truncate_for_summary(&content, TOOL_RESULT_MAX_CHARS)));
+                    parts.push(format!(
+                        "[Tool result]: {}",
+                        truncate_for_summary(&content, TOOL_RESULT_MAX_CHARS)
+                    ));
                 }
             }
             _ => {}
@@ -281,21 +333,48 @@ mod tests {
     #[test]
     fn tool_calls_record_read_write_and_edit_paths() {
         let mut file_ops = create_file_ops();
-        extract_file_ops_from_message(&assistant_with_tool_call("read", json!({ "path": "/a" })), &mut file_ops);
-        extract_file_ops_from_message(&assistant_with_tool_call("write", json!({ "path": "/b" })), &mut file_ops);
-        extract_file_ops_from_message(&assistant_with_tool_call("edit", json!({ "path": "/c" })), &mut file_ops);
-        extract_file_ops_from_message(&assistant_with_tool_call("read", json!({ "path": 5 })), &mut file_ops);
-        assert_eq!(file_ops.read.iter().collect::<Vec<_>>(), vec![&"/a".to_string()]);
-        assert_eq!(file_ops.written.iter().collect::<Vec<_>>(), vec![&"/b".to_string()]);
-        assert_eq!(file_ops.edited.iter().collect::<Vec<_>>(), vec![&"/c".to_string()]);
+        extract_file_ops_from_message(
+            &assistant_with_tool_call("read", json!({ "path": "/a" })),
+            &mut file_ops,
+        );
+        extract_file_ops_from_message(
+            &assistant_with_tool_call("write", json!({ "path": "/b" })),
+            &mut file_ops,
+        );
+        extract_file_ops_from_message(
+            &assistant_with_tool_call("edit", json!({ "path": "/c" })),
+            &mut file_ops,
+        );
+        extract_file_ops_from_message(
+            &assistant_with_tool_call("read", json!({ "path": 5 })),
+            &mut file_ops,
+        );
+        assert_eq!(
+            file_ops.read.iter().collect::<Vec<_>>(),
+            vec![&"/a".to_string()]
+        );
+        assert_eq!(
+            file_ops.written.iter().collect::<Vec<_>>(),
+            vec![&"/b".to_string()]
+        );
+        assert_eq!(
+            file_ops.edited.iter().collect::<Vec<_>>(),
+            vec![&"/c".to_string()]
+        );
     }
 
     #[test]
     fn an_apply_patch_records_every_patched_path() {
         let patch = "*** Begin Patch\n*** Update File: /one.ts\n*** Add File: /two.ts\n*** Move to: /three.ts\n*** End Patch";
         let mut file_ops = create_file_ops();
-        extract_file_ops_from_message(&assistant_with_tool_call("apply_patch", json!({ "input": patch })), &mut file_ops);
-        assert_eq!(file_ops.edited.iter().cloned().collect::<Vec<_>>(), vec!["/one.ts", "/two.ts", "/three.ts"]);
+        extract_file_ops_from_message(
+            &assistant_with_tool_call("apply_patch", json!({ "input": patch })),
+            &mut file_ops,
+        );
+        assert_eq!(
+            file_ops.edited.iter().cloned().collect::<Vec<_>>(),
+            vec!["/one.ts", "/two.ts", "/three.ts"]
+        );
     }
 
     #[test]
@@ -307,7 +386,10 @@ mod tests {
     #[test]
     fn non_assistant_messages_contribute_nothing() {
         let mut file_ops = create_file_ops();
-        extract_file_ops_from_message(&json!({ "role": "user", "content": [{ "type": "toolCall", "name": "read", "arguments": { "path": "/a" } }] }), &mut file_ops);
+        extract_file_ops_from_message(
+            &json!({ "role": "user", "content": [{ "type": "toolCall", "name": "read", "arguments": { "path": "/a" } }] }),
+            &mut file_ops,
+        );
         assert!(file_ops.read.is_empty());
     }
 
@@ -328,15 +410,24 @@ mod tests {
     fn the_file_operation_block_renders_xml_sections() {
         let (read_files, modified_files) = (vec!["/a".to_string()], vec!["/b".to_string()]);
         let rendered = format_file_operations(&read_files, &modified_files);
-        assert_eq!(rendered, "\n\n<read-files>\n/a\n</read-files>\n\n<modified-files>\n/b\n</modified-files>");
+        assert_eq!(
+            rendered,
+            "\n\n<read-files>\n/a\n</read-files>\n\n<modified-files>\n/b\n</modified-files>"
+        );
         assert_eq!(format_file_operations(&[], &[]), "");
-        assert_eq!(format_file_operations(&["/a".to_string()], &[]), "\n\n<read-files>\n/a\n</read-files>");
+        assert_eq!(
+            format_file_operations(&["/a".to_string()], &[]),
+            "\n\n<read-files>\n/a\n</read-files>"
+        );
     }
 
     #[test]
     fn truncation_keeps_the_head_and_counts_the_rest() {
         assert_eq!(truncate_for_summary("short", 10), "short");
-        assert_eq!(truncate_for_summary("abcdef", 3), "abc\n\n[... 3 more characters truncated]");
+        assert_eq!(
+            truncate_for_summary("abcdef", 3),
+            "abc\n\n[... 3 more characters truncated]"
+        );
     }
 
     #[test]
@@ -371,13 +462,17 @@ mod tests {
     #[test]
     fn a_tool_result_is_truncated_at_the_summary_limit() {
         let long = "x".repeat(TOOL_RESULT_MAX_CHARS + 5);
-        let serialized = serialize_conversation(&[json!({ "role": "toolResult", "content": [{ "type": "text", "text": long }] })]);
+        let serialized = serialize_conversation(&[
+            json!({ "role": "toolResult", "content": [{ "type": "text", "text": long }] }),
+        ]);
         assert!(serialized.ends_with("[... 5 more characters truncated]"));
     }
 
     #[test]
     fn an_assistant_message_without_text_omits_the_assistant_line() {
-        let serialized = serialize_conversation(&[json!({ "role": "assistant", "content": [{ "type": "toolCall", "name": "read", "arguments": {} }] })]);
+        let serialized = serialize_conversation(&[
+            json!({ "role": "assistant", "content": [{ "type": "toolCall", "name": "read", "arguments": {} }] }),
+        ]);
         assert_eq!(serialized, "[Assistant tool calls]: read()");
     }
 

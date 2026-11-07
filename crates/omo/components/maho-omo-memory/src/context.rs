@@ -1,7 +1,7 @@
 //! Identity context; reading it never creates storage.
-use std::path::Path;
-use memory_core::identity::layout::MemoryIdentityPaths;
 use crate::binding::MemorySessionBinding;
+use memory_core::identity::layout::MemoryIdentityPaths;
+use std::path::Path;
 
 #[derive(Clone, Debug, Default)]
 pub struct MemoryPendingLedger {
@@ -31,9 +31,21 @@ pub struct MemoryIdentityContext {
 impl MemoryIdentityContext {
     /// Pin `context.ts:34-36`: every bind gets one fresh ledger object that the trigger wiring and
     /// the RPC snapshot share; clones of this context share it too.
-    pub fn new(identity: String, identity_paths: MemoryIdentityPaths, binding: MemorySessionBinding) -> Self {
-        let durable_root=identity_paths.root.clone();
-        Self { identity, identity_paths, durable_root, project_scope: None, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())), memory_write_denied: false }
+    pub fn new(
+        identity: String,
+        identity_paths: MemoryIdentityPaths,
+        binding: MemorySessionBinding,
+    ) -> Self {
+        let durable_root = identity_paths.root.clone();
+        Self {
+            identity,
+            identity_paths,
+            durable_root,
+            project_scope: None,
+            binding,
+            ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())),
+            memory_write_denied: false,
+        }
     }
 
     pub fn with_memory_write_denied(mut self, denied: bool) -> Self {
@@ -41,11 +53,19 @@ impl MemoryIdentityContext {
         self
     }
 
-    pub fn with_durable_root(mut self, durable_root: std::path::PathBuf) -> Self { self.durable_root=durable_root; self }
+    pub fn with_durable_root(mut self, durable_root: std::path::PathBuf) -> Self {
+        self.durable_root = durable_root;
+        self
+    }
 
-    pub fn with_project_scope(mut self, scope: ProjectScope) -> Self { self.project_scope = Some(scope); self }
+    pub fn with_project_scope(mut self, scope: ProjectScope) -> Self {
+        self.project_scope = Some(scope);
+        self
+    }
 
-    pub fn repo_path(&self) -> &Path { &self.identity_paths.repo }
+    pub fn repo_path(&self) -> &Path {
+        &self.identity_paths.repo
+    }
 
     pub fn ensure_runtime_dirs(&self) -> std::io::Result<()> {
         ensure_identity_runtime_dirs(&self.identity_paths)
@@ -53,7 +73,19 @@ impl MemoryIdentityContext {
 }
 
 pub fn ensure_identity_runtime_dirs(paths: &MemoryIdentityPaths) -> std::io::Result<()> {
-    for path in [&paths.locks, &paths.transcripts, &paths.reflection, &paths.reflection_sessions, &paths.worktrees, &paths.viewers, &paths.push_queue, &paths.facts_queue, &paths.facts, &paths.notices, &paths.tool_receipts] {
+    for path in [
+        &paths.locks,
+        &paths.transcripts,
+        &paths.reflection,
+        &paths.reflection_sessions,
+        &paths.worktrees,
+        &paths.viewers,
+        &paths.push_queue,
+        &paths.facts_queue,
+        &paths.facts,
+        &paths.notices,
+        &paths.tool_receipts,
+    ] {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
@@ -67,7 +99,15 @@ mod tests {
     fn reading_context_creates_no_storage() {
         let root = tempfile::tempdir().unwrap();
         let paths = build_identity_paths(root.path(), "agent-123");
-        let context = MemoryIdentityContext::new("agent-123".into(), paths.clone(), MemorySessionBinding { identity: "agent-123".into(), repo_path_hash: "hash".into(), bound_at: 1.0 });
+        let context = MemoryIdentityContext::new(
+            "agent-123".into(),
+            paths.clone(),
+            MemorySessionBinding {
+                identity: "agent-123".into(),
+                repo_path_hash: "hash".into(),
+                bound_at: 1.0,
+            },
+        );
         assert_eq!(context.repo_path(), paths.repo);
         assert!(!paths.repo.exists());
         assert!(!paths.runtime.exists());
@@ -78,7 +118,22 @@ mod tests {
         let paths = build_identity_paths(root.path(), "agent-123");
         ensure_identity_runtime_dirs(&paths).unwrap();
         ensure_identity_runtime_dirs(&paths).unwrap();
-        for path in [&paths.runtime, &paths.locks, &paths.transcripts, &paths.reflection, &paths.reflection_sessions, &paths.worktrees, &paths.viewers, &paths.push_queue, &paths.facts_queue, &paths.facts, &paths.notices, &paths.tool_receipts] { assert!(path.is_dir()); }
+        for path in [
+            &paths.runtime,
+            &paths.locks,
+            &paths.transcripts,
+            &paths.reflection,
+            &paths.reflection_sessions,
+            &paths.worktrees,
+            &paths.viewers,
+            &paths.push_queue,
+            &paths.facts_queue,
+            &paths.facts,
+            &paths.notices,
+            &paths.tool_receipts,
+        ] {
+            assert!(path.is_dir());
+        }
         assert!(!paths.repo.exists());
     }
 }

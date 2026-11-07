@@ -90,10 +90,12 @@ pub(crate) fn to_rgba(pixmap: &Pixmap, masks: ColorMasks) -> CoreResult<RgbaImag
     let red = ComponentMask::new("red", masks.red)?;
     let green = ComponentMask::new("green", masks.green)?;
     let blue = ComponentMask::new("blue", masks.blue)?;
-    if masks.red & masks.green != 0 || masks.red & masks.blue != 0 || masks.green & masks.blue != 0 {
+    if masks.red & masks.green != 0 || masks.red & masks.blue != 0 || masks.green & masks.blue != 0
+    {
         return Err(DesktopError::capture_failed("X11 TrueColor masks overlap"));
     }
-    let too_large = || DesktopError::capture_failed("X11 image dimensions exceed the address space");
+    let too_large =
+        || DesktopError::capture_failed("X11 image dimensions exceed the address space");
     let width = usize::try_from(pixmap.width).map_err(|_| too_large())?;
     let height = usize::try_from(pixmap.height).map_err(|_| too_large())?;
     let pad_bits = usize::from(pixmap.scanline_pad).max(8);
@@ -118,9 +120,16 @@ pub(crate) fn to_rgba(pixmap: &Pixmap, masks: ColorMasks) -> CoreResult<RgbaImag
                     .rev()
                     .fold(0u32, |acc, &byte| acc << 8 | u32::from(byte))
             } else {
-                pixel.iter().fold(0u32, |acc, &byte| acc << 8 | u32::from(byte))
+                pixel
+                    .iter()
+                    .fold(0u32, |acc, &byte| acc << 8 | u32::from(byte))
             };
-            rgba.extend_from_slice(&[red.decode(value), green.decode(value), blue.decode(value), 255]);
+            rgba.extend_from_slice(&[
+                red.decode(value),
+                green.decode(value),
+                blue.decode(value),
+                255,
+            ]);
         }
     }
     RgbaImage::from_raw(pixmap.width, pixmap.height, rgba)

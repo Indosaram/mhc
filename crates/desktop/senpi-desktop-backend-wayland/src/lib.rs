@@ -17,6 +17,8 @@ mod stop_path;
 mod test_support;
 
 pub use backend::WaylandBackend;
-pub use stop_path::{GlobalShortcutsListener, STOP_SHORTCUT_ID, UNAVAILABLE as STOP_PATH_UNAVAILABLE};
+pub use stop_path::{
+    GlobalShortcutsListener, STOP_SHORTCUT_ID, UNAVAILABLE as STOP_PATH_UNAVAILABLE,
+};
 
 pub const BACKEND_NAME: &str = env!("CARGO_PKG_NAME");

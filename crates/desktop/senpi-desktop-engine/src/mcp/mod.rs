@@ -9,9 +9,9 @@ mod catalog;
 use std::io::{self, BufRead, Write};
 
 use senpi_desktop_core::protocol::{MethodRejection, RequestId};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::rpc::{Failure, failure_line, reply_line};
+use crate::rpc::{failure_line, reply_line, Failure};
 use catalog::Catalog;
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];

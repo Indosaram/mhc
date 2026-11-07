@@ -128,10 +128,13 @@ pub fn precheck_create(input: &Value, source: MonitorSource) -> Option<TerminalT
             .as_u64()
             .is_none_or(|value| !(1..=3600).contains(&value))
         {
-            return Some(error_result("wakes_per_hour must be an integer from 1 to 3600."));
+            return Some(error_result(
+                "wakes_per_hour must be an integer from 1 to 3600.",
+            ));
         }
     }
-    if source == MonitorSource::Rpc && input.get("human_input").and_then(Value::as_bool) == Some(true)
+    if source == MonitorSource::Rpc
+        && input.get("human_input").and_then(Value::as_bool) == Some(true)
     {
         return Some(error_result(
             "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
@@ -401,7 +404,10 @@ mod tests {
         }
         let snapshot = registry.snapshot();
         assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot[0].expires_at, Some(1_000.0 + DURABLE_MONITOR_EXPIRY_MS as f64));
+        assert_eq!(
+            snapshot[0].expires_at,
+            Some(1_000.0 + DURABLE_MONITOR_EXPIRY_MS as f64)
+        );
         assert_eq!(snapshot[0].deadline_ms, None);
         assert!(registry.stop_rpc("rpc_1"));
     }
@@ -424,11 +430,21 @@ mod tests {
         ));
         assert!(registry.stop_rpc(&created.runtime_id));
         for (input, message) in [
-            (json!({"target":"all"}), "monitor requires description to start a watcher."),
-            (json!({"target":"all","description":"d","filter":"("}), "Invalid monitor filter regex: ("),
-            (json!({"target":"   ","description":"d"}), "target is empty; pass \"children\", \"all\" or a session id, path or st_ task id"),
+            (
+                json!({"target":"all"}),
+                "monitor requires description to start a watcher.",
+            ),
+            (
+                json!({"target":"all","description":"d","filter":"("}),
+                "Invalid monitor filter regex: (",
+            ),
+            (
+                json!({"target":"   ","description":"d"}),
+                "target is empty; pass \"children\", \"all\" or a session id, path or st_ task id",
+            ),
         ] {
-            let (result, created) = create_rpc_monitor(context(&registry, handlers.clone()), &input).await;
+            let (result, created) =
+                create_rpc_monitor(context(&registry, handlers.clone()), &input).await;
             assert_eq!(result.is_error, Some(true));
             assert_eq!(result.content[0].text, message);
             assert!(created.is_none());

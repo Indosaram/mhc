@@ -2,14 +2,17 @@
 
 use crate::utils::abort::AbortSignal;
 use crate::utils::retry::math_random;
-use crate::utils::retry_hint::{RetryHintInput, append_retry_after_ms_marker, extract_429_retry_after_ms};
+use crate::utils::retry_hint::{
+    RetryHintInput, append_retry_after_ms_marker, extract_429_retry_after_ms,
+};
 use futures::stream::{BoxStream, Stream, StreamExt};
 use reqwest::header::HeaderMap;
 use std::future::Future;
 use std::time::Duration;
 
 const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
-pub const DIGITALOCEAN_STREAM_FAILURE_MESSAGE: &str = "Upstream error from DigitalOcean: stream failed";
+pub const DIGITALOCEAN_STREAM_FAILURE_MESSAGE: &str =
+    "Upstream error from DigitalOcean: stream failed";
 
 /// The TS `isProviderError` duck type: an error carrying an HTTP status and headers.
 pub trait ProviderRequestError: std::fmt::Display {
@@ -28,7 +31,10 @@ pub enum ProviderRetryError<E> {
     Request(E),
     /// Server asked for a delay beyond the configured ceiling.
     #[error("{message}")]
-    RetryDelay { message: String, retry_after_ms: u64 },
+    RetryDelay {
+        message: String,
+        retry_after_ms: u64,
+    },
     #[error("Request aborted")]
     Aborted,
 }
@@ -42,13 +48,20 @@ pub struct ProviderRetryOptions {
 
 fn classify<E: ProviderRequestError>(error: &E) -> Option<(Option<u16>, Option<&HeaderMap>)> {
     if error.to_string() == DIGITALOCEAN_STREAM_FAILURE_MESSAGE {
-        return Some(error.provider_status().map_or((None, None), |s| (s.status, s.headers)));
+        return Some(
+            error
+                .provider_status()
+                .map_or((None, None), |s| (s.status, s.headers)),
+        );
     }
     error.provider_status().map(|s| (s.status, s.headers))
 }
 
 fn is_retryable(status: Option<u16>, headers: Option<&HeaderMap>) -> bool {
-    match headers.and_then(|h| h.get("x-should-retry")).and_then(|v| v.to_str().ok()) {
+    match headers
+        .and_then(|h| h.get("x-should-retry"))
+        .and_then(|v| v.to_str().ok())
+    {
         Some("true") => return true,
         Some("false") => return false,
         _ => {}
@@ -65,7 +78,14 @@ fn retry_delay_ms<E>(
     max_retry_delay_ms: Option<u64>,
     provider_message: &str,
 ) -> Result<u64, ProviderRetryError<E>> {
-    let hint = extract_429_retry_after_ms(&RetryHintInput { status: Some(429), headers, body_text: "" }, None);
+    let hint = extract_429_retry_after_ms(
+        &RetryHintInput {
+            status: Some(429),
+            headers,
+            body_text: "",
+        },
+        None,
+    );
     if let Some(delay_ms) = hint {
         let max_delay = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
         if max_delay > 0 && delay_ms > max_delay {
@@ -74,7 +94,10 @@ fn retry_delay_ms<E>(
                 delay_ms.div_ceil(1000),
                 max_delay.div_ceil(1000)
             );
-            return Err(ProviderRetryError::RetryDelay { message: append_retry_after_ms_marker(&message, delay_ms), retry_after_ms: delay_ms });
+            return Err(ProviderRetryError::RetryDelay {
+                message: append_retry_after_ms_marker(&message, delay_ms),
+                retry_after_ms: delay_ms,
+            });
         }
         return Ok(delay_ms);
     }
@@ -82,7 +105,10 @@ fn retry_delay_ms<E>(
     Ok((exponential * (1.0 - math_random() * 0.25)) as u64)
 }
 
-async fn abortable_sleep<E>(ms: u64, signal: Option<&AbortSignal>) -> Result<(), ProviderRetryError<E>> {
+async fn abortable_sleep<E>(
+    ms: u64,
+    signal: Option<&AbortSignal>,
+) -> Result<(), ProviderRetryError<E>> {
     let Some(signal) = signal else {
         tokio::time::sleep(Duration::from_millis(ms)).await;
         return Ok(());
@@ -98,7 +124,10 @@ async fn abortable_sleep<E>(ms: u64, signal: Option<&AbortSignal>) -> Result<(),
 }
 
 /// Retries transient provider HTTP failures (408/409/429/5xx, `x-should-retry`) with server hints.
-pub async fn retry_provider_request<T, E, F, Fut>(mut request: F, options: &ProviderRetryOptions) -> Result<T, ProviderRetryError<E>>
+pub async fn retry_provider_request<T, E, F, Fut>(
+    mut request: F,
+    options: &ProviderRetryOptions,
+) -> Result<T, ProviderRetryError<E>>
 where
     E: ProviderRequestError,
     F: FnMut() -> Fut,
@@ -114,12 +143,19 @@ where
         if options.signal.as_ref().is_some_and(AbortSignal::aborted) {
             return Err(ProviderRetryError::Aborted);
         }
-        let Some((_, headers)) = classify(&error).filter(|(s, h)| remaining > 0 && is_retryable(*s, *h)) else {
+        let Some((_, headers)) =
+            classify(&error).filter(|(s, h)| remaining > 0 && is_retryable(*s, *h))
+        else {
             return Err(ProviderRetryError::Request(error));
         };
         let retry_index = max_retries - remaining;
         remaining -= 1;
-        let delay = retry_delay_ms(headers, retry_index, options.max_retry_delay_ms, &error.to_string())?;
+        let delay = retry_delay_ms(
+            headers,
+            retry_index,
+            options.max_retry_delay_ms,
+            &error.to_string(),
+        )?;
         abortable_sleep(delay, options.signal.as_ref()).await?;
     }
 }
@@ -153,7 +189,9 @@ where
                     None => None,
                 };
                 let replay: BoxStream<'static, Result<TChunk, E>> = match first {
-                    Some(chunk) => futures::stream::once(async move { Ok(chunk) }).chain(stream).boxed(),
+                    Some(chunk) => futures::stream::once(async move { Ok(chunk) })
+                        .chain(stream)
+                        .boxed(),
                     None => futures::stream::empty().boxed(),
                 };
                 Ok((replay, metadata))
@@ -185,7 +223,10 @@ mod tests {
 
     impl ProviderRequestError for HttpError {
         fn provider_status(&self) -> Option<ProviderErrorStatus<'_>> {
-            Some(ProviderErrorStatus { status: self.status, headers: self.headers.as_ref() })
+            Some(ProviderErrorStatus {
+                status: self.status,
+                headers: self.headers.as_ref(),
+            })
         }
     }
 
@@ -195,19 +236,33 @@ mod tests {
         for (k, v) in headers {
             map.insert(*k, v.parse().expect("header"));
         }
-        HttpError { status, headers: Some(map), message: format!("Provider error: {}", status.map_or("undefined".to_owned(), |s| s.to_string())) }
+        HttpError {
+            status,
+            headers: Some(map),
+            message: format!(
+                "Provider error: {}",
+                status.map_or("undefined".to_owned(), |s| s.to_string())
+            ),
+        }
     }
 
     /// "retries retryable provider errors"
     #[tokio::test(start_paused = true)]
     async fn retries_retryable_provider_errors() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
                 async move {
-                    if n == 0 { Err(err(Some(429), &[("retry-after-ms", "1000")])) } else { Ok("ok") }
+                    if n == 0 {
+                        Err(err(Some(429), &[("retry-after-ms", "1000")]))
+                    } else {
+                        Ok("ok")
+                    }
                 }
             },
             &options,
@@ -221,7 +276,10 @@ mod tests {
     #[tokio::test]
     async fn does_not_retry_errors_the_provider_marks_as_non_retryable() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(2), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(2),
+            ..Default::default()
+        };
         let result = retry_provider_request::<(), _, _, _>(
             || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -232,7 +290,9 @@ mod tests {
         .await;
         // `rejects.toBe(error)`: the original provider error propagates unchanged.
         match result {
-            Err(ProviderRetryError::Request(error)) => assert_eq!(error.to_string(), "Provider error: 429"),
+            Err(ProviderRetryError::Request(error)) => {
+                assert_eq!(error.to_string(), "Provider error: 429")
+            }
             other => panic!("expected the original provider error to propagate, got {other:?}"),
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -242,7 +302,11 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_provider_requested_retry_delay_above_the_limit() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), max_retry_delay_ms: Some(1000), signal: None };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            max_retry_delay_ms: Some(1000),
+            signal: None,
+        };
         let result = retry_provider_request::<(), _, _, _>(
             || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -253,7 +317,10 @@ mod tests {
         .await;
         match result {
             Err(ProviderRetryError::RetryDelay { message, .. }) => {
-                assert!(message.starts_with("Server requested 277403s retry delay (max: 1s)"), "{message}");
+                assert!(
+                    message.starts_with("Server requested 277403s retry delay (max: 1s)"),
+                    "{message}"
+                );
             }
             other => panic!("expected retry delay error, got {other:?}"),
         }
@@ -264,11 +331,21 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn allows_disabling_the_provider_requested_retry_delay_cap() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), max_retry_delay_ms: Some(0), signal: None };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            max_retry_delay_ms: Some(0),
+            signal: None,
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(429), &[("retry-after", "2")])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(429), &[("retry-after", "2")]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -283,8 +360,11 @@ mod tests {
         use crate::utils::abort::AbortController;
         let controller = AbortController::new();
         let calls = AtomicU32::new(0);
-        let options =
-            ProviderRetryOptions { max_retries: Some(2), max_retry_delay_ms: Some(0), signal: Some(controller.signal()) };
+        let options = ProviderRetryOptions {
+            max_retries: Some(2),
+            max_retry_delay_ms: Some(0),
+            signal: Some(controller.signal()),
+        };
         let result_future = retry_provider_request::<(), _, _, _>(
             || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -321,7 +401,10 @@ mod tests {
     impl<S: Stream + Unpin> Stream for DropGuardedStream<S> {
         type Item = S::Item;
 
-        fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
             std::pin::Pin::new(&mut self.get_mut().inner).poll_next(cx)
         }
     }
@@ -330,7 +413,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn forwards_early_consumer_cancellation_to_the_provider_stream() {
         let drops = Arc::new(AtomicU32::new(0));
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let (stream, meta) = retry_provider_stream_request(
             || {
                 let drops = Arc::clone(&drops);
@@ -362,7 +448,10 @@ mod tests {
     #[tokio::test]
     async fn stamps_retry_after_ms_and_canonical_marker_on_over_cap_429_with_retry_after_header() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request::<(), _, _, _>(
             || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -372,7 +461,10 @@ mod tests {
         )
         .await;
         match result {
-            Err(ProviderRetryError::RetryDelay { message, retry_after_ms }) => {
+            Err(ProviderRetryError::RetryDelay {
+                message,
+                retry_after_ms,
+            }) => {
                 assert_eq!(retry_after_ms, 1_258_000);
                 assert!(message.contains("(retry-after-ms: 1258000)"), "{message}");
             }
@@ -385,11 +477,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn honors_retry_after_2_header_delay_under_cap() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(429), &[("retry-after", "2")])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(429), &[("retry-after", "2")]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -402,11 +503,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn honors_retry_after_ms_header_on_non_429_500_errors() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(500), &[("retry-after-ms", "100")])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(500), &[("retry-after-ms", "100")]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -419,11 +529,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn uses_exponential_path_for_non_429_500_errors() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(500), &[])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(500), &[]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -436,11 +555,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn preserves_exponential_fallback_for_429_without_any_hint() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(429), &[])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(429), &[]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -453,11 +581,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn honors_x_should_retry_true_header() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(400), &[("x-should-retry", "true")])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(400), &[("x-should-retry", "true")]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -470,11 +607,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn handles_malformed_retry_after_headers_gracefully() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n == 0 { Err(err(Some(429), &[("retry-after", "garbage-later")])) } else { Ok("ok") } }
+                async move {
+                    if n == 0 {
+                        Err(err(Some(429), &[("retry-after", "garbage-later")]))
+                    } else {
+                        Ok("ok")
+                    }
+                }
             },
             &options,
         )
@@ -487,13 +633,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn preserves_digitalocean_stream_failure_special_case() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
                 async move {
                     if n == 0 {
-                        Err(HttpError { status: None, headers: None, message: DIGITALOCEAN_STREAM_FAILURE_MESSAGE.to_owned() })
+                        Err(HttpError {
+                            status: None,
+                            headers: None,
+                            message: DIGITALOCEAN_STREAM_FAILURE_MESSAGE.to_owned(),
+                        })
                     } else {
                         Ok("ok")
                     }
@@ -509,14 +662,20 @@ mod tests {
     /// "stamps retryAfterMs when retry-after-ms header exceeds cap"
     #[tokio::test]
     async fn stamps_retry_after_ms_when_retry_after_ms_header_exceeds_cap() {
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let result = retry_provider_request::<(), _, _, _>(
             || async { Err(err(Some(429), &[("retry-after-ms", "90000")])) },
             &options,
         )
         .await;
         match result {
-            Err(ProviderRetryError::RetryDelay { message, retry_after_ms }) => {
+            Err(ProviderRetryError::RetryDelay {
+                message,
+                retry_after_ms,
+            }) => {
                 assert_eq!(retry_after_ms, 90_000);
                 assert!(message.contains("(retry-after-ms: 90000)"), "{message}");
             }
@@ -529,12 +688,19 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn stream_retry_replays_the_prefetched_first_chunk() {
         let calls = AtomicU32::new(0);
-        let options = ProviderRetryOptions { max_retries: Some(1), ..Default::default() };
+        let options = ProviderRetryOptions {
+            max_retries: Some(1),
+            ..Default::default()
+        };
         let (stream, meta) = retry_provider_stream_request(
             || {
                 let n = calls.fetch_add(1, Ordering::SeqCst);
                 async move {
-                    let items: Vec<Result<u32, HttpError>> = if n == 0 { vec![Err(err(Some(500), &[]))] } else { vec![Ok(1), Ok(2)] };
+                    let items: Vec<Result<u32, HttpError>> = if n == 0 {
+                        vec![Err(err(Some(500), &[]))]
+                    } else {
+                        vec![Ok(1), Ok(2)]
+                    };
                     Ok((futures::stream::iter(items), n))
                 }
             },

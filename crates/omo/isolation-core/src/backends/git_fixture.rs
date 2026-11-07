@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backend::{IsolationError, Result};
-use crate::test_support::{fixture, Fixture};
+use crate::test_support::{Fixture, fixture};
 
 pub fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     let output = std::process::Command::new("git")
@@ -28,7 +28,11 @@ pub fn repo() -> Fixture {
     // recreated .git/objects between rm() and symlink()).
     git(&f.repo_root, &["config", "maintenance.auto", "false"]).expect("maintenance.auto");
     git(&f.repo_root, &["config", "user.name", "Fixture"]).expect("user.name");
-    git(&f.repo_root, &["config", "user.email", "fixture@example.invalid"]).expect("user.email");
+    git(
+        &f.repo_root,
+        &["config", "user.email", "fixture@example.invalid"],
+    )
+    .expect("user.email");
     git(&f.repo_root, &["config", "core.autocrlf", "false"]).expect("core.autocrlf");
     git(&f.repo_root, &["config", "core.symlinks", "false"]).expect("core.symlinks");
     std::fs::write(f.repo_root.join("tracked"), "base\n").expect("tracked file");

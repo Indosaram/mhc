@@ -57,12 +57,9 @@ pub fn narrow(event: &AgentSessionEvent) -> Option<EffectSessionEvent> {
         AgentSessionEvent::Agent(AgentEvent::MessageStart {
             message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::User(_)),
             ..
-        }) =>
-        {
-            EffectSessionEvent::UserMessageStart {
-                client_message_id: None,
-            }
-        }
+        }) => EffectSessionEvent::UserMessageStart {
+            client_message_id: None,
+        },
         AgentSessionEvent::Agent(AgentEvent::AgentStart) => EffectSessionEvent::AgentStart,
         AgentSessionEvent::AgentEnd {
             messages,
@@ -293,7 +290,9 @@ mod tests {
             "stopReason": stop, "errorMessage": error, "timestamp": 0
         }))
         .expect("assistant message");
-        maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(message)))
+        maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
+            message,
+        )))
     }
 
     fn agent_end(last: maho_ext_api::AgentMessage, will_retry: bool) -> AgentSessionEvent {

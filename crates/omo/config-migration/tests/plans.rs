@@ -42,7 +42,10 @@ fn home_env(home_dir: &str) -> BTreeMap<String, String> {
 }
 
 fn canonical_text(path: &Path) -> String {
-    let canonical = fs::canonicalize(path).expect("canonicalize").to_string_lossy().into_owned();
+    let canonical = fs::canonicalize(path)
+        .expect("canonicalize")
+        .to_string_lossy()
+        .into_owned();
     if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = canonical.strip_prefix(r"\\?\") {
@@ -262,7 +265,10 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
     };
     let join_sub = |base: &str, sub: &str| -> String {
         if cfg!(windows) {
-            Path::new(base).join(sub.replace('/', "\\")).to_string_lossy().into_owned()
+            Path::new(base)
+                .join(sub.replace('/', "\\"))
+                .to_string_lossy()
+                .into_owned()
         } else {
             format!("{base}/{sub}")
         }
@@ -271,8 +277,14 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
         backup_paths(opencode_user_plan),
         vec![
             join_sub(&user_backup, ".config/opencode/oh-my-openagent.jsonc"),
-            join_sub(&user_backup, ".config/opencode/oh-my-openagent.jsonc.migrations.json"),
-            join_sub(&user_backup, ".config/opencode/profiles/kimi/oh-my-openagent.jsonc"),
+            join_sub(
+                &user_backup,
+                ".config/opencode/oh-my-openagent.jsonc.migrations.json"
+            ),
+            join_sub(
+                &user_backup,
+                ".config/opencode/profiles/kimi/oh-my-openagent.jsonc"
+            ),
         ]
     );
     assert_eq!(

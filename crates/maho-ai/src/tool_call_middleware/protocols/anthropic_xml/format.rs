@@ -8,7 +8,9 @@ use crate::types::Tool;
 
 fn serialize_tool_value(value: &Value) -> String {
     match value {
-        Value::Object(_) | Value::Array(_) => serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
+        Value::Object(_) | Value::Array(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "null".into())
+        }
         Value::String(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
@@ -22,13 +24,18 @@ pub fn render_tool_definitions(tools: &[Tool]) -> String {
         .map(|tool| {
             Value::Object(Map::from_iter([
                 ("name".into(), Value::String(tool.name.clone())),
-                ("description".into(), Value::String(tool.description.clone())),
+                (
+                    "description".into(),
+                    Value::String(tool.description.clone()),
+                ),
                 ("parameters".into(), tool.parameters.clone()),
             ]))
         })
         .collect();
     let json = serde_json::to_string(&Value::Array(entries)).unwrap_or_else(|_| "[]".into());
-    json.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
+    json.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 pub fn anthropic_xml_format_tools_system_prompt(tools: &[Tool]) -> String {
@@ -55,7 +62,11 @@ pub fn anthropic_xml_format_tool_call(name: &str, args: &Map<String, Value>) -> 
     lines.join("\n")
 }
 
-pub fn anthropic_xml_format_tool_response(tool_name: &str, _tool_call_id: &str, content: &[ToolResultContent]) -> String {
+pub fn anthropic_xml_format_tool_response(
+    tool_name: &str,
+    _tool_call_id: &str,
+    content: &[ToolResultContent],
+) -> String {
     let text_content = content
         .iter()
         .filter_map(|entry| match entry {
@@ -76,10 +87,17 @@ pub fn anthropic_xml_format_tool_response(tool_name: &str, _tool_call_id: &str, 
 mod tests {
     use super::*;
     use crate::types::{ImageContent, TextContent};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     #[test]
@@ -118,7 +136,11 @@ mod tests {
 
     #[test]
     fn anthropic_xml_format_tool_response_wraps_text_content_only() {
-        let content = vec![ToolResultContent::Text(TextContent { text: "sunny".into(), audience: None, text_signature: None })];
+        let content = vec![ToolResultContent::Text(TextContent {
+            text: "sunny".into(),
+            audience: None,
+            text_signature: None,
+        })];
         let formatted = anthropic_xml_format_tool_response("get_weather", "id-1", &content);
         assert!(formatted.contains("<tool_name>get_weather</tool_name>"));
         assert!(formatted.contains("<stdout>sunny</stdout>"));
@@ -141,7 +163,9 @@ mod tests {
             parsed,
             json!([{"name": tool.name, "description": tool.description, "parameters": tool.parameters}])
         );
-        assert!(prompt.contains(r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#));
+        assert!(prompt.contains(
+            r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#
+        ));
         assert!(prompt.contains("exactly one"));
         assert!(!prompt.contains("<function_calls>"));
     }
@@ -184,9 +208,20 @@ mod tests {
     #[test]
     fn extracts_text_content_into_anthropic_style_function_results() {
         let content = vec![
-            ToolResultContent::Text(TextContent { text: "first line".into(), audience: None, text_signature: None }),
-            ToolResultContent::Image(ImageContent { data: "ignored".into(), mime_type: "image/png".into() }),
-            ToolResultContent::Text(TextContent { text: "second line".into(), audience: None, text_signature: None }),
+            ToolResultContent::Text(TextContent {
+                text: "first line".into(),
+                audience: None,
+                text_signature: None,
+            }),
+            ToolResultContent::Image(ImageContent {
+                data: "ignored".into(),
+                mime_type: "image/png".into(),
+            }),
+            ToolResultContent::Text(TextContent {
+                text: "second line".into(),
+                audience: None,
+                text_signature: None,
+            }),
         ];
         let formatted = anthropic_xml_format_tool_response("run_command", "call-1", &content);
         assert_eq!(
@@ -207,7 +242,8 @@ mod tests {
             audience: None,
             text_signature: None,
         })];
-        let formatted = anthropic_xml_format_tool_response("tool</tool_name>&\"", "call-2", &content);
+        let formatted =
+            anthropic_xml_format_tool_response("tool</tool_name>&\"", "call-2", &content);
         assert_eq!(
             formatted,
             "<function_results>\n\
@@ -218,5 +254,4 @@ mod tests {
              </function_results>"
         );
     }
-
 }

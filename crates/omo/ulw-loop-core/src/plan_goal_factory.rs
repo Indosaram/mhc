@@ -22,7 +22,17 @@ pub struct GoalSeedOptions {
 const JS_WS: &str = r"[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]";
 
 fn is_js_whitespace(c: char) -> bool {
-    matches!(c, '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}')
+    matches!(
+        c,
+        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
+    )
 }
 
 /// JS `value.trim()`.
@@ -38,9 +48,8 @@ fn list_marker_pattern() -> String {
 static LIST_MARKER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&list_marker_pattern()).expect("valid list marker regex"));
 
-static PARAGRAPH_BREAK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(r"\n{JS_WS}*\n")).expect("valid paragraph regex")
-});
+static PARAGRAPH_BREAK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"\n{JS_WS}*\n")).expect("valid paragraph regex"));
 
 fn list_marker() -> &'static Regex {
     &LIST_MARKER
@@ -70,7 +79,10 @@ fn clean_line(line: &str) -> String {
 
 fn normalize_objective(value: &str) -> String {
     let mut words = Vec::new();
-    for word in value.split(is_js_whitespace).filter(|word| !word.is_empty()) {
+    for word in value
+        .split(is_js_whitespace)
+        .filter(|word| !word.is_empty())
+    {
         words.push(word);
     }
     words.join(" ")
@@ -120,14 +132,20 @@ pub fn normalize_goal_id(title: &str, index: usize) -> String {
 fn assert_non_empty(value: &str, label: &str) -> Result<String, UlwLoopError> {
     let trimmed = js_trim(value);
     if trimmed.is_empty() {
-        return Err(UlwLoopError::new(format!("Missing {label}."), "ULW_LOOP_ARGUMENT_MISSING"));
+        return Err(UlwLoopError::new(
+            format!("Missing {label}."),
+            "ULW_LOOP_ARGUMENT_MISSING",
+        ));
     }
     Ok(trimmed.to_string())
 }
 
 fn truncate_objective(objective: &str) -> String {
     if utf16_len(objective) > 80 {
-        format!("{}...", slice_utf16_prefix(objective, 77).trim_end_matches(is_js_whitespace))
+        format!(
+            "{}...",
+            slice_utf16_prefix(objective, 77).trim_end_matches(is_js_whitespace)
+        )
     } else {
         objective.to_string()
     }
@@ -150,11 +168,14 @@ pub fn seed_default_success_criteria(
     options: Option<&GoalSeedOptions>,
 ) -> Vec<UlwLoopSuccessCriterion> {
     let norm = normalize_objective(objective);
-    let subject = truncate_objective(if norm.is_empty() {
-        format!("Goal {}", goal_index + 1)
-    } else {
-        norm
-    }.as_str());
+    let subject = truncate_objective(
+        if norm.is_empty() {
+            format!("Goal {}", goal_index + 1)
+        } else {
+            norm
+        }
+        .as_str(),
+    );
 
     let goal_id = options
         .and_then(|o| o.goal_id.clone())
@@ -164,26 +185,44 @@ pub fn seed_default_success_criteria(
         .unwrap_or(UlwLoopToolkitSurface::LazyCodex);
 
     let rows: [(&str, String, String, bool); 3] = [
-        ("happy", format!("happy path for: {subject}"), format!("observable happy-path proof for goal {}", goal_index + 1), true),
-        ("edge", "edge case (boundary/empty/malformed)".to_string(), format!("boundary or malformed-input proof for: {subject}"), true),
-        ("regression", "regression: adjacent surface still works".to_string(), format!("regression proof for neighboring behavior after: {subject}"), false),
+        (
+            "happy",
+            format!("happy path for: {subject}"),
+            format!("observable happy-path proof for goal {}", goal_index + 1),
+            true,
+        ),
+        (
+            "edge",
+            "edge case (boundary/empty/malformed)".to_string(),
+            format!("boundary or malformed-input proof for: {subject}"),
+            true,
+        ),
+        (
+            "regression",
+            "regression: adjacent surface still works".to_string(),
+            format!("regression proof for neighboring behavior after: {subject}"),
+            false,
+        ),
     ];
 
-    rows.into_iter().enumerate().map(|(index, (user_model, scenario, proof, essential))| {
-        let id = criterion_id(index);
-        UlwLoopSuccessCriterion {
-            id: id.clone(),
-            scenario,
-            user_model: user_model.to_string(),
-            expected_evidence: format!("{} with {proof}.", replace_via(&goal_id, &id, surface)),
-            essential: Some(essential),
-            captured_evidence: None,
-            status: "pending".to_string(),
-            captured_at: None,
-            notes: None,
-            artifacts: None,
-        }
-    }).collect()
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, (user_model, scenario, proof, essential))| {
+            let id = criterion_id(index);
+            UlwLoopSuccessCriterion {
+                id: id.clone(),
+                scenario,
+                user_model: user_model.to_string(),
+                expected_evidence: format!("{} with {proof}.", replace_via(&goal_id, &id, surface)),
+                essential: Some(essential),
+                captured_evidence: None,
+                status: "pending".to_string(),
+                captured_at: None,
+                notes: None,
+                artifacts: None,
+            }
+        })
+        .collect()
 }
 
 pub fn derive_goal_candidates(brief: &str) -> Vec<(String, String)> {

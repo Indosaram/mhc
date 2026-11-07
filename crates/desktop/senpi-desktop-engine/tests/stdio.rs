@@ -2,8 +2,8 @@ mod common;
 
 use std::process::Command;
 
-use common::{BINARY, DELAYED_CAPTURE, Engine, TWO_DISPLAYS, error_code, fake_backend};
-use serde_json::{Value, json};
+use common::{error_code, fake_backend, Engine, BINARY, DELAYED_CAPTURE, TWO_DISPLAYS};
+use serde_json::{json, Value};
 
 #[test]
 fn hello_and_capabilities_report_the_abi_and_the_fake_backend_before_session_open() {

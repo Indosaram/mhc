@@ -52,9 +52,14 @@ async fn shared_root_plan_is_never_read_for_a_session() -> Result<(), Box<dyn st
         shared.join("goals.json"),
         r#"{"version":1,"revision":1,"goals":[{"id":"G001","title":"G1","objective":"O1","status":"pending","attempt":0,"createdAt":"","updatedAt":"","successCriteria":[]}],"goalsPath":".omo/ulw-loop/goals.json","ledgerPath":".omo/ulw-loop/ledger.jsonl","briefPath":".omo/ulw-loop/brief.md","createdAt":"","updatedAt":""}"#,
     )?;
-    let scoped: serde_json::Value = serde_json::from_str(&run_omo_status(root.path(), Some("other-session")).await.stdout)?;
+    let scoped: serde_json::Value = serde_json::from_str(
+        &run_omo_status(root.path(), Some("other-session"))
+            .await
+            .stdout,
+    )?;
     assert_eq!(scoped["error"]["code"], "ULW_LOOP_PLAN_MISSING");
-    let unscoped: serde_json::Value = serde_json::from_str(&run_omo_status(root.path(), None).await.stdout)?;
+    let unscoped: serde_json::Value =
+        serde_json::from_str(&run_omo_status(root.path(), None).await.stdout)?;
     assert_eq!(unscoped["error"]["code"], "ULW_LOOP_SESSION_SCOPE_REQUIRED");
     Ok(())
 }

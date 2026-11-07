@@ -38,6 +38,8 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: clippy
+      - name: cargo fmt
+        run: cargo fmt --all --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
       - name: disk usage

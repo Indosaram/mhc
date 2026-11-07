@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use maho_agent::harness::context::BACKGROUND_CONTEXT;
 use maho_agent::harness::env::nodejs::NodeExecutionEnv;
-use maho_agent::harness::session::jsonl::io::{AppendFn, TxAppendFn, publish_file_atomically, publish_jsonl};
-use maho_agent::harness::session::jsonl::types::{JsonlStorageHeader, JSONL_STORAGE_VERSION};
-use maho_agent::harness::session::values::{set_value, session_name};
+use maho_agent::harness::session::jsonl::io::{
+    AppendFn, TxAppendFn, publish_file_atomically, publish_jsonl,
+};
+use maho_agent::harness::session::jsonl::types::{JSONL_STORAGE_VERSION, JsonlStorageHeader};
+use maho_agent::harness::session::values::{session_name, set_value};
 use maho_agent::harness::types::{FileError, FileErrorCode, FileSystem};
 
 fn temp_root(label: &str) -> String {
@@ -22,7 +24,12 @@ fn temp_root(label: &str) -> String {
 }
 
 fn header() -> JsonlStorageHeader {
-    let mut header = JsonlStorageHeader::new("session", JSONL_STORAGE_VERSION, 1_700_000_000_000, "/workspace");
+    let mut header = JsonlStorageHeader::new(
+        "session",
+        JSONL_STORAGE_VERSION,
+        1_700_000_000_000,
+        "/workspace",
+    );
     header.next_seq = Some(4);
     header
 }
@@ -68,10 +75,20 @@ async fn keeps_the_destination_unchanged_until_all_content_has_been_written() {
     .await
     .expect("publish");
 
-    assert_eq!(std::fs::read_to_string(&path).expect("destination"), "first\nsecond\n");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("destination"),
+        "first\nsecond\n"
+    );
     assert!(!std::path::Path::new(&format!("{path}.tmp")).exists());
     let observed = observed.lock().expect("observed").clone();
-    assert_eq!(observed, vec!["first\n".to_owned(), "original".to_owned(), "original".to_owned()]);
+    assert_eq!(
+        observed,
+        vec![
+            "first\n".to_owned(),
+            "original".to_owned(),
+            "original".to_owned()
+        ]
+    );
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -89,7 +106,9 @@ async fn discards_partial_content_and_preserves_the_original_error_when_the_call
         Arc::new(|append: AppendFn| {
             Box::pin(async move {
                 append("partial".to_owned()).await?;
-                Err(maho_agent::harness::session::SessionError::io("content generation failed"))
+                Err(maho_agent::harness::session::SessionError::io(
+                    "content generation failed",
+                ))
             })
         }),
     )
@@ -97,7 +116,10 @@ async fn discards_partial_content_and_preserves_the_original_error_when_the_call
     .expect_err("failure");
     assert_eq!(error.message, "content generation failed");
 
-    assert_eq!(std::fs::read_to_string(&path).expect("destination"), "original");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("destination"),
+        "original"
+    );
     assert!(!std::path::Path::new(&format!("{path}.tmp")).exists());
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
@@ -114,13 +136,22 @@ async fn preserves_the_destination_and_allows_retry_after_a_failing_append() {
         file_system.clone(),
         path.clone(),
         &BACKGROUND_CONTEXT,
-        Arc::new(|append: AppendFn| Box::pin(async move { append("replacement".to_owned()).await })),
+        Arc::new(|append: AppendFn| {
+            Box::pin(async move { append("replacement".to_owned()).await })
+        }),
     )
     .await
     .expect_err("injected append failure");
-    assert!(error.message.contains("injected I/O failure"), "{}", error.message);
+    assert!(
+        error.message.contains("injected I/O failure"),
+        "{}",
+        error.message
+    );
 
-    assert_eq!(std::fs::read_to_string(&path).expect("destination"), "original");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("destination"),
+        "original"
+    );
     assert!(!std::path::Path::new(&format!("{path}.tmp")).exists());
 
     publish_file_atomically(
@@ -131,7 +162,10 @@ async fn preserves_the_destination_and_allows_retry_after_a_failing_append() {
     )
     .await
     .expect("retry");
-    assert_eq!(std::fs::read_to_string(&path).expect("destination"), "retry");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("destination"),
+        "retry"
+    );
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -146,7 +180,8 @@ async fn writes_the_header_first_and_preserves_transaction_boundaries() {
     let second = serde_json::json!({ "kind": "value", "op": "set", "seq": 2, "namespace": "pi.session.name", "key": "", "value": "second" });
     let third = serde_json::json!({ "kind": "value", "op": "set", "seq": 3, "namespace": "pi.session.name", "key": "", "value": "third" });
 
-    let transactions: Vec<Vec<serde_json::Value>> = vec![vec![first.clone()], vec![second.clone(), third.clone()]];
+    let transactions: Vec<Vec<serde_json::Value>> =
+        vec![vec![first.clone()], vec![second.clone(), third.clone()]];
     publish_jsonl(
         file_system.clone(),
         path.clone(),
@@ -159,7 +194,8 @@ async fn writes_the_header_first_and_preserves_transaction_boundaries() {
                     let writes = transaction
                         .iter()
                         .map(|value| {
-                            maho_agent::harness::session::jsonl::io::parse_committed_write(value).expect("write")
+                            maho_agent::harness::session::jsonl::io::parse_committed_write(value)
+                                .expect("write")
                         })
                         .collect();
                     append(writes).await?;
@@ -178,7 +214,10 @@ async fn writes_the_header_first_and_preserves_transaction_boundaries() {
         String::new(),
     ]
     .join("\n");
-    assert_eq!(std::fs::read_to_string(&path).expect("destination"), expected);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("destination"),
+        expected
+    );
     std::fs::remove_dir_all(&root).expect("cleanup");
 
     let _ = set_value(&session_name(), serde_json::json!("unused"));

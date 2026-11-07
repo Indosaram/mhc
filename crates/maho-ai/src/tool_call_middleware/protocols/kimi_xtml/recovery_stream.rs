@@ -3,15 +3,18 @@
 use serde_json::{Map, Value};
 
 use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
-use crate::tool_call_middleware::recovery_code_mask::{create_recovery_code_mask, RecoveryCodeMask, RecoveryCodeMaskSegment};
+use crate::tool_call_middleware::recovery_code_mask::{
+    RecoveryCodeMask, RecoveryCodeMaskSegment, create_recovery_code_mask,
+};
 use crate::tool_call_middleware::types::{ParserOptions, StreamParser, StreamParserEvent};
 use crate::types::Tool;
 
 use super::markers::{
-    get_partial_xtml_suffix, match_xtml_channel_marker, parse_xtml_attributes, XTML_ARGUMENT_CLOSE, XTML_ARGUMENT_OPEN, XTML_CALL_CLOSE,
-    XTML_CALL_OPEN, XTML_CLOSE_PREFIX, XTML_OPEN_PREFIX, XTML_SEP, XTML_TOOLS_CLOSE, XTML_TOOLS_OPEN,
+    XTML_ARGUMENT_CLOSE, XTML_ARGUMENT_OPEN, XTML_CALL_CLOSE, XTML_CALL_OPEN, XTML_CLOSE_PREFIX,
+    XTML_OPEN_PREFIX, XTML_SEP, XTML_TOOLS_CLOSE, XTML_TOOLS_OPEN, get_partial_xtml_suffix,
+    match_xtml_channel_marker, parse_xtml_attributes,
 };
-use super::parse::{coerce_xtml_argument_value, CoercedXtmlValue};
+use super::parse::{CoercedXtmlValue, coerce_xtml_argument_value};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ParserMode {
@@ -28,7 +31,10 @@ const MARKER_PREFIXES: [&str; 3] = [XTML_OPEN_PREFIX, XTML_CLOSE_PREFIX, XTML_SE
 const STRUCTURAL_MARKER_OPENS: [&str; 2] = [XTML_CALL_OPEN, XTML_ARGUMENT_OPEN];
 
 fn find_marker_start(text: &str) -> Option<usize> {
-    MARKER_PREFIXES.iter().filter_map(|prefix| text.find(prefix)).min()
+    MARKER_PREFIXES
+        .iter()
+        .filter_map(|prefix| text.find(prefix))
+        .min()
 }
 
 fn could_extend_marker(buffer: &str, marker: &str) -> bool {
@@ -40,11 +46,15 @@ fn could_extend_marker(buffer: &str, marker: &str) -> bool {
 }
 
 fn starts_complete_structural_marker(buffer: &str) -> bool {
-    STRUCTURAL_MARKER_OPENS.iter().any(|open| buffer.starts_with(open))
+    STRUCTURAL_MARKER_OPENS
+        .iter()
+        .any(|open| buffer.starts_with(open))
 }
 
 fn starts_partial_structural_marker(buffer: &str) -> bool {
-    STRUCTURAL_MARKER_OPENS.iter().any(|open| buffer.len() < open.len() && open.starts_with(buffer))
+    STRUCTURAL_MARKER_OPENS
+        .iter()
+        .any(|open| buffer.len() < open.len() && open.starts_with(buffer))
 }
 
 struct XtmlRecoveryStreamParser {
@@ -83,7 +93,11 @@ impl XtmlRecoveryStreamParser {
             id: format!("recovered-xtml-{}", self.call_index),
             arguments: self.call_args.clone(),
             incomplete,
-            error_message: if incomplete { self.call_invalid_reason.clone() } else { None },
+            error_message: if incomplete {
+                self.call_invalid_reason.clone()
+            } else {
+                None
+            },
         });
         self.reset_call();
         self.mode = ParserMode::Tools;
@@ -92,7 +106,11 @@ impl XtmlRecoveryStreamParser {
     fn process_text(&mut self, events: &mut Vec<StreamParserEvent>) -> bool {
         let Some(marker_index) = find_marker_start(&self.buffer) else {
             let partial = get_partial_xtml_suffix(&self.buffer, &MARKER_PREFIXES);
-            let flushable = if partial.is_empty() { self.buffer.clone() } else { self.buffer[..self.buffer.len() - partial.len()].to_string() };
+            let flushable = if partial.is_empty() {
+                self.buffer.clone()
+            } else {
+                self.buffer[..self.buffer.len() - partial.len()].to_string()
+            };
             if !flushable.is_empty() {
                 events.push(StreamParserEvent::Text { text: flushable });
             }
@@ -100,7 +118,9 @@ impl XtmlRecoveryStreamParser {
             return false;
         };
         if marker_index > 0 {
-            events.push(StreamParserEvent::Text { text: self.buffer[..marker_index].to_string() });
+            events.push(StreamParserEvent::Text {
+                text: self.buffer[..marker_index].to_string(),
+            });
             self.buffer = self.buffer[marker_index..].to_string();
             return true;
         }
@@ -121,8 +141,16 @@ impl XtmlRecoveryStreamParser {
             }
             return true;
         }
-        let take = self.buffer.chars().take(2).map(char::len_utf8).sum::<usize>().min(self.buffer.len());
-        events.push(StreamParserEvent::Text { text: self.buffer[..take].to_string() });
+        let take = self
+            .buffer
+            .chars()
+            .take(2)
+            .map(char::len_utf8)
+            .sum::<usize>()
+            .min(self.buffer.len());
+        events.push(StreamParserEvent::Text {
+            text: self.buffer[..take].to_string(),
+        });
         self.buffer = self.buffer[take..].to_string();
         true
     }
@@ -150,14 +178,21 @@ impl XtmlRecoveryStreamParser {
                     self.mode = ParserMode::CallHeader;
                 }
                 ParserMode::CallHeader | ParserMode::ArgumentHeader => {
-                    let Some(sep_index) = self.buffer.find(XTML_SEP) else { return };
+                    let Some(sep_index) = self.buffer.find(XTML_SEP) else {
+                        return;
+                    };
                     let attributes = parse_xtml_attributes(&self.buffer[..sep_index]);
                     self.buffer = self.buffer[sep_index + XTML_SEP.len()..].to_string();
                     if self.mode == ParserMode::CallHeader {
                         let name = attributes.get("tool").cloned().unwrap_or_default();
                         if !self.tools.iter().any(|candidate| candidate.name == name) {
                             if let Some(options) = &self.options {
-                                options.report_error(&format!("kimi-xtml recovery: call for unknown tool \"{name}\"."), Some(std::collections::HashMap::new()));
+                                options.report_error(
+                                    &format!(
+                                        "kimi-xtml recovery: call for unknown tool \"{name}\"."
+                                    ),
+                                    Some(std::collections::HashMap::new()),
+                                );
                             }
                             self.mode = ParserMode::DiscardCall;
                             continue;
@@ -165,7 +200,11 @@ impl XtmlRecoveryStreamParser {
                         self.call_index += 1;
                         self.call_name = name.clone();
                         self.call_started = true;
-                        events.push(StreamParserEvent::ToolcallStart { index: self.call_index as usize, name, id: format!("recovered-xtml-{}", self.call_index) });
+                        events.push(StreamParserEvent::ToolcallStart {
+                            index: self.call_index as usize,
+                            name,
+                            id: format!("recovered-xtml-{}", self.call_index),
+                        });
                         self.mode = ParserMode::CallBody;
                     } else {
                         self.argument_key = attributes.get("key").cloned().unwrap_or_default();
@@ -189,28 +228,48 @@ impl XtmlRecoveryStreamParser {
                     self.mode = ParserMode::ArgumentHeader;
                 }
                 ParserMode::ArgumentValue => {
-                    let Some(value_end) = self.buffer.find(XTML_ARGUMENT_CLOSE) else { return };
-                    let coerced = coerce_xtml_argument_value(&self.buffer[..value_end], self.argument_type.as_deref());
+                    let Some(value_end) = self.buffer.find(XTML_ARGUMENT_CLOSE) else {
+                        return;
+                    };
+                    let coerced = coerce_xtml_argument_value(
+                        &self.buffer[..value_end],
+                        self.argument_type.as_deref(),
+                    );
                     self.buffer = self.buffer[value_end + XTML_ARGUMENT_CLOSE.len()..].to_string();
                     match coerced {
                         CoercedXtmlValue::Err => {
-                            let reason = format!("kimi-xtml recovery: invalid value for argument \"{}\".", self.argument_key);
+                            let reason = format!(
+                                "kimi-xtml recovery: invalid value for argument \"{}\".",
+                                self.argument_key
+                            );
                             self.call_invalid_reason = Some(reason.clone());
                             if let Some(options) = &self.options {
-                                options.report_error(&reason, Some(std::collections::HashMap::from([("toolCall".to_string(), Value::String(self.call_name.clone()))])));
+                                options.report_error(
+                                    &reason,
+                                    Some(std::collections::HashMap::from([(
+                                        "toolCall".to_string(),
+                                        Value::String(self.call_name.clone()),
+                                    )])),
+                                );
                             }
                         }
                         CoercedXtmlValue::Ok(value) => {
                             if !self.argument_key.is_empty() {
                                 self.call_args.insert(self.argument_key.clone(), value);
-                                events.push(StreamParserEvent::ToolcallDelta { index: self.call_index as usize, arguments_delta: Value::Object(self.call_args.clone()).to_string() });
+                                events.push(StreamParserEvent::ToolcallDelta {
+                                    index: self.call_index as usize,
+                                    arguments_delta: Value::Object(self.call_args.clone())
+                                        .to_string(),
+                                });
                             }
                         }
                     }
                     self.mode = ParserMode::CallBody;
                 }
                 ParserMode::DiscardCall => {
-                    let Some(call_end) = self.buffer.find(XTML_CALL_CLOSE) else { return };
+                    let Some(call_end) = self.buffer.find(XTML_CALL_CLOSE) else {
+                        return;
+                    };
                     self.buffer = self.buffer[call_end + XTML_CALL_CLOSE.len()..].to_string();
                     self.reset_call();
                     self.mode = ParserMode::Tools;
@@ -228,7 +287,9 @@ impl XtmlRecoveryStreamParser {
                 continue;
             }
             if self.mode == ParserMode::Text && !self.buffer.is_empty() {
-                events.push(StreamParserEvent::Text { text: std::mem::take(&mut self.buffer) });
+                events.push(StreamParserEvent::Text {
+                    text: std::mem::take(&mut self.buffer),
+                });
             }
             if self.mode == ParserMode::Text {
                 events.push(StreamParserEvent::Text { text: segment.text });
@@ -277,13 +338,18 @@ impl RecoveryStreamParser for XtmlRecoveryStreamParser {
     fn interrupt(&mut self) -> Vec<StreamParserEvent> {
         let mut events = Vec::new();
         if self.mode == ParserMode::Text && !self.buffer.is_empty() {
-            events.push(StreamParserEvent::Text { text: std::mem::take(&mut self.buffer) });
+            events.push(StreamParserEvent::Text {
+                text: std::mem::take(&mut self.buffer),
+            });
         }
         events
     }
 }
 
-pub fn create_xtml_recovery_stream_parser(tools: Vec<Tool>, options: Option<ParserOptions>) -> Box<dyn RecoveryStreamParser + Send> {
+pub fn create_xtml_recovery_stream_parser(
+    tools: Vec<Tool>,
+    options: Option<ParserOptions>,
+) -> Box<dyn RecoveryStreamParser + Send> {
     Box::new(XtmlRecoveryStreamParser {
         tools,
         options,
@@ -308,7 +374,14 @@ mod tests {
     use crate::tool_call_middleware::types::StreamParserEvent;
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     #[test]
@@ -319,7 +392,9 @@ mod tests {
         );
         let mut events = parser.feed(&text);
         events.extend(parser.finish());
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart{name, ..} if name == "get_weather")));
+        assert!(events.iter().any(
+            |e| matches!(e, StreamParserEvent::ToolcallStart{name, ..} if name == "get_weather")
+        ));
         assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallEnd{incomplete: false, arguments, ..} if arguments.get("city") == Some(&json!("Seoul")))));
     }
 
@@ -328,7 +403,16 @@ mod tests {
         let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
         let mut events = parser.feed("hello world");
         events.extend(parser.finish());
-        let text: String = events.iter().filter_map(|e| if let StreamParserEvent::Text { text } = e { Some(text.as_str()) } else { None }).collect();
+        let text: String = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamParserEvent::Text { text } = e {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(text, "hello world");
     }
 
@@ -338,7 +422,11 @@ mod tests {
         let text = format!("```\n{XTML_TOOLS_OPEN}not a real call{XTML_TOOLS_CLOSE}\n```");
         let mut events = parser.feed(&text);
         events.extend(parser.finish());
-        assert!(!events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. }))
+        );
     }
 
     #[test]
@@ -346,11 +434,29 @@ mod tests {
         let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
         let mut events = parser.feed("hello<|op");
         events.extend(parser.interrupt());
-        let text: String = events.iter().filter_map(|e| if let StreamParserEvent::Text { text } = e { Some(text.as_str()) } else { None }).collect();
+        let text: String = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamParserEvent::Text { text } = e {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(text, "hello<|op");
     }
     fn text_of(events: &[StreamParserEvent]) -> String {
-        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|event| {
+                if let StreamParserEvent::Text { text } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn leaked_block() -> &'static str {
@@ -364,7 +470,9 @@ mod tests {
     }
 
     fn end_of(events: &[StreamParserEvent]) -> Option<&StreamParserEvent> {
-        events.iter().find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
+        events
+            .iter()
+            .find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
     }
 
     #[test]
@@ -372,7 +480,12 @@ mod tests {
         let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
         let mut events = parser.feed(&format!("One moment. {} Done.", leaked_block()));
         events.extend(parser.finish());
-        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            name, arguments, ..
+        } = end_of(&events).expect("toolcall end")
+        else {
+            unreachable!()
+        };
         assert_eq!(name, "get_weather");
         assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
         assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallStart { name, .. } if name == "get_weather")));
@@ -387,7 +500,10 @@ mod tests {
         let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
         let mut events = parser.feed("reasoning about the weather<|close|>think<|sep|><|open|>response<|sep|>The answer is 31C.");
         events.extend(parser.finish());
-        assert_eq!(text_of(&events), "reasoning about the weatherThe answer is 31C.");
+        assert_eq!(
+            text_of(&events),
+            "reasoning about the weatherThe answer is 31C."
+        );
     }
 
     #[test]
@@ -426,10 +542,14 @@ mod tests {
         events.extend(parser.feed(&leaked[tools_open_length..]));
         events.extend(parser.feed(" Done."));
         events.extend(parser.finish());
-        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            name, arguments, ..
+        } = end_of(&events).expect("toolcall end")
+        else {
+            unreachable!()
+        };
         assert_eq!(name, "get_weather");
         assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
         assert!(!text_of(&events).contains("<|"));
     }
-
 }

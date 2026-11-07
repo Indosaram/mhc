@@ -9,21 +9,24 @@ use crate::domain_types::{UlwLoopLedgerEntry, UlwLoopPlan};
 use crate::goal_status::aggregate_codex_objective_for_scope;
 use crate::ledger::{read_ledger as reconcile_ledger, read_ledger_at};
 use crate::paths::{
-    repo_relative, ulw_loop_dir, ulw_loop_goals_path, ulw_loop_relative_dir,
-    ulw_loop_state_lock_path, UlwLoopScope,
+    UlwLoopScope, repo_relative, ulw_loop_dir, ulw_loop_goals_path, ulw_loop_relative_dir,
+    ulw_loop_state_lock_path,
 };
-use crate::plan_commit::{commit, materialize_sync, CommitMutation};
+use crate::plan_commit::{CommitMutation, commit, materialize_sync};
 use crate::plan_log::reconcile_plan;
 use crate::plan_missing_recovery::plan_missing_error;
-use crate::runtime::{iso, UlwLoopError};
-use crate::state_lock::{with_state_lock, StateLockOptions};
+use crate::runtime::{UlwLoopError, iso};
+use crate::state_lock::{StateLockOptions, with_state_lock};
 
 pub use crate::plan_log::plan_exists;
 
 const LEGACY_OBJECTIVE_PREFIX: &str = "Complete all ulw-loop stories in .omo/ulw-loop/goals.json: ";
 const LEGACY_OBJECTIVE: &str = "Complete all ulw-loop stories listed in .omo/ulw-loop/goals.json. Use .omo/ulw-loop/ledger.jsonl as the durable audit trail.";
 
-pub fn read_ledger(repo_root: impl AsRef<Path>, scope: Option<&UlwLoopScope>) -> Vec<UlwLoopLedgerEntry> {
+pub fn read_ledger(
+    repo_root: impl AsRef<Path>,
+    scope: Option<&UlwLoopScope>,
+) -> Vec<UlwLoopLedgerEntry> {
     reconcile_ledger(repo_root, scope)
 }
 
@@ -46,7 +49,10 @@ pub fn read_ulw_loop_plan_sync(
     let mut parsed = match reconcile_plan(&dir) {
         Some(p) => p,
         None => {
-            let rel = repo_relative(&path.to_string_lossy(), &repo_root.as_ref().to_string_lossy());
+            let rel = repo_relative(
+                &path.to_string_lossy(),
+                &repo_root.as_ref().to_string_lossy(),
+            );
             // Pin `plan-io.ts:73-81`: a goals.json that exists but is not a version-1 plan with a
             // `goals` array is an invalid plan, never a missing one.
             if fs::read_to_string(&path).is_ok() {
@@ -61,7 +67,10 @@ pub fn read_ulw_loop_plan_sync(
     };
 
     if parsed.version != 1 {
-        let rel = repo_relative(&path.to_string_lossy(), &repo_root.as_ref().to_string_lossy());
+        let rel = repo_relative(
+            &path.to_string_lossy(),
+            &repo_root.as_ref().to_string_lossy(),
+        );
         return Err(UlwLoopError::new(
             format!("Invalid ulw-loop plan at {rel}."),
             "ULW_LOOP_PLAN_INVALID",
@@ -71,7 +80,9 @@ pub fn read_ulw_loop_plan_sync(
     let is_aggregate = parsed.codex_goal_mode.as_deref().unwrap_or("per_story") == "aggregate";
     if is_aggregate {
         if let Some(previous_objective) = parsed.codex_objective.clone() {
-            if previous_objective == LEGACY_OBJECTIVE || previous_objective.starts_with(LEGACY_OBJECTIVE_PREFIX) {
+            if previous_objective == LEGACY_OBJECTIVE
+                || previous_objective.starts_with(LEGACY_OBJECTIVE_PREFIX)
+            {
                 let now = iso();
                 let new_obj = aggregate_codex_objective_for_scope(scope);
                 let mut aliases = parsed.codex_objective_aliases.clone().unwrap_or_default();
@@ -140,7 +151,8 @@ pub fn write_plan(
     scope: Option<&UlwLoopScope>,
 ) -> Result<(), UlwLoopError> {
     if plan.revision.is_none() {
-        plan.revision = reconcile_plan(ulw_loop_dir(&repo_root, scope)).and_then(|current| current.revision);
+        plan.revision =
+            reconcile_plan(ulw_loop_dir(&repo_root, scope)).and_then(|current| current.revision);
     }
     let mut entries = Vec::new();
     commit(
@@ -212,7 +224,10 @@ pub fn find_accepted_steering_entry<'a>(
 ) -> Option<&'a UlwLoopLedgerEntry> {
     entries.iter().find(|entry| {
         is_steering_kind(&entry.kind)
-            && entry.steering.as_ref().is_some_and(|s| s.invariant.accepted)
+            && entry
+                .steering
+                .as_ref()
+                .is_some_and(|s| s.invariant.accepted)
             && (entry.idempotency_key.as_deref() == Some(key)
                 || entry
                     .steering

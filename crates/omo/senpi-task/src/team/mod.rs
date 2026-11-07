@@ -6,6 +6,7 @@ mod fallback_notification_tests;
 #[cfg(test)]
 mod import_discipline_tests;
 pub mod liveness_ownership;
+pub mod member_extension;
 pub mod member_extensions;
 #[cfg(test)]
 mod member_extensions_tests;
@@ -23,6 +24,7 @@ mod member_revival_tests;
 pub mod member_validator;
 #[cfg(test)]
 mod member_validator_tests;
+pub mod messaging;
 pub mod normalize;
 #[cfg(test)]
 mod normalize_tests;
@@ -57,5 +59,3 @@ mod storage_tests;
 pub mod tasks;
 #[cfg(test)]
 mod tasks_tests;
-pub mod member_extension;
-pub mod messaging;

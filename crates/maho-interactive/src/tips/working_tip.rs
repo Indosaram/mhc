@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::catalog::types::TipDefinition;
-use super::scheduler::{select_tip, SelectTipOptions};
+use super::scheduler::{SelectTipOptions, select_tip};
 
 static NEWLINE_RUN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*\n\s*").expect("valid newline regex"));

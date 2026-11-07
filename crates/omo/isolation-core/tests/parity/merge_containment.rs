@@ -3,8 +3,8 @@ use std::path::Path;
 use isolation_core::backends::git_fixture::{git, repo};
 use isolation_core::test_support::fixture;
 use isolation_core::{
-    capture_baseline, merge_isolated_changes, nested_path, write_artifacts, ArtifactOptions,
-    DeltaPatchResult, IsolationMergeOptions, MergeMode, ISOLATION_BASELINE_MAX_CONTENT_BYTES,
+    ArtifactOptions, DeltaPatchResult, ISOLATION_BASELINE_MAX_CONTENT_BYTES, IsolationMergeOptions,
+    MergeMode, capture_baseline, merge_isolated_changes, nested_path, write_artifacts,
 };
 
 fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -63,7 +63,8 @@ fn nested_merge_refuses_a_nested_repository_path_replaced_by_an_external_symlink
     let f = repo();
     let inner = repo();
     copy_dir_all(&inner.repo_root, &f.repo_root.join("inner")).expect("nested copy");
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolation_dir = f.root.join("child");
     copy_dir_all(&f.repo_root, &isolation_dir).expect("isolation copy");
     std::fs::write(isolation_dir.join("inner/tracked"), "child edit\n").expect("edit");

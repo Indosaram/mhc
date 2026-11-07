@@ -17,7 +17,11 @@ mod tests {
     #[test]
     fn binding_renderer_is_registered_and_hidden() {
         let mut api = maho_ext_api::ExtensionApi::new(
-            maho_ext_api::LoadedExtension::new("memory-bindings", Default::default(), Default::default()),
+            maho_ext_api::LoadedExtension::new(
+                "memory-bindings",
+                Default::default(),
+                Default::default(),
+            ),
             Default::default(),
             Default::default(),
             Default::default(),

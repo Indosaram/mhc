@@ -30,7 +30,10 @@ pub fn team_storage_base_dir(config: &StateDirConfig) -> PathBuf {
     resolve_state_dir(config).join("teams")
 }
 
-pub fn resolve_team_runtime_dirs(config: &StateDirConfig, team_run_id: &str) -> team_core::Result<TeamRuntimeDirs> {
+pub fn resolve_team_runtime_dirs(
+    config: &StateDirConfig,
+    team_run_id: &str,
+) -> team_core::Result<TeamRuntimeDirs> {
     let base_dir = team_storage_base_dir(config);
     let runtime_dir = get_runtime_state_dir(&base_dir, team_run_id)?;
     let tasks_dir = get_tasks_dir(&base_dir, team_run_id)?;
@@ -52,7 +55,11 @@ pub fn resolve_team_member_inbox_dir(
 /// The omo-compatible `<projectRoot>/.omo/teams/<name>/config.json` path. Discovery-only: it is read
 /// for spec discovery and is NEVER a runtime-write target (runtime state lives under the state dir).
 pub fn resolve_project_team_spec_path(project_root: &Path, team_name: &str) -> PathBuf {
-    project_root.join(".omo").join("teams").join(team_name).join("config.json")
+    project_root
+        .join(".omo")
+        .join("teams")
+        .join(team_name)
+        .join("config.json")
 }
 
 fn create_private_dir(path: &Path) -> io::Result<()> {

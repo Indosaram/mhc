@@ -22,12 +22,10 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
-use senpi_desktop_safety::{
-    Chord, StopPathError, StopPathId, StopPathListener, Supervisor,
-};
+use senpi_desktop_safety::{Chord, StopPathError, StopPathId, StopPathListener, Supervisor};
 
-pub use chord::DEFAULT_STOP_CHORD;
 use chord::Hotkey;
+pub use chord::DEFAULT_STOP_CHORD;
 
 const THREAD_NAME: &str = "senpi-desktop-killswitch";
 /// How long `start()` waits for the first tap to go live.

@@ -14,7 +14,11 @@ pub fn backoff_delay_ms(
 }
 
 fn clamp_unit(value: f64) -> f64 {
-    if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.5 }
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.5
+    }
 }
 
 #[cfg(test)]

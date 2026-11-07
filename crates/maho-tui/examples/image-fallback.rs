@@ -9,9 +9,17 @@ fn main() {
     let mut image = Image::new(
         "",
         "image/png",
-        ImageTheme { fallback_color: Rc::new(str::to_string) },
-        ImageOptions { filename: Some("diagram.png".to_string()), ..ImageOptions::default() },
-        Some(ImageDimensions { width_px: 640, height_px: 480 }),
+        ImageTheme {
+            fallback_color: Rc::new(str::to_string),
+        },
+        ImageOptions {
+            filename: Some("diagram.png".to_string()),
+            ..ImageOptions::default()
+        },
+        Some(ImageDimensions {
+            width_px: 640,
+            height_px: 480,
+        }),
     );
     for line in image.render(80) {
         println!("{line}");

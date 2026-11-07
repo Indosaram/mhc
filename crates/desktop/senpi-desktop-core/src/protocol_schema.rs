@@ -5,13 +5,13 @@
 use schemars::generate::SchemaSettings;
 use schemars::transform::RecursiveTransform;
 use schemars::{Schema, SchemaGenerator};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::error::ErrorCode;
-use crate::methods::{Exposure, Method, Notification, method_schemas};
+use crate::methods::{method_schemas, Exposure, Method, Notification};
 use crate::protocol::{
-    ABI, ERROR_CODES, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
-    PROTOCOL_VERSION, RpcNotification, RpcRequest, RpcResponse, rpc_error_code,
+    rpc_error_code, RpcNotification, RpcRequest, RpcResponse, ABI, ERROR_CODES, INVALID_PARAMS,
+    INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, PROTOCOL_VERSION,
 };
 
 /// The protocol schema: `methods` (effect, hostOnly, testOnly, params and

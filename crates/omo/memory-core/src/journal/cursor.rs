@@ -119,9 +119,13 @@ fn derive_state_with_entries(
     entries: &[TranscriptEntry],
 ) -> ReflectionTranscriptState {
     let mut derived = derive_state_with_total(state, count_completed_steps(entries));
-    let anchor = state.reflected_through_message_id.as_deref()
+    let anchor = state
+        .reflected_through_message_id
+        .as_deref()
         .and_then(|message_id| reflected_cursor_index(entries, message_id));
-    derived.unreflected_bytes = Some(serialized_bytes(&entries[anchor.map_or(0, |index| index + 1)..]));
+    derived.unreflected_bytes = Some(serialized_bytes(
+        &entries[anchor.map_or(0, |index| index + 1)..],
+    ));
     derived
 }
 
@@ -185,8 +189,7 @@ pub fn capture_cursor_snapshot_with_max_bytes(
             let id = entries[index].source_message_id();
             let mut group_end = index;
             let mut group_bytes = bytes;
-            while group_end + 1 < entries.len()
-                && entries[group_end + 1].source_message_id() == id
+            while group_end + 1 < entries.len() && entries[group_end + 1].source_message_id() == id
             {
                 group_end += 1;
                 group_bytes += entry_bytes(&entries[group_end]);
@@ -199,7 +202,10 @@ pub fn capture_cursor_snapshot_with_max_bytes(
             end_line = group_end + 1;
             bytes = group_bytes;
             index = group_end;
-            if group_bytes >= max_bytes { exhausted = true; break; }
+            if group_bytes >= max_bytes {
+                exhausted = true;
+                break;
+            }
         }
         index += 1;
     }
@@ -241,8 +247,10 @@ pub fn finalize_cursor(
     let snapshot_entries = &entries[..end_line];
     let mut updated = state.clone();
     updated.reflected_through_message_id = Some(snapshot.end_message_id.clone());
-    updated.reflected_through_byte_offset =
-        Some(reflected_through_byte_offset(entries, &snapshot.end_message_id));
+    updated.reflected_through_byte_offset = Some(reflected_through_byte_offset(
+        entries,
+        &snapshot.end_message_id,
+    ));
     updated.consecutive_failures = Some(0);
     updated.next_eligible_at = None;
     updated.reflected_completed_steps = count_completed_steps(snapshot_entries);
@@ -332,8 +340,15 @@ pub fn parse_state(raw: &str) -> Result<ReflectionTranscriptState, JournalError>
         last_reflection_started_at,
         last_reflection_succeeded_at,
         pending_compaction,
-        consecutive_failures: obj.get("consecutive_failures").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()),
-        next_eligible_at: obj.get("next_eligible_at").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
+        consecutive_failures: obj
+            .get("consecutive_failures")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok()),
+        next_eligible_at: obj
+            .get("next_eligible_at")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
     })
 }
 

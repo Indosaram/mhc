@@ -13,7 +13,11 @@ fn clear_ui(ctx: &ExtensionContext) {
         ctx.ui.set_widget(STATUS_KEY, None, Default::default());
     }
 }
-pub type ConfigLoader = Arc<dyn Fn(&std::path::Path, &std::path::Path) -> Result<ConfigLoadResult, std::io::Error> + Send + Sync>;
+pub type ConfigLoader = Arc<
+    dyn Fn(&std::path::Path, &std::path::Path) -> Result<ConfigLoadResult, std::io::Error>
+        + Send
+        + Sync,
+>;
 
 pub fn register_search_lifecycle(api: &mut ExtensionApi) -> Arc<Mutex<ConfigLoadResult>> {
     register_search_lifecycle_with(api, Arc::new(load_websearch_config))

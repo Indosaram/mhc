@@ -95,7 +95,10 @@ fn a_turn_end_keeps_the_ineffective_count() {
     }
     let ended = end_turn(state);
     assert_eq!(ended.accepted_this_turn, 0);
-    assert_eq!(ended.ineffective_attempts_this_turn, INEFFECTIVE_ADMISSION_LIMIT);
+    assert_eq!(
+        ended.ineffective_attempts_this_turn,
+        INEFFECTIVE_ADMISSION_LIMIT
+    );
     assert!(should_reject_by_cap(&ended).cancel);
 }
 
@@ -113,8 +116,10 @@ fn an_effective_compaction_refills_the_ineffective_budget() {
 
 #[test]
 fn recorded_yield_reads_the_entry_details() {
-    let measured = recorded_yield(&entry(json!({"structuralYield": {"savedTokens": 0, "savingsRatio": 0.0}})))
-        .expect("recorded yield");
+    let measured = recorded_yield(&entry(
+        json!({"structuralYield": {"savedTokens": 0, "savingsRatio": 0.0}}),
+    ))
+    .expect("recorded yield");
     assert_eq!(measured.saved_tokens, 0.0);
     assert_eq!(measured.tokens_before, 40_000.0);
     assert!(is_ineffective_compaction(measured));

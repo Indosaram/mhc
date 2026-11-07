@@ -374,9 +374,10 @@ mod tests {
 
     #[test]
     fn parses_job_args_and_refuses_malformed_ones() {
-        let parsed =
-            parse_module_job_args(&json!({ "modulePath": abs("/a/b.rs"), "export": "x", "args": [1] }))
-                .expect("valid");
+        let parsed = parse_module_job_args(
+            &json!({ "modulePath": abs("/a/b.rs"), "export": "x", "args": [1] }),
+        )
+        .expect("valid");
         assert_eq!(
             parsed,
             ModuleJobArgs {

@@ -1,7 +1,7 @@
 //! Port of components/dynamic-border.ts.
-use std::rc::Rc;
-use maho_tui::tui::Component;
 use crate::theme::{Theme, ThemeColor};
+use maho_tui::tui::Component;
+use std::rc::Rc;
 
 pub struct DynamicBorder {
     color: Rc<dyn Fn(&str) -> String>,
@@ -16,6 +16,6 @@ impl DynamicBorder {
 }
 impl Component for DynamicBorder {
     fn render(&mut self, width: usize) -> Vec<String> {
-        vec![(self.color)(&"─".repeat(width.max(1))) ]
+        vec![(self.color)(&"─".repeat(width.max(1)))]
     }
 }

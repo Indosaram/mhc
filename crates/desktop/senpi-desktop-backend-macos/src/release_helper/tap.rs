@@ -19,7 +19,8 @@ type CfRunLoopRef = *mut c_void;
 type CfStringRef = *const c_void;
 type CgEventRef = *mut c_void;
 type CgEventTapProxy = *mut c_void;
-type CgEventTapCallBack = extern "C" fn(CgEventTapProxy, u32, CgEventRef, *mut c_void) -> CgEventRef;
+type CgEventTapCallBack =
+    extern "C" fn(CgEventTapProxy, u32, CgEventRef, *mut c_void) -> CgEventRef;
 
 const SESSION_EVENT_TAP: u32 = 1; // kCGSessionEventTap
 const HEAD_INSERT: u32 = 0; // kCGHeadInsertEventTap
@@ -61,7 +62,11 @@ unsafe extern "C" {
     fn CFMachPortInvalidate(port: CfMachPortRef);
     fn CFRunLoopGetCurrent() -> CfRunLoopRef;
     fn CFRunLoopAddSource(run_loop: CfRunLoopRef, source: CfRunLoopSourceRef, mode: CfStringRef);
-    fn CFRunLoopRunInMode(mode: CfStringRef, seconds: f64, return_after_source_handled: bool) -> i32;
+    fn CFRunLoopRunInMode(
+        mode: CfStringRef,
+        seconds: f64,
+        return_after_source_handled: bool,
+    ) -> i32;
 }
 
 /// The helper's tap. When a process dies with a listen-only tap still valid
@@ -103,7 +108,9 @@ impl Transitions for RunLoop {
     fn drain(&self) {
         // SAFETY: [FFI] runs this thread's loop without waiting; the tap queues
         // only key and button transitions, far slower than this applies them.
-        while unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, true) } == RUN_LOOP_HANDLED_SOURCE {}
+        while unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, true) }
+            == RUN_LOOP_HANDLED_SOURCE
+        {}
     }
 
     fn run_briefly(&self) {
@@ -122,15 +129,29 @@ pub(crate) fn observe(observation: &Arc<Observation>, mut ready: UnixStream) {
     // before the tap so the tap's events do not pile up meanwhile.
     // SAFETY: [FFI] read-only query of the HID system state.
     unsafe { CGEventSourceKeyState(HID_SYSTEM_STATE, 0) };
-    let mask = TRANSITION_TYPES.iter().fold(0u64, |mask, &kind| mask | (1 << kind));
-    let context = Box::into_raw(Box::new(Context { observation: Arc::clone(observation), port: ptr::null_mut() }));
+    let mask = TRANSITION_TYPES
+        .iter()
+        .fold(0u64, |mask, &kind| mask | (1 << kind));
+    let context = Box::into_raw(Box::new(Context {
+        observation: Arc::clone(observation),
+        port: ptr::null_mut(),
+    }));
     let mut tap = TAP.lock().unwrap_or_else(PoisonError::into_inner);
     if !matches!(*tap, TapState::Unstarted) {
         return;
     }
     // SAFETY: [FFI] a listen-only session tap whose context is leaked, so it
     // lives for the rest of the process.
-    let port = unsafe { CGEventTapCreate(SESSION_EVENT_TAP, HEAD_INSERT, LISTEN_ONLY, mask, observed, context.cast()) };
+    let port = unsafe {
+        CGEventTapCreate(
+            SESSION_EVENT_TAP,
+            HEAD_INSERT,
+            LISTEN_ONLY,
+            mask,
+            observed,
+            context.cast(),
+        )
+    };
     if port.is_null() {
         std::process::exit(0);
     }
@@ -180,7 +201,12 @@ fn hid_state() -> UserHolds {
     down
 }
 
-extern "C" fn observed(_proxy: CgEventTapProxy, kind: u32, event: CgEventRef, user_info: *mut c_void) -> CgEventRef {
+extern "C" fn observed(
+    _proxy: CgEventTapProxy,
+    kind: u32,
+    event: CgEventRef,
+    user_info: *mut c_void,
+) -> CgEventRef {
     // SAFETY: [use-after-free] `user_info` is the leaked `Context` this tap
     // was created with.
     let context = unsafe { &*user_info.cast::<Context>() };

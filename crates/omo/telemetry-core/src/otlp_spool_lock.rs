@@ -86,9 +86,10 @@ pub fn unlock(
     });
     if let Err(e) = result
         && e.kind() != io::ErrorKind::NotFound
-            && let Some(report) = on_left {
-                report(&e);
-            }
+        && let Some(report) = on_left
+    {
+        report(&e);
+    }
 }
 pub struct LockLimits<'a> {
     pub lease_ms: u64,

@@ -6,11 +6,11 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use senpi_desktop_core::ax::{AxBackend, AxHandle, AxRegistry, snapshot};
+use senpi_desktop_core::ax::{snapshot, AxBackend, AxHandle, AxRegistry};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow};
 
-use super::{MacAx, element, is_trusted};
+use super::{element, is_trusted, MacAx};
 
 const DOCUMENT_TEXT: &str = "senpi ax live";
 /// Hang guard for TextEdit's launch; the window usually appears in < 2 s.

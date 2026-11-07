@@ -1,16 +1,17 @@
 use std::path::Path;
 
-use crate::backend::{BackendKind, IsolationError, Result, BACKEND_FILE};
+use crate::backend::{BACKEND_FILE, BackendKind, IsolationError, Result};
 use crate::util::now_iso8601;
 
 pub fn mark_started(base: &Path, backend: BackendKind, extra: &[(&str, String)]) -> Result<()> {
     let path = base.join(BACKEND_FILE);
-    let mut object: serde_json::Map<String, serde_json::Value> = match std::fs::read_to_string(&path)
-    {
-        Ok(text) => serde_json::from_str(&text).map_err(|error| IsolationError::other(error.to_string()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-        Err(error) => return Err(error.into()),
-    };
+    let mut object: serde_json::Map<String, serde_json::Value> =
+        match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|error| IsolationError::other(error.to_string()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+            Err(error) => return Err(error.into()),
+        };
     object.insert(
         "backend".to_string(),
         serde_json::Value::String(backend.as_str().to_string()),

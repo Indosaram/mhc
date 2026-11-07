@@ -7,8 +7,8 @@ use std::sync::Arc;
 use maho_ext_api::ExtensionApi;
 use memory_core::people::format::{ObservationGroup, PeopleLimits};
 
-use crate::palace::people::{PalacePeople, PalacePeopleNode, collect_people};
 use crate::model_registry_resolver::NativeMemoryModelRegistry;
+use crate::palace::people::{PalacePeople, PalacePeopleNode, collect_people};
 
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
 use super::people_ask::{
@@ -16,18 +16,22 @@ use super::people_ask::{
     create_people_ask_runner, has_no_evidence,
 };
 use super::people_query::{PersonQueryResolution, resolve_person_query};
-use super::people_render::{parse_people_card_lines, parse_people_observations, render_person_card, render_roster};
+use super::people_render::{
+    parse_people_card_lines, parse_people_observations, render_person_card, render_roster,
+};
 use super::people_search::collect_person_search_hits;
 use super::repo::open_repo;
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    command_context_from, finish, require_identity, respond,
 };
 
 /// Fixed render budget per observation level; deliberately NOT a config knob.
 pub const OBSERVATIONS_PER_LEVEL: usize = 20;
 
-pub use super::people_query::{PersonQueryResolution as PersonQuery, resolve_person_query as resolve_person};
+pub use super::people_query::{
+    PersonQueryResolution as PersonQuery, resolve_person_query as resolve_person,
+};
 
 /// Derives the roster and adjacency graph. A repository-open, `head`, or `ls_tree`
 /// failure propagates as an error; only a successful `None` (people disabled) defaults
@@ -39,7 +43,10 @@ pub fn derive_people_graph(
 ) -> Result<PalacePeople, String> {
     let repo = open_repo(deps, identity)?;
     let head = repo.head().map_err(|error| error.to_string())?;
-    let options = crate::palace::people::PalacePeopleOptions { enabled: true, limits };
+    let options = crate::palace::people::PalacePeopleOptions {
+        enabled: true,
+        limits,
+    };
     resolve_people_graph(
         collect_people(&repo, head.as_deref(), &options).map_err(|error| error.to_string()),
     )
@@ -58,7 +65,11 @@ pub fn resolve_people_graph(
 }
 
 fn empty_people_graph() -> PalacePeople {
-    PalacePeople { nodes: Vec::new(), edges: Vec::new(), diagnostics: Vec::new() }
+    PalacePeople {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+        diagnostics: Vec::new(),
+    }
 }
 
 pub fn select_observations(
@@ -80,7 +91,10 @@ pub fn select_observations(
             if !all {
                 sorted.truncate(OBSERVATIONS_PER_LEVEL);
             }
-            ObservationGroup { section: group.section, entries: sorted }
+            ObservationGroup {
+                section: group.section,
+                entries: sorted,
+            }
         })
         .collect()
 }
@@ -102,7 +116,11 @@ pub async fn handle_people(
     let people = &settings["people"];
     // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream treats a missing people.enabled as true; mhc treats it as false.
     if people["enabled"].as_bool() != Some(true) {
-        return respond(ctx, "people records are disabled (memory.people.enabled)", NotifyLevel::Error);
+        return respond(
+            ctx,
+            "people records are disabled (memory.people.enabled)",
+            NotifyLevel::Error,
+        );
     }
     let limits = PeopleLimits {
         max_entries: people["max_entries"].as_u64().unwrap_or(40) as usize,
@@ -137,7 +155,11 @@ pub async fn handle_people(
         }
     };
     let Some(node) = graph.nodes.iter().find(|node| node.slug == slug) else {
-        return respond(ctx, format!("no person matches \"{name}\""), NotifyLevel::Error);
+        return respond(
+            ctx,
+            format!("no person matches \"{name}\""),
+            NotifyLevel::Error,
+        );
     };
 
     let observations = select_observations(
@@ -150,7 +172,16 @@ pub async fn handle_people(
     let card_body = read_person_file(deps, &identity, &node.path);
 
     if let Some(question) = question {
-        return ask_about_person(deps, ctx, node, &question, limits, card_body.as_deref(), &observations).await;
+        return ask_about_person(
+            deps,
+            ctx,
+            node,
+            &question,
+            limits,
+            card_body.as_deref(),
+            &observations,
+        )
+        .await;
     }
 
     respond(
@@ -194,10 +225,10 @@ async fn ask_about_person(
     let runner = match &deps.people_ask {
         Some(runner) => runner.clone(),
         None => {
-            let registry = ctx
-                .model_registry
-                .clone()
-                .map(|registry| Arc::new(NativeMemoryModelRegistry(registry)) as Arc<dyn senpi_task::host::SenpiModelRegistry>);
+            let registry = ctx.model_registry.clone().map(|registry| {
+                Arc::new(NativeMemoryModelRegistry(registry))
+                    as Arc<dyn senpi_task::host::SenpiModelRegistry>
+            });
             create_people_ask_runner(PeopleAskOptions {
                 config: deps.full_config_value(),
                 registry,
@@ -252,26 +283,41 @@ fn extract_ask(args: &str) -> (Option<String>, String) {
     if value_and_rest.is_empty() {
         return (None, args.to_owned());
     }
-    let (raw_value, consumed) = if let Some(quote) = value_and_rest.chars().next().filter(|c| *c == '"' || *c == '\'') {
+    let (raw_value, consumed) = if let Some(quote) = value_and_rest
+        .chars()
+        .next()
+        .filter(|c| *c == '"' || *c == '\'')
+    {
         match value_and_rest[quote.len_utf8()..].find(quote) {
             Some(end) => {
                 let value = &value_and_rest[..quote.len_utf8() + end + quote.len_utf8()];
                 (value.to_owned(), value.len())
             }
             None => {
-                let value = value_and_rest.split_whitespace().next().unwrap_or("").to_owned();
+                let value = value_and_rest
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned();
                 let len = value.len();
                 (value, len)
             }
         }
     } else {
-        let value = value_and_rest.split_whitespace().next().unwrap_or("").to_owned();
+        let value = value_and_rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_owned();
         let len = value.len();
         (value, len)
     };
     let unquoted = {
         let bytes = raw_value.as_bytes();
-        if bytes.len() >= 2 && (bytes[0] == b'"' || bytes[0] == b'\'') && bytes[bytes.len() - 1] == bytes[0] {
+        if bytes.len() >= 2
+            && (bytes[0] == b'"' || bytes[0] == b'\'')
+            && bytes[bytes.len() - 1] == bytes[0]
+        {
             raw_value[1..raw_value.len() - 1].to_owned()
         } else {
             raw_value.clone()
@@ -281,7 +327,11 @@ fn extract_ask(args: &str) -> (Option<String>, String) {
     let match_end = index + "--ask".len() + separator_len + consumed;
     let rest = format!("{} {}", &args[..index], &args[match_end..]);
     (
-        if question.is_empty() { None } else { Some(question) },
+        if question.is_empty() {
+            None
+        } else {
+            Some(question)
+        },
         rest,
     )
 }
@@ -310,7 +360,8 @@ mod tests {
     use crate::commands::test_support::*;
 
     #[tokio::test]
-    async fn given_three_cards_with_four_relationship_lines_when_the_graph_is_derived_then_nodes_and_edges_match() {
+    async fn given_three_cards_with_four_relationship_lines_when_the_graph_is_derived_then_nodes_and_edges_match()
+     {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
 
@@ -334,18 +385,45 @@ mod tests {
         assert_eq!(
             edges,
             vec![
-                ("human".to_owned(), "works-with".to_owned(), "jane-doe".to_owned(), Some("jane-doe".to_owned())),
-                ("human".to_owned(), "mentors".to_owned(), "sam-rivers".to_owned(), Some("sam-rivers".to_owned())),
-                ("jane-doe".to_owned(), "reports-to".to_owned(), "human".to_owned(), Some("human".to_owned())),
-                ("sam-rivers".to_owned(), "collaborates".to_owned(), "unknown-person".to_owned(), None),
+                (
+                    "human".to_owned(),
+                    "works-with".to_owned(),
+                    "jane-doe".to_owned(),
+                    Some("jane-doe".to_owned())
+                ),
+                (
+                    "human".to_owned(),
+                    "mentors".to_owned(),
+                    "sam-rivers".to_owned(),
+                    Some("sam-rivers".to_owned())
+                ),
+                (
+                    "jane-doe".to_owned(),
+                    "reports-to".to_owned(),
+                    "human".to_owned(),
+                    Some("human".to_owned())
+                ),
+                (
+                    "sam-rivers".to_owned(),
+                    "collaborates".to_owned(),
+                    "unknown-person".to_owned(),
+                    None
+                ),
             ]
         );
     }
 
     #[tokio::test]
-    async fn given_a_repository_without_any_card_when_the_graph_is_derived_then_it_holds_no_node_and_no_edge() {
+    async fn given_a_repository_without_any_card_when_the_graph_is_derived_then_it_holds_no_node_and_no_edge()
+     {
         let (_root, identity) = temp_identity();
-        seeded_repo(&identity, vec![seed("system/persona.md", "---\ndescription: P\n---\nbody\n")]);
+        seeded_repo(
+            &identity,
+            vec![seed(
+                "system/persona.md",
+                "---\ndescription: P\n---\nbody\n",
+            )],
+        );
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
 
         let graph = derive_people_graph(&fake.deps, &identity, LIMITS).expect("people graph");
@@ -355,7 +433,8 @@ mod tests {
     }
 
     #[test]
-    fn given_a_collector_error_when_the_graph_is_resolved_then_the_error_propagates_instead_of_an_empty_roster() {
+    fn given_a_collector_error_when_the_graph_is_resolved_then_the_error_propagates_instead_of_an_empty_roster()
+     {
         match resolve_people_graph(Err("git ls-tree failed".to_owned())) {
             Err(error) => assert_eq!(error, "git ls-tree failed"),
             Ok(_) => panic!("expected the collector error to propagate"),
@@ -398,7 +477,9 @@ mod tests {
 
         assert_eq!(
             resolve_person_query(&graph.nodes, "jd"),
-            PersonQueryResolution::Hit { slug: "jane-doe".to_owned() }
+            PersonQueryResolution::Hit {
+                slug: "jane-doe".to_owned()
+            }
         );
     }
 
@@ -410,12 +491,15 @@ mod tests {
 
         assert_eq!(
             resolve_person_query(&graph.nodes, "jane doh"),
-            PersonQueryResolution::Miss { close: vec!["jane-doe".to_owned()] }
+            PersonQueryResolution::Miss {
+                close: vec!["jane-doe".to_owned()]
+            }
         );
     }
 
     #[tokio::test]
-    async fn given_a_fixture_repository_when_people_runs_then_the_roster_is_surfaced_through_one_notification() {
+    async fn given_a_fixture_repository_when_people_runs_then_the_roster_is_surfaced_through_one_notification()
+     {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -458,7 +542,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_real_repo_with_a_failing_ls_tree_when_people_runs_then_it_reports_an_error_and_no_roster() {
+    async fn given_a_real_repo_with_a_failing_ls_tree_when_people_runs_then_it_reports_an_error_and_no_roster()
+     {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(
             Some(identity),
@@ -477,7 +562,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_unknown_name_when_people_runs_then_the_miss_preserves_close_slugs_and_errors() {
+    async fn given_an_unknown_name_when_people_runs_then_the_miss_preserves_close_slugs_and_errors()
+    {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -494,10 +580,14 @@ mod tests {
     async fn given_people_disabled_when_people_runs_then_it_refuses_without_reading_any_record() {
         let (_root, identity) = people_fixture(0);
         let mut settings = memory_settings();
-        settings["people"] = serde_json::json!({ "enabled": false, "max_entries": 40, "max_entry_chars": 200 });
+        settings["people"] =
+            serde_json::json!({ "enabled": false, "max_entries": 40, "max_entry_chars": 200 });
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { settings: Some(settings), ..Default::default() },
+            FakeDepsOverrides {
+                settings: Some(settings),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -510,27 +600,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_no_evidence_for_the_person_when_ask_runs_then_it_abstains_without_launching_a_child() {
+    async fn given_no_evidence_for_the_person_when_ask_runs_then_it_abstains_without_launching_a_child()
+     {
         let (_root, identity) = people_fixture(0);
-        let fake = fake_deps(Some(identity), FakeDepsOverrides { people_ask: Some(true), ..Default::default() });
+        let fake = fake_deps(
+            Some(identity),
+            FakeDepsOverrides {
+                people_ask: Some(true),
+                ..Default::default()
+            },
+        );
         let context = fake_command_context(FakeContextOptions::default());
 
-        let response = handle_people(&fake.deps, &context.ctx, "nia-blank --ask \"does nia ship on fridays?\"").await;
+        let response = handle_people(
+            &fake.deps,
+            &context.ctx,
+            "nia-blank --ask \"does nia ship on fridays?\"",
+        )
+        .await;
 
         assert!(has_no_evidence(&PeopleAskEvidence::default()));
-        assert!(fake.people_asks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
-        assert_eq!(context.ui.notifications(), vec![(response.text.clone(), NotifyLevel::Info)]);
+        assert!(
+            fake.people_asks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        assert_eq!(
+            context.ui.notifications(),
+            vec![(response.text.clone(), NotifyLevel::Info)]
+        );
     }
 
     #[tokio::test]
-    async fn given_card_and_observation_evidence_when_ask_runs_then_the_quick_child_receives_that_evidence() {
+    async fn given_card_and_observation_evidence_when_ask_runs_then_the_quick_child_receives_that_evidence()
+     {
         let (_root, identity) = people_fixture(3);
-        let fake = fake_deps(Some(identity), FakeDepsOverrides { people_ask: Some(true), ..Default::default() });
+        let fake = fake_deps(
+            Some(identity),
+            FakeDepsOverrides {
+                people_ask: Some(true),
+                ..Default::default()
+            },
+        );
         let context = fake_command_context(FakeContextOptions::default());
 
-        handle_people(&fake.deps, &context.ctx, "jane-doe --ask \"how does jane review?\"").await;
+        handle_people(
+            &fake.deps,
+            &context.ctx,
+            "jane-doe --ask \"how does jane review?\"",
+        )
+        .await;
 
-        let asked = fake.people_asks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let asked = fake
+            .people_asks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].question, "how does jane review?");
         assert_eq!(asked[0].slug, "jane-doe");
@@ -544,23 +670,36 @@ mod tests {
         );
         assert_eq!(asked[0].evidence.observations.len(), 4);
         assert!(!has_no_evidence(&asked[0].evidence));
-        assert_eq!(context.ui.notifications(), vec![(context.ui.notifications()[0].0.clone(), NotifyLevel::Info)]);
+        assert_eq!(
+            context.ui.notifications(),
+            vec![(context.ui.notifications()[0].0.clone(), NotifyLevel::Info)]
+        );
     }
 
     #[tokio::test]
-    async fn given_more_observations_than_the_per_level_cap_when_selected_then_each_level_keeps_the_newest_twenty() {
+    async fn given_more_observations_than_the_per_level_cap_when_selected_then_each_level_keeps_the_newest_twenty()
+     {
         let (_root, identity) = people_fixture(25);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
 
         let groups = select_observations(&fake.deps, &identity, "jane-doe", LIMITS, false);
 
-        let explicit = groups.iter().find(|group| group.section == "Explicit").expect("explicit");
+        let explicit = groups
+            .iter()
+            .find(|group| group.section == "Explicit")
+            .expect("explicit");
         assert_eq!(OBSERVATIONS_PER_LEVEL, 20);
         assert_eq!(explicit.entries.len(), 20);
         assert_eq!(explicit.entries[0].date, "2026-03-25");
-        assert_eq!(explicit.entries.last().map(|entry| entry.date.clone()), Some("2026-03-06".to_owned()));
         assert_eq!(
-            groups.iter().find(|group| group.section == "Inductive").map(|group| group.entries.len()),
+            explicit.entries.last().map(|entry| entry.date.clone()),
+            Some("2026-03-06".to_owned())
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .find(|group| group.section == "Inductive")
+                .map(|group| group.entries.len()),
             Some(1)
         );
     }
@@ -573,13 +712,17 @@ mod tests {
         let groups = select_observations(&fake.deps, &identity, "jane-doe", LIMITS, true);
 
         assert_eq!(
-            groups.iter().find(|group| group.section == "Explicit").map(|group| group.entries.len()),
+            groups
+                .iter()
+                .find(|group| group.section == "Explicit")
+                .map(|group| group.entries.len()),
             Some(25)
         );
     }
 
     #[tokio::test]
-    async fn given_a_person_with_observations_when_people_name_runs_then_card_fields_and_capped_selection_are_surfaced() {
+    async fn given_a_person_with_observations_when_people_name_runs_then_card_fields_and_capped_selection_are_surfaced()
+     {
         let (_root, identity) = people_fixture(25);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -615,8 +758,13 @@ mod tests {
             .iter()
             .map(|entry| entry.date.clone())
             .collect();
-        let expected: Vec<String> = (0..20).map(|index| format!("2026-03-{:02}", 25 - index)).collect();
+        let expected: Vec<String> = (0..20)
+            .map(|index| format!("2026-03-{:02}", 25 - index))
+            .collect();
         assert_eq!(dates, expected);
-        assert_eq!(context.ui.notifications(), vec![(response.text.clone(), NotifyLevel::Info)]);
+        assert_eq!(
+            context.ui.notifications(),
+            vec![(response.text.clone(), NotifyLevel::Info)]
+        );
     }
 }

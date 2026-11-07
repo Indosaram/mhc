@@ -71,13 +71,21 @@ pub struct RetryTieredHintDecision {
     pub delay_ms: f64,
 }
 
-pub type RetryTieredHintStrategy =
-    Arc<dyn Fn(&RetryFailure, u32, &RetryBackoffPolicy, i64) -> Result<RetryTieredHintDecision, String> + Send + Sync>;
+pub type RetryTieredHintStrategy = Arc<
+    dyn Fn(&RetryFailure, u32, &RetryBackoffPolicy, i64) -> Result<RetryTieredHintDecision, String>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 pub enum RetryServerHintPolicy {
-    Override { accept_zero: bool, ceiling: RetryHintCeiling },
-    Tiered { strategy: RetryTieredHintStrategy },
+    Override {
+        accept_zero: bool,
+        ceiling: RetryHintCeiling,
+    },
+    Tiered {
+        strategy: RetryTieredHintStrategy,
+    },
 }
 
 #[derive(Clone)]

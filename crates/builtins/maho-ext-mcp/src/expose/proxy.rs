@@ -71,7 +71,10 @@ pub async fn call_mcp_proxy_entry(
 }
 
 /// The proxy's JSON-string `args` as an object, or the guiding text result.
-fn parse_proxy_args(entry: &McpToolCatalogEntry, args: Option<&str>) -> Result<Value, Box<ToolResult>> {
+fn parse_proxy_args(
+    entry: &McpToolCatalogEntry,
+    args: Option<&str>,
+) -> Result<Value, Box<ToolResult>> {
     let parsed = serde_json::from_str::<Value>(args.unwrap_or("{}"));
     match parsed {
         Ok(params) if params.is_object() => Ok(params),

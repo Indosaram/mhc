@@ -78,7 +78,9 @@ impl DagFs for HookFs {
     }
 }
 
-fn on_create(hook: impl Fn(&Path) -> io::Result<File> + Send + Sync + 'static) -> Option<CreateHook> {
+fn on_create(
+    hook: impl Fn(&Path) -> io::Result<File> + Send + Sync + 'static,
+) -> Option<CreateHook> {
     Some(Box::new(hook))
 }
 
@@ -86,7 +88,9 @@ fn on_fsync(hook: impl Fn(&File) -> io::Result<()> + Send + Sync + 'static) -> O
     Some(Box::new(hook))
 }
 
-fn on_pair(hook: impl Fn(&Path, &Path) -> io::Result<()> + Send + Sync + 'static) -> Option<PairHook> {
+fn on_pair(
+    hook: impl Fn(&Path, &Path) -> io::Result<()> + Send + Sync + 'static,
+) -> Option<PairHook> {
     Some(Box::new(hook))
 }
 
@@ -128,14 +132,19 @@ fn open(project: &Path, options: DagStoreOptions) -> DagFileStore {
 }
 
 #[test]
-fn given_the_dag_state_directory_vanished_after_open_when_a_run_lock_and_a_checkpoint_are_written_then_both_recreate_their_directories() {
+fn given_the_dag_state_directory_vanished_after_open_when_a_run_lock_and_a_checkpoint_are_written_then_both_recreate_their_directories()
+ {
     // TS store.test.ts: a worktree cleanup removes the state dir while the session is live.
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
     fs::remove_dir_all(&store.paths.root).expect("remove DAG root");
 
-    let guarded = store.with_run_lock(RUN_ID, || "ran").expect("fresh run lock");
-    store.write_checkpoint(RUN_ID, &checkpoint(RUN_ID, "running", None, None)).expect("checkpoint recreates its directory");
+    let guarded = store
+        .with_run_lock(RUN_ID, || "ran")
+        .expect("fresh run lock");
+    store
+        .write_checkpoint(RUN_ID, &checkpoint(RUN_ID, "running", None, None))
+        .expect("checkpoint recreates its directory");
 
     assert_eq!(guarded, "ran");
     assert!(store.paths.locks.exists());
@@ -148,22 +157,36 @@ fn given_a_missing_dag_directory_when_opening_then_reads_treat_it_as_empty_witho
     let store = open(project.path(), DagStoreOptions::default());
     fs::remove_dir_all(&store.paths.root).expect("remove DAG root");
 
-    assert_eq!(store.prune_expired(None).expect("empty retention sweep"), Vec::<String>::new());
+    assert_eq!(
+        store.prune_expired(None).expect("empty retention sweep"),
+        Vec::<String>::new()
+    );
     assert!(!store.paths.root.exists());
 
-    store.append_event(&event(1)).expect("write recreates event directory");
+    store
+        .append_event(&event(1))
+        .expect("write recreates event directory");
     assert!(store.paths.events.exists());
 }
 
 #[test]
-fn given_a_checkpoint_without_lease_holder_fields_when_rewriting_then_prior_lease_fields_are_not_carried_forward() {
+fn given_a_checkpoint_without_lease_holder_fields_when_rewriting_then_prior_lease_fields_are_not_carried_forward()
+ {
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
     store.write_checkpoint(RUN_ID, &json!({"schemaVersion":1,"runId":RUN_ID,"leaseHolderPid":7,"previousLeaseHolderPid":6})).expect("initial checkpoint");
 
-    store.write_checkpoint(RUN_ID, &json!({"schemaVersion":1,"runId":RUN_ID,"status":"paused"})).expect("replacement checkpoint");
+    store
+        .write_checkpoint(
+            RUN_ID,
+            &json!({"schemaVersion":1,"runId":RUN_ID,"status":"paused"}),
+        )
+        .expect("replacement checkpoint");
 
-    let value = store.read_checkpoint::<Value>(RUN_ID).expect("read").expect("checkpoint");
+    let value = store
+        .read_checkpoint::<Value>(RUN_ID)
+        .expect("read")
+        .expect("checkpoint");
     assert!(value.get("leaseHolderPid").is_none());
     assert!(value.get("previousLeaseHolderPid").is_none());
 }
@@ -261,7 +284,8 @@ fn flag() -> Arc<AtomicBool> {
 // createDagFileStore event WAL
 
 #[test]
-fn given_five_durable_events_when_reading_two_at_a_time_then_since_seq_is_exclusive_and_has_more_flips() {
+fn given_five_durable_events_when_reading_two_at_a_time_then_since_seq_is_exclusive_and_has_more_flips()
+ {
     // given
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
@@ -271,8 +295,12 @@ fn given_five_durable_events_when_reading_two_at_a_time_then_since_seq_is_exclus
 
     // when
     let first = store.read_events(RUN_ID, 0, &limit(2)).expect("first");
-    let second = store.read_events(RUN_ID, first.next_since_seq, &limit(2)).expect("second");
-    let third = store.read_events(RUN_ID, second.next_since_seq, &limit(2)).expect("third");
+    let second = store
+        .read_events(RUN_ID, first.next_since_seq, &limit(2))
+        .expect("second");
+    let third = store
+        .read_events(RUN_ID, second.next_since_seq, &limit(2))
+        .expect("third");
 
     // then
     assert_eq!(seqs(&first), vec![1, 2]);
@@ -284,7 +312,8 @@ fn given_five_durable_events_when_reading_two_at_a_time_then_since_seq_is_exclus
 }
 
 #[test]
-fn given_mixed_events_beyond_a_catch_up_boundary_when_filtering_a_bounded_page_then_lane_type_and_through_seq_all_apply() {
+fn given_mixed_events_beyond_a_catch_up_boundary_when_filtering_a_bounded_page_then_lane_type_and_through_seq_all_apply()
+ {
     // given
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
@@ -318,7 +347,8 @@ fn given_mixed_events_beyond_a_catch_up_boundary_when_filtering_a_bounded_page_t
 }
 
 #[test]
-fn given_an_existing_event_seq_when_a_distinct_event_reuses_it_then_the_wal_rejects_the_duplicate() {
+fn given_an_existing_event_seq_when_a_distinct_event_reuses_it_then_the_wal_rejects_the_duplicate()
+{
     // given
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
@@ -337,7 +367,11 @@ fn given_an_existing_event_seq_when_a_distinct_event_reuses_it_then_the_wal_reje
         "{message}"
     );
     assert_eq!(
-        store.read_events(RUN_ID, 0, &limit(10)).expect("read").events.len(),
+        store
+            .read_events(RUN_ID, 0, &limit(10))
+            .expect("read")
+            .events
+            .len(),
         1
     );
 }
@@ -371,7 +405,8 @@ fn given_default_store_durability_when_one_event_is_appended_then_the_wal_descri
 }
 
 #[test]
-fn given_fsync_is_disabled_when_wal_lock_and_checkpoint_writes_run_then_ordering_remains_without_durability_barriers() {
+fn given_fsync_is_disabled_when_wal_lock_and_checkpoint_writes_run_then_ordering_remains_without_durability_barriers()
+ {
     // given
     let project = temp_project();
     let count = Arc::new(AtomicUsize::new(0));
@@ -418,7 +453,8 @@ fn given_fsync_is_disabled_when_wal_lock_and_checkpoint_writes_run_then_ordering
 }
 
 #[test]
-fn given_a_wal_ending_in_a_torn_fragment_when_a_new_store_opens_then_valid_events_remain_and_the_tail_is_diagnosed_and_discarded() {
+fn given_a_wal_ending_in_a_torn_fragment_when_a_new_store_opens_then_valid_events_remain_and_the_tail_is_diagnosed_and_discarded()
+ {
     // given
     let project = temp_project();
     let writer = open(project.path(), DagStoreOptions::default());
@@ -447,7 +483,8 @@ fn given_a_wal_ending_in_a_torn_fragment_when_a_new_store_opens_then_valid_event
 }
 
 #[test]
-fn given_a_future_schema_event_file_when_a_store_opens_then_it_fails_closed_with_a_journal_corrupt_diagnostic() {
+fn given_a_future_schema_event_file_when_a_store_opens_then_it_fails_closed_with_a_journal_corrupt_diagnostic()
+ {
     // given
     let project = temp_project();
     let seeded = open(project.path(), DagStoreOptions::default());
@@ -466,7 +503,8 @@ fn given_a_future_schema_event_file_when_a_store_opens_then_it_fails_closed_with
 
 #[test]
 #[cfg(unix)]
-fn given_posix_checkpoint_persistence_when_an_existing_checkpoint_is_replaced_then_readers_see_the_old_complete_file_until_rename_and_both_file_and_directory_are_fsynced() {
+fn given_posix_checkpoint_persistence_when_an_existing_checkpoint_is_replaced_then_readers_see_the_old_complete_file_until_rename_and_both_file_and_directory_are_fsynced()
+ {
     // given
     let project = temp_project();
     let order = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -513,7 +551,10 @@ fn given_posix_checkpoint_persistence_when_an_existing_checkpoint_is_replaced_th
 
     // when
     store
-        .write_checkpoint(RUN_ID, &json!({ "schemaVersion": 1, "runId": RUN_ID, "generation": 2 }))
+        .write_checkpoint(
+            RUN_ID,
+            &json!({ "schemaVersion": 1, "runId": RUN_ID, "generation": 2 }),
+        )
         .expect("write");
 
     // then
@@ -531,7 +572,8 @@ fn given_posix_checkpoint_persistence_when_an_existing_checkpoint_is_replaced_th
 }
 
 #[test]
-fn given_windows_checkpoint_persistence_when_directory_fsync_would_fail_with_eperm_then_the_atomic_checkpoint_still_succeeds() {
+fn given_windows_checkpoint_persistence_when_directory_fsync_would_fail_with_eperm_then_the_atomic_checkpoint_still_succeeds()
+ {
     // given
     let project = temp_project();
     let fsync_count = Arc::new(AtomicUsize::new(0));
@@ -575,7 +617,8 @@ fn given_windows_checkpoint_persistence_when_directory_fsync_would_fail_with_epe
 }
 
 #[test]
-fn given_a_future_schema_checkpoint_when_it_is_opened_then_it_fails_closed_with_a_journal_corrupt_diagnostic() {
+fn given_a_future_schema_checkpoint_when_it_is_opened_then_it_fails_closed_with_a_journal_corrupt_diagnostic()
+ {
     // given
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
@@ -594,7 +637,8 @@ fn given_a_future_schema_checkpoint_when_it_is_opened_then_it_fails_closed_with_
 
 #[test]
 #[cfg(unix)]
-fn given_an_existing_node_result_when_it_is_replaced_then_readers_see_the_old_complete_file_until_rename_and_both_file_and_directory_are_fsynced() {
+fn given_an_existing_node_result_when_it_is_replaced_then_readers_see_the_old_complete_file_until_rename_and_both_file_and_directory_are_fsynced()
+ {
     // given
     let project = temp_project();
     let order = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -635,13 +679,17 @@ fn given_an_existing_node_result_when_it_is_replaced_then_readers_see_the_old_co
             ..DagStoreOptions::default()
         },
     );
-    store.write_result(RUN_ID, "node-a", "old result").expect("old");
+    store
+        .write_result(RUN_ID, "node-a", "old result")
+        .expect("old");
     observed.lock().unwrap().clear();
     order.lock().unwrap().clear();
     fsync_count.store(0, SeqCst);
 
     // when
-    store.write_result(RUN_ID, "node-a", "new result").expect("new");
+    store
+        .write_result(RUN_ID, "node-a", "new result")
+        .expect("new");
 
     // then
     assert_eq!(*observed.lock().unwrap(), vec!["old result"]);
@@ -654,7 +702,8 @@ fn given_an_existing_node_result_when_it_is_replaced_then_readers_see_the_old_co
 }
 
 #[test]
-fn given_a_one_run_session_limit_when_a_second_run_checkpoint_is_created_then_the_configured_limit_rejects_it_without_an_orphan() {
+fn given_a_one_run_session_limit_when_a_second_run_checkpoint_is_created_then_the_configured_limit_rejects_it_without_an_orphan()
+ {
     // given
     let project = temp_project();
     let store = create_dag_file_store(
@@ -680,30 +729,41 @@ fn given_a_one_run_session_limit_when_a_second_run_checkpoint_is_created_then_th
 
     // then
     let message = err_of(second).to_string();
-    assert!(message.contains("DAG session run limit reached: 1"), "{message}");
+    assert!(
+        message.contains("DAG session run limit reached: 1"),
+        "{message}"
+    );
     assert_eq!(
         store.read_checkpoint::<Value>(OTHER_RUN_ID).expect("read"),
         None
     );
     let mut names: Vec<String> = fs::read_dir(&store.paths.runs)
         .expect("runs dir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     names.sort();
     assert_eq!(names, vec![format!("{RUN_ID}.json")]);
 }
 
 #[test]
-fn given_a_parent_session_and_run_key_when_writing_the_key_then_its_filename_is_the_exact_nul_delimited_sha256() {
+fn given_a_parent_session_and_run_key_when_writing_the_key_then_its_filename_is_the_exact_nul_delimited_sha256()
+ {
     // given
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
     let parent_session_id = "parent/session";
     let run_key = "release-plan";
-    let expected_hash: String = Sha256::digest(format!("{parent_session_id}\0{run_key}").as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let expected_hash: String =
+        Sha256::digest(format!("{parent_session_id}\0{run_key}").as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
 
     // when
     let path = store
@@ -730,7 +790,8 @@ fn given_a_parent_session_and_run_key_when_writing_the_key_then_its_filename_is_
 // createDagFileStore locks and retention
 
 #[test]
-fn given_a_lock_held_by_a_dead_pid_when_the_run_lock_is_acquired_then_the_stale_lock_is_reclaimed() {
+fn given_a_lock_held_by_a_dead_pid_when_the_run_lock_is_acquired_then_the_stale_lock_is_reclaimed()
+{
     // given
     let project = temp_project();
     let store = open(
@@ -758,7 +819,8 @@ fn given_a_lock_held_by_a_dead_pid_when_the_run_lock_is_acquired_then_the_stale_
 }
 
 #[test]
-fn given_a_concurrent_observer_watches_stale_reclamation_when_ownership_changes_then_the_canonical_lock_path_is_never_vacant() {
+fn given_a_concurrent_observer_watches_stale_reclamation_when_ownership_changes_then_the_canonical_lock_path_is_never_vacant()
+ {
     // given
     let project = temp_project();
     let canonical = run_lock_path(project.path());
@@ -810,7 +872,8 @@ fn given_a_concurrent_observer_watches_stale_reclamation_when_ownership_changes_
 }
 
 #[test]
-fn given_two_reclaimers_validate_one_stale_holder_when_they_contend_at_publication_then_reclamation_stays_exclusive() {
+fn given_two_reclaimers_validate_one_stale_holder_when_they_contend_at_publication_then_reclamation_stays_exclusive()
+ {
     // given
     const CONTENDER_HOLDER: &str = r#"{"hostPid":303,"owner":"contender"}"#;
     let project = temp_project();
@@ -851,7 +914,10 @@ fn given_two_reclaimers_validate_one_stale_holder_when_they_contend_at_publicati
                     });
                     if let Err(error) = result {
                         let message = error.to_string();
-                        assert!(message.contains("Timed out acquiring DAG lock"), "{message}");
+                        assert!(
+                            message.contains("Timed out acquiring DAG lock"),
+                            "{message}"
+                        );
                     }
                     if !canonical.exists() {
                         vacancy_observed.store(true, SeqCst);
@@ -912,7 +978,10 @@ fn given_two_reclaimers_validate_one_stale_holder_when_they_contend_at_publicati
         let value: Value =
             serde_json::from_str(&fs::read_to_string(&canonical).expect("final holder"))
                 .expect("final holder json");
-        value.get("owner").and_then(Value::as_str).map(str::to_string)
+        value
+            .get("owner")
+            .and_then(Value::as_str)
+            .map(str::to_string)
     } else {
         None
     };
@@ -936,7 +1005,8 @@ fn given_two_reclaimers_validate_one_stale_holder_when_they_contend_at_publicati
 }
 
 #[test]
-fn given_a_second_reclaimer_observes_sentinel_initialization_when_the_first_is_preempted_after_open_then_no_ownerless_sentinel_is_visible() {
+fn given_a_second_reclaimer_observes_sentinel_initialization_when_the_first_is_preempted_after_open_then_no_ownerless_sentinel_is_visible()
+ {
     // given
     let project = temp_project();
     let canonical = run_lock_path(project.path());
@@ -982,8 +1052,7 @@ fn given_a_second_reclaimer_observes_sentinel_initialization_when_the_first_is_p
                 let absent = !reclaim_sentinel.exists();
                 sentinel_absent.store(absent, SeqCst);
                 if !absent {
-                    let content =
-                        fs::read_to_string(&reclaim_sentinel).expect("sentinel content");
+                    let content = fs::read_to_string(&reclaim_sentinel).expect("sentinel content");
                     match serde_json::from_str::<Value>(&content) {
                         Ok(value) => ownerless.store(!has_owner_record(&value), SeqCst),
                         Err(_) => ownerless.store(true, SeqCst),
@@ -1046,7 +1115,8 @@ fn given_a_second_reclaimer_observes_sentinel_initialization_when_the_first_is_p
 }
 
 #[test]
-fn given_a_crashed_reclaimer_left_its_sentinel_when_another_process_reclaims_the_stale_holder_then_the_sentinel_cannot_wedge_acquisition() {
+fn given_a_crashed_reclaimer_left_its_sentinel_when_another_process_reclaims_the_stale_holder_then_the_sentinel_cannot_wedge_acquisition()
+ {
     // given
     let project = temp_project();
     let store = open(
@@ -1083,7 +1153,8 @@ fn given_a_crashed_reclaimer_left_its_sentinel_when_another_process_reclaims_the
 }
 
 #[test]
-fn given_a_contender_probes_every_reclamation_transition_when_a_stale_lock_is_replaced_then_only_the_reclaimer_concludes_it_holds_the_lock() {
+fn given_a_contender_probes_every_reclamation_transition_when_a_stale_lock_is_replaced_then_only_the_reclaimer_concludes_it_holds_the_lock()
+ {
     // given
     let project = temp_project();
     let canonical = run_lock_path(project.path());
@@ -1161,7 +1232,8 @@ fn given_a_contender_probes_every_reclamation_transition_when_a_stale_lock_is_re
 }
 
 #[test]
-fn given_a_fresh_holder_acquires_between_stale_inspection_and_removal_when_the_run_lock_retries_then_the_fresh_lock_survives_and_the_reclaimer_never_enters() {
+fn given_a_fresh_holder_acquires_between_stale_inspection_and_removal_when_the_run_lock_retries_then_the_fresh_lock_survives_and_the_reclaimer_never_enters()
+ {
     // given
     const FRESH: &str = r#"{"hostPid":202,"owner":"fresh"}"#;
     let project = temp_project();
@@ -1208,7 +1280,8 @@ fn given_a_fresh_holder_acquires_between_stale_inspection_and_removal_when_the_r
 }
 
 #[test]
-fn given_a_contender_replaces_the_observed_stale_holder_before_atomic_takeover_when_validation_runs_then_the_contender_wins_and_the_reclaimer_never_enters() {
+fn given_a_contender_replaces_the_observed_stale_holder_before_atomic_takeover_when_validation_runs_then_the_contender_wins_and_the_reclaimer_never_enters()
+ {
     // given
     const FRESH: &str = r#"{"hostPid":202,"owner":"fresh-before-quarantine"}"#;
     const CONTENDER: &str = r#"{"hostPid":303,"owner":"contender"}"#;
@@ -1260,7 +1333,8 @@ fn given_a_contender_replaces_the_observed_stale_holder_before_atomic_takeover_w
 }
 
 #[test]
-fn given_an_acquired_lock_path_is_replaced_before_release_when_the_original_holder_exits_then_it_never_unlinks_the_replacement() {
+fn given_an_acquired_lock_path_is_replaced_before_release_when_the_original_holder_exits_then_it_never_unlinks_the_replacement()
+ {
     // given
     const CONTENDER: &str = r#"{"hostPid":303,"owner":"contender"}"#;
     let project = temp_project();
@@ -1280,7 +1354,8 @@ fn given_an_acquired_lock_path_is_replaced_before_release_when_the_original_hold
 }
 
 #[test]
-fn given_a_dead_holder_is_replaced_before_reclamation_when_the_run_lock_retries_then_it_never_deletes_the_fresh_holder() {
+fn given_a_dead_holder_is_replaced_before_reclamation_when_the_run_lock_retries_then_it_never_deletes_the_fresh_holder()
+ {
     // given
     let project = temp_project();
     let canonical = run_lock_path(project.path());
@@ -1344,7 +1419,8 @@ fn retention_store(project: &Path) -> DagFileStore {
 }
 
 #[test]
-fn given_expired_terminal_artifacts_and_equally_old_live_artifacts_when_retention_runs_then_only_the_terminal_run_is_pruned() {
+fn given_expired_terminal_artifacts_and_equally_old_live_artifacts_when_retention_runs_then_only_the_terminal_run_is_pruned()
+ {
     // given
     let now = retention_now();
     let project = temp_project();
@@ -1352,7 +1428,10 @@ fn given_expired_terminal_artifacts_and_equally_old_live_artifacts_when_retentio
     let old = "2026-01-01T00:00:00.000Z";
     let task_id = "st_dead-owner";
     store
-        .write_checkpoint(RUN_ID, &checkpoint(RUN_ID, "completed", Some(old), Some(task_id)))
+        .write_checkpoint(
+            RUN_ID,
+            &checkpoint(RUN_ID, "completed", Some(old), Some(task_id)),
+        )
         .expect("terminal checkpoint");
     store
         .write_checkpoint(
@@ -1415,7 +1494,8 @@ fn given_expired_terminal_artifacts_and_equally_old_live_artifacts_when_retentio
 }
 
 #[test]
-fn given_expired_terminal_and_equally_old_live_skill_sidecars_when_retention_runs_then_only_the_terminal_sidecar_is_pruned() {
+fn given_expired_terminal_and_equally_old_live_skill_sidecars_when_retention_runs_then_only_the_terminal_sidecar_is_pruned()
+ {
     // given
     let now = retention_now();
     let old = "2026-01-01T00:00:00.000Z";

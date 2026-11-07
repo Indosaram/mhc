@@ -1,28 +1,48 @@
-use std::{fs, io::Write, process::{Command, Stdio}};
+use std::{
+    fs,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 #[test]
 fn flat_brand_startup_copies_engine_state_once() {
     let home = tempfile::tempdir().expect("isolated home");
     fs::create_dir_all(home.path().join(".omo")).expect("isolated omo state");
-    fs::write(home.path().join(".omo/onboarding-completed"), "{}\n").expect("onboarding already complete");
+    fs::write(home.path().join(".omo/onboarding-completed"), "{}\n")
+        .expect("onboarding already complete");
     let legacy = home.path().join(".senpi/agent");
     fs::create_dir_all(&legacy).expect("legacy directory");
     fs::write(legacy.join("models.json"), "{\"providers\":{}}\n").expect("models fixture");
     #[cfg(unix)]
     {
         fs::write(home.path().join("external-fixture"), "link source").expect("external fixture");
-        std::os::unix::fs::symlink("../../external-fixture", legacy.join("linked-fixture")).expect("file link");
+        std::os::unix::fs::symlink("../../external-fixture", legacy.join("linked-fixture"))
+            .expect("file link");
         std::os::unix::fs::symlink(".", legacy.join("cycle-fixture")).expect("directory cycle");
     }
     let target = home.path().join(".qa");
     for iteration in 0..2 {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mhc"));
         command
-            .env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", home.path()).env("MAHO_BRAND", r#"{"name":"qa","configDir":".qa","flatLayout":true}"#)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", home.path())
+            .env(
+                "MAHO_BRAND",
+                r#"{"name":"qa","configDir":".qa","flatLayout":true}"#,
+            )
             .current_dir(home.path())
-            .args(["--mode", "rpc", "--offline", "--no-session", "--model", "openai/gpt-4o"])
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            .args([
+                "--mode",
+                "rpc",
+                "--offline",
+                "--no-session",
+                "--model",
+                "openai/gpt-4o",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         if cfg!(windows) {
             command.env("USERPROFILE", home.path());
             if let Some(sysroot) = std::env::var_os("SystemRoot") {
@@ -31,26 +51,67 @@ fn flat_brand_startup_copies_engine_state_once() {
         }
         let mut child = command.spawn().expect("real mhc");
         let mut stdin = child.stdin.take().expect("stdin");
-        stdin.write_all(b"{\"id\":\"brand-probe\",\"type\":\"get_messages\"}\n").expect("query");
+        stdin
+            .write_all(b"{\"id\":\"brand-probe\",\"type\":\"get_messages\"}\n")
+            .expect("query");
         drop(stdin);
         let output = child.wait_with_output().expect("process exits");
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-        let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout).expect("RPC UTF-8")
-            .lines().map(|line| serde_json::from_str(line).expect("RPC JSONL frame")).collect();
-        let response = responses.iter().find(|response| response["id"] == "brand-probe").expect("RPC response");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+            .expect("RPC UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("RPC JSONL frame"))
+            .collect();
+        let response = responses
+            .iter()
+            .find(|response| response["id"] == "brand-probe")
+            .expect("RPC response");
         assert_eq!(response["id"], "brand-probe");
         assert_eq!(response["success"], true);
-        assert_eq!(fs::read_to_string(target.join("models.json")).expect("copied models"), "{\"providers\":{}}\n");
+        assert_eq!(
+            fs::read_to_string(target.join("models.json")).expect("copied models"),
+            "{\"providers\":{}}\n"
+        );
         assert!(target.join(".migrated-from-senpi").exists());
         #[cfg(unix)]
         {
-            assert!(fs::symlink_metadata(target.join("linked-fixture")).expect("file metadata").file_type().is_symlink());
-            assert!(fs::symlink_metadata(target.join("cycle-fixture")).expect("directory metadata").file_type().is_symlink());
-            assert_eq!(fs::canonicalize(target.join("linked-fixture")).expect("file target"), fs::canonicalize(home.path()).expect("canonical temp dir").join("external-fixture"));
-            assert_eq!(fs::canonicalize(target.join("cycle-fixture")).expect("cycle target"), fs::canonicalize(&legacy).expect("canonical legacy directory"));
+            assert!(
+                fs::symlink_metadata(target.join("linked-fixture"))
+                    .expect("file metadata")
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(
+                fs::symlink_metadata(target.join("cycle-fixture"))
+                    .expect("directory metadata")
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::canonicalize(target.join("linked-fixture")).expect("file target"),
+                fs::canonicalize(home.path())
+                    .expect("canonical temp dir")
+                    .join("external-fixture")
+            );
+            assert_eq!(
+                fs::canonicalize(target.join("cycle-fixture")).expect("cycle target"),
+                fs::canonicalize(&legacy).expect("canonical legacy directory")
+            );
         }
-        assert_eq!(fs::read_to_string(legacy.join("models.json")).expect("original models"),
-            if iteration == 0 { "{\"providers\":{}}\n" } else { "changed source" });
-        if iteration == 0 { fs::write(legacy.join("models.json"), "changed source").expect("change source"); }
+        assert_eq!(
+            fs::read_to_string(legacy.join("models.json")).expect("original models"),
+            if iteration == 0 {
+                "{\"providers\":{}}\n"
+            } else {
+                "changed source"
+            }
+        );
+        if iteration == 0 {
+            fs::write(legacy.join("models.json"), "changed source").expect("change source");
+        }
     }
 }

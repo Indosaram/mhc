@@ -1,4 +1,4 @@
-use super::{overlap_units, utf16_slice, JsonValue, Op, Path, Seg};
+use super::{JsonValue, Op, Path, Seg, overlap_units, utf16_slice};
 use crate::types::JsString;
 use std::collections::HashMap;
 
@@ -338,7 +338,10 @@ fn diff_value(before: &JsonValue, after: &JsonValue, path: &[Seg], batch: &mut B
             if a == b {
                 return;
             }
-            if a.len() == b.len() && a.len() > 1 && a.first() != b.first() && a.last() != b.last()
+            if a.len() == b.len()
+                && a.len() > 1
+                && a.first() != b.first()
+                && a.last() != b.last()
                 && let Some(order) = permutation(a, b)
             {
                 batch.emit(Op::Permute(path.to_vec(), order));
@@ -347,10 +350,7 @@ fn diff_value(before: &JsonValue, after: &JsonValue, path: &[Seg], batch: &mut B
             diff_array_region(a, b, path, batch, 0);
         }
         (JsonValue::Object(a), JsonValue::Object(b)) => {
-            if a.iter()
-                .chain(b.iter())
-                .any(|(k, _)| k.reserved())
-            {
+            if a.iter().chain(b.iter()).any(|(k, _)| k.reserved()) {
                 if before != after {
                     batch.set(path, after);
                 }

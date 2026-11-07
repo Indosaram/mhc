@@ -122,8 +122,8 @@ fn test_unset_when_called_twice_then_removes_the_mirror_key_and_tolerates_absenc
     // Pin mirror.test.ts "#when unset #then later commits produce no new log lines": the key is
     // gone afterwards and a repeat unset is a tolerated no-op (git exit code 5).
     let temp = tempdir().expect("tempdir");
-    let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(temp.path(), "mirror-agent"))
-        .expect("repo");
+    let repo =
+        GitMemoryRepo::new(GitMemoryRepoOptions::new(temp.path(), "mirror-agent")).expect("repo");
     repo.init(None).expect("init");
     repo.config_set(CONFIG_KEY, "https://example.com/memory.git")
         .expect("seed mirror url");
@@ -138,10 +138,10 @@ fn test_unset_when_called_twice_then_removes_the_mirror_key_and_tolerates_absenc
 
 mod serialization {
     use super::*;
-    use pretty_assertions::assert_eq;
     use crate::git::{GitExec, GitExecOptions, GitExecResult, system_git_exec};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use pretty_assertions::assert_eq;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct ConfigLockProbe {
         inner: Arc<dyn GitExec>,
@@ -151,7 +151,9 @@ mod serialization {
     impl GitExec for ConfigLockProbe {
         fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
             if argv.iter().any(|arg| arg == "--unset-all") {
-                assert!(crate::git::config_lock::config_mutation_lock_is_held(&options.cwd));
+                assert!(crate::git::config_lock::config_mutation_lock_is_held(
+                    &options.cwd
+                ));
                 self.observed.store(true, Ordering::SeqCst);
             }
             self.inner.run(argv, options)
@@ -164,8 +166,12 @@ mod serialization {
         let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(temp.path(), "mirror-lock-agent"))
             .expect("repo");
         repo.init(None).expect("init");
-        repo.config_set(CONFIG_KEY, "https://example.com/memory.git").expect("seed mirror url");
-        let probe = ConfigLockProbe { inner: system_git_exec(), observed: AtomicBool::new(false) };
+        repo.config_set(CONFIG_KEY, "https://example.com/memory.git")
+            .expect("seed mirror url");
+        let probe = ConfigLockProbe {
+            inner: system_git_exec(),
+            observed: AtomicBool::new(false),
+        };
         MirrorSync::with_exec(&repo, &probe).unset().expect("unset");
         assert!(probe.observed.load(Ordering::SeqCst));
         assert_eq!(repo.config_get(CONFIG_KEY).expect("get"), None);
@@ -175,13 +181,13 @@ mod serialization {
 #[cfg(unix)]
 mod bounded_exec {
     use super::*;
+    use crate::git::{GitExec, GitExecOptions, GitExecResult, GitExecRuntime};
     use pretty_assertions::assert_eq;
     use std::fs::File;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
-    use crate::git::{GitExec, GitExecOptions, GitExecResult, GitExecRuntime};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct TimeoutTrackingExec {
         observed_timeout_ms: Arc<AtomicUsize>,
@@ -190,8 +196,13 @@ mod bounded_exec {
 
     impl GitExec for TimeoutTrackingExec {
         fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
-            self.observed_timeout_ms.store(options.timeout_ms as usize, Ordering::SeqCst);
-            let val = options.env.get("GIT_TERMINAL_PROMPT").cloned().unwrap_or_default();
+            self.observed_timeout_ms
+                .store(options.timeout_ms as usize, Ordering::SeqCst);
+            let val = options
+                .env
+                .get("GIT_TERMINAL_PROMPT")
+                .cloned()
+                .unwrap_or_default();
             if val == "0" {
                 self.observed_terminal_prompt.store(true, Ordering::SeqCst);
             }
@@ -239,7 +250,9 @@ mod bounded_exec {
                  exit 0\n",
                 fifo_path.display()
             );
-            script.write_all(script_content.as_bytes()).expect("write fake git");
+            script
+                .write_all(script_content.as_bytes())
+                .expect("write fake git");
             let mut perms = script.metadata().expect("meta").permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&fake_git_path, perms).expect("set_permissions");
@@ -300,7 +313,10 @@ mod bounded_exec {
         assert!(result.detail.contains("timed out after 100ms"));
 
         // Unblock any potential reader if anything survived
-        let _ = std::fs::OpenOptions::new().write(true).read(true).open(&fifo_path);
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .open(&fifo_path);
     }
 
     #[test]
@@ -352,9 +368,13 @@ mod lifecycle {
 
     fn create_repo(root: &Path) -> GitMemoryRepo {
         let dir = root.join("repo");
-        let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(dir.clone(), "agent-mirror")).expect("repo");
+        let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(dir.clone(), "agent-mirror"))
+            .expect("repo");
         repo.init(InitializeGitRepoOptions {
-            seed_files: vec![GitSeedFile { relative_path: "system/persona.md".into(), content: "seed\n".into() }],
+            seed_files: vec![GitSeedFile {
+                relative_path: "system/persona.md".into(),
+                content: "seed\n".into(),
+            }],
             ..Default::default()
         })
         .expect("init");
@@ -368,7 +388,14 @@ mod lifecycle {
     fn create_bare(root: &Path, name: &str) -> PathBuf {
         let dir = root.join(name);
         fs::create_dir_all(&dir).expect("bare dir");
-        assert!(git(&dir, &["init", "--bare", "--quiet", "--initial-branch=main"]).status.success());
+        assert!(
+            git(
+                &dir,
+                &["init", "--bare", "--quiet", "--initial-branch=main"]
+            )
+            .status
+            .success()
+        );
         dir
     }
 
@@ -394,11 +421,16 @@ mod lifecycle {
         let repo = create_repo(root.path());
         let bare = create_bare(root.path(), "bare");
         let mirror = MirrorSync::new(&repo);
-        let result = mirror.set(&format!("file://{}", bare.display())).expect("set");
+        let result = mirror
+            .set(&format!("file://{}", bare.display()))
+            .expect("set");
         let commit = commit_file(&repo.dir, "system/persona.md", "hooked\n");
         assert!(result.pushed, "{}", result.detail);
         assert!(commit.status.success());
-        assert_eq!(String::from_utf8_lossy(&show(&bare, "main:system/persona.md").stdout), "hooked\n");
+        assert_eq!(
+            String::from_utf8_lossy(&show(&bare, "main:system/persona.md").stdout),
+            "hooked\n"
+        );
         assert!(read_log(&repo.dir).contains("exit=0"));
     }
 
@@ -409,11 +441,21 @@ mod lifecycle {
         let first = create_bare(root.path(), "first");
         let second = create_bare(root.path(), "second");
         let mirror = MirrorSync::new(&repo);
-        mirror.set(&format!("file://{}", first.display())).expect("first set");
-        mirror.set(&format!("file://{}", second.display())).expect("second set");
+        mirror
+            .set(&format!("file://{}", first.display()))
+            .expect("first set");
+        mirror
+            .set(&format!("file://{}", second.display()))
+            .expect("second set");
         commit_file(&repo.dir, "reference/notes.md", "second\n");
-        assert_eq!(mirror.status().url, Some(format!("file://{}", second.display())));
-        assert_eq!(String::from_utf8_lossy(&show(&second, "main:reference/notes.md").stdout), "second\n");
+        assert_eq!(
+            mirror.status().url,
+            Some(format!("file://{}", second.display()))
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&show(&second, "main:reference/notes.md").stdout),
+            "second\n"
+        );
         assert!(!show(&first, "main:reference/notes.md").status.success());
     }
 
@@ -423,7 +465,9 @@ mod lifecycle {
         let repo = create_repo(root.path());
         let bare = create_bare(root.path(), "bare");
         let mirror = MirrorSync::new(&repo);
-        mirror.set(&format!("file://{}", bare.display())).expect("set");
+        mirror
+            .set(&format!("file://{}", bare.display()))
+            .expect("set");
         commit_file(&repo.dir, "system/persona.md", "before unset\n");
         let before = read_log(&repo.dir);
         assert!(before.contains("exit=0"));
@@ -439,7 +483,9 @@ mod lifecycle {
         let repo = create_repo(root.path());
         let missing = root.path().join("gone/gone.git");
         let mirror = MirrorSync::new(&repo);
-        let result = mirror.set(&format!("file://{}", missing.display())).expect("set");
+        let result = mirror
+            .set(&format!("file://{}", missing.display()))
+            .expect("set");
         let status = mirror.status();
         assert!(!result.pushed);
         assert!(!result.detail.is_empty());
@@ -453,11 +499,16 @@ mod lifecycle {
         let repo = create_repo(root.path());
         let missing = root.path().join("gone/gone.git");
         let mirror = MirrorSync::new(&repo);
-        mirror.set(&format!("file://{}", missing.display())).expect("set");
+        mirror
+            .set(&format!("file://{}", missing.display()))
+            .expect("set");
         let commit = commit_file(&repo.dir, "system/persona.md", "still local\n");
         let status = mirror.status();
         assert!(commit.status.success());
-        assert!(String::from_utf8_lossy(&git(&repo.dir, &["log", "--oneline"]).stdout).contains("write system/persona.md"));
+        assert!(
+            String::from_utf8_lossy(&git(&repo.dir, &["log", "--oneline"]).stdout)
+                .contains("write system/persona.md")
+        );
         assert!(!read_log(&repo.dir).contains("exit=0"));
         assert!(!status.last_log_lines.is_empty());
         assert!(status.last_log_lines.join("\n").contains("exit="));
@@ -468,7 +519,8 @@ mod lifecycle {
         let root = tempdir().expect("tempdir");
         let repo = create_repo(root.path());
         let bare = create_bare(root.path(), "bare");
-        repo.config_set(CONFIG_KEY, &format!("file://{}", bare.display())).expect("config");
+        repo.config_set(CONFIG_KEY, &format!("file://{}", bare.display()))
+            .expect("config");
         let mirror = MirrorSync::new(&repo);
         assert!(mirror.status().ahead_count > 0);
         let result = mirror.push_now();

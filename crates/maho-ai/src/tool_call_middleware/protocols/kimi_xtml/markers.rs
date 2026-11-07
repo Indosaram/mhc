@@ -28,17 +28,29 @@ static ANCHORED_CHANNEL_MARKER_PATTERN: LazyLock<fancy_regex::Regex> = LazyLock:
 });
 
 pub fn match_xtml_channel_marker(text: &str) -> Option<String> {
-    ANCHORED_CHANNEL_MARKER_PATTERN.find(text).ok().flatten().map(|m| m.as_str().to_string())
+    ANCHORED_CHANNEL_MARKER_PATTERN
+        .find(text)
+        .ok()
+        .flatten()
+        .map(|m| m.as_str().to_string())
 }
 
 /// `/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s<]+))/g`.
-static ATTRIBUTE_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s<]+))"#).expect("ATTRIBUTE_PATTERN is a valid fixed regex"));
+static ATTRIBUTE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s<]+))"#)
+        .expect("ATTRIBUTE_PATTERN is a valid fixed regex")
+});
 
 pub fn parse_xtml_attributes(header: &str) -> HashMap<String, String> {
     let mut attributes = HashMap::new();
     for captures in ATTRIBUTE_PATTERN.captures_iter(header) {
         let Some(key) = captures.get(1) else { continue };
-        let value = captures.get(2).or_else(|| captures.get(3)).or_else(|| captures.get(4)).map(|m| m.as_str()).unwrap_or("");
+        let value = captures
+            .get(2)
+            .or_else(|| captures.get(3))
+            .or_else(|| captures.get(4))
+            .map(|m| m.as_str())
+            .unwrap_or("");
         attributes.insert(key.as_str().to_string(), value.to_string());
     }
     attributes
@@ -64,8 +76,14 @@ mod tests {
     #[test]
     fn match_xtml_channel_marker_matches_open_and_close_tokens_with_and_without_sep() {
         assert_eq!(match_xtml_channel_marker("<|open|>call <rest>"), None);
-        assert_eq!(match_xtml_channel_marker("<|sep|>rest"), Some("<|sep|>".to_string()));
-        assert_eq!(match_xtml_channel_marker("<|open|>argument<|sep|>value"), Some("<|open|>argument<|sep|>".to_string()));
+        assert_eq!(
+            match_xtml_channel_marker("<|sep|>rest"),
+            Some("<|sep|>".to_string())
+        );
+        assert_eq!(
+            match_xtml_channel_marker("<|open|>argument<|sep|>value"),
+            Some("<|open|>argument<|sep|>".to_string())
+        );
         assert_eq!(match_xtml_channel_marker("not a marker"), None);
     }
 
@@ -73,7 +91,10 @@ mod tests {
     fn match_xtml_channel_marker_excludes_structural_channel_names_from_the_sepless_branch() {
         assert_eq!(match_xtml_channel_marker("<|open|>call"), None);
         assert_eq!(match_xtml_channel_marker("<|open|>argument"), None);
-        assert_eq!(match_xtml_channel_marker("<|open|>thinking rest"), Some("<|open|>thinking".to_string()));
+        assert_eq!(
+            match_xtml_channel_marker("<|open|>thinking rest"),
+            Some("<|open|>thinking".to_string())
+        );
     }
 
     #[test]

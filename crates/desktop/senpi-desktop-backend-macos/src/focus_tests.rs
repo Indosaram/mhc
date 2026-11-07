@@ -1,5 +1,5 @@
-use super::{HandBack, WindowInfo, first_front_window, hand_back};
-use crate::front_app::{RestoreStep, restore_step, user_front_pid};
+use super::{first_front_window, hand_back, HandBack, WindowInfo};
+use crate::front_app::{restore_step, user_front_pid, RestoreStep};
 
 #[test]
 fn chooses_first_visible_normal_window_of_frontmost_process() {

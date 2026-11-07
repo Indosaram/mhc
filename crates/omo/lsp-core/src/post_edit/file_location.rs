@@ -28,7 +28,10 @@ pub fn classify_post_edit_file_location(
     let file = canonicalize_existing_or_nearest_ancestor(&resolved).unwrap_or(resolved);
 
     let canonical_agent_dirs = canonical_directories(options.agent_dirs);
-    if canonical_agent_dirs.iter().any(|d| is_path_inside(d, &file)) {
+    if canonical_agent_dirs
+        .iter()
+        .any(|d| is_path_inside(d, &file))
+    {
         return PostEditFileLocation::AgentConfig;
     }
 
@@ -38,7 +41,10 @@ pub fn classify_post_edit_file_location(
     let temp_dirs = options.temp_dirs.unwrap_or(&default_temps);
     let canonical_temp_dirs = canonical_directories(temp_dirs);
 
-    if let Some(temp_root) = canonical_temp_dirs.iter().find(|d| is_path_inside(d, &file)) {
+    if let Some(temp_root) = canonical_temp_dirs
+        .iter()
+        .find(|d| is_path_inside(d, &file))
+    {
         let own_project = match &project_root {
             Some(p) => p != temp_root && is_path_inside(temp_root, p),
             None => false,
@@ -54,9 +60,17 @@ pub fn classify_post_edit_file_location(
         return PostEditFileLocation::OutsideProject;
     };
 
-    let default_homes = vec![std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| if cfg!(windows) { "C:\\Users\\default".to_string() } else { "/root".to_string() })];
+    let default_homes = vec![
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| {
+                if cfg!(windows) {
+                    "C:\\Users\\default".to_string()
+                } else {
+                    "/root".to_string()
+                }
+            }),
+    ];
     let home_dirs = options.home_dirs.unwrap_or(&default_homes);
     let canonical_home_dirs = canonical_directories(home_dirs);
 

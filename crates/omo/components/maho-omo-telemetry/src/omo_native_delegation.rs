@@ -111,7 +111,9 @@ fn start_reason_of(
         Some(TaskStatus::Lost) => "revive_after_lost",
         // A previous paused task resumed by this run: the epoch proves a resume, and a paused prior run
         // was never terminal, so the reason is `session_resume` exactly as for pending and running.
-        Some(TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused) | None => "session_resume",
+        Some(TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused) | None => {
+            "session_resume"
+        }
     }
 }
 

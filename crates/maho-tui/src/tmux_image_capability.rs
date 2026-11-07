@@ -1,6 +1,8 @@
 //! Port of senpi `packages/tui/src/tmux-image-capability.ts`.
 
-use crate::tmux_image_probe::{TmuxAllowPassthrough, TmuxBaseState, TmuxImageState, TmuxSupportTier};
+use crate::tmux_image_probe::{
+    TmuxAllowPassthrough, TmuxBaseState, TmuxImageState, TmuxSupportTier,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TmuxKittyTerminal {
@@ -124,12 +126,12 @@ pub fn decide_tmux_image_capability(
         TmuxImageState::Outside(_) => {
             return TmuxImageDecision::Disabled {
                 reason: TmuxImageDisabledReason::OutsideTmux,
-            }
+            };
         }
         TmuxImageState::Unavailable { .. } => {
             return TmuxImageDecision::Disabled {
                 reason: TmuxImageDisabledReason::ProbeUnavailable,
-            }
+            };
         }
         TmuxImageState::Detected { base, .. } => base,
     };

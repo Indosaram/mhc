@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::engine::{Engine, SessionCall};
-use crate::rpc::{Failure, to_result};
+use crate::rpc::{to_result, Failure};
 
 #[derive(Debug)]
 pub enum Route {

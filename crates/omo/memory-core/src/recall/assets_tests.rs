@@ -4,7 +4,7 @@ use super::load_kibitzer_persona;
 
 #[test]
 fn given_the_source_asset_when_loaded_through_the_loader_then_it_equals_the_real_file_and_is_non_empty()
-{
+ {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("recall");

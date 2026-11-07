@@ -21,7 +21,9 @@ fn decode_jwt_expiry(token: &str) -> Option<f64> {
     let mut base64 = payload.replace('-', "+").replace('_', "/");
     let padding = (4 - (base64.len() % 4)) % 4;
     base64.push_str(&"=".repeat(padding));
-    let decoded = base64::engine::general_purpose::STANDARD.decode(base64).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .ok()?;
     let parsed: Value = serde_json::from_slice(&decoded).ok()?;
     let exp = parsed.get("exp")?.as_f64()?;
     if exp.is_finite() && exp > 0.0 {
@@ -41,9 +43,10 @@ fn error_detail(body: &Map<String, Value>) -> Option<String> {
         return Some(error.clone());
     }
     if let Some(Value::Object(error)) = body.get("error")
-        && let Some(Value::String(message)) = error.get("message") {
-            return Some(message.clone());
-        }
+        && let Some(Value::String(message)) = error.get("message")
+    {
+        return Some(message.clone());
+    }
     None
 }
 
@@ -103,8 +106,13 @@ pub async fn exchange_devin_authorization_code(
 
     if !response.ok() {
         let detail = error_detail(&body);
-        let suffix = detail.map(|detail| format!(": {detail}")).unwrap_or_default();
-        anyhow::bail!("Devin OAuth token exchange failed (HTTP {}){suffix}", response.status);
+        let suffix = detail
+            .map(|detail| format!(": {detail}"))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "Devin OAuth token exchange failed (HTTP {}){suffix}",
+            response.status
+        );
     }
 
     let token = match body.get("token") {
@@ -148,9 +156,18 @@ mod tests {
 
     #[test]
     fn unreadable_jwt_payload_falls_back_to_the_fixed_window() {
-        for token in ["header.!!!not-base64!!!.signature", "no-dots", "header.e30.signature", "header..signature"] {
+        for token in [
+            "header.!!!not-base64!!!.signature",
+            "no-dots",
+            "header.e30.signature",
+            "header..signature",
+        ] {
             let credential = devin_credential(token, 2_000.0);
-            assert_eq!(credential.expires, 2_000.0 + DEVIN_FALLBACK_EXPIRY_MS, "{token}");
+            assert_eq!(
+                credential.expires,
+                2_000.0 + DEVIN_FALLBACK_EXPIRY_MS,
+                "{token}"
+            );
         }
     }
 
@@ -158,9 +175,15 @@ mod tests {
     async fn exchanges_the_code_with_a_bare_json_body() {
         let transport = ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "token": "jwt-token" }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "token": "jwt-token" }),
+            },
         )]);
-        let credential = exchange_devin_authorization_code("code-1", "verifier-1", &signal(), &transport).await.unwrap();
+        let credential =
+            exchange_devin_authorization_code("code-1", "verifier-1", &signal(), &transport)
+                .await
+                .unwrap();
         assert_eq!(credential.access, "jwt-token");
 
         let requests = transport.requests();
@@ -175,16 +198,32 @@ mod tests {
     #[tokio::test]
     async fn surfaces_the_error_description_then_message_then_error() {
         let cases = [
-            (serde_json::json!({"error_description": "description wins", "message": "m", "error": "e"}), "description wins"),
-            (serde_json::json!({"message": "message wins", "error": "e"}), "message wins"),
+            (
+                serde_json::json!({"error_description": "description wins", "message": "m", "error": "e"}),
+                "description wins",
+            ),
+            (
+                serde_json::json!({"message": "message wins", "error": "e"}),
+                "message wins",
+            ),
             (serde_json::json!({"error": "error wins"}), "error wins"),
-            (serde_json::json!({"error": {"message": "nested wins"}}), "nested wins"),
+            (
+                serde_json::json!({"error": {"message": "nested wins"}}),
+                "nested wins",
+            ),
             (serde_json::json!({}), ""),
         ];
         for (body, detail) in cases {
-            let transport =
-                ScriptedTransport::new(vec![(None, ScriptedResponse::Json { status: 400, body: body.clone() })]);
-            let error = exchange_devin_authorization_code("c", "v", &signal(), &transport).await.unwrap_err();
+            let transport = ScriptedTransport::new(vec![(
+                None,
+                ScriptedResponse::Json {
+                    status: 400,
+                    body: body.clone(),
+                },
+            )]);
+            let error = exchange_devin_authorization_code("c", "v", &signal(), &transport)
+                .await
+                .unwrap_err();
             let expected = if detail.is_empty() {
                 "Devin OAuth token exchange failed (HTTP 400)".to_string()
             } else {
@@ -196,22 +235,51 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_response_without_a_token() {
-        for body in [serde_json::json!({}), serde_json::json!({"token": ""}), serde_json::json!({"token": 5})] {
-            let transport = ScriptedTransport::new(vec![(None, ScriptedResponse::Json { status: 200, body })]);
-            let error = exchange_devin_authorization_code("c", "v", &signal(), &transport).await.unwrap_err();
-            assert_eq!(error.to_string(), "Devin OAuth response carries no \"token\"");
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"token": ""}),
+            serde_json::json!({"token": 5}),
+        ] {
+            let transport =
+                ScriptedTransport::new(vec![(None, ScriptedResponse::Json { status: 200, body })]);
+            let error = exchange_devin_authorization_code("c", "v", &signal(), &transport)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "Devin OAuth response carries no \"token\""
+            );
         }
     }
 
     #[tokio::test]
     async fn invalid_json_is_only_fatal_for_a_successful_response() {
-        let transport = ScriptedTransport::new(vec![(None, ScriptedResponse::Text { status: 200, body: "<html>".into() })]);
-        let error = exchange_devin_authorization_code("c", "v", &signal(), &transport).await.unwrap_err();
+        let transport = ScriptedTransport::new(vec![(
+            None,
+            ScriptedResponse::Text {
+                status: 200,
+                body: "<html>".into(),
+            },
+        )]);
+        let error = exchange_devin_authorization_code("c", "v", &signal(), &transport)
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Devin OAuth returned invalid JSON");
 
-        let transport = ScriptedTransport::new(vec![(None, ScriptedResponse::Text { status: 500, body: "<html>".into() })]);
-        let error = exchange_devin_authorization_code("c", "v", &signal(), &transport).await.unwrap_err();
-        assert_eq!(error.to_string(), "Devin OAuth token exchange failed (HTTP 500)");
+        let transport = ScriptedTransport::new(vec![(
+            None,
+            ScriptedResponse::Text {
+                status: 500,
+                body: "<html>".into(),
+            },
+        )]);
+        let error = exchange_devin_authorization_code("c", "v", &signal(), &transport)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Devin OAuth token exchange failed (HTTP 500)"
+        );
     }
 
     #[tokio::test]
@@ -219,8 +287,9 @@ mod tests {
         let transport = ScriptedTransport::default();
         let controller = AbortController::new();
         controller.abort(None);
-        let error =
-            exchange_devin_authorization_code("c", "v", &controller.signal(), &transport).await.unwrap_err();
+        let error = exchange_devin_authorization_code("c", "v", &controller.signal(), &transport)
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Login cancelled");
         assert!(transport.requests().is_empty());
     }

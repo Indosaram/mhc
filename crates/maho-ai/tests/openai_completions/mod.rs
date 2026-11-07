@@ -14,7 +14,7 @@ mod stream_lifecycle;
 mod thinking_as_text;
 mod thinking_matrix;
 mod thinking_token_budget;
+mod tool_choice;
 mod tool_result_images;
 mod tool_schema_compat;
-mod tool_choice;
 mod vllm_priority;

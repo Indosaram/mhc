@@ -63,7 +63,8 @@ fn test_redact_url_when_free_text_containing_credentialed_url_then_masked() {
 }
 
 #[test]
-fn test_redact_url_when_secret_like_material_in_sync_output_then_predicate_matches_and_redaction_clears_it() {
+fn test_redact_url_when_secret_like_material_in_sync_output_then_predicate_matches_and_redaction_clears_it()
+ {
     let value = "token=abc123 and AKIA1234567890ABCDEF";
     let redacted = redact_url(value);
     assert!(contains_secret_like_material(value));
@@ -78,7 +79,10 @@ fn test_contains_secret_like_material_when_common_credential_forms_then_recogniz
         "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc",
         "sk-proj-AAAABBBBCCCCDDDD",
     ] {
-        assert!(contains_secret_like_material(value), "not recognized: {value}");
+        assert!(
+            contains_secret_like_material(value),
+            "not recognized: {value}"
+        );
     }
 }
 
@@ -115,7 +119,11 @@ fn test_contains_secret_like_material_when_checked_repeatedly_then_stays_true() 
 
 #[test]
 fn test_redact_url_when_malformed_pem_shaped_input_then_unchanged_and_real_pem_is_masked() {
-    let hostile = format!("-----BEGIN {}-----{}", "A".repeat(100_000), "B".repeat(100_000));
+    let hostile = format!(
+        "-----BEGIN {}-----{}",
+        "A".repeat(100_000),
+        "B".repeat(100_000)
+    );
     assert_eq!(redact_url(&hostile), hostile);
 
     let pem = "-----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----";
@@ -123,7 +131,8 @@ fn test_redact_url_when_malformed_pem_shaped_input_then_unchanged_and_real_pem_i
 }
 
 #[test]
-fn test_contains_secret_like_material_when_neighbour_is_not_ascii_word_then_ascii_boundary_still_matches() {
+fn test_contains_secret_like_material_when_neighbour_is_not_ascii_word_then_ascii_boundary_still_matches()
+ {
     // JavaScript `\b` is ASCII-only, so a non-ASCII neighbour is not a word
     // character and the AWS key stays bounded; an ASCII word character is not.
     assert!(contains_secret_like_material("\u{e9}AKIA1234567890ABCDEF"));
@@ -132,13 +141,15 @@ fn test_contains_secret_like_material_when_neighbour_is_not_ascii_word_then_asci
 }
 
 #[test]
-fn test_redact_url_when_token_exceeds_the_upstream_256_character_bound_then_only_the_bound_is_replaced() {
+fn test_redact_url_when_token_exceeds_the_upstream_256_character_bound_then_only_the_bound_is_replaced()
+ {
     assert_eq!(redact_url(&format!("token={}", "a".repeat(256))), "***");
     assert_eq!(redact_url(&format!("token={}", "a".repeat(257))), "***a");
 }
 
 #[test]
-fn test_redact_url_when_token_bound_counts_utf16_units_then_128_astral_characters_are_fully_masked() {
+fn test_redact_url_when_token_bound_counts_utf16_units_then_128_astral_characters_are_fully_masked()
+{
     // 128 supplementary characters are 256 UTF-16 code units, exactly `\S{1,256}`.
     let token = "\u{1F600}".repeat(128);
     assert_eq!(redact_url(&format!("token={token}")), "***");
@@ -161,7 +172,8 @@ fn test_redact_url_when_javascript_whitespace_separator_then_feff_joins_and_0085
 }
 
 #[test]
-fn test_contains_secret_like_material_when_case_differs_then_case_sensitive_patterns_do_not_match() {
+fn test_contains_secret_like_material_when_case_differs_then_case_sensitive_patterns_do_not_match()
+{
     assert!(!contains_secret_like_material("akia1234567890abcdef"));
     assert!(!contains_secret_like_material("SK-AAAABBBBCCCCDDDD"));
     assert!(!contains_secret_like_material("GHP-abcdefghijkl"));
@@ -171,7 +183,8 @@ fn test_contains_secret_like_material_when_case_differs_then_case_sensitive_patt
 
 #[test]
 fn test_redact_url_when_pem_blocks_then_matching_labels_replace_and_mismatched_end_is_skipped() {
-    let mismatched = "-----BEGIN PRIVATE KEY-----a-----END CERTIFICATE-----b-----END PRIVATE KEY-----";
+    let mismatched =
+        "-----BEGIN PRIVATE KEY-----a-----END CERTIFICATE-----b-----END PRIVATE KEY-----";
     assert_eq!(redact_url(mismatched), "***");
 
     let two = "-----BEGIN A-----x-----END A----- -----BEGIN B-----y-----END B-----";
@@ -180,7 +193,11 @@ fn test_redact_url_when_pem_blocks_then_matching_labels_replace_and_mismatched_e
     let illegal = "-----BEGIN BAD_LABEL-----x-----END BAD_LABEL-----";
     assert_eq!(redact_url(illegal), illegal);
 
-    let over_bound = format!("-----BEGIN {}-----x-----END {}-----", "A".repeat(65), "A".repeat(65));
+    let over_bound = format!(
+        "-----BEGIN {}-----x-----END {}-----",
+        "A".repeat(65),
+        "A".repeat(65)
+    );
     assert_eq!(redact_url(&over_bound), over_bound);
 }
 
@@ -190,7 +207,8 @@ fn test_redact_url_when_empty_url_then_empty_string_returned() {
 }
 
 #[test]
-fn test_redact_url_when_credential_contains_zero_width_obfuscation_then_entire_original_span_is_masked() {
+fn test_redact_url_when_credential_contains_zero_width_obfuscation_then_entire_original_span_is_masked()
+ {
     let value = "to\u{200B}ken=abc123";
     assert!(contains_secret_like_material(value));
     assert_eq!(redact_url(value), "***");

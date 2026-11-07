@@ -1,11 +1,11 @@
 //! Port of upstream `store-extension/index.test.ts` with real SQLite transactional test receipts.
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use maho_omo_gateway::{apply_gateway_rules_migrations_with_now, 
-    apply_gateway_rules_migrations, block_for_session, rules_committed, sessions_with_rules,
+use maho_omo_gateway::{
     DeliverySummary, EnqueueDeliveryRequest, GatewayDeliveryEnqueueSeam, RulesCommittedArgs,
-    RulesCommittedTarget,
+    RulesCommittedTarget, apply_gateway_rules_migrations, apply_gateway_rules_migrations_with_now,
+    block_for_session, rules_committed, sessions_with_rules,
 };
 
 /// Deterministic test-only enqueue seam that persists delivery receipts to an actual SQLite
@@ -95,7 +95,8 @@ impl GatewayDeliveryEnqueueSeam for SqliteTestReceiptsSeam {
 }
 
 #[test]
-fn given_a_bound_session_when_its_chat_rules_commit_then_block_for_session_returns_rendered_block_and_receipt_is_persisted() {
+fn given_a_bound_session_when_its_chat_rules_commit_then_block_for_session_returns_rendered_block_and_receipt_is_persisted()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     SqliteTestReceiptsSeam::ensure_table(&conn).unwrap();
@@ -133,8 +134,10 @@ fn given_a_bound_session_when_its_chat_rules_commit_then_block_for_session_retur
             "- tag the owner on decisions",
             "</operating-rules>",
         ]
-        .join("
-")
+        .join(
+            "
+"
+        )
     );
 
     // Verify exact delivery receipt contents in SQLite
@@ -145,11 +148,16 @@ fn given_a_bound_session_when_its_chat_rules_commit_then_block_for_session_retur
     assert_eq!(receipt.0, format!("deliv_{expected_event}"));
     assert_eq!(receipt.1, "b-1");
     assert_eq!(receipt.3, "follow_up");
-    assert!(receipt.2.contains(r#"<operating-rules-changed scope="team" version="v1">"#));
+    assert!(
+        receipt
+            .2
+            .contains(r#"<operating-rules-changed scope="team" version="v1">"#)
+    );
 }
 
 #[test]
-fn given_a_rules_commit_when_it_repeats_and_new_version_commits_then_each_session_gains_exactly_one_delivery_per_version() {
+fn given_a_rules_commit_when_it_repeats_and_new_version_commits_then_each_session_gains_exactly_one_delivery_per_version()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     SqliteTestReceiptsSeam::ensure_table(&conn).unwrap();
@@ -185,11 +193,17 @@ fn given_a_rules_commit_when_it_repeats_and_new_version_commits_then_each_sessio
     assert_eq!(first.outcomes[1].outcome, "updated");
     assert!(matches!(
         first.outcomes[0].delivery,
-        Some(DeliverySummary::Ok { deduplicated: false, .. })
+        Some(DeliverySummary::Ok {
+            deduplicated: false,
+            ..
+        })
     ));
     assert!(matches!(
         first.outcomes[1].delivery,
-        Some(DeliverySummary::Ok { deduplicated: false, .. })
+        Some(DeliverySummary::Ok {
+            deduplicated: false,
+            ..
+        })
     ));
     assert_eq!(SqliteTestReceiptsSeam::count_receipts(&conn).unwrap(), 2);
 
@@ -210,11 +224,17 @@ fn given_a_rules_commit_when_it_repeats_and_new_version_commits_then_each_sessio
     assert_eq!(repeated.outcomes[1].outcome, "unchanged");
     assert!(matches!(
         repeated.outcomes[0].delivery,
-        Some(DeliverySummary::Ok { deduplicated: true, .. })
+        Some(DeliverySummary::Ok {
+            deduplicated: true,
+            ..
+        })
     ));
     assert!(matches!(
         repeated.outcomes[1].delivery,
-        Some(DeliverySummary::Ok { deduplicated: true, .. })
+        Some(DeliverySummary::Ok {
+            deduplicated: true,
+            ..
+        })
     ));
     assert_eq!(SqliteTestReceiptsSeam::count_receipts(&conn).unwrap(), 2);
 
@@ -234,7 +254,10 @@ fn given_a_rules_commit_when_it_repeats_and_new_version_commits_then_each_sessio
     assert_eq!(duplicated.outcomes.len(), 2);
     assert!(matches!(
         duplicated.outcomes[1].delivery,
-        Some(DeliverySummary::Ok { deduplicated: true, .. })
+        Some(DeliverySummary::Ok {
+            deduplicated: true,
+            ..
+        })
     ));
 
     // Next version: v2
@@ -255,14 +278,18 @@ fn given_a_rules_commit_when_it_repeats_and_new_version_commits_then_each_sessio
     for outcome in &next.outcomes {
         assert!(matches!(
             outcome.delivery,
-            Some(DeliverySummary::Ok { deduplicated: false, .. })
+            Some(DeliverySummary::Ok {
+                deduplicated: false,
+                ..
+            })
         ));
     }
     assert_eq!(SqliteTestReceiptsSeam::count_receipts(&conn).unwrap(), 4);
 }
 
 #[test]
-fn given_valid_first_target_and_invalid_second_when_committed_then_transaction_rolls_back_both_rule_and_receipt() {
+fn given_valid_first_target_and_invalid_second_when_committed_then_transaction_rolls_back_both_rule_and_receipt()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     SqliteTestReceiptsSeam::ensure_table(&conn).unwrap();
@@ -297,7 +324,10 @@ fn given_valid_first_target_and_invalid_second_when_committed_then_transaction_r
 
     // Both rule block and delivery receipt for valid-sess MUST be rolled back (absent)
     let block = block_for_session(&conn, "valid-sess").unwrap();
-    assert!(block.is_none(), "Rule block must be rolled back on commit failure");
+    assert!(
+        block.is_none(),
+        "Rule block must be rolled back on commit failure"
+    );
 
     assert_eq!(
         SqliteTestReceiptsSeam::count_receipts(&conn).unwrap(),
@@ -307,7 +337,8 @@ fn given_valid_first_target_and_invalid_second_when_committed_then_transaction_r
 }
 
 #[test]
-fn given_a_committed_block_when_a_later_commit_clears_the_session_then_the_block_row_is_removed_without_delivery() {
+fn given_a_committed_block_when_a_later_commit_clears_the_session_then_the_block_row_is_removed_without_delivery()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     SqliteTestReceiptsSeam::ensure_table(&conn).unwrap();
@@ -415,7 +446,8 @@ fn given_malformed_targets_when_rules_committed_runs_then_the_call_is_refused() 
 }
 
 #[test]
-fn given_two_sessions_in_one_scope_and_one_in_another_when_the_scope_is_listed_then_exactly_its_two_sessions_are_returned() {
+fn given_two_sessions_in_one_scope_and_one_in_another_when_the_scope_is_listed_then_exactly_its_two_sessions_are_returned()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     SqliteTestReceiptsSeam::ensure_table(&conn).unwrap();
@@ -539,7 +571,10 @@ fn given_existing_populated_database_when_migrations_reapply_then_it_succeeds_id
     {
         let mut conn = Connection::open(&db_path).unwrap();
         let res = apply_gateway_rules_migrations(&mut conn);
-        assert!(res.is_ok(), "Restart on existing database must succeed idempotently");
+        assert!(
+            res.is_ok(),
+            "Restart on existing database must succeed idempotently"
+        );
     }
 }
 
@@ -568,7 +603,8 @@ fn given_future_database_version_when_migrations_run_then_it_returns_an_error() 
 }
 
 #[test]
-fn given_unregistered_database_with_actual_extension_schema_when_migrated_then_inserts_updated_at_correctly() {
+fn given_unregistered_database_with_actual_extension_schema_when_migrated_then_inserts_updated_at_correctly()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     // Pinned exact 3-column extension_schema from upstream schema.ts
     conn.execute(
@@ -585,7 +621,9 @@ fn given_unregistered_database_with_actual_extension_schema_when_migrated_then_i
     apply_gateway_rules_migrations_with_now(&mut conn, 123456789.0).unwrap();
 
     let mut stmt = conn
-        .prepare("SELECT name, version, updated_at FROM extension_schema WHERE name = 'gateway_rules'")
+        .prepare(
+            "SELECT name, version, updated_at FROM extension_schema WHERE name = 'gateway_rules'",
+        )
         .unwrap();
     let row: (String, i64, i64) = stmt
         .query_row([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -601,7 +639,8 @@ fn given_unregistered_database_with_actual_extension_schema_when_migrated_then_i
 }
 
 #[test]
-fn given_existing_database_with_pinned_extension_schema_and_current_marker_when_migrated_then_retains_version_and_reads_rules() {
+fn given_existing_database_with_pinned_extension_schema_and_current_marker_when_migrated_then_retains_version_and_reads_rules()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     // Upstream actual schema: extension_schema + gateway_rules_blocks
     conn.execute(
@@ -647,10 +686,16 @@ fn given_existing_database_with_pinned_extension_schema_and_current_marker_when_
         .unwrap();
     let row: (i64, i64) = stmt.query_row([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     assert_eq!(row.0, 1);
-    assert_eq!(row.1, 987654321, "Existing updated_at timestamp must be retained");
+    assert_eq!(
+        row.1, 987654321,
+        "Existing updated_at timestamp must be retained"
+    );
 
     // Component/store reads populated DB successfully
     let block = block_for_session(&conn, "sess-pinned").unwrap().unwrap();
     assert_eq!(block.version, "v1");
-    assert_eq!(block.block, r#"<operating-rules version="v1">- rule</operating-rules>"#);
+    assert_eq!(
+        block.block,
+        r#"<operating-rules version="v1">- rule</operating-rules>"#
+    );
 }

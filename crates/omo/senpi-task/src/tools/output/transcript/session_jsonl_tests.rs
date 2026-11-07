@@ -90,7 +90,8 @@ fn given_v1_linear_session_when_parsed_then_only_assistant_text_entries_are_extr
 }
 
 #[test]
-fn given_v2_tree_session_with_model_change_and_tool_result_when_parsed_then_user_tool_non_message_entries_are_skipped() {
+fn given_v2_tree_session_with_model_change_and_tool_result_when_parsed_then_user_tool_non_message_entries_are_skipped()
+ {
     // given
     let text = fixture("v2.jsonl");
 
@@ -108,7 +109,8 @@ fn given_v2_tree_session_with_model_change_and_tool_result_when_parsed_then_user
 }
 
 #[test]
-fn given_v3_session_with_custom_custom_message_and_unknown_future_entry_when_parsed_then_unknown_types_are_tolerated() {
+fn given_v3_session_with_custom_custom_message_and_unknown_future_entry_when_parsed_then_unknown_types_are_tolerated()
+ {
     // given
     let text = fixture("v3.jsonl");
 
@@ -118,12 +120,16 @@ fn given_v3_session_with_custom_custom_message_and_unknown_future_entry_when_par
     // then
     assert_eq!(
         texts,
-        vec!["Cutting the release now.".to_string(), "Release v9 is live.".to_string()]
+        vec![
+            "Cutting the release now.".to_string(),
+            "Release v9 is live.".to_string()
+        ]
     );
 }
 
 #[test]
-fn given_malformed_lines_mixed_with_valid_ones_when_parsed_then_broken_lines_are_skipped_without_throwing() {
+fn given_malformed_lines_mixed_with_valid_ones_when_parsed_then_broken_lines_are_skipped_without_throwing()
+ {
     // given
     let text = [
         r#"{"type":"session","version":3,"id":"x"}"#,

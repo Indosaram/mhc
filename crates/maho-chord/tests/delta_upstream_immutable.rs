@@ -1,10 +1,10 @@
-use maho_chord::{delta::*, JsonValue};
-use std::result::Result;
+use maho_chord::{JsonValue, delta::*};
 use serde_json::json;
+use std::result::Result;
 
 #[test]
-fn touched_containers_and_placements_keep_payload_ownership(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn touched_containers_and_placements_keep_payload_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
     let shared: JsonValue = json!({"nested":{"value":1}}).into();
     let untouched: JsonValue = json!({"value":9}).into();
     let row: JsonValue = json!({"id":4,"label":"placed"}).into();
@@ -57,8 +57,8 @@ fn touched_containers_and_placements_keep_payload_ownership(
 }
 
 #[test]
-fn arbitrary_batch_partitions_equal_flattened_and_sequential_replay(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn arbitrary_batch_partitions_equal_flattened_and_sequential_replay()
+-> Result<(), Box<dyn std::error::Error>> {
     let initial: JsonValue = json!({"text":"start","values":(0..8).map(|id|json!({"id":id,"score":0})).collect::<Vec<_>>(),"revision":0}).into();
     let mut tracker = track(initial.clone())?;
     let mut batches = Vec::new();

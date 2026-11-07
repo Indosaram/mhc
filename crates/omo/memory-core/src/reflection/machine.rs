@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::journal::cursor::REFLECTION_SNAPSHOT_MAX_BYTES;
 use crate::journal::cursor::{
     ReflectionSnapshot, ReflectionTranscriptState, count_completed_steps,
 };
-use crate::journal::cursor::REFLECTION_SNAPSHOT_MAX_BYTES;
 
 /// Reflection trigger types that initiate or queue background runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -260,11 +260,18 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                 return EvaluationResult {
                     state,
                     action: EvaluationAction::Reserve(request),
-                }
+                };
             }
-            let budget = state.config.snapshot_max_bytes.unwrap_or(REFLECTION_SNAPSHOT_MAX_BYTES as u64);
+            let budget = state
+                .config
+                .snapshot_max_bytes
+                .unwrap_or(REFLECTION_SNAPSHOT_MAX_BYTES as u64);
             let pressure_ready = budget > 0
-                && state.journal.state.unreflected_bytes.is_some_and(|bytes| bytes as u64 >= budget)
+                && state
+                    .journal
+                    .state
+                    .unreflected_bytes
+                    .is_some_and(|bytes| bytes as u64 >= budget)
                 && !contains_trigger(&state.reservation, ReflectionTrigger::StepCount);
             if pressure_ready {
                 let mut request = make_request(
@@ -280,7 +287,10 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                     action: EvaluationAction::Reserve(request),
                 };
             }
-            EvaluationResult { state, action: EvaluationAction::None }
+            EvaluationResult {
+                state,
+                action: EvaluationAction::None,
+            }
         }
     }
 }
@@ -328,15 +338,23 @@ pub fn reserve_transition(
 
 fn cap_pending_run(mut run: ReservedRun) -> ReservedRun {
     let mut seen = std::collections::BTreeSet::new();
-    run.request.conversation_ids.retain(|id| seen.insert(id.clone()));
-    run.request.snapshots.retain(|captured| seen.contains(&captured.conversation_id));
+    run.request
+        .conversation_ids
+        .retain(|id| seen.insert(id.clone()));
+    run.request
+        .snapshots
+        .retain(|captured| seen.contains(&captured.conversation_id));
     while seen.len() > REFLECTION_PENDING_MAX_CONVERSATIONS
         || serde_json::to_vec(&run).map_or(0, |bytes| bytes.len()) > REFLECTION_PENDING_MAX_BYTES
     {
-        let Some(oldest) = run.request.conversation_ids.first().cloned() else { break };
+        let Some(oldest) = run.request.conversation_ids.first().cloned() else {
+            break;
+        };
         seen.remove(&oldest);
         run.request.conversation_ids.remove(0);
-        run.request.snapshots.retain(|captured| captured.conversation_id != oldest);
+        run.request
+            .snapshots
+            .retain(|captured| captured.conversation_id != oldest);
     }
     run
 }

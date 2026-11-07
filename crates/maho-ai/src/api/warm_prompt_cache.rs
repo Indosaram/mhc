@@ -109,7 +109,11 @@ pub async fn warm_prompt_cache_simple(
 
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
     // PERF-DIVERGENCE(senpi warm-prompt-cache.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let client = options
+        .request
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut request_headers = reqwest::header::HeaderMap::new();
     request_headers.insert(
         reqwest::header::HeaderName::from_static("anthropic-version"),

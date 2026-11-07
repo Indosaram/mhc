@@ -77,7 +77,10 @@ fn snippet_of(text: &str) -> String {
     if collapsed.chars().count() <= SNIPPET_CHARS {
         collapsed
     } else {
-        format!("{}...", collapsed.chars().take(SNIPPET_CHARS).collect::<String>())
+        format!(
+            "{}...",
+            collapsed.chars().take(SNIPPET_CHARS).collect::<String>()
+        )
     }
 }
 

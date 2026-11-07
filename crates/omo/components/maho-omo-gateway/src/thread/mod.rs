@@ -4,8 +4,8 @@
 //! Upstream counterpart: `packages/omo-senpi/src/components/thread/`. One upstream file maps to one
 //! module here (`gateway/<name>.ts` -> `thread/<name>.rs`).
 
-pub mod address_book;
 pub mod adapter;
+pub mod address_book;
 pub mod attachment_fence;
 pub mod component;
 pub mod constants;
@@ -43,11 +43,17 @@ pub mod tools;
 pub mod types;
 
 pub use adapter::{
-    Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind, GatewayEndpointPort, GatewayEndpointRef, GatewayWakeReply, ReleaseSessionReply,
+    Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind,
+    GatewayEndpointPort, GatewayEndpointRef, GatewayWakeReply, ReleaseSessionReply,
     SessionAdmissionGate, SessionRuntimePort, WakeReason,
 };
-pub use constants::{GATEWAY_BUSY_TIMEOUT_MS, GATEWAY_LOCK_WAIT_MAX_MS, GATEWAY_PROVENANCE_SENTENCE, MAX_HOPS};
-pub use engine::{GatewayDeliverRequest, GatewayEngine, GatewayEngineOptions, GatewayResolve, GatewayResolution, GatewayTarget};
+pub use constants::{
+    GATEWAY_BUSY_TIMEOUT_MS, GATEWAY_LOCK_WAIT_MAX_MS, GATEWAY_PROVENANCE_SENTENCE, MAX_HOPS,
+};
+pub use engine::{
+    GatewayDeliverRequest, GatewayEngine, GatewayEngineOptions, GatewayResolution, GatewayResolve,
+    GatewayTarget,
+};
 pub use errors::{ThreadErrorCode, ThreadToolFailure, thread_tool_failure};
 pub use provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
 pub use provenance_record::{PROVENANCE_MIGRATION, is_provenance};
@@ -55,5 +61,10 @@ pub use provenance_resolver::{ProvenanceRuntime, ProvenanceWorkspace, resolve_pr
 pub use schema::{GATEWAY_MIGRATIONS, GATEWAY_TABLES, GatewaySchemaVersionError};
 pub use store::{GatewayStoreOptions, SqliteGatewayStore, create_gateway_store};
 pub use store_api::{GatewayStoreApi, SharedGatewayStore};
-pub use store_extensions::{DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult};
-pub use types::{DeliveryRow, EnqueueRequest, GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance};
+pub use store_extensions::{
+    DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult,
+};
+pub use types::{
+    DeliveryRow, EnqueueRequest, GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender,
+    Provenance,
+};

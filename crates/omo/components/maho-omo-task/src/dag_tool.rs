@@ -1019,13 +1019,18 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
                 // TS awaits these actions; `wait` (and scheduler bookkeeping) block on condvars here, so run
                 // them off the async executor. Blocking a current-thread runtime stalls its I/O driver,
                 // which the in-process children's provider streams depend on, and deadlocks the run.
-                let cancellation = Arc::new(senpi_task::dag::handle::DagWaitCancellation::default());
+                let cancellation =
+                    Arc::new(senpi_task::dag::handle::DagWaitCancellation::default());
                 struct CancelOnDrop(Arc<senpi_task::dag::handle::DagWaitCancellation>);
                 impl Drop for CancelOnDrop {
-                    fn drop(&mut self) { self.0.cancel(); }
+                    fn drop(&mut self) {
+                        self.0.cancel();
+                    }
                 }
                 let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-                if call.signal.is_aborted() { cancellation.cancel(); }
+                if call.signal.is_aborted() {
+                    cancellation.cancel();
+                }
                 let worker_cancellation = cancellation.clone();
                 let mut worker = tokio::task::spawn_blocking(move || {
                     senpi_task::dag::handle::with_dag_wait_cancellation(worker_cancellation, || {
@@ -1039,7 +1044,9 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
                         worker.await
                     }
                 };
-                result.map_err(|error| ToolError::Message(format!("workflow tool worker failed: {error}")))?
+                result.map_err(|error| {
+                    ToolError::Message(format!("workflow tool worker failed: {error}"))
+                })?
             })
         }),
     );

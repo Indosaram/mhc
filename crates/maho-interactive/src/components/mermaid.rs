@@ -50,7 +50,11 @@ fn code_span(line: &str) -> String {
         .max()
         .unwrap_or(0);
     let fence = "`".repeat(longest_backtick_run + 1);
-    let padding = if content.starts_with('`') || content.ends_with('`') { " " } else { "" };
+    let padding = if content.starts_with('`') || content.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
     format!("{fence}{padding}{content}{padding}{fence}")
 }
 
@@ -68,15 +72,22 @@ fn style_span(text: &str, cls: Cls, theme: &Theme) -> String {
 fn themed_lines(art: &crate::grok_mermaid::MermaidArt, theme: &Theme) -> Vec<String> {
     art.styled
         .iter()
-        .map(|row| row.iter().map(|span| style_span(&span.text, span.cls, theme)).collect::<String>())
+        .map(|row| {
+            row.iter()
+                .map(|span| style_span(&span.text, span.cls, theme))
+                .collect::<String>()
+        })
         .collect()
 }
 
 fn is_mermaid(token: &Token) -> bool {
     match token {
-        Token::Code { lang: Some(lang), .. } => {
-            lang.split_whitespace().next().is_some_and(|first| first.eq_ignore_ascii_case("mermaid"))
-        }
+        Token::Code {
+            lang: Some(lang), ..
+        } => lang
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case("mermaid")),
         _ => false,
     }
 }
@@ -124,9 +135,16 @@ pub fn create_live_mermaid_markdown_transformer(
                 continue;
             }
             if !context.is_streaming && !art.warnings.is_empty() {
-                let suffix = if art.warnings.len() > 1 { format!(" (+{} more)", art.warnings.len() - 1) } else { String::new() };
+                let suffix = if art.warnings.len() > 1 {
+                    format!(" (+{} more)", art.warnings.len() - 1)
+                } else {
+                    String::new()
+                };
                 let warning = format!("Mermaid diagram not rendered: {}{suffix}", art.warnings[0]);
-                let styled_warning = theme.as_ref().map_or_else(|| warning.clone(), |theme| theme.fg(ThemeColor::Warning, &warning));
+                let styled_warning = theme.as_ref().map_or_else(
+                    || warning.clone(),
+                    |theme| theme.fg(ThemeColor::Warning, &warning),
+                );
                 out.push_str(token.raw());
                 out.push('\n');
                 out.push_str(&code_span(&styled_warning));
@@ -137,7 +155,13 @@ pub fn create_live_mermaid_markdown_transformer(
                 Some(theme) => themed_lines(&art, theme),
                 None => art.plain.clone(),
             };
-            out.push_str(&lines.iter().map(|line| code_span(line)).collect::<Vec<_>>().join("  \n"));
+            out.push_str(
+                &lines
+                    .iter()
+                    .map(|line| code_span(line))
+                    .collect::<Vec<_>>()
+                    .join("  \n"),
+            );
             out.push('\n');
         }
         Ok(Some(out))
@@ -194,7 +218,10 @@ mod tests {
         assert!(rendered.contains("Before"));
         assert!(rendered.contains("┌───────┐"));
         assert!(rendered.contains("│ Start ├───▶│ Done │"));
-        assert!(rendered.contains("└───────┘    └──────┘`\nAfter"), "{rendered:?}");
+        assert!(
+            rendered.contains("└───────┘    └──────┘`\nAfter"),
+            "{rendered:?}"
+        );
         assert!(!rendered.contains("```mermaid"));
         assert!(rendered.contains("After"));
     }
@@ -204,9 +231,18 @@ mod tests {
         let unsupported = "```mermaid\npie\n  title Pets\n  \"Dogs\" : 4\n```";
         let oversized = "```mermaid\nflowchart LR\n  A[Start] --> B[Done]\n```";
 
-        assert_eq!(transform_mermaid(unsupported, TransformOptions::default()), unsupported);
         assert_eq!(
-            transform_mermaid(oversized, TransformOptions { max_width: 10, ..Default::default() }),
+            transform_mermaid(unsupported, TransformOptions::default()),
+            unsupported
+        );
+        assert_eq!(
+            transform_mermaid(
+                oversized,
+                TransformOptions {
+                    max_width: 10,
+                    ..Default::default()
+                }
+            ),
             oversized
         );
     }
@@ -218,7 +254,10 @@ mod tests {
         let accent = theme.get_fg_ansi(ThemeColor::Accent);
         let rendered = transform_mermaid(
             "```mermaid\nflowchart LR\n  A --> B\n```",
-            TransformOptions { theme: Some(theme), ..Default::default() },
+            TransformOptions {
+                theme: Some(theme),
+                ..Default::default()
+            },
         );
 
         assert!(rendered.contains(&border), "{rendered:?}");
@@ -230,8 +269,14 @@ mod tests {
         let partial_markdown = "```mermaid\nflowchart LR\n  A --> B";
 
         assert!(
-            transform_mermaid(partial_markdown, TransformOptions { is_streaming: true, ..Default::default() })
-                .contains("───▶")
+            transform_mermaid(
+                partial_markdown,
+                TransformOptions {
+                    is_streaming: true,
+                    ..Default::default()
+                }
+            )
+            .contains("───▶")
         );
     }
 
@@ -249,15 +294,29 @@ mod tests {
     fn falls_back_to_the_code_block_with_a_warning_after_streaming() {
         let markdown = "```mermaid\nflowchart LR\n  A[Foo] invalid\n```";
         let final_render = transform_mermaid(markdown, TransformOptions::default());
-        let followed_by_text =
-            transform_mermaid(&format!("{markdown}\nFollowing text"), TransformOptions::default());
-        let streaming = transform_mermaid(markdown, TransformOptions { is_streaming: true, ..Default::default() });
+        let followed_by_text = transform_mermaid(
+            &format!("{markdown}\nFollowing text"),
+            TransformOptions::default(),
+        );
+        let streaming = transform_mermaid(
+            markdown,
+            TransformOptions {
+                is_streaming: true,
+                ..Default::default()
+            },
+        );
 
         assert!(final_render.contains(markdown));
-        assert!(final_render.contains("```\n`Mermaid diagram not rendered"), "{final_render:?}");
+        assert!(
+            final_render.contains("```\n`Mermaid diagram not rendered"),
+            "{final_render:?}"
+        );
         assert!(final_render.contains("dropped, expected a link: \"invalid\""));
         assert!(!final_render.contains("more)"));
-        assert!(followed_by_text.contains("  \nFollowing text"), "{followed_by_text:?}");
+        assert!(
+            followed_by_text.contains("  \nFollowing text"),
+            "{followed_by_text:?}"
+        );
         assert!(!streaming.contains("Mermaid diagram not rendered"));
         assert!(!streaming.contains("```mermaid"));
         assert!(streaming.contains("│ Foo │"));
@@ -279,24 +338,43 @@ mod tests {
         let markdown = "```mermaid\nflowchart LR\n  A --> B\n```";
 
         assert_eq!(
-            transform_mermaid(markdown, TransformOptions { mode: MermaidRenderingMode::Off, ..Default::default() }),
+            transform_mermaid(
+                markdown,
+                TransformOptions {
+                    mode: MermaidRenderingMode::Off,
+                    ..Default::default()
+                }
+            ),
             markdown
         );
         assert_eq!(
             transform_mermaid(
                 markdown,
-                TransformOptions { mode: MermaidRenderingMode::On, is_streaming: true, ..Default::default() }
+                TransformOptions {
+                    mode: MermaidRenderingMode::On,
+                    is_streaming: true,
+                    ..Default::default()
+                }
             ),
             markdown
         );
         assert!(
-            !transform_mermaid(markdown, TransformOptions { mode: MermaidRenderingMode::On, ..Default::default() })
-                .contains("```mermaid")
+            !transform_mermaid(
+                markdown,
+                TransformOptions {
+                    mode: MermaidRenderingMode::On,
+                    ..Default::default()
+                }
+            )
+            .contains("```mermaid")
         );
         assert_eq!(
             transform_mermaid(
                 markdown,
-                TransformOptions { message_type: MessageType::AssistantThinking, ..Default::default() }
+                TransformOptions {
+                    message_type: MessageType::AssistantThinking,
+                    ..Default::default()
+                }
             ),
             markdown
         );

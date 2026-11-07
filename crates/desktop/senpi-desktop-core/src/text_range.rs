@@ -211,7 +211,7 @@ pub fn replace_utf16_selection(
 
 #[cfg(test)]
 mod tests {
-    use super::{SelectPart, TextSelectRequest, Utf16Range, replace_utf16_selection, utf16_slice};
+    use super::{replace_utf16_selection, utf16_slice, SelectPart, TextSelectRequest, Utf16Range};
 
     fn request(text: &str, prefix: &str, suffix: &str, part: SelectPart) -> TextSelectRequest {
         TextSelectRequest {

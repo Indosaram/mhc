@@ -221,7 +221,10 @@ impl FakeRespawnRunner {
     }
 
     fn started_task_ids(&self) -> Vec<String> {
-        self.specs().iter().map(|spec| spec.task_id.clone()).collect()
+        self.specs()
+            .iter()
+            .map(|spec| spec.task_id.clone())
+            .collect()
     }
 
     fn controls(&self) -> Vec<Arc<RespawnControl>> {
@@ -350,8 +353,12 @@ impl FakeManagedRunner {
         let mut handles = lock(&self.handles);
         while !handles.contains_key(task_id) {
             let now = Instant::now();
-            assert!(now < deadline, "timed out waiting for the {task_id} handle to start");
-            handles = self.started
+            assert!(
+                now < deadline,
+                "timed out waiting for the {task_id} handle to start"
+            );
+            handles = self
+                .started
                 .wait_timeout(handles, deadline - now)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
@@ -650,7 +657,10 @@ fn build_harness(
 }
 
 fn status_of(store: &TaskRecordStore, task_id: &str) -> Option<TaskStatus> {
-    store.load(task_id).expect("load").map(|record| record.status)
+    store
+        .load(task_id)
+        .expect("load")
+        .map(|record| record.status)
 }
 
 fn started(result: StartResult) -> crate::manager::types::StartedTask {
@@ -738,11 +748,14 @@ fn given_injected_reattach_ports_and_a_registered_store_fallback_when_reconciled
     deps.orphan_kill_delay_ms = Some(0);
     let injected = Arc::clone(&calls);
     deps.respawn = Some(Arc::new(move |record: &TaskRecord, path: Option<&Path>| {
-        injected.lock().unwrap_or_else(PoisonError::into_inner).push(format!(
-            "respawn:{}:{}",
-            record.task_id,
-            path.expect("session path").display()
-        ));
+        injected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(format!(
+                "respawn:{}:{}",
+                record.task_id,
+                path.expect("session path").display()
+            ));
         RespawnResult::Ok(Arc::new(InjectedHandle {
             task_id: record.task_id.clone(),
             session_id: "injected-session".to_string(),
@@ -752,11 +765,14 @@ fn given_injected_reattach_ports_and_a_registered_store_fallback_when_reconciled
     let injected = Arc::clone(&calls);
     deps.reattach = Some(Arc::new(
         move |record: &TaskRecord, handle: Arc<dyn ManagedChildHandle>| {
-            injected.lock().unwrap_or_else(PoisonError::into_inner).push(format!(
-                "reattach:{}:{}",
-                record.task_id,
-                handle.session_id().unwrap_or_default()
-            ));
+            injected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(format!(
+                    "reattach:{}:{}",
+                    record.task_id,
+                    handle.session_id().unwrap_or_default()
+                ));
             ReattachResult::Ok
         },
     ));
@@ -883,11 +899,7 @@ fn given_an_orphan_whose_reattach_respawn_then_fails_when_reconciled_then_the_tr
 
     // then the reattach failure detail replaces the generic orphan reason instead of being swallowed
     assert_eq!(result.outcomes[0].kind, ReconcileOutcomeKind::Lost);
-    let record = harness
-        .store
-        .load(task_id)
-        .expect("load")
-        .expect("record");
+    let record = harness.store.load(task_id).expect("load").expect("record");
     assert_eq!(
         record.error_message.as_deref(),
         Some("reattach failed: persisted spawn spec unavailable")
@@ -1242,32 +1254,33 @@ fn given_a_team_member_whose_current_runtime_is_missing_when_reconciling_then_it
     let healthy = seed_process_record(&temp.store, "st_00000010");
     persist_sessions(&temp.store, &team.task_id);
     persist_sessions(&temp.store, &healthy.task_id);
-    let resolver = create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
-        state_dir: StateDirConfig {
-            project_dir: temp.store.state_dir().to_path_buf(),
-            task_state_dir: None,
-        },
-        team_bounds: TeamTaskBounds {
-            max_members: 8,
-            max_parallel_members: 4,
-            max_wall_clock_minutes: 120,
-        },
-        member_extension: TeamMemberExtensionConfig {
-            entry_path: "/trusted/member-extension.js".to_string(),
-            inherited_extensions: Some(vec!["/trusted/provider-extension.js".to_string()]),
-        },
-    })
-    .expect("resolver");
-    let trusted: TrustedRespawnLaunchResolver = Arc::new(move |record: &TaskRecord| {
-        match resolver.resolve(record.name.as_deref(), &record.task_id) {
-            Ok(launch) => Ok(Some(TrustedRespawnLaunch {
-                extensions: Some(launch.extensions),
-                member_env: launch.member_env,
-            })),
-            Err(error) => Err(ManagedRunnerError::TeamRespawnLaunch {
-                code: error.code.as_str().to_string(),
-            }),
-        }
+    let resolver =
+        create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
+            state_dir: StateDirConfig {
+                project_dir: temp.store.state_dir().to_path_buf(),
+                task_state_dir: None,
+            },
+            team_bounds: TeamTaskBounds {
+                max_members: 8,
+                max_parallel_members: 4,
+                max_wall_clock_minutes: 120,
+            },
+            member_extension: TeamMemberExtensionConfig {
+                entry_path: "/trusted/member-extension.js".to_string(),
+                inherited_extensions: Some(vec!["/trusted/provider-extension.js".to_string()]),
+            },
+        })
+        .expect("resolver");
+    let trusted: TrustedRespawnLaunchResolver = Arc::new(move |record: &TaskRecord| match resolver
+        .resolve(record.name.as_deref(), &record.task_id)
+    {
+        Ok(launch) => Ok(Some(TrustedRespawnLaunch {
+            extensions: Some(launch.extensions),
+            member_env: launch.member_env,
+        })),
+        Err(error) => Err(ManagedRunnerError::TeamRespawnLaunch {
+            code: error.code.as_str().to_string(),
+        }),
     });
     let harness = create_harness_for_store(
         &temp.store,
@@ -1338,8 +1351,14 @@ fn given_one_concurrency_slot_and_two_queued_tasks_when_a_reattached_task_comple
     harness.in_process.wait_started(&first_queued.task_id);
 
     // then
-    assert_eq!(status_of(&harness.store, &first_queued.task_id), Some(Running));
-    assert_eq!(status_of(&harness.store, &second_queued.task_id), Some(Pending));
+    assert_eq!(
+        status_of(&harness.store, &first_queued.task_id),
+        Some(Running)
+    );
+    assert_eq!(
+        status_of(&harness.store, &second_queued.task_id),
+        Some(Pending)
+    );
     harness.in_process.settle(
         &first_queued.task_id,
         RunnerOutcome::Completed {
@@ -1347,7 +1366,10 @@ fn given_one_concurrency_slot_and_two_queued_tasks_when_a_reattached_task_comple
         },
     );
     harness.in_process.wait_started(&second_queued.task_id);
-    assert_eq!(status_of(&harness.store, &second_queued.task_id), Some(Running));
+    assert_eq!(
+        status_of(&harness.store, &second_queued.task_id),
+        Some(Running)
+    );
 }
 
 #[test]

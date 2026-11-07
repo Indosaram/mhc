@@ -1,13 +1,26 @@
-use maho_core::{messages::convert_to_llm,session_manager::session_entry_to_context_messages};
-use serde_json::{Value,json};
 use crate::openai_remote_schema::get_openai_remote_compaction_details;
-fn record_signature(value:Option<&str>)->Option<Value> {let text=value.filter(|s|s.starts_with('{'))?;serde_json::from_str::<Value>(text).ok().filter(Value::is_object)}
-pub fn provider_native_item(raw:&Value)->Option<Value> {if raw.is_object() && raw.get("type").is_some_and(Value::is_string) {Some(raw.clone())} else {None}}
-fn user_content(content:&Value)->Vec<Value> {
-    if let Some(text)=content.as_str() {return vec![json!({"type":"input_text","text":text})];}
+use maho_core::{messages::convert_to_llm, session_manager::session_entry_to_context_messages};
+use serde_json::{Value, json};
+fn record_signature(value: Option<&str>) -> Option<Value> {
+    let text = value.filter(|s| s.starts_with('{'))?;
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(Value::is_object)
+}
+pub fn provider_native_item(raw: &Value) -> Option<Value> {
+    if raw.is_object() && raw.get("type").is_some_and(Value::is_string) {
+        Some(raw.clone())
+    } else {
+        None
+    }
+}
+fn user_content(content: &Value) -> Vec<Value> {
+    if let Some(text) = content.as_str() {
+        return vec![json!({"type":"input_text","text":text})];
+    }
     content.as_array().into_iter().flatten().map(|b|if b.get("type").and_then(Value::as_str)==Some("text") {json!({"type":"input_text","text":b["text"]})} else {json!({"type":"input_image","detail":"auto","image_url":format!("data:{};base64,{}",b["mimeType"].as_str().unwrap_or_default(),b["data"].as_str().unwrap_or_default())})}).collect()
 }
-fn convert_message(message:&Value,index:usize,image_capable:bool)->Vec<Value> {
+fn convert_message(message: &Value, index: usize, image_capable: bool) -> Vec<Value> {
     match message.get("role").and_then(Value::as_str) {
         Some("user")=>vec![json!({"role":"user","content":user_content(&message["content"])})],
         Some("assistant")=>message["content"].as_array().into_iter().flatten().filter_map(|block|match block.get("type").and_then(Value::as_str) {
@@ -42,17 +55,38 @@ fn convert_message(message:&Value,index:usize,image_capable:bool)->Vec<Value> {
         _=>Vec::new(),
     }
 }
-pub fn convert_pending_messages(messages:&[Value],image_capable:bool)->Vec<Value> {convert_to_llm(messages).iter().enumerate().flat_map(|(i,m)|convert_message(m,i,image_capable)).collect()}
-pub fn convert_branch_entries(entries:&[Value],image_capable:bool)->Vec<Value> {
-    let mut items=Vec::new();let mut pending=Vec::new();let mut index=0;
-    let flush=|pending:&mut Vec<Value>,items:&mut Vec<Value>,index:&mut usize| {for message in convert_to_llm(pending) {items.extend(convert_message(&message,*index,image_capable));*index+=1;}pending.clear();};
+pub fn convert_pending_messages(messages: &[Value], image_capable: bool) -> Vec<Value> {
+    convert_to_llm(messages)
+        .iter()
+        .enumerate()
+        .flat_map(|(i, m)| convert_message(m, i, image_capable))
+        .collect()
+}
+pub fn convert_branch_entries(entries: &[Value], image_capable: bool) -> Vec<Value> {
+    let mut items = Vec::new();
+    let mut pending = Vec::new();
+    let mut index = 0;
+    let flush = |pending: &mut Vec<Value>, items: &mut Vec<Value>, index: &mut usize| {
+        for message in convert_to_llm(pending) {
+            items.extend(convert_message(&message, *index, image_capable));
+            *index += 1;
+        }
+        pending.clear();
+    };
     for entry in entries {
-        if entry.get("type").and_then(Value::as_str)==Some("compaction") && let Some(details)=entry.get("details").and_then(get_openai_remote_compaction_details) {
-            flush(&mut pending,&mut items,&mut index);items.extend(details.replacement_input.into_iter().map(Value::Object));continue;
+        if entry.get("type").and_then(Value::as_str) == Some("compaction")
+            && let Some(details) = entry
+                .get("details")
+                .and_then(get_openai_remote_compaction_details)
+        {
+            flush(&mut pending, &mut items, &mut index);
+            items.extend(details.replacement_input.into_iter().map(Value::Object));
+            continue;
         }
         pending.extend(session_entry_to_context_messages(entry));
     }
-    flush(&mut pending,&mut items,&mut index);items
+    flush(&mut pending, &mut items, &mut index);
+    items
 }
 
 #[cfg(test)]
@@ -62,9 +96,15 @@ mod tests {
 
     #[test]
     fn system_and_configuration_messages_are_not_remote_input() {
-        assert!(convert_pending_messages(&[
-            json!({"role":"system","content":"private prompt","timestamp":0}),
-            json!({"role":"configurationUpdate","timestamp":0}),
-        ], false).is_empty());
+        assert!(
+            convert_pending_messages(
+                &[
+                    json!({"role":"system","content":"private prompt","timestamp":0}),
+                    json!({"role":"configurationUpdate","timestamp":0}),
+                ],
+                false
+            )
+            .is_empty()
+        );
     }
 }

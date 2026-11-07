@@ -247,7 +247,10 @@ mod tests {
         ] {
             let result = detect_heuristic_model_family(model).expect("GPT six family exists");
             assert_eq!(result.family, family, "{model}");
-            assert_eq!(result.variants, Some(&["low", "medium", "high", "xhigh", "max"][..]));
+            assert_eq!(
+                result.variants,
+                Some(&["low", "medium", "high", "xhigh", "max"][..])
+            );
             assert_eq!(result.supports_temperature, Some(false));
         }
     }
@@ -255,8 +258,12 @@ mod tests {
     #[test]
     fn astra_and_six_point_one_sol_downgrade_none_and_minimal_to_low() {
         for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-sol-fast"] {
-            let result = detect_heuristic_model_family(model).expect("specific GPT six family exists");
-            assert_eq!(result.reasoning_efforts, Some(&["low", "medium", "high", "xhigh", "max"][..]));
+            let result =
+                detect_heuristic_model_family(model).expect("specific GPT six family exists");
+            assert_eq!(
+                result.reasoning_efforts,
+                Some(&["low", "medium", "high", "xhigh", "max"][..])
+            );
             assert_eq!(result.reasoning_effort_alias("none"), Some("low"));
             assert_eq!(result.reasoning_effort_alias("minimal"), Some("low"));
         }
@@ -264,8 +271,12 @@ mod tests {
 
     #[test]
     fn general_gpt_six_keeps_none_but_aliases_minimal() {
-        let result = detect_heuristic_model_family("gpt-6-sol").expect("general GPT six family exists");
-        assert_eq!(result.reasoning_efforts, Some(&["none", "low", "medium", "high", "xhigh", "max"][..]));
+        let result =
+            detect_heuristic_model_family("gpt-6-sol").expect("general GPT six family exists");
+        assert_eq!(
+            result.reasoning_efforts,
+            Some(&["none", "low", "medium", "high", "xhigh", "max"][..])
+        );
         assert_eq!(result.reasoning_effort_alias("none"), None);
         assert_eq!(result.reasoning_effort_alias("minimal"), Some("low"));
     }

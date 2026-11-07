@@ -38,13 +38,19 @@ impl std::error::Error for UserEditError {}
 
 impl UserEditError {
     fn new(reason: UserEditReason, message: impl Into<String>) -> Self {
-        Self { reason, message: message.into() }
+        Self {
+            reason,
+            message: message.into(),
+        }
     }
 }
 
 /// Optimistic-concurrency guard for the user-edit surface: the caller's leaf token must equal the
 /// session's current leaf.
-pub fn assert_expected_user_leaf(expected_leaf_id: Option<&str>, current_leaf_id: Option<&str>) -> Result<(), UserEditError> {
+pub fn assert_expected_user_leaf(
+    expected_leaf_id: Option<&str>,
+    current_leaf_id: Option<&str>,
+) -> Result<(), UserEditError> {
     if expected_leaf_id.is_none() || expected_leaf_id == current_leaf_id {
         return Ok(());
     }
@@ -70,18 +76,35 @@ pub fn user_text_equals(original: &UserMessage, text: &str) -> bool {
 }
 
 /// Text replaces every text block; every other block (the user's own attachments) is carried over.
-pub fn build_edited_user_message(original: &UserMessage, text: &str) -> Result<UserMessage, UserEditError> {
+pub fn build_edited_user_message(
+    original: &UserMessage,
+    text: &str,
+) -> Result<UserMessage, UserEditError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err(UserEditError::new(UserEditReason::Empty, "Edited user message cannot be empty"));
+        return Err(UserEditError::new(
+            UserEditReason::Empty,
+            "Edited user message cannot be empty",
+        ));
     }
     let attachments: Vec<ContentBlock> = match &original.content {
-        UserContent::Blocks(blocks) => blocks.iter().filter(|block| !matches!(block, ContentBlock::Text(_))).cloned().collect(),
+        UserContent::Blocks(blocks) => blocks
+            .iter()
+            .filter(|block| !matches!(block, ContentBlock::Text(_)))
+            .cloned()
+            .collect(),
         UserContent::Text(_) => Vec::new(),
     };
-    let mut content = vec![ContentBlock::Text(maho_ai::types::TextContent { text: trimmed.to_owned(), audience: None, text_signature: None })];
+    let mut content = vec![ContentBlock::Text(maho_ai::types::TextContent {
+        text: trimmed.to_owned(),
+        audience: None,
+        text_signature: None,
+    })];
     content.extend(attachments);
-    Ok(UserMessage { content: UserContent::Blocks(content), timestamp: chrono::Utc::now().timestamp_millis() })
+    Ok(UserMessage {
+        content: UserContent::Blocks(content),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    })
 }
 
 #[cfg(test)]
@@ -111,7 +134,13 @@ mod tests {
     #[test]
     fn an_empty_edit_is_rejected() {
         let message = user(json!([{ "type": "text", "text": "hi" }]));
-        assert_eq!(build_edited_user_message(&message, "   ").expect_err("empty").reason.code(), "empty");
+        assert_eq!(
+            build_edited_user_message(&message, "   ")
+                .expect_err("empty")
+                .reason
+                .code(),
+            "empty"
+        );
     }
 
     #[test]
@@ -121,7 +150,9 @@ mod tests {
             { "type": "image", "mimeType": "image/png", "data": "AAAA" }
         ]));
         let edited = build_edited_user_message(&message, "new").expect("edited");
-        let UserContent::Blocks(blocks) = edited.content else { panic!("blocks") };
+        let UserContent::Blocks(blocks) = edited.content else {
+            panic!("blocks")
+        };
         assert_eq!(blocks.len(), 2);
         assert!(matches!(blocks[0], ContentBlock::Text(_)));
         assert!(matches!(blocks[1], ContentBlock::Image(_)));

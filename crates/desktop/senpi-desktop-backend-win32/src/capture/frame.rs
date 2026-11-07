@@ -46,15 +46,27 @@ pub(crate) fn lay_out<T>(
     }
     if displays.is_empty() {
         return Err(match selector {
-            DisplaySelector::All => DesktopError::capture_failed("Win32 reported no active displays"),
+            DisplaySelector::All => {
+                DesktopError::capture_failed("Win32 reported no active displays")
+            }
             DisplaySelector::Id(id) => {
                 DesktopError::invalid_target(format!("selected display id '{id}' is not active"))
             }
         });
     }
-    displays.sort_by(|(_, left), (_, right)| (left.y, left.x, &left.id).cmp(&(right.y, right.x, &right.id)));
-    let min_x = displays.iter().map(|(_, display)| display.x).min().unwrap_or(0);
-    let min_y = displays.iter().map(|(_, display)| display.y).min().unwrap_or(0);
+    displays.sort_by(|(_, left), (_, right)| {
+        (left.y, left.x, &left.id).cmp(&(right.y, right.x, &right.id))
+    });
+    let min_x = displays
+        .iter()
+        .map(|(_, display)| display.x)
+        .min()
+        .unwrap_or(0);
+    let min_y = displays
+        .iter()
+        .map(|(_, display)| display.y)
+        .min()
+        .unwrap_or(0);
     for (_, display) in &mut displays {
         display.pixel_x = offset(display.x, min_x)?;
         display.pixel_y = offset(display.y, min_y)?;
@@ -71,7 +83,10 @@ pub(crate) fn lay_out<T>(
 }
 
 /// A physical window rect in the same global physical coordinates.
-pub(crate) fn logical_window_rect(rect: PhysicalRect, displays: &[DesktopDisplay]) -> (i32, i32, u32, u32) {
+pub(crate) fn logical_window_rect(
+    rect: PhysicalRect,
+    displays: &[DesktopDisplay],
+) -> (i32, i32, u32, u32) {
     let _ = displays;
     (rect.x, rect.y, rect.width, rect.height)
 }
@@ -107,7 +122,9 @@ pub(crate) fn physical_point(x: f64, y: f64, displays: &[DesktopDisplay]) -> Opt
 
 /// Composites per-display captures only when each still matches the geometry
 /// enumerated before capture.
-pub(crate) fn composite(regions: Vec<(DesktopDisplay, RgbaImage)>) -> CoreResult<(RgbaImage, FrameGeometry)> {
+pub(crate) fn composite(
+    regions: Vec<(DesktopDisplay, RgbaImage)>,
+) -> CoreResult<(RgbaImage, FrameGeometry)> {
     let (width, height) = extent(regions.iter().map(|(display, _)| display));
     let mut canvas = RgbaImage::from_pixel(width.max(1), height.max(1), Rgba([0, 0, 0, 255]));
     let mut displays = Vec::with_capacity(regions.len());

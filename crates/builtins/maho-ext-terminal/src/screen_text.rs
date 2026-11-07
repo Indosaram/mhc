@@ -18,7 +18,11 @@ pub const fn normalize_scrollback(value: usize) -> usize {
 
 pub fn normalize_replay_history_length(cols: usize, rows: usize, scrollback: usize) -> usize {
     cols.max(MIN_SIZE)
-        .saturating_mul(rows.saturating_add(scrollback).saturating_add(1).max(MIN_SIZE))
+        .saturating_mul(
+            rows.saturating_add(scrollback)
+                .saturating_add(1)
+                .max(MIN_SIZE),
+        )
         .saturating_mul(4)
         .clamp(MIN_REPLAY_HISTORY_LENGTH, MAX_REPLAY_HISTORY_LENGTH)
 }
@@ -49,8 +53,14 @@ mod tests {
 
     #[test]
     fn replay_budget_has_upstream_bounds() {
-        assert_eq!(normalize_replay_history_length(1, 1, 0), MIN_REPLAY_HISTORY_LENGTH);
-        assert_eq!(normalize_replay_history_length(300, 80, 1_000), MAX_REPLAY_HISTORY_LENGTH);
+        assert_eq!(
+            normalize_replay_history_length(1, 1, 0),
+            MIN_REPLAY_HISTORY_LENGTH
+        );
+        assert_eq!(
+            normalize_replay_history_length(300, 80, 1_000),
+            MAX_REPLAY_HISTORY_LENGTH
+        );
         assert_eq!(normalize_replay_history_length(100, 40, 100), 56_400);
     }
 

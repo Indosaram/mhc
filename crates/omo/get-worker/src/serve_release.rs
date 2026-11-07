@@ -2,13 +2,13 @@
 
 use crate::bindings::{CacheKey, CachePopulation, ReleaseStore, StoredObject};
 use crate::datapoint::{
-    is_qa_install, record_download, request_country, DownloadEvent, RequestKind, ServedFrom,
+    DownloadEvent, RequestKind, ServedFrom, is_qa_install, record_download, request_country,
 };
 use crate::env::RequestContext;
 use crate::http::{Body, Headers, Method, Request, Response};
 use crate::release_names::{
-    asset_kind, completion_marker_key, github_asset_url, is_release_version, release_object_key,
-    AssetKind,
+    AssetKind, asset_kind, completion_marker_key, github_asset_url, is_release_version,
+    release_object_key,
 };
 
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";

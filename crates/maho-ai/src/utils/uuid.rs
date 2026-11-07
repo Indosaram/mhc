@@ -23,7 +23,10 @@ thread_local! {
     static GENERATOR: std::cell::RefCell<Generator> = const { std::cell::RefCell::new(Generator { last_ordinary_timestamp: -1, sequence: None }) };
 }
 #[cfg(not(test))]
-static GENERATOR: Mutex<Generator> = Mutex::new(Generator { last_ordinary_timestamp: -1, sequence: None });
+static GENERATOR: Mutex<Generator> = Mutex::new(Generator {
+    last_ordinary_timestamp: -1,
+    sequence: None,
+});
 
 #[cfg(test)]
 thread_local! {
@@ -32,7 +35,9 @@ thread_local! {
 
 #[cfg(test)]
 fn current_time_ms() -> i64 {
-    MOCK_NOW_MS.with(|mock| mock.get()).unwrap_or_else(super::diagnostics::now_ms)
+    MOCK_NOW_MS
+        .with(|mock| mock.get())
+        .unwrap_or_else(super::diagnostics::now_ms)
 }
 
 #[cfg(not(test))]
@@ -48,7 +53,9 @@ static MOCK_RANDOM_BYTES: Mutex<Option<MockRandomBytesFn>> = Mutex::new(None);
 
 #[cfg(test)]
 fn random_bytes() -> [u8; 16] {
-    let guard = MOCK_RANDOM_BYTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = MOCK_RANDOM_BYTES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match guard.as_ref() {
         Some(f) => f(),
         None => *uuid::Uuid::new_v4().as_bytes(),
@@ -68,7 +75,11 @@ fn random_bytes() -> [u8; 16] {
 /// being rejected at compile time by a narrower Rust integer type.
 pub fn uuidv7(timestamp_ms: Option<f64>) -> Result<String, UuidError> {
     let requested_f64 = timestamp_ms.unwrap_or_else(|| current_time_ms() as f64);
-    if !requested_f64.is_finite() || requested_f64.trunc() != requested_f64 || requested_f64 < 0.0 || requested_f64 > MAX_UUID_V7_TIMESTAMP as f64 {
+    if !requested_f64.is_finite()
+        || requested_f64.trunc() != requested_f64
+        || requested_f64 < 0.0
+        || requested_f64 > MAX_UUID_V7_TIMESTAMP as f64
+    {
         return Err(UuidError::TimestampOutOfRange);
     }
     let requested = requested_f64 as i64;
@@ -83,11 +94,13 @@ pub fn uuidv7(timestamp_ms: Option<f64>) -> Result<String, UuidError> {
             Some(_) => requested,
         };
         let sequence = match state.sequence {
-            None => (u64::from(bytes[1]) << 32)
-                | (u64::from(bytes[2]) << 24)
-                | (u64::from(bytes[3]) << 16)
-                | (u64::from(bytes[4]) << 8)
-                | u64::from(bytes[5]),
+            None => {
+                (u64::from(bytes[1]) << 32)
+                    | (u64::from(bytes[2]) << 24)
+                    | (u64::from(bytes[3]) << 16)
+                    | (u64::from(bytes[4]) << 8)
+                    | u64::from(bytes[5])
+            }
             Some(MAX_SEQUENCE) => return Err(UuidError::SequenceExhausted),
             Some(previous) => previous + 1,
         };
@@ -115,7 +128,9 @@ fn with_generator<T>(f: impl FnOnce(&mut Generator) -> T) -> T {
 
 #[cfg(not(test))]
 fn with_generator<T>(f: impl FnOnce(&mut Generator) -> T) -> T {
-    let mut state = GENERATOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut state = GENERATOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     f(&mut state)
 }
 
@@ -131,7 +146,10 @@ mod tests {
         assert_eq!(bytes[13], b'-');
         assert_eq!(bytes[14], b'7');
         assert_eq!(bytes[18], b'-');
-        assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'), "bad variant nibble in {id}");
+        assert!(
+            matches!(bytes[19], b'8' | b'9' | b'a' | b'b'),
+            "bad variant nibble in {id}"
+        );
         assert_eq!(bytes[23], b'-');
         for (i, &b) in bytes.iter().enumerate() {
             if matches!(i, 8 | 13 | 18 | 23) {
@@ -156,7 +174,9 @@ mod tests {
     #[test]
     fn generates_ordered_uuid_v7s_while_preserving_follower_timestamps() {
         MOCK_NOW_MS.with(|mock| mock.set(None));
-        *MOCK_RANDOM_BYTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *MOCK_RANDOM_BYTES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         const TIMESTAMP: i64 = 2_000_000_000_000;
         set_mock_now_ms(TIMESTAMP);
 
@@ -168,8 +188,10 @@ mod tests {
         let after_advance = uuidv7(None).expect("uuid");
         let ordinary_ids = [first, second, after_rollback, after_advance];
         let follower_timestamp = TIMESTAMP - 1_000;
-        let followers =
-            [uuidv7(Some(follower_timestamp as f64)).expect("uuid"), uuidv7(Some(follower_timestamp as f64)).expect("uuid")];
+        let followers = [
+            uuidv7(Some(follower_timestamp as f64)).expect("uuid"),
+            uuidv7(Some(follower_timestamp as f64)).expect("uuid"),
+        ];
 
         for id in ordinary_ids.iter().chain(followers.iter()) {
             assert_matches_uuid_v7(id);
@@ -178,13 +200,33 @@ mod tests {
         sorted.sort();
         assert_eq!(ordinary_ids, sorted, "ordinary ids must already be sorted");
         let unique: std::collections::HashSet<_> = ordinary_ids.iter().collect();
-        assert_eq!(unique.len(), ordinary_ids.len(), "ordinary ids must be unique");
+        assert_eq!(
+            unique.len(),
+            ordinary_ids.len(),
+            "ordinary ids must be unique"
+        );
         let timestamps: Vec<u64> = ordinary_ids.iter().map(|id| parse_timestamp(id)).collect();
-        assert_eq!(timestamps, vec![TIMESTAMP as u64, TIMESTAMP as u64, TIMESTAMP as u64, (TIMESTAMP + 1) as u64]);
-        let follower_timestamps: Vec<u64> = followers.iter().map(|id| parse_timestamp(id)).collect();
-        assert_eq!(follower_timestamps, vec![follower_timestamp as u64, follower_timestamp as u64]);
+        assert_eq!(
+            timestamps,
+            vec![
+                TIMESTAMP as u64,
+                TIMESTAMP as u64,
+                TIMESTAMP as u64,
+                (TIMESTAMP + 1) as u64
+            ]
+        );
+        let follower_timestamps: Vec<u64> =
+            followers.iter().map(|id| parse_timestamp(id)).collect();
+        assert_eq!(
+            follower_timestamps,
+            vec![follower_timestamp as u64, follower_timestamp as u64]
+        );
         let follower_set: std::collections::HashSet<_> = followers.iter().collect();
-        assert_eq!(follower_set.len(), followers.len(), "follower ids must be unique");
+        assert_eq!(
+            follower_set.len(),
+            followers.len(),
+            "follower ids must be unique"
+        );
     }
 
     /// Port of "uses fresh randomness for every UUID tail" (uuid.test.ts).
@@ -193,7 +235,9 @@ mod tests {
         MOCK_NOW_MS.with(|mock| mock.set(None));
         const TIMESTAMP: i64 = 2_000_000_000_000;
         let counter = std::sync::atomic::AtomicU8::new(0);
-        *MOCK_RANDOM_BYTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(move || {
+        *MOCK_RANDOM_BYTES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(move || {
             let byte = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             [byte; 16]
         }));
@@ -207,7 +251,13 @@ mod tests {
     /// Port of "accepts timestamp boundary %s" (uuid.test.ts it.each([0, 2 ** 48 - 1])).
     #[test]
     fn accepts_timestamp_boundary() {
-        let cases: &[(&str, f64)] = &[("accepts timestamp boundary 0", 0.0), ("accepts timestamp boundary 281474976710655", 0xffff_ffff_ffffu64 as f64)];
+        let cases: &[(&str, f64)] = &[
+            ("accepts timestamp boundary 0", 0.0),
+            (
+                "accepts timestamp boundary 281474976710655",
+                0xffff_ffff_ffffu64 as f64,
+            ),
+        ];
         for (title, timestamp) in cases {
             let id = uuidv7(Some(*timestamp)).unwrap_or_else(|e| panic!("case {title}: {e}"));
             assert_eq!(parse_timestamp(&id), *timestamp as u64, "case: {title}");
@@ -222,13 +272,20 @@ mod tests {
     fn rejects_invalid_timestamp() {
         let cases: &[(&str, f64)] = &[
             ("rejects invalid timestamp -1", -1.0),
-            ("rejects invalid timestamp 281474976710656", 0x1_0000_0000_0000u64 as f64),
+            (
+                "rejects invalid timestamp 281474976710656",
+                0x1_0000_0000_0000u64 as f64,
+            ),
             ("rejects invalid timestamp 1.5", 1.5),
             ("rejects invalid timestamp NaN", f64::NAN),
             ("rejects invalid timestamp Infinity", f64::INFINITY),
         ];
         for (title, timestamp) in cases {
-            assert_eq!(uuidv7(Some(*timestamp)), Err(UuidError::TimestampOutOfRange), "case: {title}");
+            assert_eq!(
+                uuidv7(Some(*timestamp)),
+                Err(UuidError::TimestampOutOfRange),
+                "case: {title}"
+            );
         }
     }
 }

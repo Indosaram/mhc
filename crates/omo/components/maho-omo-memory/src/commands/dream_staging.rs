@@ -65,7 +65,8 @@ pub fn stage_dream_transcript(
             has_session_header = true;
             continue;
         }
-        if let Some(item) = normalize_message(&parsed, &file_path, line_index, &fallback_captured_at)
+        if let Some(item) =
+            normalize_message(&parsed, &file_path, line_index, &fallback_captured_at)
         {
             normalized.push(item);
         }
@@ -96,7 +97,8 @@ pub fn stage_dream_transcript(
     }
     if entries.is_empty() {
         return Err(
-            "--from senpi session JSONL contains no stageable user or assistant messages".to_owned(),
+            "--from senpi session JSONL contains no stageable user or assistant messages"
+                .to_owned(),
         );
     }
 
@@ -132,10 +134,16 @@ pub fn stage_dream_transcript(
             .collect(),
     );
     journal.append(&fresh).map_err(|error| error.to_string())?;
-    Ok(StagedDreamTranscript { conversation_id, staged_message_ids, skipped_message_ids })
+    Ok(StagedDreamTranscript {
+        conversation_id,
+        staged_message_ids,
+        skipped_message_ids,
+    })
 }
 
-fn projection_message_id(projection: &memory_core::journal::entries::TranscriptProjection) -> String {
+fn projection_message_id(
+    projection: &memory_core::journal::entries::TranscriptProjection,
+) -> String {
     use memory_core::journal::entries::TranscriptProjection;
     match projection {
         TranscriptProjection::User { message_id, .. }
@@ -277,7 +285,10 @@ mod tests {
             sha1_hex(b"The quick brown fox jumps over the lazy dog"),
             "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
         );
-        assert_eq!(sha1_hex(b"remember tabs"), "a4d561f91a91d1abb13acbb7d5629104e698c77f");
+        assert_eq!(
+            sha1_hex(b"remember tabs"),
+            "a4d561f91a91d1abb13acbb7d5629104e698c77f"
+        );
     }
 
     #[test]
@@ -295,7 +306,8 @@ mod tests {
         let journal_dir = transcripts_dir.join(&conversation_id);
         // A directory where the transcript file belongs: `read_to_string` fails with a
         // non-`NotFound` IO error, so `TranscriptJournal::read_entries` returns `Err`.
-        std::fs::create_dir_all(journal_dir.join("transcript.jsonl")).expect("blocked transcript path");
+        std::fs::create_dir_all(journal_dir.join("transcript.jsonl"))
+            .expect("blocked transcript path");
 
         let result = stage_dream_transcript(
             source.to_string_lossy().as_ref(),
@@ -303,7 +315,10 @@ mod tests {
             root.path(),
         );
 
-        assert!(result.is_err(), "an unreadable journal must propagate the read error");
+        assert!(
+            result.is_err(),
+            "an unreadable journal must propagate the read error"
+        );
         assert!(
             journal_dir.join("transcript.jsonl").is_dir(),
             "the failed read must not replace the transcript path"

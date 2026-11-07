@@ -86,7 +86,10 @@ fn is_hidden(entry: &Value) -> bool {
 /// One row: `message` rows carry the optional `role` and the summarized, bounded text;
 /// `custom_message` rows carry the bounded top-level content; every other type is `{cursor, type}`.
 fn render_row(cursor: usize, entry: &Value, cap: usize) -> Value {
-    let entry_type = entry.get("type").and_then(Value::as_str).unwrap_or_default();
+    let entry_type = entry
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if entry_type == "message"
         && let Some(message) = entry.get("message").filter(|message| message.is_object())
     {
@@ -147,7 +150,11 @@ mod tests {
 
     /// The two `session_entries` caps overridden; every other cap stays at its default.
     fn caps(session_entries: usize, session_entry_chars: usize) -> KibitzerToolCaps {
-        KibitzerToolCaps { session_entries, session_entry_chars, ..DEFAULT_KIBITZER_TOOL_CAPS }
+        KibitzerToolCaps {
+            session_entries,
+            session_entry_chars,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        }
     }
 
     /// Upstream `test-support.ts::message`: content is one text block.
@@ -183,13 +190,21 @@ mod tests {
     }
 
     fn page_rows(page: &Value) -> Vec<Value> {
-        page.get("entries").and_then(Value::as_array).cloned().unwrap_or_default()
+        page.get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn row_texts(page: &Value) -> Vec<String> {
         page_rows(page)
             .iter()
-            .map(|row| row.get("text").and_then(Value::as_str).unwrap_or_default().to_string())
+            .map(|row| {
+                row.get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
             .collect()
     }
 
@@ -209,7 +224,9 @@ mod tests {
     }
 
     fn is_truncated(page: &Value) -> bool {
-        page.get("truncated").and_then(Value::as_bool).unwrap_or(false)
+        page.get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     // ---- five upstream pure paging cases (`session-read.test.ts` :: `sessionEntriesSince`) ----
@@ -221,8 +238,16 @@ mod tests {
             message_with_custom_type("assistant", "recall hint", "e1", RECALL_CUSTOM_TYPE),
             message_with_custom_type("assistant", "legacy hint", "e2", "omo-memorian:recall"),
             message_with_custom_type("assistant", "notice", "e3", MEMORY_NOTICE_CUSTOM_TYPE),
-            custom_entry(NUDGED_ENTRY_TYPE, "e4", json!({ "version": 1, "nudges": [{ "path": "a.md", "hint": "h" }] })),
-            custom_entry(GATE_ENTRY_TYPE, "e5", json!({ "version": 1, "status": "skipped", "candidateCount": 0 })),
+            custom_entry(
+                NUDGED_ENTRY_TYPE,
+                "e4",
+                json!({ "version": 1, "nudges": [{ "path": "a.md", "hint": "h" }] }),
+            ),
+            custom_entry(
+                GATE_ENTRY_TYPE,
+                "e5",
+                json!({ "version": 1, "status": "skipped", "candidateCount": 0 }),
+            ),
             custom_message(UNAVAILABLE_ENTRY_TYPE, "e6", "injected"),
             message("assistant", "visible assistant", "e7"),
         ];
@@ -235,11 +260,17 @@ mod tests {
             GATE_ENTRY_TYPE,
             UNAVAILABLE_ENTRY_TYPE,
         ] {
-            assert!(HIDDEN_SESSION_CUSTOM_TYPES.contains(&hidden_type), "{hidden_type} must be hidden");
+            assert!(
+                HIDDEN_SESSION_CUSTOM_TYPES.contains(&hidden_type),
+                "{hidden_type} must be hidden"
+            );
         }
 
         let page = session_entries_since(&entries, -1, caps(30, 600));
-        assert_eq!(row_texts(&page), vec!["visible user".to_string(), "visible assistant".to_string()]);
+        assert_eq!(
+            row_texts(&page),
+            vec!["visible user".to_string(), "visible assistant".to_string()]
+        );
         assert_eq!(row_cursors(&page), vec![0, 7]);
         assert_eq!(hidden_count(&page), 6);
         assert_eq!(next_since(&page), 7);
@@ -248,7 +279,11 @@ mod tests {
 
     #[test]
     fn given_a_since_cursor_when_listing_then_only_entries_after_the_cursor_are_returned() {
-        let entries = vec![message("user", "a", "e0"), message("assistant", "b", "e1"), message("user", "c", "e2")];
+        let entries = vec![
+            message("user", "a", "e0"),
+            message("assistant", "b", "e1"),
+            message("user", "c", "e2"),
+        ];
         let page = session_entries_since(&entries, 1, caps(30, 600));
         assert_eq!(row_texts(&page), vec!["c".to_string()]);
         assert_eq!(next_since(&page), 2);
@@ -260,9 +295,11 @@ mod tests {
     }
 
     #[test]
-    fn given_more_entries_than_the_page_cap_when_listing_then_the_page_is_bounded_and_reports_the_continuation_cursor() {
-        let entries: Vec<Value> =
-            (0..10).map(|index| message("user", &format!("m{index}"), &format!("e{index}"))).collect();
+    fn given_more_entries_than_the_page_cap_when_listing_then_the_page_is_bounded_and_reports_the_continuation_cursor()
+     {
+        let entries: Vec<Value> = (0..10)
+            .map(|index| message("user", &format!("m{index}"), &format!("e{index}")))
+            .collect();
         let page = session_entries_since(&entries, -1, caps(4, 600));
         assert_eq!(page_rows(&page).len(), 4);
         assert_eq!(next_since(&page), 3);
@@ -270,20 +307,30 @@ mod tests {
     }
 
     #[test]
-    fn given_a_long_entry_with_a_secret_when_listing_then_the_text_is_redacted_before_it_is_capped() {
+    fn given_a_long_entry_with_a_secret_when_listing_then_the_text_is_redacted_before_it_is_capped()
+    {
         // Upstream redacts secret-like material FIRST, so a secret inside the kept head cannot survive.
         let secret = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let entries = vec![message("user", &format!("{secret} {}", "y".repeat(2000)), "e0")];
+        let entries = vec![message(
+            "user",
+            &format!("{secret} {}", "y".repeat(2000)),
+            "e0",
+        )];
         let page = session_entries_since(&entries, -1, caps(30, 100));
         let rows = page_rows(&page);
-        let text = rows.first().and_then(|row| row.get("text")).and_then(Value::as_str).unwrap_or_default();
+        let text = rows
+            .first()
+            .and_then(|row| row.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         assert!(!text.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"));
         assert!(text.encode_utf16().count() <= 100 + 64);
         assert!(text.contains("[truncated"));
     }
 
     #[test]
-    fn given_assistant_tool_calls_and_tool_results_when_listing_then_they_are_summarized_as_bounded_text() {
+    fn given_assistant_tool_calls_and_tool_results_when_listing_then_they_are_summarized_as_bounded_text()
+     {
         let entries = vec![
             json!({
                 "type": "message",
@@ -307,20 +354,36 @@ mod tests {
         let page = session_entries_since(&entries, -1, caps(30, 600));
         let rows = page_rows(&page);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].get("role").and_then(Value::as_str), Some("assistant"));
-        let first = rows[0].get("text").and_then(Value::as_str).unwrap_or_default();
+        assert_eq!(
+            rows[0].get("role").and_then(Value::as_str),
+            Some("assistant")
+        );
+        let first = rows[0]
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         assert!(first.contains("bash"));
         assert!(first.contains("ls"));
-        assert_eq!(rows[1].get("role").and_then(Value::as_str), Some("toolResult"));
-        assert!(rows[1].get("text").and_then(Value::as_str).unwrap_or_default().contains("a.txt"));
+        assert_eq!(
+            rows[1].get("role").and_then(Value::as_str),
+            Some("toolResult")
+        );
+        assert!(
+            rows[1]
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("a.txt")
+        );
     }
 
     // ---- boundary cases (queue invocation contract) ----
 
     #[test]
     fn given_exactly_the_page_cap_when_listing_then_the_page_is_not_truncated() {
-        let entries: Vec<Value> =
-            (0..3).map(|index| message("user", &format!("m{index}"), &format!("e{index}"))).collect();
+        let entries: Vec<Value> = (0..3)
+            .map(|index| message("user", &format!("m{index}"), &format!("e{index}")))
+            .collect();
         let exact = session_entries_since(&entries, -1, caps(3, 600));
         assert_eq!(page_rows(&exact).len(), 3);
         assert_eq!(next_since(&exact), 2);
@@ -333,13 +396,26 @@ mod tests {
     }
 
     #[test]
-    fn given_a_filled_page_when_hidden_rows_precede_the_next_visible_row_then_they_are_still_counted() {
+    fn given_a_filled_page_when_hidden_rows_precede_the_next_visible_row_then_they_are_still_counted()
+     {
         let entries = vec![
             message("user", "v0", "e0"),
-            custom_entry(NUDGED_ENTRY_TYPE, "e1", json!({ "version": 1, "nudges": [] })),
-            custom_entry(GATE_ENTRY_TYPE, "e2", json!({ "version": 1, "status": "skipped", "candidateCount": 0 })),
+            custom_entry(
+                NUDGED_ENTRY_TYPE,
+                "e1",
+                json!({ "version": 1, "nudges": [] }),
+            ),
+            custom_entry(
+                GATE_ENTRY_TYPE,
+                "e2",
+                json!({ "version": 1, "status": "skipped", "candidateCount": 0 }),
+            ),
             message("assistant", "v3", "e3"),
-            custom_entry(UNAVAILABLE_ENTRY_TYPE, "e4", json!({ "version": 1, "category": "c", "cause": "category_unavailable" })),
+            custom_entry(
+                UNAVAILABLE_ENTRY_TYPE,
+                "e4",
+                json!({ "version": 1, "category": "c", "cause": "category_unavailable" }),
+            ),
         ];
         let page = session_entries_since(&entries, -1, caps(1, 600));
         assert_eq!(page_rows(&page).len(), 1);
@@ -351,7 +427,11 @@ mod tests {
     #[test]
     fn given_a_zero_page_cap_when_listing_then_no_rows_return_and_the_input_cursor_is_preserved() {
         let entries = vec![
-            custom_entry(NUDGED_ENTRY_TYPE, "e0", json!({ "version": 1, "nudges": [] })),
+            custom_entry(
+                NUDGED_ENTRY_TYPE,
+                "e0",
+                json!({ "version": 1, "nudges": [] }),
+            ),
             message("user", "visible", "e1"),
         ];
         let page = session_entries_since(&entries, -1, caps(0, 600));
@@ -392,14 +472,18 @@ mod tests {
         let page = session_entries_since(&entries, -1, caps(30, 600));
         let rows = page_rows(&page);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].get("type").and_then(Value::as_str), Some("custom_message"));
+        assert_eq!(
+            rows[0].get("type").and_then(Value::as_str),
+            Some("custom_message")
+        );
         assert_eq!(rows[0].get("text").and_then(Value::as_str), Some("hello"));
         assert!(rows[0].get("role").is_none());
         assert_eq!(hidden_count(&page), 0);
     }
 
     #[test]
-    fn given_a_message_with_a_non_string_role_when_listing_then_the_row_omits_role_but_keeps_text() {
+    fn given_a_message_with_a_non_string_role_when_listing_then_the_row_omits_role_but_keeps_text()
+    {
         let entries = vec![json!({ "type": "message", "message": { "role": 5, "content": "hi" } })];
         let page = session_entries_since(&entries, -1, caps(30, 600));
         let rows = page_rows(&page);
@@ -417,6 +501,9 @@ mod tests {
         let page = session_entries_since(&entries, -1, caps(30, 600));
         let rows = page_rows(&page);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].get("text").and_then(Value::as_str), Some("[tool bash] "));
+        assert_eq!(
+            rows[0].get("text").and_then(Value::as_str),
+            Some("[tool bash] ")
+        );
     }
 }

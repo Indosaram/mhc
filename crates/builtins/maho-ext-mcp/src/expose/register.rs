@@ -1,6 +1,4 @@
-use super::schema_compat::{
-    McpToolNameEntry, build_mcp_tool_names, map_mcp_tool_result,
-};
+use super::schema_compat::{McpToolNameEntry, build_mcp_tool_names, map_mcp_tool_result};
 use crate::{
     catalog::McpToolCatalogEntry,
     config_schema::OutputGuardSettings,
@@ -45,26 +43,68 @@ pub fn build_mcp_tool_definitions(
     artifacts: Arc<McpOutputArtifacts>,
     output_guard: Option<OutputGuardSettings>,
 ) -> Vec<ToolDefinition> {
-    map_mcp_catalog_names(entries).into_iter().map(|named|{
-        let entry=named.entry;let label=format!("{}/{}",entry.server,entry.tool);
-        let description=entry.description.clone().unwrap_or_else(||format!("MCP tool {label}"));
-        let schema=super::schema_compat::convert_json_schema_to_type_box_with(&entry.schema,entry.modern).schema;
-        let defaults=McpGuardDefaults {agent_dir:agent_dir.clone(),artifacts:artifacts.clone(),output_guard:output_guard.clone()};
-        let identity_entry=entry.clone();let name=named.name.clone();
-        let mut tool=ToolDefinition::new(&named.name,&description,schema,Arc::new(move |call|{
-            let entry=entry.clone();let defaults=defaults.clone();let name=name.clone();
-            Box::pin(async move {
-                call.signal.check()?;
-                let params=if call.params.is_object() || entry.modern {call.params.clone()}else{json!({})};
-                // register.ts: the invocation input is the definition's own (record) arguments.
-                let invocation=crate::invocation::McpInvocation::from_call(&call,&name,params.clone());
-                execute_mcp_catalog_entry(&entry,params,&call,&invocation,&defaults).await
-            })
-        }));
-        // register.ts `registerDispatchIdentity(schema, () => entry.invocation?.identity(entry))`.
-        maho_ext_permission_system::dispatch_metadata::register_dispatch_identity(&mut tool,move |_|identity_entry.invocation.as_ref().map(|resolver|resolver.identity(&identity_entry)));
-        tool.label=label;tool.execution_mode=Some(ToolExecutionMode::Parallel);tool
-    }).collect()
+    map_mcp_catalog_names(entries)
+        .into_iter()
+        .map(|named| {
+            let entry = named.entry;
+            let label = format!("{}/{}", entry.server, entry.tool);
+            let description = entry
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("MCP tool {label}"));
+            let schema = super::schema_compat::convert_json_schema_to_type_box_with(
+                &entry.schema,
+                entry.modern,
+            )
+            .schema;
+            let defaults = McpGuardDefaults {
+                agent_dir: agent_dir.clone(),
+                artifacts: artifacts.clone(),
+                output_guard: output_guard.clone(),
+            };
+            let identity_entry = entry.clone();
+            let name = named.name.clone();
+            let mut tool = ToolDefinition::new(
+                &named.name,
+                &description,
+                schema,
+                Arc::new(move |call| {
+                    let entry = entry.clone();
+                    let defaults = defaults.clone();
+                    let name = name.clone();
+                    Box::pin(async move {
+                        call.signal.check()?;
+                        let params = if call.params.is_object() || entry.modern {
+                            call.params.clone()
+                        } else {
+                            json!({})
+                        };
+                        // register.ts: the invocation input is the definition's own (record) arguments.
+                        let invocation = crate::invocation::McpInvocation::from_call(
+                            &call,
+                            &name,
+                            params.clone(),
+                        );
+                        execute_mcp_catalog_entry(&entry, params, &call, &invocation, &defaults)
+                            .await
+                    })
+                }),
+            );
+            // register.ts `registerDispatchIdentity(schema, () => entry.invocation?.identity(entry))`.
+            maho_ext_permission_system::dispatch_metadata::register_dispatch_identity(
+                &mut tool,
+                move |_| {
+                    identity_entry
+                        .invocation
+                        .as_ref()
+                        .map(|resolver| resolver.identity(&identity_entry))
+                },
+            );
+            tool.label = label;
+            tool.execution_mode = Some(ToolExecutionMode::Parallel);
+            tool
+        })
+        .collect()
 }
 
 /// The output-guard settings a definition falls back to when its catalog entry carries none.
@@ -97,45 +137,98 @@ pub async fn execute_mcp_catalog_entry(
     // invocation.ts validates against the current schema; without a resolver the offered modern schema is
     // checked here, and an unusable schema refuses the call as schema_changed.
     // A refusal is a result the model can read, not a thrown error (senpi-mcp-34/35).
-    let refusal=if entry.invocation.is_none() && entry.modern {
+    let refusal = if entry.invocation.is_none() && entry.modern {
         match crate::modern::tool_schema::compile_modern_schema(&entry.schema) {
-            Err(error)=>Some(format!("{}: {}",error.code.as_str(),error.message)),
-            Ok(validator) if !validator.validate(&params)=>Some("Arguments do not match the current MCP tool schema.".to_owned()),
-            Ok(_)=>None,
+            Err(error) => Some(format!("{}: {}", error.code.as_str(), error.message)),
+            Ok(validator) if !validator.validate(&params) => {
+                Some("Arguments do not match the current MCP tool schema.".to_owned())
+            }
+            Ok(_) => None,
         }
-    } else {None};
-    let outcome=match refusal {
-        Some(message)=>super::call::McpCallOutcome::Refused(crate::invocation::McpInvocationError {
-            kind:crate::invocation::McpInvocationErrorKind::SchemaChanged,
-            message,
-            server:entry.server.clone(),
-            tool:entry.tool.clone(),
-            current_definition:Some(entry.schema.clone()),
-        }),
-        None=>super::call::call_mcp_tool_for(entry,params,call.id,&call.signal,call.on_update.as_deref(),Some(invocation)).await?,
+    } else {
+        None
+    };
+    let outcome = match refusal {
+        Some(message) => {
+            super::call::McpCallOutcome::Refused(crate::invocation::McpInvocationError {
+                kind: crate::invocation::McpInvocationErrorKind::SchemaChanged,
+                message,
+                server: entry.server.clone(),
+                tool: entry.tool.clone(),
+                current_definition: Some(entry.schema.clone()),
+            })
+        }
+        None => {
+            super::call::call_mcp_tool_for(
+                entry,
+                params,
+                call.id,
+                &call.signal,
+                call.on_update.as_deref(),
+                Some(invocation),
+            )
+            .await?
+        }
     };
     match outcome {
         super::call::McpCallOutcome::Refused(error) => {
-            let block=json!({"type":"text","text":json!({"error":error}).to_string()});
-            let guarded=apply_mcp_output_guard(std::slice::from_ref(&block),McpOutputGuardOptions {
-                agent_dir:entry.agent_dir.as_deref().unwrap_or(&defaults.agent_dir),
-                artifacts:Some(entry.artifacts.as_deref().unwrap_or(&defaults.artifacts)),
-                server:&entry.server,
-                output_guard:entry.output_guard.as_ref().or(defaults.output_guard.as_ref()),
-            });
-            let content=guarded.iter().map(|block|ToolContent::text(block.get("text").and_then(Value::as_str).unwrap_or(""))).collect();
+            let block = json!({"type":"text","text":json!({"error":error}).to_string()});
+            let guarded = apply_mcp_output_guard(
+                std::slice::from_ref(&block),
+                McpOutputGuardOptions {
+                    agent_dir: entry.agent_dir.as_deref().unwrap_or(&defaults.agent_dir),
+                    artifacts: Some(entry.artifacts.as_deref().unwrap_or(&defaults.artifacts)),
+                    server: &entry.server,
+                    output_guard: entry
+                        .output_guard
+                        .as_ref()
+                        .or(defaults.output_guard.as_ref()),
+                },
+            );
+            let content = guarded
+                .iter()
+                .map(|block| {
+                    ToolContent::text(block.get("text").and_then(Value::as_str).unwrap_or(""))
+                })
+                .collect();
             Ok(ToolResult {
                 content,
-                details:Some(maho_core::config_reference_redaction::redact_resolved_reference_data(&json!({"error":error,"preview":error.kind.as_str(),"server":entry.server,"tool":entry.tool}))),
-                structured_content:None,
-                is_error:None,
+                details: Some(
+                    maho_core::config_reference_redaction::redact_resolved_reference_data(
+                        &json!({"error":error,"preview":error.kind.as_str(),"server":entry.server,"tool":entry.tool}),
+                    ),
+                ),
+                structured_content: None,
+                is_error: None,
             })
         }
-        super::call::McpCallOutcome::Called {entry:current,result} => {
-            let mut details_entry=(*current).clone();
+        super::call::McpCallOutcome::Called {
+            entry: current,
+            result,
+        } => {
+            let mut details_entry = (*current).clone();
             // The details name the offered tool (`server`/`tool` of `entry`), as upstream.
-            details_entry.server=entry.server.clone();details_entry.tool=entry.tool.clone();
-            mapped_guarded_result(&details_entry,&result,current.agent_dir.as_deref().or(entry.agent_dir.as_deref()).unwrap_or(&defaults.agent_dir),current.artifacts.as_ref().or(entry.artifacts.as_ref()).unwrap_or(&defaults.artifacts),current.output_guard.as_ref().or(entry.output_guard.as_ref()).or(defaults.output_guard.as_ref()))
+            details_entry.server = entry.server.clone();
+            details_entry.tool = entry.tool.clone();
+            mapped_guarded_result(
+                &details_entry,
+                &result,
+                current
+                    .agent_dir
+                    .as_deref()
+                    .or(entry.agent_dir.as_deref())
+                    .unwrap_or(&defaults.agent_dir),
+                current
+                    .artifacts
+                    .as_ref()
+                    .or(entry.artifacts.as_ref())
+                    .unwrap_or(&defaults.artifacts),
+                current
+                    .output_guard
+                    .as_ref()
+                    .or(entry.output_guard.as_ref())
+                    .or(defaults.output_guard.as_ref()),
+            )
         }
     }
 }

@@ -5,13 +5,18 @@ use std::collections::HashMap;
 /// senpi `main.ts` `offlineMode`: `--offline` or a truthy brand-prefixed `OFFLINE`.
 pub fn is_offline_mode(argv: &[String], env: &HashMap<String, String>) -> bool {
     argv.iter().any(|arg| arg == "--offline")
-        || super::shared_host::is_truthy_env_flag(maho_core::brand::env_value("OFFLINE", env).as_deref())
+        || super::shared_host::is_truthy_env_flag(
+            maho_core::brand::env_value("OFFLINE", env).as_deref(),
+        )
 }
 
 /// senpi `cli.ts`/`cli-main.ts`/`rpc-entry.ts` (`scrubBrandFromEnvironment`, `PI_CODING_AGENT`,
 /// `AI_AGENT`) and `main.ts:913-917` (offline mode): the environment the process continues with.
 /// The brand profile must already be resolved, since the brand variable is removed here.
-pub fn startup_process_env(argv: &[String], env: &HashMap<String, String>) -> HashMap<String, String> {
+pub fn startup_process_env(
+    argv: &[String],
+    env: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut next = env.clone();
     maho_core::brand::scrub_brand_from_environment(&mut next);
     next.insert("PI_CODING_AGENT".to_owned(), "true".to_owned());
@@ -25,11 +30,26 @@ pub fn startup_process_env(argv: &[String], env: &HashMap<String, String>) -> Ha
 
 /// senpi `main.ts:944-945`: `applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy)`
 /// over settings created with `projectTrusted: false`.
-pub fn bootstrap_http_proxy_env(argv: &[String], cwd: &str, agent_dir: &str, home_dir: &str, env: &HashMap<String, String>) -> Result<HashMap<String, String>, String> {
-    let settings = maho_core::settings_manager::SettingsManager::create(cwd, agent_dir, home_dir, false);
-    let proxy = settings.get_global().get("httpProxy").and_then(serde_json::Value::as_str).map(str::to_owned);
+pub fn bootstrap_http_proxy_env(
+    argv: &[String],
+    cwd: &str,
+    agent_dir: &str,
+    home_dir: &str,
+    env: &HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    let settings =
+        maho_core::settings_manager::SettingsManager::create(cwd, agent_dir, home_dir, false);
+    let proxy = settings
+        .get_global()
+        .get("httpProxy")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     let mut next = env.clone();
-    maho_core::http_dispatcher::apply_http_proxy_settings(proxy.as_deref(), argv.iter().any(|arg| arg == "--multi-session"), &mut next)?;
+    maho_core::http_dispatcher::apply_http_proxy_settings(
+        proxy.as_deref(),
+        argv.iter().any(|arg| arg == "--multi-session"),
+        &mut next,
+    )?;
     Ok(next)
 }
 
@@ -39,7 +59,9 @@ pub fn bootstrap_http_proxy_env(argv: &[String], cwd: &str, agent_dir: &str, hom
 pub fn set_process_title(title: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
-        let Ok(name) = std::ffi::CString::new(process_title_bytes(title)) else { return false; };
+        let Ok(name) = std::ffi::CString::new(process_title_bytes(title)) else {
+            return false;
+        };
         nix::sys::prctl::set_name(&name).is_ok()
     }
     #[cfg(not(target_os = "linux"))]
@@ -52,7 +74,9 @@ pub fn set_process_title(title: &str) -> bool {
 /// The comm name the kernel keeps: at most 15 bytes, cut on a char boundary.
 pub fn process_title_bytes(title: &str) -> &str {
     let mut end = title.len().min(15);
-    while !title.is_char_boundary(end) { end -= 1; }
+    while !title.is_char_boundary(end) {
+        end -= 1;
+    }
     &title[..end]
 }
 
@@ -66,13 +90,25 @@ mod tests {
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
     }
 
     #[test]
     fn startup_env_marks_the_agent_and_scrubs_the_brand() {
-        let next = startup_process_env(&[], &env(&[(maho_core::brand::BRAND_ENV_VAR, r#"{"name":"qa"}"#), ("KEEP", "1")]));
-        assert_eq!(next.get("PI_CODING_AGENT").map(String::as_str), Some("true"));
+        let next = startup_process_env(
+            &[],
+            &env(&[
+                (maho_core::brand::BRAND_ENV_VAR, r#"{"name":"qa"}"#),
+                ("KEEP", "1"),
+            ]),
+        );
+        assert_eq!(
+            next.get("PI_CODING_AGENT").map(String::as_str),
+            Some("true")
+        );
         assert_eq!(next.get("AI_AGENT"), Some(&maho_core::config::app_name()));
         assert!(!next.contains_key(maho_core::brand::BRAND_ENV_VAR));
         assert_eq!(next.get("KEEP").map(String::as_str), Some("1"));
@@ -83,13 +119,19 @@ mod tests {
     fn offline_flag_disables_network_and_version_check() {
         let next = startup_process_env(&["--offline".to_owned()], &HashMap::new());
         assert_eq!(next.get("PI_OFFLINE").map(String::as_str), Some("1"));
-        assert_eq!(next.get("PI_SKIP_VERSION_CHECK").map(String::as_str), Some("1"));
+        assert_eq!(
+            next.get("PI_SKIP_VERSION_CHECK").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
     fn process_title_is_cut_to_the_kernel_comm_length_on_a_char_boundary() {
         assert_eq!(process_title_bytes("maho"), "maho");
-        assert_eq!(process_title_bytes("a-very-long-product-name"), "a-very-long-pro");
+        assert_eq!(
+            process_title_bytes("a-very-long-product-name"),
+            "a-very-long-pro"
+        );
         assert_eq!(process_title_bytes("ééééééééé"), "ééééééé");
     }
 
@@ -101,7 +143,9 @@ mod tests {
             assert!(set_process_title("maho-title-test"));
             let comm = std::fs::read_to_string("/proc/thread-self/comm").expect("comm");
             assert_eq!(comm.trim_end(), "maho-title-test");
-        }).join().expect("title thread");
+        })
+        .join()
+        .expect("title thread");
     }
 
     #[test]
@@ -115,10 +159,31 @@ mod tests {
         let root = tempfile::tempdir().expect("temp root");
         let agent = root.path().join("agent");
         std::fs::create_dir_all(&agent).expect("agent dir");
-        std::fs::write(agent.join("settings.json"), r#"{"httpProxy":" http://proxy.local:8080 "}"#).expect("settings");
-        let (cwd, agent, home) = (root.path().to_string_lossy(), agent.to_string_lossy(), root.path().to_string_lossy());
-        let next = bootstrap_http_proxy_env(&[], &cwd, &agent, &home, &env(&[("HTTPS_PROXY", "http://existing:1")])).expect("proxy applied");
-        assert_eq!(next.get("HTTP_PROXY").map(String::as_str), Some("http://proxy.local:8080"));
-        assert_eq!(next.get("HTTPS_PROXY").map(String::as_str), Some("http://existing:1"));
+        std::fs::write(
+            agent.join("settings.json"),
+            r#"{"httpProxy":" http://proxy.local:8080 "}"#,
+        )
+        .expect("settings");
+        let (cwd, agent, home) = (
+            root.path().to_string_lossy(),
+            agent.to_string_lossy(),
+            root.path().to_string_lossy(),
+        );
+        let next = bootstrap_http_proxy_env(
+            &[],
+            &cwd,
+            &agent,
+            &home,
+            &env(&[("HTTPS_PROXY", "http://existing:1")]),
+        )
+        .expect("proxy applied");
+        assert_eq!(
+            next.get("HTTP_PROXY").map(String::as_str),
+            Some("http://proxy.local:8080")
+        );
+        assert_eq!(
+            next.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://existing:1")
+        );
     }
 }

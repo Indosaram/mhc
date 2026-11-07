@@ -101,14 +101,14 @@ pub fn classify_external_authorization_blocker(evidence: &str) -> Option<String>
         "AUTHORIZATION_REQUIRED"
     };
 
-    Some(format!("GHCR_PULL_ACCESS:{status_part}:GHCR_VISIBILITY_OR_CREDENTIAL_REQUIRED"))
+    Some(format!(
+        "GHCR_PULL_ACCESS:{status_part}:GHCR_VISIBILITY_OR_CREDENTIAL_REQUIRED"
+    ))
 }
 
 pub fn same_blocker_occurrences(plan: &UlwLoopPlan, signature: &str) -> usize {
     plan.goals
         .iter()
-        .filter(|goal| {
-            goal.blocker_signature.as_deref() == Some(signature)
-        })
+        .filter(|goal| goal.blocker_signature.as_deref() == Some(signature))
         .count()
 }

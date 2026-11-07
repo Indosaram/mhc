@@ -64,7 +64,9 @@ impl From<crate::speculative::SummaryGenerationError> for LiveSummaryFailure {
             classification,
             fallback: crate::speculative::summary_failure(&error),
             unsafe_diagnostics: match &error {
-                SummaryGenerationError::UnsafeRetainedSuffix(unsafe_error) => Some(unsafe_error.diagnostics.clone()),
+                SummaryGenerationError::UnsafeRetainedSuffix(unsafe_error) => {
+                    Some(unsafe_error.diagnostics.clone())
+                }
                 _ => None,
             },
         }
@@ -233,23 +235,36 @@ mod cancellation_tests {
         let signal = controller.signal();
         let (started, cleanup_started) = tokio::sync::oneshot::channel();
         let (release, cleanup_release) = tokio::sync::oneshot::channel();
-        let job = track_speculative_job(1, (), controller, async move {
-            signal.cancelled().await;
-            started.send(()).expect("cleanup observed");
-            cleanup_release.await.expect("cleanup release");
-            JobSettlement::<(), String> { result: None, error: None }
-        }, 0);
+        let job = track_speculative_job(
+            1,
+            (),
+            controller,
+            async move {
+                signal.cancelled().await;
+                started.send(()).expect("cleanup observed");
+                cleanup_release.await.expect("cleanup release");
+                JobSettlement::<(), String> {
+                    result: None,
+                    error: None,
+                }
+            },
+            0,
+        );
 
         // When cancellation requests retirement of this generation.
         let cancelling = tokio::spawn(async move { job.cancel().await });
-        tokio::time::timeout(std::time::Duration::from_secs(5), cleanup_started).await
-            .expect("cleanup starts").expect("cleanup notification");
+        tokio::time::timeout(std::time::Duration::from_secs(5), cleanup_started)
+            .await
+            .expect("cleanup starts")
+            .expect("cleanup notification");
 
         // Then cancellation cannot complete before the generation acknowledges cleanup.
         assert!(!cancelling.is_finished());
         release.send(()).expect("release cleanup");
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), cancelling).await
-            .expect("cancellation settles").expect("cancellation task");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), cancelling)
+            .await
+            .expect("cancellation settles")
+            .expect("cancellation task");
         assert!(result.result.is_none());
         assert!(result.error.is_none());
     }

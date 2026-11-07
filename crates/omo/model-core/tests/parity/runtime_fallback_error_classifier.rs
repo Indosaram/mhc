@@ -233,7 +233,11 @@ fn aborts_on_terminal_quota_in_data_detail_without_retry() {
     });
 
     let error_type = classify_runtime_fallback_error(Some(&error));
-    let is_retryable = is_runtime_fallback_retryable_error(Some(&error), &DEFAULT_RETRY_CODES, &RuntimeFallbackRetryOptions::default());
+    let is_retryable = is_runtime_fallback_retryable_error(
+        Some(&error),
+        &DEFAULT_RETRY_CODES,
+        &RuntimeFallbackRetryOptions::default(),
+    );
 
     assert_eq!(error_type, Some(RuntimeFallbackErrorType::Abort));
     assert!(!is_retryable);
@@ -266,7 +270,11 @@ fn aborts_on_model_not_found_terminal_quota_wrapper_without_retry() {
     });
 
     let error_type = classify_runtime_fallback_error(Some(&error));
-    let is_retryable = is_runtime_fallback_retryable_error(Some(&error), &DEFAULT_RETRY_CODES, &RuntimeFallbackRetryOptions::default());
+    let is_retryable = is_runtime_fallback_retryable_error(
+        Some(&error),
+        &DEFAULT_RETRY_CODES,
+        &RuntimeFallbackRetryOptions::default(),
+    );
 
     assert_eq!(error_type, Some(RuntimeFallbackErrorType::Abort));
     assert!(!is_retryable);
@@ -286,9 +294,17 @@ fn non_terminal_quota_and_billing_limit_remain_retryable() {
         });
 
         let error_type = classify_runtime_fallback_error(Some(&error));
-        let is_retryable = is_runtime_fallback_retryable_error(Some(&error), &DEFAULT_RETRY_CODES, &RuntimeFallbackRetryOptions::default());
+        let is_retryable = is_runtime_fallback_retryable_error(
+            Some(&error),
+            &DEFAULT_RETRY_CODES,
+            &RuntimeFallbackRetryOptions::default(),
+        );
 
-        assert_eq!(error_type, Some(RuntimeFallbackErrorType::QuotaExceeded), "{message}");
+        assert_eq!(
+            error_type,
+            Some(RuntimeFallbackErrorType::QuotaExceeded),
+            "{message}"
+        );
         assert!(is_retryable, "{message}");
     }
 }

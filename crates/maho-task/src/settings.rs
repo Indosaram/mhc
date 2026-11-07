@@ -4,9 +4,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use crate::transport::{
-    DEFAULT_COMPLETION_BATCH_LIMIT, DEFAULT_COMPLETION_TRANSPORT_LIMIT,
-    MAX_COMPLETION_BATCH_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT,
-    MIN_COMPLETION_BATCH_LIMIT, MIN_COMPLETION_TRANSPORT_LIMIT,
+    DEFAULT_COMPLETION_BATCH_LIMIT, DEFAULT_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_BATCH_LIMIT,
+    MAX_COMPLETION_TRANSPORT_LIMIT, MIN_COMPLETION_BATCH_LIMIT, MIN_COMPLETION_TRANSPORT_LIMIT,
 };
 
 /// Environment variable carrying a child's nesting depth (0 = the main session).
@@ -166,10 +165,8 @@ impl TaskSettings {
             .or_else(|| u64_at(task, &["completionBatchLimit"]))
         {
             let val = usize::try_from(n).unwrap_or(usize::MAX);
-            settings.completion_batch_limit = val.clamp(
-                MIN_COMPLETION_BATCH_LIMIT,
-                MAX_COMPLETION_BATCH_LIMIT,
-            );
+            settings.completion_batch_limit =
+                val.clamp(MIN_COMPLETION_BATCH_LIMIT, MAX_COMPLETION_BATCH_LIMIT);
         }
         settings
     }
@@ -219,19 +216,27 @@ mod tests {
         assert_eq!(settings.state_dir, Some(PathBuf::from("/s")));
         assert!(settings.isolation_enabled);
         assert_eq!(settings.wait_for(None), Duration::from_millis(20));
-        assert_eq!(settings.wait_for(Some(Duration::from_secs(9))), Duration::from_millis(30));
-        assert_eq!(settings.wait_for(Some(Duration::ZERO)), Duration::from_millis(10));
+        assert_eq!(
+            settings.wait_for(Some(Duration::from_secs(9))),
+            Duration::from_millis(30)
+        );
+        assert_eq!(
+            settings.wait_for(Some(Duration::ZERO)),
+            Duration::from_millis(10)
+        );
         assert_eq!(TaskSettings::from_view(None), TaskSettings::default());
     }
 
     #[test]
     fn reads_and_clamps_transport_limits() {
-        let custom = json!({"task": {"completion_transport_limit": 5000, "completion_batch_limit": 30000}});
+        let custom =
+            json!({"task": {"completion_transport_limit": 5000, "completion_batch_limit": 30000}});
         let s = TaskSettings::from_view(Some(&custom));
         assert_eq!(s.completion_transport_limit, 5000);
         assert_eq!(s.completion_batch_limit, 30000);
 
-        let low = json!({"task": {"completion_transport_limit": 500, "completion_batch_limit": 100}});
+        let low =
+            json!({"task": {"completion_transport_limit": 500, "completion_batch_limit": 100}});
         let s = TaskSettings::from_view(Some(&low));
         assert_eq!(s.completion_transport_limit, MIN_COMPLETION_TRANSPORT_LIMIT);
         assert_eq!(s.completion_batch_limit, MIN_COMPLETION_BATCH_LIMIT);
@@ -254,7 +259,11 @@ mod tests {
     #[test]
     fn spawned_by_from_the_environment() {
         // Top-level parent P starts T: the root is P.
-        let top = env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "P"), (ROOT_SESSION_ENV, "P")]);
+        let top = env_of(&[
+            (TASK_ID_ENV, "T"),
+            (PARENT_SESSION_ENV, "P"),
+            (ROOT_SESSION_ENV, "P"),
+        ]);
         assert_eq!(
             spawned_by_from(&top),
             Some(SpawnedBy {
@@ -264,19 +273,40 @@ mod tests {
             })
         );
         let json = serde_json::to_value(spawned_by_from(&top).expect("ancestry")).expect("json");
-        assert_eq!(json, json!({"parentSessionId": "P", "rootSessionId": "P", "taskId": "T"}));
+        assert_eq!(
+            json,
+            json!({"parentSessionId": "P", "rootSessionId": "P", "taskId": "T"})
+        );
         // Child C (root P) starts T2.
-        let nested = env_of(&[(TASK_ID_ENV, "T2"), (PARENT_SESSION_ENV, "C"), (ROOT_SESSION_ENV, "P")]);
+        let nested = env_of(&[
+            (TASK_ID_ENV, "T2"),
+            (PARENT_SESSION_ENV, "C"),
+            (ROOT_SESSION_ENV, "P"),
+        ]);
         let ancestry = spawned_by_from(&nested).expect("ancestry");
         assert_eq!(
-            (ancestry.parent_session_id.as_str(), ancestry.root_session_id.as_str(), ancestry.task_id.as_str()),
+            (
+                ancestry.parent_session_id.as_str(),
+                ancestry.root_session_id.as_str(),
+                ancestry.task_id.as_str()
+            ),
             ("C", "P", "T2")
         );
         // An empty root falls back to the parent.
-        let no_root = env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "P"), (ROOT_SESSION_ENV, " ")]);
-        assert_eq!(spawned_by_from(&no_root).expect("ancestry").root_session_id, "P");
+        let no_root = env_of(&[
+            (TASK_ID_ENV, "T"),
+            (PARENT_SESSION_ENV, "P"),
+            (ROOT_SESSION_ENV, " "),
+        ]);
+        assert_eq!(
+            spawned_by_from(&no_root).expect("ancestry").root_session_id,
+            "P"
+        );
         // Missing or empty parent: no ancestry.
-        assert_eq!(spawned_by_from(&env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "")])), None);
+        assert_eq!(
+            spawned_by_from(&env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "")])),
+            None
+        );
         assert_eq!(spawned_by_from(&env_of(&[(TASK_ID_ENV, "T")])), None);
         assert_eq!(spawned_by_from(&env_of(&[(PARENT_SESSION_ENV, "P")])), None);
     }
@@ -284,7 +314,10 @@ mod tests {
     #[test]
     fn lineage_root() {
         assert_eq!(Lineage::default().root_of("L"), "L");
-        let nested = Lineage { depth: 1, root_session: Some("R".into()) };
+        let nested = Lineage {
+            depth: 1,
+            root_session: Some("R".into()),
+        };
         assert_eq!(nested.root_of("L"), "R");
     }
 

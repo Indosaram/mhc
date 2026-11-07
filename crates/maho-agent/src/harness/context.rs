@@ -97,7 +97,8 @@ pub fn with_context_value<T: Clone + Send + Sync + 'static>(
 pub fn combine_abort_signals(first: &AbortSignal, second: &AbortSignal) -> AbortSignal {
     let controller = AbortController::new();
     let combined = controller.signal();
-    if let Some((source, order)) = [first, second].into_iter()
+    if let Some((source, order)) = [first, second]
+        .into_iter()
         .filter_map(|signal| signal.cancellation_order().map(|order| (signal, order)))
         .min_by_key(|(_, order)| *order)
     {
@@ -109,7 +110,8 @@ pub fn combine_abort_signals(first: &AbortSignal, second: &AbortSignal) -> Abort
         let second = second.downgrade();
         move || {
             let source = [first.upgrade(), second.upgrade()]
-                .into_iter().flatten()
+                .into_iter()
+                .flatten()
                 .filter_map(|signal| signal.cancellation_order().map(|order| (signal, order)))
                 .min_by_key(|(_, order)| *order);
             if let Some((source, order)) = source {
@@ -149,7 +151,9 @@ impl maho_chord::types::AbortSignal for ChordAbortSignal {
     }
 
     fn reason(&self) -> Option<Arc<dyn std::error::Error + Send + Sync>> {
-        self.0.reason_arc().map(|reason| reason as Arc<dyn std::error::Error + Send + Sync>)
+        self.0
+            .reason_arc()
+            .map(|reason| reason as Arc<dyn std::error::Error + Send + Sync>)
     }
 
     fn cancellation_order(&self) -> Option<u64> {
@@ -253,7 +257,8 @@ mod tests {
         let controller = AbortController::new();
         let context = with_abort_signal(controller.signal(), &BACKGROUND_CONTEXT);
         let signal = context.as_chord().abort_signal().expect("adapter");
-        let (native, cancel) = maho_chord::context::with_cancel(&maho_chord::context::BACKGROUND_CONTEXT);
+        let (native, cancel) =
+            maho_chord::context::with_cancel(&maho_chord::context::BACKGROUND_CONTEXT);
         // When the external source fires before the native source.
         controller.abort(Some(AbortReason::new("Error", "external")));
         cancel.cancel();
@@ -264,7 +269,14 @@ mod tests {
         let original: Arc<dyn std::error::Error + Send + Sync> = original;
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(&first, &original));
-        assert!(signal.cancellation_order().expect("external order") < native.abort_signal().expect("native").cancellation_order().expect("native order"));
+        assert!(
+            signal.cancellation_order().expect("external order")
+                < native
+                    .abort_signal()
+                    .expect("native")
+                    .cancellation_order()
+                    .expect("native order")
+        );
     }
 
     #[test]
@@ -279,10 +291,17 @@ mod tests {
         child.abort(Some(AbortReason::new("Error", "child")));
         parent.abort(Some(AbortReason::new("Error", "parent")));
         // Then both adapter surfaces retain the child reason and original order.
-        assert_eq!(context.abort_signal().expect("combined").reason(), child.signal().reason());
-        let expected: Arc<dyn std::error::Error + Send + Sync> = child.signal().reason_arc().expect("child reason");
+        assert_eq!(
+            context.abort_signal().expect("combined").reason(),
+            child.signal().reason()
+        );
+        let expected: Arc<dyn std::error::Error + Send + Sync> =
+            child.signal().reason_arc().expect("child reason");
         assert!(Arc::ptr_eq(&shared.reason().expect("reason"), &expected));
-        assert_eq!(shared.cancellation_order(), child.signal().cancellation_order());
+        assert_eq!(
+            shared.cancellation_order(),
+            child.signal().cancellation_order()
+        );
     }
 
     #[test]
@@ -295,8 +314,14 @@ mod tests {
         // When they are combined parent-first.
         let combined = combine_abort_signals(&parent.signal(), &child.signal());
         // Then the earlier cancellation retains its identity regardless of input order.
-        assert!(Arc::ptr_eq(&combined.reason_arc().expect("combined"), &child.signal().reason_arc().expect("child")));
-        assert_eq!(combined.cancellation_order(), child.signal().cancellation_order());
+        assert!(Arc::ptr_eq(
+            &combined.reason_arc().expect("combined"),
+            &child.signal().reason_arc().expect("child")
+        ));
+        assert_eq!(
+            combined.cancellation_order(),
+            child.signal().cancellation_order()
+        );
     }
 
     #[tokio::test]

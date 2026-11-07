@@ -1297,10 +1297,12 @@ mod tests {
             &api,
             ExtensionEvent::TurnEnd {
                 turn_index: 1,
-                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
-                    "hello",
-                    Default::default(),
-                )))),
+                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(
+                    std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
+                        "hello",
+                        Default::default(),
+                    )),
+                )),
                 tool_results: Vec::new(),
             },
             &ctx,
@@ -1334,10 +1336,12 @@ mod tests {
             &api,
             ExtensionEvent::TurnEnd {
                 turn_index: 1,
-                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
-                    "hello",
-                    Default::default(),
-                )))),
+                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(
+                    std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
+                        "hello",
+                        Default::default(),
+                    )),
+                )),
                 tool_results: Vec::new(),
             },
             &ctx,
@@ -1366,9 +1370,12 @@ mod tests {
     fn turn_end() -> ExtensionEvent {
         ExtensionEvent::TurnEnd {
             turn_index: 1,
-            message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
-                maho_ai::providers::faux::faux_assistant_message("hello", Default::default()),
-            ))),
+            message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(
+                std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
+                    "hello",
+                    Default::default(),
+                )),
+            )),
             tool_results: Vec::new(),
         }
     }
@@ -1646,10 +1653,7 @@ mod tests {
     fn deferring_context(
         home: &std::path::Path,
         id: &str,
-    ) -> (
-        maho_ext_api::ExtensionContext,
-        DeferredQueue,
-    ) {
+    ) -> (maho_ext_api::ExtensionContext, DeferredQueue) {
         let mut ctx = context(home, id);
         let queue: DeferredQueue = Arc::default();
         let tasks = Arc::clone(&queue);
@@ -1717,7 +1721,10 @@ mod tests {
         let (mut component, _messages) = component(t.path());
         let shut_down = Arc::new(tokio::sync::Notify::new());
         // Armed after registration: the shutdown handlers and the context the factory fires them with.
-        type ShutdownTrigger = (Vec<maho_ext_api::ExtensionHandler>, maho_ext_api::ExtensionContext);
+        type ShutdownTrigger = (
+            Vec<maho_ext_api::ExtensionHandler>,
+            maho_ext_api::ExtensionContext,
+        );
         let trigger: Arc<Mutex<Option<ShutdownTrigger>>> = Arc::default();
         let armed = Arc::clone(&trigger);
         let signal = Arc::clone(&shut_down);

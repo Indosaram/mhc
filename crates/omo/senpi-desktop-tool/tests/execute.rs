@@ -1,25 +1,43 @@
 //! Tests matching upstream `test/execute.test.ts`.
 
-use std::collections::HashMap;
-use std::sync::Arc;
 use maho_tools::definition::AbortSignal;
 use maho_tools::definition::ToolCall;
-use senpi_desktop_tool::session::{ComputerModel, AUDIT_FILE_NAME};
+use senpi_desktop_tool::session::{AUDIT_FILE_NAME, ComputerModel};
 use senpi_desktop_tool::settings::ComputerSettingsInput;
-use senpi_desktop_tool::tool::{create_computer_tool, ComputerToolDeps};
+use senpi_desktop_tool::tool::{ComputerToolDeps, create_computer_tool};
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::fixtures;
-use fixtures::{desktop_fixture, host_context, methods_of, TestToolContext};
+use fixtures::{TestToolContext, desktop_fixture, host_context, methods_of};
 
 #[tokio::test]
 async fn explicit_null_return_is_displayed_and_string_return_is_unquoted() {
     let fixture = desktop_fixture(None, HashMap::new());
-    let tool = create_computer_tool(ComputerToolDeps { handle: fixture.handle.clone(), execute_tool: None });
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "value-session", "/sessions/project");
+    let tool = create_computer_tool(ComputerToolDeps {
+        handle: fixture.handle.clone(),
+        execute_tool: None,
+    });
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "value-session",
+        "/sessions/project",
+    );
     for (code, expected) in [("return null;", "null"), ("return 'plain';", "plain")] {
-        let result = (tool.execute)(ToolCall { id: "value", params: json!({"action": "run", "code": code, "read_only": true}), signal: AbortSignal::default(), on_update: None, context: Some(&ctx) }).await.expect("value result");
-        assert!(matches!(result.content.as_slice(), [maho_tools::definition::ToolContent::Text { text, .. }] if text == expected));
+        let result = (tool.execute)(ToolCall {
+            id: "value",
+            params: json!({"action": "run", "code": code, "read_only": true}),
+            signal: AbortSignal::default(),
+            on_update: None,
+            context: Some(&ctx),
+        })
+        .await
+        .expect("value result");
+        assert!(
+            matches!(result.content.as_slice(), [maho_tools::definition::ToolContent::Text { text, .. }] if text == expected)
+        );
     }
     fixture.handle.close().await.expect("close");
 }
@@ -40,7 +58,12 @@ async fn runs_window_screenshot_chain_through_facade_and_returns_inline_image() 
         ]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call-1",
         params: input,
@@ -50,7 +73,11 @@ async fn runs_window_screenshot_chain_through_facade_and_returns_inline_image() 
     };
 
     let result = (tool.execute)(call).await.expect("execute");
-    let images = result.content.iter().filter(|c| matches!(c, maho_tools::definition::ToolContent::Image { .. })).count();
+    let images = result
+        .content
+        .iter()
+        .filter(|c| matches!(c, maho_tools::definition::ToolContent::Image { .. }))
+        .count();
     assert_eq!(images, 1);
 
     let details = result.details.expect("details");
@@ -74,7 +101,12 @@ async fn rejects_user_reset_chain_as_unknown_method_before_engine_started() {
         "chain": [{ "method": "userReset" }]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call-1",
         params: input,
@@ -85,7 +117,13 @@ async fn rejects_user_reset_chain_as_unknown_method_before_engine_started() {
 
     let res = (tool.execute)(call).await;
     assert!(res.is_err());
-    assert_eq!(fixture.log.children_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        fixture
+            .log
+            .children_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -102,7 +140,12 @@ async fn refuses_input_inside_read_only_run_before_it_reaches_engine() {
         "read_only": true
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call-1",
         params: input,
@@ -124,9 +167,10 @@ async fn refuses_input_inside_read_only_run_before_it_reaches_engine() {
 async fn reaches_host_tools_from_run_code_through_injected_execute_tool() {
     let fixture = desktop_fixture(None, HashMap::new());
     let exec_tool = Arc::new(|name: String, params: serde_json::Value, _sig| {
-        Box::pin(async move {
-            Ok(json!({ "name": name, "params": params }))
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>
+        Box::pin(async move { Ok(json!({ "name": name, "params": params })) })
+            as std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+            >
     });
 
     let tool = create_computer_tool(ComputerToolDeps {
@@ -139,7 +183,12 @@ async fn reaches_host_tools_from_run_code_through_injected_execute_tool() {
         "code": r#"return await tool.read({ path: "a.txt" });"#
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call-1",
         params: input,
@@ -163,7 +212,12 @@ async fn returns_live_capabilities_as_facade_value() {
         execute_tool: None,
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call-1",
         params: json!({ "action": "capabilities" }),
@@ -199,9 +253,18 @@ async fn opens_session_with_audit_path_and_coordinate_safe_caps_for_claude() {
     fixture.handle.activate(&ctx).await.expect("activate");
 
     let reqs = fixture.log.requests.lock().await.clone();
-    let open = reqs.iter().find(|r| r.method == "session.open").expect("open");
+    let open = reqs
+        .iter()
+        .find(|r| r.method == "session.open")
+        .expect("open");
     let params = open.params.as_ref().unwrap();
-    assert!(params.get("auditPath").and_then(|v| v.as_str()).unwrap().contains(AUDIT_FILE_NAME));
+    assert!(
+        params
+            .get("auditPath")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains(AUDIT_FILE_NAME)
+    );
     assert_eq!(params["captureCaps"]["maxWidth"], 2000);
     assert_eq!(params["captureCaps"]["coordinateSafe"], true);
     assert_eq!(params["captureCaps"]["maxBytes"], 1_000_000);
@@ -223,40 +286,75 @@ async fn turns_auditing_off_and_keeps_native_caps_when_settings_ask() {
     fixture.handle.activate(&ctx).await.expect("activate");
 
     let reqs = fixture.log.requests.lock().await.clone();
-    let open = reqs.iter().find(|r| r.method == "session.open").expect("open");
+    let open = reqs
+        .iter()
+        .find(|r| r.method == "session.open")
+        .expect("open");
     let params = open.params.as_ref().unwrap();
-    assert!(params.get("auditPath").is_none() || params.get("auditPath") == Some(&serde_json::Value::Null));
+    assert!(
+        params.get("auditPath").is_none()
+            || params.get("auditPath") == Some(&serde_json::Value::Null)
+    );
     assert_eq!(params["captureCaps"]["coordinateSafe"], false);
 }
 
 // 2 it.each parameter expansions for macosCanary
 #[tokio::test]
 async fn carries_session_canary_policy_into_engine_session() {
-    let settings = ComputerSettingsInput { macos_canary: Some("session".into()), ..Default::default() };
+    let settings = ComputerSettingsInput {
+        macos_canary: Some("session".into()),
+        ..Default::default()
+    };
     let fixture = desktop_fixture(Some(settings), HashMap::new());
     let ctx = host_context(None);
     fixture.handle.activate(&ctx).await.expect("activate");
 
     let reqs = fixture.log.requests.lock().await.clone();
-    let open = reqs.iter().find(|r| r.method == "session.open").expect("open");
-    assert_eq!(open.params.as_ref().unwrap().get("macosCanary").and_then(|v| v.as_str()), Some("session"));
+    let open = reqs
+        .iter()
+        .find(|r| r.method == "session.open")
+        .expect("open");
+    assert_eq!(
+        open.params
+            .as_ref()
+            .unwrap()
+            .get("macosCanary")
+            .and_then(|v| v.as_str()),
+        Some("session")
+    );
 }
 
 #[tokio::test]
 async fn carries_off_canary_policy_into_engine_session() {
-    let settings = ComputerSettingsInput { macos_canary: Some("off".into()), ..Default::default() };
+    let settings = ComputerSettingsInput {
+        macos_canary: Some("off".into()),
+        ..Default::default()
+    };
     let fixture = desktop_fixture(Some(settings), HashMap::new());
     let ctx = host_context(None);
     fixture.handle.activate(&ctx).await.expect("activate");
 
     let reqs = fixture.log.requests.lock().await.clone();
-    let open = reqs.iter().find(|r| r.method == "session.open").expect("open");
-    assert_eq!(open.params.as_ref().unwrap().get("macosCanary").and_then(|v| v.as_str()), Some("off"));
+    let open = reqs
+        .iter()
+        .find(|r| r.method == "session.open")
+        .expect("open");
+    assert_eq!(
+        open.params
+            .as_ref()
+            .unwrap()
+            .get("macosCanary")
+            .and_then(|v| v.as_str()),
+        Some("off")
+    );
 }
 
 #[tokio::test]
 async fn arms_configured_stop_chord_once_across_repeated_calls() {
-    let settings = ComputerSettingsInput { stop_hotkey: Some("ctrl+alt+shift+f12".into()), ..Default::default() };
+    let settings = ComputerSettingsInput {
+        stop_hotkey: Some("ctrl+alt+shift+f12".into()),
+        ..Default::default()
+    };
     let fixture = desktop_fixture(Some(settings), HashMap::new());
     let ctx = host_context(None);
 
@@ -264,10 +362,21 @@ async fn arms_configured_stop_chord_once_across_repeated_calls() {
     fixture.handle.activate(&ctx).await.expect("activate 2");
 
     let reqs = fixture.log.requests.lock().await.clone();
-    let starts: Vec<_> = reqs.iter().filter(|r| r.method == "stopPath.start").collect();
+    let starts: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.method == "stopPath.start")
+        .collect();
     let opens: Vec<_> = reqs.iter().filter(|r| r.method == "session.open").collect();
 
     assert_eq!(starts.len(), 1);
-    assert_eq!(starts[0].params.as_ref().unwrap().get("chord").and_then(|v| v.as_str()), Some("ctrl+alt+shift+f12"));
+    assert_eq!(
+        starts[0]
+            .params
+            .as_ref()
+            .unwrap()
+            .get("chord")
+            .and_then(|v| v.as_str()),
+        Some("ctrl+alt+shift+f12")
+    );
     assert_eq!(opens.len(), 1);
 }

@@ -22,7 +22,9 @@ pub enum QuestionSurface {
 pub enum ComposerDestination {
     #[default]
     Chat,
-    Answer { request_id: String },
+    Answer {
+        request_id: String,
+    },
 }
 
 /// senpi's `AsyncQuestionState`. `replies` holds every completion sender, so a duplicate
@@ -39,24 +41,54 @@ pub struct PendingQuestion {
 
 /// Translate producer wall-clock deadlines into the terminal's monotonic clock once at attach.
 /// The producer remains the expiry owner; the callback is only a live display source.
-pub(crate) fn question_deadline(options: &maho_ext_api::QuestionOptions, now_ms: u64) -> Option<std::rc::Rc<dyn Fn() -> u64>> {
-    let wall_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+pub(crate) fn question_deadline(
+    options: &maho_ext_api::QuestionOptions,
+    now_ms: u64,
+) -> Option<std::rc::Rc<dyn Fn() -> u64>> {
+    let wall_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        });
     question_deadline_at(options, now_ms, wall_now)
 }
 
-fn question_deadline_at(options: &maho_ext_api::QuestionOptions, now_ms: u64, wall_now: u64) -> Option<std::rc::Rc<dyn Fn() -> u64>> {
+fn question_deadline_at(
+    options: &maho_ext_api::QuestionOptions,
+    now_ms: u64,
+    wall_now: u64,
+) -> Option<std::rc::Rc<dyn Fn() -> u64>> {
     let deadline = options.get_deadline_at_ms.clone()?;
     let hard = options.hard_deadline_at_ms;
     Some(std::rc::Rc::new(move || {
         let absolute = deadline();
         let absolute = hard.map_or(absolute, |hard| absolute.min(hard));
-        if absolute >= wall_now { now_ms.saturating_add(absolute - wall_now) }
-        else { now_ms.saturating_sub(wall_now - absolute) }
+        if absolute >= wall_now {
+            now_ms.saturating_add(absolute - wall_now)
+        } else {
+            now_ms.saturating_sub(wall_now - absolute)
+        }
     }))
 }
 
 pub(crate) fn question_draft(draft: maho_ext_api::QuestionDraft) -> QuestionDraft {
-    QuestionDraft { comment: draft.comment, answers: draft.answers.unwrap_or_default().into_iter().map(|(id, answer)| (id, crate::components::ask_user_question_state::QuestionAnswer { selected: answer.selected, text: answer.text })).collect() }
+    QuestionDraft {
+        comment: draft.comment,
+        answers: draft
+            .answers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, answer)| {
+                (
+                    id,
+                    crate::components::ask_user_question_state::QuestionAnswer {
+                        selected: answer.selected,
+                        text: answer.text,
+                    },
+                )
+            })
+            .collect(),
+    }
 }
 
 impl PendingQuestion {
@@ -139,7 +171,11 @@ impl QuestionRegistry {
     pub fn finish(&mut self, request_id: &str) -> Option<PendingQuestion> {
         let removed = self.pending.remove(request_id)?;
         self.order.retain(|id| id != request_id);
-        if self.composer_destination == (ComposerDestination::Answer { request_id: request_id.to_owned() }) {
+        if self.composer_destination
+            == (ComposerDestination::Answer {
+                request_id: request_id.to_owned(),
+            })
+        {
             self.composer_destination = ComposerDestination::Chat;
         }
         if self.order.is_empty() && self.surface == QuestionSurface::List {
@@ -176,15 +212,19 @@ impl QuestionRegistry {
 
     /// senpi's `/answer <n>`: the 1-based position in `pendingOrder`.
     pub fn by_number(&self, number: usize) -> Option<&str> {
-
-        number.checked_sub(1).and_then(|index| self.order.get(index)).map(String::as_str)
+        number
+            .checked_sub(1)
+            .and_then(|index| self.order.get(index))
+            .map(String::as_str)
     }
 
     /// senpi's `setComposerReply(requestId?)`.
     pub fn set_composer_reply(&mut self, request_id: Option<&str>) {
         self.composer_destination = match request_id {
             Some(request_id) if self.pending.contains_key(request_id) => {
-                ComposerDestination::Answer { request_id: request_id.to_owned() }
+                ComposerDestination::Answer {
+                    request_id: request_id.to_owned(),
+                }
             }
             _ => ComposerDestination::Chat,
         };
@@ -224,21 +264,41 @@ mod tests {
             request_id: id.into(),
             wait_for_answer,
             timeout_ms: 60_000,
-            questions: vec![Question { id: "item".into(), header: format!("Header {id}"), question: "Choose".into(), options: vec![QuestionOption { label: "A".into(), description: None }], multi_select: false }],
+            questions: vec![Question {
+                id: "item".into(),
+                header: format!("Header {id}"),
+                question: "Choose".into(),
+                options: vec![QuestionOption {
+                    label: "A".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            }],
         }
     }
 
     fn pending(id: &str) -> PendingQuestion {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         std::mem::forget(receiver);
-        PendingQuestion { request: request(id, false), draft: QuestionDraft::default(), timeout_ms: 60_000, asked_at_ms: 0, get_deadline_at_ms: None, on_progress: None, replies: vec![reply] }
+        PendingQuestion {
+            request: request(id, false),
+            draft: QuestionDraft::default(),
+            timeout_ms: 60_000,
+            asked_at_ms: 0,
+            get_deadline_at_ms: None,
+            on_progress: None,
+            replies: vec![reply],
+        }
     }
 
     #[test]
     fn duplicates_share_the_existing_question() {
         let mut registry = QuestionRegistry::default();
         assert!(registry.show(pending("q1")));
-        assert!(!registry.show(pending("q1")), "a duplicate request id is not shown twice");
+        assert!(
+            !registry.show(pending("q1")),
+            "a duplicate request id is not shown twice"
+        );
         assert_eq!(registry.len(), 1);
         assert_eq!(registry.shown_id(), Some("q1"));
     }
@@ -253,8 +313,16 @@ mod tests {
         assert!(registry.finish("q1").is_some());
         assert_eq!(registry.order(), ["q2"]);
         assert_eq!(registry.shown_id(), Some("q2"));
-        assert_eq!(registry.surface, QuestionSurface::Collapsed, "expanded surface collapses with its question");
-        assert_eq!(registry.composer_destination, ComposerDestination::Chat, "the reply target is cleared");
+        assert_eq!(
+            registry.surface,
+            QuestionSurface::Collapsed,
+            "expanded surface collapses with its question"
+        );
+        assert_eq!(
+            registry.composer_destination,
+            ComposerDestination::Chat,
+            "the reply target is cleared"
+        );
         assert!(registry.finish("missing").is_none());
     }
 
@@ -270,9 +338,17 @@ mod tests {
         assert!(registry.cycle());
         assert_eq!(registry.shown_id(), Some("q1"));
         registry.finish("q1");
-        assert_eq!(registry.surface, QuestionSurface::List, "a non-empty list stays open");
+        assert_eq!(
+            registry.surface,
+            QuestionSurface::List,
+            "a non-empty list stays open"
+        );
         registry.finish("q2");
-        assert_eq!(registry.surface, QuestionSurface::Collapsed, "the empty list collapses");
+        assert_eq!(
+            registry.surface,
+            QuestionSurface::Collapsed,
+            "the empty list collapses"
+        );
     }
 
     #[test]
@@ -293,7 +369,11 @@ mod tests {
         registry.set_composer_reply(Some("q1"));
         assert_eq!(registry.composer_request_id(), Some("q1"));
         registry.set_composer_reply(Some("ghost"));
-        assert_eq!(registry.composer_request_id(), None, "an unknown request falls back to chat");
+        assert_eq!(
+            registry.composer_request_id(),
+            None,
+            "an unknown request falls back to chat"
+        );
         registry.set_composer_reply(Some("q1"));
         registry.set_composer_reply(None);
         assert_eq!(registry.composer_request_id(), None);
@@ -305,30 +385,58 @@ mod tests {
         question.asked_at_ms = 1_000;
         assert_eq!(question.unanswered(), ["item"]);
         assert_eq!(question.deadline_at_ms(), 61_000);
-        question.draft.answers.insert("item".into(), crate::components::ask_user_question_state::QuestionAnswer { selected: vec!["A".into()], text: None });
+        question.draft.answers.insert(
+            "item".into(),
+            crate::components::ask_user_question_state::QuestionAnswer {
+                selected: vec!["A".into()],
+                text: None,
+            },
+        );
         assert!(question.unanswered().is_empty());
         let label = answer_list_label(&question, 11_000);
-        assert!(label.starts_with("Header q1 · 00:10 ago · 00:50 remaining"), "label: {label}");
+        assert!(
+            label.starts_with("Header q1 · 00:10 ago · 00:50 remaining"),
+            "label: {label}"
+        );
     }
 
     #[test]
     fn live_deadline_tracks_idle_updates_without_moving_the_hard_cap() {
         let live = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(11_000));
         let source = live.clone();
-        let options = maho_ext_api::QuestionOptions { get_deadline_at_ms: Some(std::sync::Arc::new(move || source.load(std::sync::atomic::Ordering::Relaxed))), hard_deadline_at_ms: Some(15_000), ..Default::default() };
+        let options = maho_ext_api::QuestionOptions {
+            get_deadline_at_ms: Some(std::sync::Arc::new(move || {
+                source.load(std::sync::atomic::Ordering::Relaxed)
+            })),
+            hard_deadline_at_ms: Some(15_000),
+            ..Default::default()
+        };
         let deadline = question_deadline_at(&options, 500, 10_000).expect("live deadline");
         assert_eq!(deadline(), 1_500);
         live.store(13_000, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(deadline(), 3_500);
         live.store(20_000, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(deadline(), 5_500);
-        let reattached = question_deadline_at(&options, 2_500, 12_000).expect("reattached deadline");
+        let reattached =
+            question_deadline_at(&options, 2_500, 12_000).expect("reattached deadline");
         assert_eq!(reattached(), deadline());
     }
 
     #[test]
     fn retained_draft_conversion_preserves_answers_and_comment() {
-        let draft = question_draft(maho_ext_api::QuestionDraft { answers: Some([("item".into(), maho_ext_api::QuestionAnswer { selected: vec!["A".into()], text: Some("retained".into()) })].into()), comment: Some("comment".into()) });
+        let draft = question_draft(maho_ext_api::QuestionDraft {
+            answers: Some(
+                [(
+                    "item".into(),
+                    maho_ext_api::QuestionAnswer {
+                        selected: vec!["A".into()],
+                        text: Some("retained".into()),
+                    },
+                )]
+                .into(),
+            ),
+            comment: Some("comment".into()),
+        });
         assert_eq!(draft.answers["item"].selected, ["A"]);
         assert_eq!(draft.answers["item"].text.as_deref(), Some("retained"));
         assert_eq!(draft.comment.as_deref(), Some("comment"));

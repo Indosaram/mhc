@@ -209,7 +209,11 @@ pub fn resolve_daemon_version() -> String {
 
 /// Runtime defaults for this build: the running executable and the stamped version.
 pub fn packaged_runtime_defaults() -> DaemonRuntimeDefaults {
-    let sibling_name = if cfg!(windows) { "lsp-daemon.exe" } else { "lsp-daemon" };
+    let sibling_name = if cfg!(windows) {
+        "lsp-daemon.exe"
+    } else {
+        "lsp-daemon"
+    };
     // An unresolvable executable yields a relative path, which runtime resolution rejects
     // as non-absolute instead of panicking here.
     let cli_path = std::env::current_exe()

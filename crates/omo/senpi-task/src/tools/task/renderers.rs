@@ -11,8 +11,8 @@ pub use super::call_renderer::{
     format_task_mode, format_task_target, render_task_call_lines, task_call_lines,
 };
 pub use crate::renderer_text::{
-    excerpt_renderer_prompt_text, excerpt_renderer_text, join_renderer_tokens, normalize_renderer_text,
-    renderer_visible_width,
+    excerpt_renderer_prompt_text, excerpt_renderer_text, join_renderer_tokens,
+    normalize_renderer_text, renderer_visible_width,
 };
 pub use crate::tools::render::{lines_component, status_theme_color};
 
@@ -23,12 +23,19 @@ pub fn format_task_status(status: &str) -> String {
 }
 
 pub fn task_result_lines(details: &TaskToolDetails) -> Vec<String> {
-    let mode = details.run_in_background.map(|bg| format_task_mode(Some(bg)).to_string());
+    let mode = details
+        .run_in_background
+        .map(|bg| format_task_mode(Some(bg)).to_string());
     result_lines(details, mode.as_deref())
 }
 
-pub fn render_task_result_lines(details: &TaskToolDetails, theme: &dyn RendererTheme) -> Vec<String> {
-    let mode = details.run_in_background.map(|bg| theme.italic(format_task_mode(Some(bg))));
+pub fn render_task_result_lines(
+    details: &TaskToolDetails,
+    theme: &dyn RendererTheme,
+) -> Vec<String> {
+    let mode = details
+        .run_in_background
+        .map(|bg| theme.italic(format_task_mode(Some(bg))));
     result_lines(details, mode.as_deref())
 }
 
@@ -47,7 +54,10 @@ pub fn render_task_result_component<'a>(
     details: &TaskToolDetails,
     theme: &'a dyn RendererTheme,
 ) -> TaskResultComponent<'a> {
-    TaskResultComponent { details: details.clone(), theme }
+    TaskResultComponent {
+        details: details.clone(),
+        theme,
+    }
 }
 
 impl LinesComponent for TaskResultComponent<'_> {
@@ -56,14 +66,22 @@ impl LinesComponent for TaskResultComponent<'_> {
             return vec![String::new()];
         }
         let details = &self.details;
-        let mode = details.run_in_background.map(|bg| self.theme.italic(format_task_mode(Some(bg))));
+        let mode = details
+            .run_in_background
+            .map(|bg| self.theme.italic(format_task_mode(Some(bg))));
         let line = task_result_line_for_width(details, mode.as_deref(), width);
-        let aggregate =
-            truncate_to_width(&self.theme.fg(status_theme_color(&details.status), &line), width, ELLIPSIS);
+        let aggregate = truncate_to_width(
+            &self.theme.fg(status_theme_color(&details.status), &line),
+            width,
+            ELLIPSIS,
+        );
         let mut lines = vec![aggregate];
         lines.extend(details.items.iter().flatten().map(|item| {
             truncate_to_width(
-                &self.theme.fg(status_theme_color(&item.status), &task_item_result_line(item)),
+                &self.theme.fg(
+                    status_theme_color(&item.status),
+                    &task_item_result_line(item),
+                ),
                 width,
                 ELLIPSIS,
             )
@@ -119,8 +137,13 @@ fn task_result_line(details: &TaskToolDetails, mode: Option<&str>) -> String {
     let target = task_target_token(&details_target(details));
     let fallback = fallback_count_token(details);
     let status = format_task_status(&details.status);
-    let mut tokens: Vec<Option<String>> =
-        vec![Some("task".to_string()), target, fallback, mode.map(str::to_string), Some(status)];
+    let mut tokens: Vec<Option<String>> = vec![
+        Some("task".to_string()),
+        target,
+        fallback,
+        mode.map(str::to_string),
+        Some(status),
+    ];
     tokens.extend(task_result_optional_tokens(details).into_iter().map(Some));
     join_owned(&tokens)
 }
@@ -136,24 +159,48 @@ fn task_item_result_line(item: &TaskToolItemDetail) -> String {
         Some(format_task_status(&item.status)),
         task_id.map(|id| format!("id:{id}")),
         item.queue_position.map(|queue| format!("queue:{queue}")),
-        error.map(|error| format!("error:{}", excerpt_renderer_text(&error, Some(TASK_REASON_EXCERPT_WIDTH)))),
+        error.map(|error| {
+            format!(
+                "error:{}",
+                excerpt_renderer_text(&error, Some(TASK_REASON_EXCERPT_WIDTH))
+            )
+        }),
     ])
 }
 
-fn task_result_line_for_width(details: &TaskToolDetails, mode: Option<&str>, width: usize) -> String {
+fn task_result_line_for_width(
+    details: &TaskToolDetails,
+    mode: Option<&str>,
+    width: usize,
+) -> String {
     let fallback = fallback_count_token(details);
     let status = format_task_status(&details.status);
-    let required_without_target: Vec<&str> =
-        [Some("task"), fallback.as_deref(), mode, Some(status.as_str())].into_iter().flatten().collect();
+    let required_without_target: Vec<&str> = [
+        Some("task"),
+        fallback.as_deref(),
+        mode,
+        Some(status.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let required_spaces = required_without_target.len() + 1;
-    let used: usize = required_without_target.iter().map(|token| renderer_visible_width(token)).sum();
+    let used: usize = required_without_target
+        .iter()
+        .map(|token| renderer_visible_width(token))
+        .sum();
     let target_width = width.saturating_sub(used + required_spaces);
     let target = compact_target_token(&details_target(details), target_width);
-    let required: Vec<&str> =
-        [Some("task"), target.as_deref(), fallback.as_deref(), mode, Some(status.as_str())]
-            .into_iter()
-            .flatten()
-            .collect();
+    let required: Vec<&str> = [
+        Some("task"),
+        target.as_deref(),
+        fallback.as_deref(),
+        mode,
+        Some(status.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let mut line = required.join(" ");
     for token in task_result_optional_tokens(details) {
         let candidate = format!("{line} {token}");
@@ -185,7 +232,10 @@ fn task_result_optional_tokens(details: &TaskToolDetails) -> Vec<String> {
         tokens.push(format!("queue:{queue}"));
     }
     if let Some(reason) = reason {
-        tokens.push(format!("reason:{}", excerpt_renderer_text(&reason, Some(TASK_REASON_EXCERPT_WIDTH))));
+        tokens.push(format!(
+            "reason:{}",
+            excerpt_renderer_text(&reason, Some(TASK_REASON_EXCERPT_WIDTH))
+        ));
     }
     tokens
 }

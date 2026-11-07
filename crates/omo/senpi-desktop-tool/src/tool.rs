@@ -126,7 +126,10 @@ pub async fn run_computer(
     timeout_seconds: f64,
     signal: Option<AbortSignal>,
 ) -> Result<ComputerToolResult, DesktopRunError> {
-    deps.handle.activate(context).await.map_err(DesktopRunError::Engine)?;
+    deps.handle
+        .activate(context)
+        .await
+        .map_err(DesktopRunError::Engine)?;
 
     let snapshot = run_snapshot(&deps.handle.settings(), context, read_only);
     let timeout_ms = std::time::Duration::from_secs_f64(timeout_seconds).as_millis() as u64;

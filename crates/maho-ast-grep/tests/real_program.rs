@@ -14,7 +14,12 @@ fn read(dir: &std::path::Path, name: &str) -> String {
 fn warnings(value: &Value) -> Vec<String> {
     value["warnings"]
         .as_array()
-        .map(|items| items.iter().filter_map(|w| w.as_str().map(str::to_owned)).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|w| w.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -64,7 +69,10 @@ async fn t10_multi_capture_is_the_exact_source_slice() {
     )
     .await;
     assert_eq!(value["ok"], true, "{value}");
-    assert_eq!(value["matches"][0]["metavariables"]["multi"]["ITEMS"], "1,2, 3");
+    assert_eq!(
+        value["matches"][0]["metavariables"]["multi"]["ITEMS"],
+        "1,2, 3"
+    );
 }
 
 #[tokio::test]
@@ -72,9 +80,7 @@ async fn t12_regex_syntax_and_lowercase_metavariables_are_rejected_unless_forced
     let dir = tempfile::tempdir().expect("tempdir");
     tree(dir.path(), &[("a.js", "var size = 1;\nlen(x);\n")]);
     let server = real_server(dir.path());
-    let base = |pattern: &str, force: bool| {
-        json!({ "paths": ["."], "pattern": pattern, "language": "javascript", "force": force })
-    };
+    let base = |pattern: &str, force: bool| json!({ "paths": ["."], "pattern": pattern, "language": "javascript", "force": force });
     let (rejected, is_error) = call(&server, "search", base("\\bsize", false)).await;
     assert!(is_error);
     assert_eq!(code_of(&rejected), "PATTERN_HINT_REJECTED");
@@ -97,9 +103,8 @@ async fn t13_python_class_head_with_colon_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     tree(dir.path(), &[("a.py", "class A(B):\n    pass\n")]);
     let server = real_server(dir.path());
-    let search = |pattern: &str| {
-        json!({ "paths": ["."], "pattern": pattern, "language": "python" })
-    };
+    let search =
+        |pattern: &str| json!({ "paths": ["."], "pattern": pattern, "language": "python" });
     let (rejected, _) = call(&server, "search", search("class $K($$$):")).await;
     assert_eq!(code_of(&rejected), "PATTERN_HINT_REJECTED");
     let (accepted, _) = call(&server, "search", search("class $K($$$)")).await;
@@ -125,7 +130,10 @@ async fn t14_error_node_pattern_fails_instead_of_returning_zero_matches() {
 #[tokio::test]
 async fn t15_match_limit_truncates_with_null_totals() {
     let dir = tempfile::tempdir().expect("tempdir");
-    tree(dir.path(), &[("a.js", "hit(1);\nhit(2);\nhit(3);\nhit(4);\nhit(5);\n")]);
+    tree(
+        dir.path(),
+        &[("a.js", "hit(1);\nhit(2);\nhit(3);\nhit(4);\nhit(5);\n")],
+    );
     let server = real_server(dir.path());
     let (value, is_error) = call(
         &server,
@@ -219,7 +227,16 @@ async fn t22_rewrite_metavariable_errors_are_rejected_even_with_force() {
 #[tokio::test]
 async fn t25_scan_rule_source_must_be_exactly_one_and_yaml_must_parse() {
     let dir = tempfile::tempdir().expect("tempdir");
-    tree(dir.path(), &[("a.js", "alert(1);\n"), ("rule.yml", "id: x\nlanguage: javascript\nrule:\n  pattern: alert($A)\n")]);
+    tree(
+        dir.path(),
+        &[
+            ("a.js", "alert(1);\n"),
+            (
+                "rule.yml",
+                "id: x\nlanguage: javascript\nrule:\n  pattern: alert($A)\n",
+            ),
+        ],
+    );
     let server = real_server(dir.path());
     let (both, is_error) = call(
         &server,
@@ -252,16 +269,23 @@ async fn t25_scan_rule_source_must_be_exactly_one_and_yaml_must_parse() {
 #[tokio::test]
 async fn t26_scan_with_fix_reports_rule_and_replacement_and_applies() {
     let dir = tempfile::tempdir().expect("tempdir");
-    tree(dir.path(), &[("a.js", "alert(1);\n"), ("sgconfig.yml", "ruleDirs: [\n")]);
+    tree(
+        dir.path(),
+        &[("a.js", "alert(1);\n"), ("sgconfig.yml", "ruleDirs: [\n")],
+    );
     let server = real_server(dir.path());
-    let rules = "id: no-alert\nlanguage: javascript\nrule:\n  pattern: alert($A)\nfix: console.log($A)\n";
+    let rules =
+        "id: no-alert\nlanguage: javascript\nrule:\n  pattern: alert($A)\nfix: console.log($A)\n";
     let (preview, is_error) = call(
         &server,
         "scan",
         json!({ "paths": ["a.js"], "inlineRules": rules }),
     )
     .await;
-    assert!(!is_error, "a broken sgconfig.yml must not matter: {preview}");
+    assert!(
+        !is_error,
+        "a broken sgconfig.yml must not matter: {preview}"
+    );
     assert_eq!(preview["kind"], "scan");
     assert_eq!(preview["matches"][0]["rule"]["ruleId"], "no-alert");
     assert!(preview["matches"][0]["rule"]["labels"].is_array());

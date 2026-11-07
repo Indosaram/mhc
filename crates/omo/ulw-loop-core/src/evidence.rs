@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain_types::{UlwLoopItem, UlwLoopLedgerEntry, UlwLoopPlan, UlwLoopSuccessCriterion};
 use crate::evidence_artifacts::resolve_evidence_artifacts;
-use crate::goal_status::{essential_criteria_of, has_all_criteria_pass, has_essential_criteria_pass};
+use crate::goal_status::{
+    essential_criteria_of, has_all_criteria_pass, has_essential_criteria_pass,
+};
 use crate::paths::UlwLoopScope;
-use crate::plan_commit::{commit, CommitMutation};
+use crate::plan_commit::{CommitMutation, commit};
 use crate::plan_io::{read_ulw_loop_plan, with_ulw_loop_mutation_lock};
-use crate::runtime::{iso, UlwLoopError};
+use crate::runtime::{UlwLoopError, iso};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordEvidenceResult {
@@ -61,9 +63,18 @@ pub fn criteria_summary(plan: &UlwLoopPlan) -> CriteriaSummary {
             summary.total_criteria += 1;
             match criterion.status.as_str() {
                 "pass" => summary.pass_count += 1,
-                "pending" => { summary.pending_count += 1; unresolved = true; }
-                "fail" => { summary.fail_count += 1; unresolved = true; }
-                "blocked" => { summary.blocked_count += 1; unresolved = true; }
+                "pending" => {
+                    summary.pending_count += 1;
+                    unresolved = true;
+                }
+                "fail" => {
+                    summary.fail_count += 1;
+                    unresolved = true;
+                }
+                "blocked" => {
+                    summary.blocked_count += 1;
+                    unresolved = true;
+                }
                 _ => unresolved = true,
             }
         }
@@ -139,7 +150,9 @@ pub fn record_evidence(
         let kind = ledger_kind(&args.status)?;
         let captured_at = iso();
 
-        let prev_status = plan.goals[goal_idx].success_criteria[crit_idx].status.clone();
+        let prev_status = plan.goals[goal_idx].success_criteria[crit_idx]
+            .status
+            .clone();
         {
             let criterion = &mut plan.goals[goal_idx].success_criteria[crit_idx];
             criterion.status = args.status.clone();
@@ -189,7 +202,12 @@ pub fn record_evidence(
             },
         )?;
 
-        Ok(RecordEvidenceResult { plan, goal: cloned_goal, criterion: cloned_crit, ledger_entry })
+        Ok(RecordEvidenceResult {
+            plan,
+            goal: cloned_goal,
+            criterion: cloned_crit,
+            ledger_entry,
+        })
     })
 }
 
@@ -264,7 +282,10 @@ pub fn mark_criteria_pending_reset_for_goal(
 }
 
 pub fn unresolved_criteria_of(goal: &UlwLoopItem) -> Vec<&UlwLoopSuccessCriterion> {
-    goal.success_criteria.iter().filter(|c| c.status != "pass").collect()
+    goal.success_criteria
+        .iter()
+        .filter(|c| c.status != "pass")
+        .collect()
 }
 
 pub fn unresolved_essential_criteria_of(goal: &UlwLoopItem) -> Vec<&UlwLoopSuccessCriterion> {
@@ -299,9 +320,9 @@ pub fn require_all_plan_criteria_pass(plan: &UlwLoopPlan) -> Result<(), UlwLoopE
         .goals
         .iter()
         .flat_map(|g| {
-            unresolved_criteria_of(g).into_iter().map(|c| {
-                serde_json::json!({ "goalId": g.id, "id": c.id, "status": c.status })
-            })
+            unresolved_criteria_of(g)
+                .into_iter()
+                .map(|c| serde_json::json!({ "goalId": g.id, "id": c.id, "status": c.status }))
         })
         .collect();
     if unresolved.is_empty() {
@@ -328,7 +349,10 @@ pub fn require_essential_criteria_pass(goal: &UlwLoopItem) -> Result<(), UlwLoop
     details.insert("goalId".into(), serde_json::json!(goal.id));
     details.insert("unresolved".into(), serde_json::json!(unresolved));
     Err(UlwLoopError::with_details(
-        format!("Goal {} has unresolved essential success criteria.", goal.id),
+        format!(
+            "Goal {} has unresolved essential success criteria.",
+            goal.id
+        ),
         "ulw_loop_criteria_not_all_pass",
         details,
     ))

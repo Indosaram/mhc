@@ -32,7 +32,10 @@ fn available_hint(label: &str, names: Option<&Vec<String>>) -> String {
 
 /// Validates parsed team members against the ACTUAL senpi vocabulary. team-core `validate_spec` is
 /// NOT used because it hard-calls the opencode-roster eligibility registry.
-pub fn validate_senpi_team_members(spec: &TeamSpec, ports: &SenpiTeamMemberPorts) -> Result<(), SenpiTeamSpecError> {
+pub fn validate_senpi_team_members(
+    spec: &TeamSpec,
+    ports: &SenpiTeamMemberPorts,
+) -> Result<(), SenpiTeamSpecError> {
     let curated = curated_readonly_agent_names();
     for member in &spec.members {
         if member.kind.as_str() == "category" {
@@ -65,7 +68,9 @@ pub fn validate_senpi_team_members(spec: &TeamSpec, ports: &SenpiTeamMemberPorts
 
         if ulw_reviewer_agent_names().contains(canonical.as_str()) {
             return Err(SenpiTeamSpecError::new(
-                format!("ulw reviewer agent \"{subagent_type}\" cannot be a team member; process-mode members drop reviewer instructions and tool allowlists, so delegate via the task tool instead"),
+                format!(
+                    "ulw reviewer agent \"{subagent_type}\" cannot be a team member; process-mode members drop reviewer instructions and tool allowlists, so delegate via the task tool instead"
+                ),
                 SenpiTeamSpecErrorCode::UnknownSubagentType,
                 &spec.name,
             ));

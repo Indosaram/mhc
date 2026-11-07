@@ -7,9 +7,14 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::dag::journal::{DagJournalOptions, create_dag_journal};
-use crate::dag::manager::{DagPersistedDefinition, DagPersistedNode, DagPersistedNodeTarget, DagRunRecordV1};
+use crate::dag::manager::{
+    DagPersistedDefinition, DagPersistedNode, DagPersistedNodeTarget, DagRunRecordV1,
+};
 use crate::dag::store::{DagStoreConfig, DagStoreOptions, create_dag_file_store};
-use crate::dag::types::{DagBottleneck, DagDiagnostic, DagEdge, DagNodeState, DagRoute, DagRunEvent, DagWave, SchemaVersion1};
+use crate::dag::types::{
+    DagBottleneck, DagDiagnostic, DagEdge, DagNodeState, DagRoute, DagRunEvent, DagWave,
+    SchemaVersion1,
+};
 
 const PARENT_SESSION_ID: &str = "ses_parent";
 const OTHER_SESSION_ID: &str = "ses_other";
@@ -144,7 +149,7 @@ fn counts_of(nodes: &[DagNode]) -> DagNodeCounts {
             DagNodeState::Blocked => counts.blocked += 1,
             DagNodeState::Scheduled => counts.scheduled += 1,
             DagNodeState::Paused => *counts.paused.get_or_insert(0) += 1,
-        DagNodeState::Running => counts.running += 1,
+            DagNodeState::Running => counts.running += 1,
             DagNodeState::Completed => counts.completed += 1,
             DagNodeState::Failed => counts.failed += 1,
             DagNodeState::Cancelled => counts.cancelled += 1,
@@ -185,10 +190,13 @@ impl Harness {
     fn settle(&self, nodes: Vec<DagNode>, status: DagRunStatus, reason: Option<&str>) {
         let current = self.journal.snapshot();
         self.store
-            .write_checkpoint(&run_id(), &DagRunRecordV1 {
-                nodes: nodes.clone(),
-                ..current
-            })
+            .write_checkpoint(
+                &run_id(),
+                &DagRunRecordV1 {
+                    nodes: nodes.clone(),
+                    ..current
+                },
+            )
             .expect("write checkpoint");
         let payload = match status {
             DagRunStatus::Completed => DagRunEventPayload::RunCompleted {
@@ -220,7 +228,9 @@ fn fixture(nodes: Vec<DagNode>) -> Harness {
 fn fixture_with_cancel(nodes: Vec<DagNode>, cancel: Option<DagCancel>) -> Harness {
     let store = temp_store();
     let initial = record(nodes, DagRunStatus::Running);
-    store.write_checkpoint(&run_id(), &initial).expect("write initial checkpoint");
+    store
+        .write_checkpoint(&run_id(), &initial)
+        .expect("write initial checkpoint");
     let journal = create_dag_journal(DagJournalOptions {
         store: Arc::clone(&store),
         run_id: run_id(),
@@ -243,13 +253,21 @@ fn fixture_with_cancel(nodes: Vec<DagNode>, cancel: Option<DagCancel>) -> Harnes
         cancel,
         read_output: None,
     });
-    Harness { store, journal, surface }
+    Harness {
+        store,
+        journal,
+        surface,
+    }
 }
 
 /// Blocking `wait` moves to its own thread so the test can settle the run from the main thread,
 /// exactly like the TS test's `await Promise.resolve()` interleaving but expressed for a thread
 /// that truly blocks instead of yielding a microtask.
-fn wait_in_background(surface: &DagWaitSurface, run: DagRunId, session: &str) -> mpsc::Receiver<Result<DagRunResult, DagWaitError>> {
+fn wait_in_background(
+    surface: &DagWaitSurface,
+    run: DagRunId,
+    session: &str,
+) -> mpsc::Receiver<Result<DagRunResult, DagWaitError>> {
     let (tx, rx) = mpsc::channel();
     let surface = surface.clone();
     let session = session.to_string();
@@ -266,11 +284,18 @@ fn recv_within<T>(rx: &mpsc::Receiver<T>, what: &str) -> T {
 
 #[test]
 fn cancelled_wait_returns_live_snapshot_and_removes_subscription() {
-    let harness = fixture(vec![build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") })]);
+    let harness = fixture(vec![build_node(NodeSpec {
+        state: DagNodeState::Running,
+        task_id: Some("task-plan"),
+        ..node("plan")
+    })]);
     let (ready_tx, ready_rx) = mpsc::channel();
     let surface = create_dag_wait_surface(DagWaitSurfaceOptions {
         store: harness.store.clone(),
-        subscribe: Arc::new(move |_, _| { ready_tx.send(()).expect("ready"); Box::new(|| {}) }),
+        subscribe: Arc::new(move |_, _| {
+            ready_tx.send(()).expect("ready");
+            Box::new(|| {})
+        }),
         cancel: None,
         read_output: None,
     });
@@ -279,7 +304,9 @@ fn cancelled_wait_returns_live_snapshot_and_removes_subscription() {
     let worker_surface = surface.clone();
     let (done_tx, done_rx) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let result = with_dag_wait_cancellation(worker_cancel, || worker_surface.wait(&run_id(), PARENT_SESSION_ID));
+        let result = with_dag_wait_cancellation(worker_cancel, || {
+            worker_surface.wait(&run_id(), PARENT_SESSION_ID)
+        });
         done_tx.send(result).expect("done");
     });
     recv_within(&ready_rx, "registration");
@@ -295,12 +322,26 @@ fn cancelled_wait_returns_live_snapshot_and_removes_subscription() {
 fn given_a_two_node_run_when_both_nodes_complete_then_wait_resolves_with_each_node_output_and_run_stats()
  {
     let running = vec![
-        build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") }),
-        build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-build"), ..node("build") }),
+        build_node(NodeSpec {
+            state: DagNodeState::Running,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        }),
+        build_node(NodeSpec {
+            state: DagNodeState::Running,
+            task_id: Some("task-build"),
+            ..node("build")
+        }),
     ];
     let harness = fixture(running);
-    harness.store.write_result(&run_id(), "plan", "plan output").expect("write plan result");
-    harness.store.write_result(&run_id(), "build", "build output").expect("write build result");
+    harness
+        .store
+        .write_result(&run_id(), "plan", "plan output")
+        .expect("write plan result");
+    harness
+        .store
+        .write_result(&run_id(), "build", "build output")
+        .expect("write build result");
 
     let rx = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
     std::thread::sleep(Duration::from_millis(50));
@@ -340,13 +381,21 @@ fn given_a_two_node_run_when_both_nodes_complete_then_wait_resolves_with_each_no
     assert_eq!(result.status, DagRunStatus::Completed);
     assert_eq!(result.run_id, run_id());
     assert_eq!(result.snapshot.status, DagRunStatus::Completed);
-    let DagTerminalNodeResult::Completed { task_id, output, run_stats } = &result.nodes["plan"] else {
+    let DagTerminalNodeResult::Completed {
+        task_id,
+        output,
+        run_stats,
+    } = &result.nodes["plan"]
+    else {
         panic!("expected plan completed");
     };
     assert_eq!(task_id, "task-plan");
     assert_eq!(output, "plan output");
     assert_eq!(run_stats.as_ref().map(|s| s.runtime_ms), Some(10));
-    let DagTerminalNodeResult::Completed { task_id, output, .. } = &result.nodes["build"] else {
+    let DagTerminalNodeResult::Completed {
+        task_id, output, ..
+    } = &result.nodes["build"]
+    else {
         panic!("expected build completed");
     };
     assert_eq!(task_id, "task-build");
@@ -357,8 +406,16 @@ fn given_a_two_node_run_when_both_nodes_complete_then_wait_resolves_with_each_no
 fn given_a_failed_node_with_a_dependent_when_the_run_ends_failed_then_wait_resolves_with_the_node_error_and_the_dependency_skip()
  {
     let harness = fixture(vec![
-        build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") }),
-        build_node(NodeSpec { state: DagNodeState::Blocked, depends_on: vec!["plan".to_string()], ..node("ship") }),
+        build_node(NodeSpec {
+            state: DagNodeState::Running,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        }),
+        build_node(NodeSpec {
+            state: DagNodeState::Blocked,
+            depends_on: vec!["plan".to_string()],
+            ..node("ship")
+        }),
     ]);
 
     let rx = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
@@ -403,7 +460,11 @@ fn given_a_failed_node_with_a_dependent_when_the_run_ends_failed_then_wait_resol
 fn given_a_cancelled_run_when_wait_is_pending_then_it_resolves_rather_than_rejects_and_carries_the_cancellation_reason()
  {
     let harness = fixture(vec![
-        build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") }),
+        build_node(NodeSpec {
+            state: DagNodeState::Running,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        }),
         build_node(node("build")),
     ]);
 
@@ -411,8 +472,15 @@ fn given_a_cancelled_run_when_wait_is_pending_then_it_resolves_rather_than_rejec
     std::thread::sleep(Duration::from_millis(50));
     harness.settle(
         vec![
-            build_node(NodeSpec { state: DagNodeState::Cancelled, task_id: Some("task-plan"), ..node("plan") }),
-            build_node(NodeSpec { state: DagNodeState::Cancelled, ..node("build") }),
+            build_node(NodeSpec {
+                state: DagNodeState::Cancelled,
+                task_id: Some("task-plan"),
+                ..node("plan")
+            }),
+            build_node(NodeSpec {
+                state: DagNodeState::Cancelled,
+                ..node("build")
+            }),
         ],
         DagRunStatus::Cancelled,
         Some("user_requested"),
@@ -439,22 +507,42 @@ fn given_a_run_that_is_already_terminal_when_wait_is_called_then_it_resolves_wit
         task_id: Some("task-plan"),
         ..node("plan")
     })]);
-    harness.store.write_result(&run_id(), "plan", "plan output").expect("write result");
+    harness
+        .store
+        .write_result(&run_id(), "plan", "plan output")
+        .expect("write result");
     harness.settle(
-        vec![build_node(NodeSpec { state: DagNodeState::Completed, task_id: Some("task-plan"), ..node("plan") })],
+        vec![build_node(NodeSpec {
+            state: DagNodeState::Completed,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        })],
         DagRunStatus::Completed,
         None,
     );
     let seq_before = harness
         .store
-        .read_events(&run_id(), 0, &DagEventReadOptions { limit: 100, ..Default::default() })
+        .read_events(
+            &run_id(),
+            0,
+            &DagEventReadOptions {
+                limit: 100,
+                ..Default::default()
+            },
+        )
         .expect("read events")
         .head_seq;
 
-    let result = harness.surface.wait(&run_id(), PARENT_SESSION_ID).expect("wait ok");
+    let result = harness
+        .surface
+        .wait(&run_id(), PARENT_SESSION_ID)
+        .expect("wait ok");
 
     assert_eq!(result.status, DagRunStatus::Completed);
-    let DagTerminalNodeResult::Completed { task_id, output, .. } = &result.nodes["plan"] else {
+    let DagTerminalNodeResult::Completed {
+        task_id, output, ..
+    } = &result.nodes["plan"]
+    else {
         panic!("expected plan completed");
     };
     assert_eq!(task_id, "task-plan");
@@ -462,7 +550,14 @@ fn given_a_run_that_is_already_terminal_when_wait_is_called_then_it_resolves_wit
     assert_eq!(
         harness
             .store
-            .read_events(&run_id(), 0, &DagEventReadOptions { limit: 100, ..Default::default() })
+            .read_events(
+                &run_id(),
+                0,
+                &DagEventReadOptions {
+                    limit: 100,
+                    ..Default::default()
+                }
+            )
             .expect("read events")
             .head_seq,
         seq_before
@@ -477,16 +572,27 @@ fn given_an_attached_handle_when_done_resolves_then_it_equals_the_wait_result_an
         task_id: Some("task-plan"),
         ..node("plan")
     })]);
-    harness.store.write_result(&run_id(), "plan", "plan output").expect("write result");
-    let handle = harness.surface.attach(&run_id(), PARENT_SESSION_ID).expect("attach");
+    harness
+        .store
+        .write_result(&run_id(), "plan", "plan output")
+        .expect("write result");
+    let handle = harness
+        .surface
+        .attach(&run_id(), PARENT_SESSION_ID)
+        .expect("attach");
 
-    assert_eq!(handle.snapshot().expect("snapshot").status, DagRunStatus::Running);
+    assert_eq!(
+        handle.snapshot().expect("snapshot").status,
+        DagRunStatus::Running
+    );
     let done_rx = {
         let (tx, rx) = mpsc::channel();
         let surface = harness.surface.clone();
         let run = run_id();
         std::thread::spawn(move || {
-            let handle = surface.attach(&run, PARENT_SESSION_ID).expect("attach for done");
+            let handle = surface
+                .attach(&run, PARENT_SESSION_ID)
+                .expect("attach for done");
             let _ = tx.send(handle.done());
         });
         rx
@@ -494,7 +600,11 @@ fn given_an_attached_handle_when_done_resolves_then_it_equals_the_wait_result_an
     let wait_rx = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
     std::thread::sleep(Duration::from_millis(50));
     harness.settle(
-        vec![build_node(NodeSpec { state: DagNodeState::Completed, task_id: Some("task-plan"), ..node("plan") })],
+        vec![build_node(NodeSpec {
+            state: DagNodeState::Completed,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        })],
         DagRunStatus::Completed,
         None,
     );
@@ -503,7 +613,10 @@ fn given_an_attached_handle_when_done_resolves_then_it_equals_the_wait_result_an
 
     assert_eq!(handle.run_id, run_id());
     assert_eq!(handle_result, wait_result);
-    assert_eq!(handle.snapshot().expect("snapshot").status, DagRunStatus::Completed);
+    assert_eq!(
+        handle.snapshot().expect("snapshot").status,
+        DagRunStatus::Completed
+    );
 }
 
 #[test]
@@ -518,7 +631,11 @@ fn given_an_attached_handle_when_cancel_is_called_then_the_injected_cancellation
             .push((id.clone(), reason.map(str::to_string)));
     });
     let harness = fixture_with_cancel(
-        vec![build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") })],
+        vec![build_node(NodeSpec {
+            state: DagNodeState::Running,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        })],
         Some(cancel),
     );
 
@@ -545,15 +662,26 @@ fn given_a_caller_that_abandons_its_wait_when_the_run_later_completes_then_the_r
         cancelled_for_closure.lock().unwrap().push(id.clone());
     });
     let harness = fixture_with_cancel(
-        vec![build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") })],
+        vec![build_node(NodeSpec {
+            state: DagNodeState::Running,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        })],
         Some(cancel),
     );
-    harness.store.write_result(&run_id(), "plan", "plan output").expect("write result");
+    harness
+        .store
+        .write_result(&run_id(), "plan", "plan output")
+        .expect("write result");
 
     let abandoned_rx = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
     std::thread::sleep(Duration::from_millis(50));
     harness.settle(
-        vec![build_node(NodeSpec { state: DagNodeState::Completed, task_id: Some("task-plan"), ..node("plan") })],
+        vec![build_node(NodeSpec {
+            state: DagNodeState::Completed,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        })],
         DagRunStatus::Completed,
         None,
     );
@@ -573,7 +701,10 @@ fn given_a_caller_that_abandons_its_wait_when_the_run_later_completes_then_the_r
             .map(|record| record.status),
         Some(DagRunStatus::Completed)
     );
-    let DagTerminalNodeResult::Completed { task_id, output, .. } = &later.nodes["plan"] else {
+    let DagTerminalNodeResult::Completed {
+        task_id, output, ..
+    } = &later.nodes["plan"]
+    else {
         panic!("expected plan completed");
     };
     assert_eq!(task_id, "task-plan");
@@ -589,20 +720,29 @@ fn given_many_waiters_on_one_run_when_every_waiter_detaches_but_one_then_the_sur
         task_id: Some("task-plan"),
         ..node("plan")
     })]);
-    harness.store.write_result(&run_id(), "plan", "plan output").expect("write result");
+    harness
+        .store
+        .write_result(&run_id(), "plan", "plan output")
+        .expect("write result");
 
     let abandoned_first = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
     let abandoned_second = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
     let survivor = wait_in_background(&harness.surface, run_id(), PARENT_SESSION_ID);
     std::thread::sleep(Duration::from_millis(50));
     harness.settle(
-        vec![build_node(NodeSpec { state: DagNodeState::Completed, task_id: Some("task-plan"), ..node("plan") })],
+        vec![build_node(NodeSpec {
+            state: DagNodeState::Completed,
+            task_id: Some("task-plan"),
+            ..node("plan")
+        })],
         DagRunStatus::Completed,
         None,
     );
 
     assert_eq!(
-        recv_within(&survivor, "survivor").expect("survivor ok").status,
+        recv_within(&survivor, "survivor")
+            .expect("survivor ok")
+            .status,
         DagRunStatus::Completed
     );
     assert_eq!(harness.surface.waiter_count(&run_id()), 0);
@@ -638,14 +778,17 @@ fn given_an_unknown_run_id_when_waited_or_attached_then_run_not_found_is_raised_
     })]);
     let missing: DagRunId = "run-missing".to_string();
 
-    let error = harness.surface.wait(&missing, PARENT_SESSION_ID).expect_err("expected run_not_found");
+    let error = harness
+        .surface
+        .wait(&missing, PARENT_SESSION_ID)
+        .expect_err("expected run_not_found");
     assert_eq!(error.code, DagWaitErrorCode::RunNotFound);
     assert!(harness.surface.attach(&missing, PARENT_SESSION_ID).is_err());
 }
 
 #[test]
 fn given_malformed_wait_params_when_waited_then_invalid_arguments_is_raised_and_no_run_is_touched()
- {
+{
     let harness = fixture(vec![build_node(NodeSpec {
         state: DagNodeState::Running,
         task_id: Some("task-plan"),

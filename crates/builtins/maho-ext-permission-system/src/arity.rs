@@ -140,8 +140,15 @@ pub fn prefix(tokens: &[&str]) -> Vec<String> {
             "yarn run" => 3,
             _ => continue,
         };
-        return tokens.iter().take(arity).map(|token| (*token).to_owned()).collect();
+        return tokens
+            .iter()
+            .take(arity)
+            .map(|token| (*token).to_owned())
+            .collect();
     }
-    tokens.iter().take(1).map(|token| (*token).to_owned()).collect()
+    tokens
+        .iter()
+        .take(1)
+        .map(|token| (*token).to_owned())
+        .collect()
 }
-

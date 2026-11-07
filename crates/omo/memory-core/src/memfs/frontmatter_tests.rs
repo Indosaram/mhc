@@ -501,4 +501,3 @@ fn test_lookalike_and_duplicate_frontmatter_keys() {
         vec!["Provenance"]
     );
 }
-

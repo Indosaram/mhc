@@ -19,9 +19,7 @@ pub fn expand_path_with(path: &str, home: impl FnOnce() -> Option<std::ffi::OsSt
     let is_tilde = normalized == "~"
         || normalized.starts_with("~/")
         || (cfg!(windows) && normalized.starts_with("~\\"));
-    if is_tilde
-        && let Some(home) = home()
-    {
+    if is_tilde && let Some(home) = home() {
         let rest = normalized
             .strip_prefix("~/")
             .or_else(|| normalized.strip_prefix("~\\"))
@@ -245,7 +243,9 @@ mod tests {
         }
 
         let mut order = Vec::new();
-        let lookup = |home: Option<&'static str>, profile: Option<&'static str>, log: &mut Vec<&'static str>| {
+        let lookup = |home: Option<&'static str>,
+                      profile: Option<&'static str>,
+                      log: &mut Vec<&'static str>| {
             home.map(|v| {
                 log.push("HOME");
                 OsString::from(v)
@@ -256,12 +256,15 @@ mod tests {
             })
         };
 
-        let resolved_profile = super::expand_path_with("~/doc", || lookup(None, Some("/profile"), &mut order));
+        let resolved_profile =
+            super::expand_path_with("~/doc", || lookup(None, Some("/profile"), &mut order));
         assert_eq!(order, vec!["USERPROFILE"]);
         assert_eq!(resolved_profile, std::path::PathBuf::from("/profile/doc"));
 
         order.clear();
-        let resolved_home = super::expand_path_with("~/doc", || lookup(Some("/home"), Some("/profile"), &mut order));
+        let resolved_home = super::expand_path_with("~/doc", || {
+            lookup(Some("/home"), Some("/profile"), &mut order)
+        });
         assert_eq!(order, vec!["HOME"]);
         assert_eq!(resolved_home, std::path::PathBuf::from("/home/doc"));
     }

@@ -59,7 +59,7 @@ pub mod tool_call_middleware_truncation_e2e;
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "anthropic_common/mod.rs"]
 pub mod anthropic_common;
-#[path = "support/mod.rs"]
-pub mod support;
 #[path = "google_fixtures/mod.rs"]
 pub mod google_fixtures;
+#[path = "support/mod.rs"]
+pub mod support;

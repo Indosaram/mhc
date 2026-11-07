@@ -202,12 +202,19 @@ impl SummaryStorage {
     }
 
     pub fn read_window(&self, key: &str) -> ReadResult<WindowRecord> {
-        parse_read(read_json_or_corrupt(&self.window_path(key)), parse_window_record)
+        parse_read(
+            read_json_or_corrupt(&self.window_path(key)),
+            parse_window_record,
+        )
     }
 
     pub fn write_window(&self, key: &str, record: &WindowRecord) -> std::io::Result<()> {
         self.register();
-        write_json_atomic(&self.window_path(key), &window_record_to_json(record), &self.owner)
+        write_json_atomic(
+            &self.window_path(key),
+            &window_record_to_json(record),
+            &self.owner,
+        )
     }
 
     pub fn remove_window(&self, key: &str) {
@@ -249,10 +256,7 @@ fn json_keys(dir: &Path) -> Vec<String> {
     keys
 }
 
-pub fn parse_read<T>(
-    value: JsonRead,
-    parse: impl Fn(&Value) -> Option<T>,
-) -> ReadResult<T> {
+pub fn parse_read<T>(value: JsonRead, parse: impl Fn(&Value) -> Option<T>) -> ReadResult<T> {
     match value {
         JsonRead::Missing => ReadResult::Missing,
         JsonRead::Corrupt => ReadResult::Corrupt,
@@ -297,7 +301,9 @@ pub fn parse_window_record(value: &Value) -> Option<WindowRecord> {
         seq,
         sample_rate,
         window_id: window_is_open.then(|| window_id.unwrap_or_default().to_string()),
-        window: window_is_open.then(|| window.and_then(parse_window)).flatten(),
+        window: window_is_open
+            .then(|| window.and_then(parse_window))
+            .flatten(),
     })
 }
 
@@ -370,7 +376,10 @@ pub fn pending_record_to_json(record: &PendingRecord) -> Value {
         json!({"pid": record.owner.pid, "bootId": record.owner.boot_id}),
     );
     object.insert("createdAt".into(), json!(record.created_at));
-    object.insert("properties".into(), Value::Object(record.properties.clone()));
+    object.insert(
+        "properties".into(),
+        Value::Object(record.properties.clone()),
+    );
     Value::Object(object)
 }
 
@@ -693,8 +702,16 @@ mod tests {
         );
         assert_eq!(storage.window_key("with/slash", false).len(), 20);
         let consented = |_: &ConsentScope| true;
-        assert!(!is_record_sendable(RecordConsent::Unconsented, Some(&ConsentScope::default()), &consented));
-        assert!(!is_record_sendable(RecordConsent::Enabled, None, &consented));
+        assert!(!is_record_sendable(
+            RecordConsent::Unconsented,
+            Some(&ConsentScope::default()),
+            &consented
+        ));
+        assert!(!is_record_sendable(
+            RecordConsent::Enabled,
+            None,
+            &consented
+        ));
         assert!(!is_record_sendable(
             RecordConsent::Enabled,
             Some(&ConsentScope::default()),
@@ -812,7 +829,12 @@ mod tests {
             split_leftover_name("window.json.claimed-42-boot-a"),
             Some((42, "boot-a".into(), true))
         );
-        for invalid in ["window.json", "window.json.tmp", "window.json.x-b.tmp", "a.b.json"] {
+        for invalid in [
+            "window.json",
+            "window.json.tmp",
+            "window.json.x-b.tmp",
+            "a.b.json",
+        ] {
             assert_eq!(split_leftover_name(invalid), None, "{invalid}");
         }
     }

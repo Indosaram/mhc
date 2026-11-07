@@ -34,7 +34,8 @@ fn metadata() -> SessionMetadata {
 }
 
 fn zero_usage() -> Usage {
-    Usage { context_usage: None,
+    Usage {
+        context_usage: None,
         input: 0,
         output: 0,
         cache_read: 0,
@@ -182,7 +183,8 @@ async fn composes_bound_values_and_lists_atomically_with_entries_and_usage() {
                                     Write::List(append_list(&events, serde_json::json!("event"))),
                                     insert_usage(NewUsageRow {
                                         id: "usage".to_owned(),
-                                        usage: Usage { context_usage: None,
+                                        usage: Usage {
+                                            context_usage: None,
                                             input: 1,
                                             output: 1,
                                             total_tokens: 2,
@@ -670,7 +672,10 @@ async fn exposes_explicit_branch_scans_through_the_session_and_callback_scoped_m
 async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary() {
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
-    let pending = AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage { credential_served_recently: None, timing: None, failure_source: None,
+    let pending = AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage {
+        credential_served_recently: None,
+        timing: None,
+        failure_source: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,

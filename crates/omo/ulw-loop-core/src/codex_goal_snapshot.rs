@@ -1,9 +1,9 @@
 //! Codex goal snapshot parsing and reconciliation.
 
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
-use serde_json::Value;
 
 use crate::runtime::UlwLoopError;
 

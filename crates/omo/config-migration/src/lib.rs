@@ -20,9 +20,7 @@ mod transform_opencode;
 mod transform_types;
 mod types;
 
-pub use category_deep_split::{
-    CATEGORY_DEEP_SPLIT_MIGRATION_ID, transform_category_deep_split,
-};
+pub use category_deep_split::{CATEGORY_DEEP_SPLIT_MIGRATION_ID, transform_category_deep_split};
 pub use discovery::{
     CONFIG_JSONC_MIGRATION_ID, OPENCODE_CONFIG_MIGRATION_ID, discover_legacy_config_groups,
 };

@@ -91,7 +91,11 @@ pub fn create_turn_lifecycle(
     spawn: KibitzerWakeSpawn,
     on_wake: Arc<dyn Fn(KibitzerWakeOutcome) + Send + Sync>,
 ) -> TurnLifecycle {
-    TurnLifecycle { core, spawn, on_wake }
+    TurnLifecycle {
+        core,
+        spawn,
+        on_wake,
+    }
 }
 
 impl TurnLifecycle {
@@ -102,7 +106,11 @@ impl TurnLifecycle {
     /// never becomes `active_turn`, so nothing awaits it.
     pub fn new_turn(&self, generation: u64, max_items: usize, candidate_count: usize) -> Arc<Turn> {
         let wake = {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.wake_seq += 1;
             record.wake_seq
         };
@@ -155,7 +163,12 @@ impl TurnLifecycle {
     /// The child's subscription: budget, consumption, usage. Only the active turn is observed.
     pub fn observe(&self, observation: KibitzerChildObservation) {
         let turn = {
-            self.core.record.lock().unwrap_or_else(PoisonError::into_inner).active_turn.clone()
+            self.core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .active_turn
+                .clone()
         };
         let Some(turn) = turn else { return };
         match observation {
@@ -163,10 +176,17 @@ impl TurnLifecycle {
                 // A parallel batch can start a call past the budget before the eighth one ends.
                 let starts = turn.tool_starts.fetch_add(1, Ordering::SeqCst) + 1;
                 if starts > self.core.tool_budget {
-                    schedule_abort(&self.spawn, &self.core, &turn, KibitzerWakeAbort::ToolBudget);
+                    schedule_abort(
+                        &self.spawn,
+                        &self.core,
+                        &turn,
+                        KibitzerWakeAbort::ToolBudget,
+                    );
                 }
             }
-            KibitzerChildObservation::ToolEnd { terminate, refusal, .. } => {
+            KibitzerChildObservation::ToolEnd {
+                terminate, refusal, ..
+            } => {
                 let ends = turn.tool_ends.fetch_add(1, Ordering::SeqCst) + 1;
                 // Upstream stops at the budget by count; the registered path also reports an actual
                 // cap result - `terminate` set, or the `tool_budget_exceeded` refusal code - which
@@ -174,12 +194,20 @@ impl TurnLifecycle {
                 // counts), and a below-cap argument rejection (`terminate` false, a different code)
                 // is left to continue.
                 let refused_at_cap = terminate
-                    || refusal.as_deref() == Some(KibitzerRejectionCode::ToolBudgetExceeded.as_str());
+                    || refusal.as_deref()
+                        == Some(KibitzerRejectionCode::ToolBudgetExceeded.as_str());
                 if ends >= self.core.tool_budget || refused_at_cap {
-                    schedule_abort(&self.spawn, &self.core, &turn, KibitzerWakeAbort::ToolBudget);
+                    schedule_abort(
+                        &self.spawn,
+                        &self.core,
+                        &turn,
+                        KibitzerWakeAbort::ToolBudget,
+                    );
                 }
             }
-            KibitzerChildObservation::MessageEnd { message } => self.observe_message(&turn, &message),
+            KibitzerChildObservation::MessageEnd { message } => {
+                self.observe_message(&turn, &message)
+            }
         }
     }
 
@@ -189,15 +217,21 @@ impl TurnLifecycle {
         match message.role() {
             "user" => {
                 let text = message_text(message);
-                let mut envelopes = turn.envelopes.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(envelope) =
-                    envelopes.iter_mut().find(|envelope| !envelope.consumed && envelope.text == text)
+                let mut envelopes = turn
+                    .envelopes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if let Some(envelope) = envelopes
+                    .iter_mut()
+                    .find(|envelope| !envelope.consumed && envelope.text == text)
                 {
                     envelope.consumed = true;
                 }
             }
             "assistant" => {
-                let Some(assistant) = message.as_assistant() else { return };
+                let Some(assistant) = message.as_assistant() else {
+                    return;
+                };
                 {
                     let mut model = turn.model.lock().unwrap_or_else(PoisonError::into_inner);
                     *model = Some(format!("{}/{}", assistant.provider, assistant.model));
@@ -218,9 +252,16 @@ impl TurnLifecycle {
                         cache_write: previous.cache_write + usage.cache_write as i64,
                     });
                 }
-                let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+                let record = self
+                    .core
+                    .record
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if let Some(child) = record.child.as_ref() {
-                    *child.usage_tokens.lock().unwrap_or_else(PoisonError::into_inner) =
+                    *child
+                        .usage_tokens
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) =
                         Some(usage.input as i64 + usage.cache_read as i64);
                 }
             }
@@ -230,10 +271,17 @@ impl TurnLifecycle {
 
     /// `usage.input + usage.cacheRead` of the newest assistant message, char/4 fallback.
     pub fn context_estimate(&self, current: &Child) -> i64 {
-        if let Some(tokens) = *current.usage_tokens.lock().unwrap_or_else(PoisonError::into_inner) {
+        if let Some(tokens) = *current
+            .usage_tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
             return tokens;
         }
-        let chars = *current.chars_sent.lock().unwrap_or_else(PoisonError::into_inner);
+        let chars = *current
+            .chars_sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         chars / 4 + i64::from(chars % 4 != 0)
     }
 
@@ -321,8 +369,16 @@ impl TurnLifecycle {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let accepted = turn.accepted.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let options = ValidateNudgesOptions { candidates, surfaced, max_items: turn.max_items };
+        let accepted = turn
+            .accepted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let options = ValidateNudgesOptions {
+            candidates,
+            surfaced,
+            max_items: turn.max_items,
+        };
         validate_nudges(&accepted, &options)
     }
 
@@ -336,12 +392,18 @@ impl TurnLifecycle {
         model: Option<String>,
     ) {
         let cursors = cursors_span(turn);
-        let provenance = model
-            .or_else(|| turn.model.lock().unwrap_or_else(PoisonError::into_inner).clone());
+        let provenance = model.or_else(|| {
+            turn.model
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        });
         let (reason, configuration) = match end {
-            KibitzerWakeEnd::Failed { reason, configuration, .. } => {
-                (reason.clone(), configuration.clone())
-            }
+            KibitzerWakeEnd::Failed {
+                reason,
+                configuration,
+                ..
+            } => (reason.clone(), configuration.clone()),
             _ => (None, None),
         };
         let steered = turn
@@ -427,9 +489,16 @@ async fn abort_transition(core: Arc<SidecarCore>, turn: Arc<Turn>, cause: Kibitz
         move || async move {
             let is_active = {
                 let record = core.record.lock().unwrap_or_else(PoisonError::into_inner);
-                record.active_turn.as_ref().is_some_and(|active| Arc::ptr_eq(active, &turn))
+                record
+                    .active_turn
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, &turn))
             };
-            let already = turn.abort.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+            let already = turn
+                .abort
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some();
             let handle = {
                 let record = core.record.lock().unwrap_or_else(PoisonError::into_inner);
                 record.child.as_ref().map(|child| Arc::clone(&child.handle))
@@ -465,7 +534,11 @@ fn is_current_deadline(turn: &Turn, token: u64) -> bool {
 /// still sees the advanced epoch and does nothing.
 fn clear_deadline_impl(core: &SidecarCore, turn: &Turn) {
     turn.deadline_epoch.fetch_add(1, Ordering::SeqCst);
-    let handle = turn.deadline.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let handle = turn
+        .deadline
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
     if let Some(handle) = handle {
         core.timers.clear(handle);
     }
@@ -492,9 +565,9 @@ mod tests {
     use crate::kibitzer_contract::{
         KIBITZER_WAKE_MAX_TOTAL_MS, KibitzerSidecarTimers, KibitzerWakeSpawn,
     };
+    use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
     use crate::kibitzer_sidecar_core::{KibitzerSidecarCoreOptions, Turn, create_sidecar_core};
     use crate::kibitzer_sidecar_outcome::KibitzerWakeOutcome;
-    use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
 
     use super::{TurnLifecycle, create_turn_lifecycle};
 
@@ -527,11 +600,21 @@ mod tests {
         }
 
         fn ms_of(&self, handle: u64) -> i64 {
-            self.queued.lock().unwrap().get(&handle).expect("the arm is queued").ms
+            self.queued
+                .lock()
+                .unwrap()
+                .get(&handle)
+                .expect("the arm is queued")
+                .ms
         }
 
         fn is_cleared(&self, handle: u64) -> bool {
-            self.queued.lock().unwrap().get(&handle).expect("the arm is queued").cleared
+            self.queued
+                .lock()
+                .unwrap()
+                .get(&handle)
+                .expect("the arm is queued")
+                .cleared
         }
 
         fn fire(&self, handle: u64) {
@@ -554,10 +637,14 @@ mod tests {
                 callback();
                 return handle;
             }
-            self.queued
-                .lock()
-                .unwrap()
-                .insert(handle, Queued { ms, callback: Some(callback), cleared: false });
+            self.queued.lock().unwrap().insert(
+                handle,
+                Queued {
+                    ms,
+                    callback: Some(callback),
+                    cleared: false,
+                },
+            );
             handle
         }
 
@@ -607,7 +694,12 @@ mod tests {
         let on_wake: Arc<dyn Fn(KibitzerWakeOutcome) + Send + Sync> =
             Arc::new(|_outcome: KibitzerWakeOutcome| {});
         let turns = create_turn_lifecycle(core, spawn, on_wake);
-        Harness { turns, timers, clock, scheduled }
+        Harness {
+            turns,
+            timers,
+            clock,
+            scheduled,
+        }
     }
 
     fn armed(turn: &Arc<Turn>) -> u64 {
@@ -626,11 +718,17 @@ mod tests {
         let turn = harness.turns.new_turn(1, 5, 0);
 
         harness.turns.arm_deadline(&turn, None);
-        assert_eq!(harness.timers.ms_of(armed(&turn)), KIBITZER_WAKE_MAX_TOTAL_MS);
+        assert_eq!(
+            harness.timers.ms_of(armed(&turn)),
+            KIBITZER_WAKE_MAX_TOTAL_MS
+        );
 
         harness.clock.fetch_add(250_000, Ordering::SeqCst);
         harness.turns.arm_deadline(&turn, None);
-        assert_eq!(harness.timers.ms_of(armed(&turn)), KIBITZER_WAKE_MAX_TOTAL_MS - 250_000);
+        assert_eq!(
+            harness.timers.ms_of(armed(&turn)),
+            KIBITZER_WAKE_MAX_TOTAL_MS - 250_000
+        );
     }
 
     #[test]

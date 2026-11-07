@@ -112,7 +112,11 @@ fn test_refused_commit_rolls_back_applied_files() {
 
     let patch = "*** Begin Patch\n*** Update File: system/kept.md\n@@\n-original\n+changed\n*** Add File: notes/new/added.md\n+---\n+description: Added\n+---\n+hello\n*** End Patch";
     let err = memory_apply_patch(&repo, &test_params("refused", patch)).unwrap_err();
-    assert!(err.message.contains("refused by test hook"), "{}", err.message);
+    assert!(
+        err.message.contains("refused by test hook"),
+        "{}",
+        err.message
+    );
 
     assert_eq!(repo.status(&[] as &[&str]).expect("status"), "");
     assert_eq!(
@@ -318,7 +322,11 @@ fn given_duplicate_add_and_existing_add_when_applied_then_each_fails_with_the_to
             "*** Add File: a.md\n+one\n*** Add File: a.md\n+two",
             "duplicate add/update target",
         ),
-        (existing.as_slice(), "*** Add File: a.md\n+two", "cannot add existing"),
+        (
+            existing.as_slice(),
+            "*** Add File: a.md\n+two",
+            "cannot add existing",
+        ),
     ];
 
     for (seeds, body, expected) in rows {

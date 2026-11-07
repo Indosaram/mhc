@@ -114,7 +114,9 @@ mod tests {
         assert_eq!(observer.hook_label(), "journal");
         let reason = AbortReason::new("AbortError", "retired").with_payload(7_u8);
         controller.abort(Some(reason.clone()));
-        let refused = observer.phase("next").expect_err("retired observer refuses a phase");
+        let refused = observer
+            .phase("next")
+            .expect_err("retired observer refuses a phase");
         assert_eq!(refused.message, "retired");
         assert_eq!(refused.abort_reason.as_deref(), Some(&reason));
         assert_eq!(observer.hook_label(), "journal");

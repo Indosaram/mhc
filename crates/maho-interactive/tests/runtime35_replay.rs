@@ -1,18 +1,51 @@
-use std::{cell::RefCell, rc::Rc};
 use maho_ai::types::{AssistantMessage, ContentBlock, StopReason};
-use maho_interactive::{components::tool_execution::{ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation}, replay_assistant_tools::*, theme::{Theme, ColorMode}};
+use maho_interactive::{
+    components::tool_execution::{
+        ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation,
+    },
+    replay_assistant_tools::*,
+    theme::{ColorMode, Theme},
+};
 use maho_tui::tui::Component;
+use std::{cell::RefCell, rc::Rc};
 
 #[derive(Default)]
-struct Host { messages: Vec<AssistantMessage>, tools: Vec<Rc<RefCell<ToolExecutionComponent>>>, pending: Vec<String> }
+struct Host {
+    messages: Vec<AssistantMessage>,
+    tools: Vec<Rc<RefCell<ToolExecutionComponent>>>,
+    pending: Vec<String>,
+}
 impl ReplayToolHost for Host {
-    fn expanded(&self) -> bool { true }
-    fn add_message(&mut self, message: AssistantMessage) { self.messages.push(message); }
-    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.tools.push(component); }
-    fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
-        ToolExecutionComponent::new(name, id, serde_json::Value::Object(args.clone()), ToolExecutionOptions::default(), None, "/tmp", ToolExecutionPresentation::Classic, None, Theme::builtin("dark", ColorMode::Truecolor).expect("theme"))
+    fn expanded(&self) -> bool {
+        true
     }
-    fn add_pending(&mut self, id: &str, _: Rc<RefCell<ToolExecutionComponent>>) { self.pending.push(id.into()); }
+    fn add_message(&mut self, message: AssistantMessage) {
+        self.messages.push(message);
+    }
+    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) {
+        self.tools.push(component);
+    }
+    fn create_tool(
+        &mut self,
+        name: &str,
+        id: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> ToolExecutionComponent {
+        ToolExecutionComponent::new(
+            name,
+            id,
+            serde_json::Value::Object(args.clone()),
+            ToolExecutionOptions::default(),
+            None,
+            "/tmp",
+            ToolExecutionPresentation::Classic,
+            None,
+            Theme::builtin("dark", ColorMode::Truecolor).expect("theme"),
+        )
+    }
+    fn add_pending(&mut self, id: &str, _: Rc<RefCell<ToolExecutionComponent>>) {
+        self.pending.push(id.into());
+    }
 }
 fn message(reason: StopReason) -> AssistantMessage {
     serde_json::from_value(serde_json::json!({
@@ -25,9 +58,17 @@ fn message(reason: StopReason) -> AssistantMessage {
 fn replay_keeps_text_segments_in_original_positions_and_tracks_pending_tools() {
     let mut host = Host::default();
     replay_assistant_tools(&message(StopReason::ToolUse), &mut host);
-    assert_eq!(host.messages.iter().map(|message| message.content.len()).collect::<Vec<_>>(), [2, 1, 1]);
+    assert_eq!(
+        host.messages
+            .iter()
+            .map(|message| message.content.len())
+            .collect::<Vec<_>>(),
+        [2, 1, 1]
+    );
     assert_eq!(host.pending, ["first", "second"]);
-    assert!(matches!(&host.messages[1].content[0], ContentBlock::Text(text) if text.text == "between"));
+    assert!(
+        matches!(&host.messages[1].content[0], ContentBlock::Text(text) if text.text == "between")
+    );
 }
 
 #[test]

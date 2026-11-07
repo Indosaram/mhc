@@ -6,7 +6,9 @@ pub(super) fn read_own_footprint() -> Result<Value, String> {
     footprint_from_counters(HPROCESS::GetCurrentProcess().GetProcessMemoryInfo())
 }
 
-fn footprint_from_counters(counters: SysResult<PROCESS_MEMORY_COUNTERS_EX>) -> Result<Value, String> {
+fn footprint_from_counters(
+    counters: SysResult<PROCESS_MEMORY_COUNTERS_EX>,
+) -> Result<Value, String> {
     let counters = counters.map_err(|error| error.to_string())?;
     // PrivateUsage is already in bytes; neither WorkingSetSize nor PagefileUsage
     // is a substitute for the upstream private_usage measurement.
@@ -29,7 +31,10 @@ mod tests {
         // When
         let footprint = footprint_from_counters(Ok(counters)).expect("footprint");
         // Then
-        assert_eq!(footprint, json!({"bytes": 12_345, "measure": "private_usage"}));
+        assert_eq!(
+            footprint,
+            json!({"bytes": 12_345, "measure": "private_usage"})
+        );
     }
 
     #[test]

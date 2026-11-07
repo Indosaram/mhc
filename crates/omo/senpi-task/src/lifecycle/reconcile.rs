@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use super::context::{LifecycleContext, is_terminal, reconciliation_active};
 use super::destroy::{destroy_resident_task, term_then_kill_claimed};
+use super::errors::LifecycleError;
 use super::host_session::host_session_identity;
 use super::host_session_revive::reconcile_host_session_orphan;
-use super::errors::LifecycleError;
-use super::provisional_exit::{reconcile_provisional_exit, settle_provisional_exit_loss};
 use super::port::{
     DestroyCause, ReattachFailureKind, ReattachResult, RespawnResult, get_lifecycle_reattach_ports,
 };
+use super::provisional_exit::{reconcile_provisional_exit, settle_provisional_exit_loss};
 use super::reconcile_crashed_resident::{lost_reason, reconcile_lost_event};
 use super::reconcile_reclamation::{
     begin_local_reclamation, holds_claim, rollback_or_deferred, suspend_revived,
@@ -51,7 +51,8 @@ pub fn reconcile_on_session_start(
     context.host_session_probe.refresh(None);
     let mut groups: Vec<(String, Vec<TaskRecord>)> = Vec::new();
     for record in context.store.list()?.records {
-        let key = host_session_identity(&record).map_or_else(String::new, |host| host.socket.clone());
+        let key =
+            host_session_identity(&record).map_or_else(String::new, |host| host.socket.clone());
         match groups.iter_mut().find(|(socket, _)| *socket == key) {
             Some((_, records)) => records.push(record),
             None => groups.push((key, vec![record])),
@@ -76,7 +77,11 @@ pub fn reconcile_on_session_start(
                 .collect();
             workers
                 .into_iter()
-                .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+                .map(|worker| {
+                    worker
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
                 .collect()
         })
     };
@@ -200,7 +205,10 @@ fn reconcile_records(
         }
     }
     // Scoped admission may only claim the snapshot this pass approved.
-    let approved: HashSet<String> = candidates.iter().map(|record| record.task_id.clone()).collect();
+    let approved: HashSet<String> = candidates
+        .iter()
+        .map(|record| record.task_id.clone())
+        .collect();
     let outer = context.reconcile_admission.clone();
     let mut scoped_context = context.clone();
     scoped_context.reconcile_admission = BatchAdmissionOptions {
@@ -270,7 +278,11 @@ fn reclaim_isolations(context: &LifecycleContext) {
             record,
         );
     }
-    let _ = sweep_isolations(runtime, &records, std::sync::Arc::clone(&context.isolation_probe));
+    let _ = sweep_isolations(
+        runtime,
+        &records,
+        std::sync::Arc::clone(&context.isolation_probe),
+    );
 }
 
 pub(crate) fn reconcile_legacy_record(
@@ -543,7 +555,10 @@ fn reattach_legacy_record(
     }
     let handle = match respawned {
         RespawnResult::Ok(handle) => handle,
-        RespawnResult::Failed { code: super::port::RespawnFailureCode::RunPaused, .. } => {
+        RespawnResult::Failed {
+            code: super::port::RespawnFailureCode::RunPaused,
+            ..
+        } => {
             return Ok(ReconcileOutcome::deferred(&record.task_id, "run_paused"));
         }
         RespawnResult::Failed { reason, .. } => {

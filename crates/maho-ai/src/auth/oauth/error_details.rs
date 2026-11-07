@@ -34,12 +34,17 @@ pub fn format_error_details(error: &(dyn std::error::Error + 'static)) -> String
 }
 
 fn details_of(error: &(dyn std::error::Error + 'static)) -> ErrorDetails {
-    let mut details = ErrorDetails { name: "Error".into(), message: error.to_string(), ..Default::default() };
+    let mut details = ErrorDetails {
+        name: "Error".into(),
+        message: error.to_string(),
+        ..Default::default()
+    };
     if let Some(io) = error.downcast_ref::<std::io::Error>()
-        && let Some(code) = io.raw_os_error() {
-            details.code = Some(code.to_string());
-            details.errno = Some(code.to_string());
-        }
+        && let Some(code) = io.raw_os_error()
+    {
+        details.code = Some(code.to_string());
+        details.errno = Some(code.to_string());
+    }
     if let Some(source) = std::error::Error::source(error) {
         details.cause = Some(Box::new(details_of(source)));
     }
@@ -80,7 +85,10 @@ mod tests {
             }
         }
         let formatted = format_error_details(&Wrapper(std::io::Error::from_raw_os_error(2)));
-        assert!(formatted.starts_with("Error: wrapper failed; "), "{formatted}");
+        assert!(
+            formatted.starts_with("Error: wrapper failed; "),
+            "{formatted}"
+        );
         assert!(formatted.contains("cause=Error: "), "{formatted}");
         assert!(formatted.contains("code=2"), "{formatted}");
     }

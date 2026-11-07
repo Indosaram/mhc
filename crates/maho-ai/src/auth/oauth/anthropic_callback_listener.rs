@@ -2,7 +2,8 @@
 
 use crate::auth::oauth::error_details::format_error_details;
 use crate::auth::oauth::loopback::{
-    LoopbackFuture, LoopbackListener, LoopbackRequest, LoopbackResponse, bind_failure_code, bind_loopback,
+    LoopbackFuture, LoopbackListener, LoopbackRequest, LoopbackResponse, bind_failure_code,
+    bind_loopback,
 };
 use crate::auth::oauth::oauth_page::{oauth_error_html, oauth_success_html};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,7 +67,12 @@ impl CallbackListener {
         if let (Some(signal), Some(listener_id)) = (&self.signal, self.listener_id) {
             signal.remove_abort_listener(listener_id);
         }
-        if let Some(listener) = self.listener.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(listener) = self
+            .listener
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             listener.close();
         }
     }
@@ -101,20 +107,32 @@ fn handle_callback(shared: &Shared, request: &LoopbackRequest) -> LoopbackRespon
     if let Some(error) = error {
         return LoopbackResponse::html(
             400,
-            oauth_error_html("Anthropic authentication did not complete.", Some(&format!("Error: {error}"))),
+            oauth_error_html(
+                "Anthropic authentication did not complete.",
+                Some(&format!("Error: {error}")),
+            ),
         );
     }
     let (Some(code), Some(state)) = (code, state) else {
-        return LoopbackResponse::html(400, oauth_error_html("Missing code or state parameter.", None));
+        return LoopbackResponse::html(
+            400,
+            oauth_error_html("Missing code or state parameter.", None),
+        );
     };
     if state != shared.expected_state {
         return LoopbackResponse::html(400, foreign_login_html(&request.url));
     }
     shared.settle(Some(CallbackCode { code, state }));
-    LoopbackResponse::html(200, oauth_success_html("Anthropic authentication completed. You can close this window."))
+    LoopbackResponse::html(
+        200,
+        oauth_success_html("Anthropic authentication completed. You can close this window."),
+    )
 }
 
-pub async fn start_callback_listener(expected_state: &str, host: &str) -> anyhow::Result<CallbackListener> {
+pub async fn start_callback_listener(
+    expected_state: &str,
+    host: &str,
+) -> anyhow::Result<CallbackListener> {
     start_callback_listener_on_port(expected_state, host, PREFERRED_CALLBACK_PORT, None).await
 }
 
@@ -152,10 +170,9 @@ pub async fn start_callback_listener_on_port(
             Ok(listener) => {
                 let actual_port = listener.port;
                 let abort_shared = shared.clone();
-                let listener_id = signal.as_ref().map(|signal| {
-                    
-                    signal.add_abort_listener(move |_| abort_shared.settle(None))
-                });
+                let listener_id = signal
+                    .as_ref()
+                    .map(|signal| signal.add_abort_listener(move |_| abort_shared.settle(None)));
                 if signal.as_ref().is_some_and(|signal| signal.aborted()) {
                     shared.settle(None);
                 }
@@ -200,11 +217,16 @@ mod tests {
 
     async fn get(url: &str) -> (u16, String) {
         let response = reqwest::get(url).await.expect("request");
-        (response.status().as_u16(), response.text().await.expect("body"))
+        (
+            response.status().as_u16(),
+            response.text().await.expect("body"),
+        )
     }
 
     async fn listener() -> CallbackListener {
-        start_callback_listener_on_port("verifier-state", "127.0.0.1", 0, None).await.expect("listener")
+        start_callback_listener_on_port("verifier-state", "127.0.0.1", 0, None)
+            .await
+            .expect("listener")
     }
 
     fn url(listener: &CallbackListener, query: &str) -> String {
@@ -214,7 +236,10 @@ mod tests {
     #[test]
     fn preferred_callback_port_matches_senpi() {
         assert_eq!(PREFERRED_CALLBACK_PORT, 53692);
-        assert_eq!(callback_redirect_uri(PREFERRED_CALLBACK_PORT), "http://localhost:53692/callback");
+        assert_eq!(
+            callback_redirect_uri(PREFERRED_CALLBACK_PORT),
+            "http://localhost:53692/callback"
+        );
     }
 
     #[tokio::test]
@@ -228,7 +253,10 @@ mod tests {
         assert!(body.contains("Anthropic authentication completed. You can close this window."));
         assert_eq!(
             listener.wait_for_code().await,
-            Some(CallbackCode { code: "abc".into(), state: "verifier-state".into() })
+            Some(CallbackCode {
+                code: "abc".into(),
+                state: "verifier-state".into()
+            })
         );
         listener.close();
     }
@@ -279,9 +307,13 @@ mod tests {
     #[tokio::test]
     async fn an_aborted_signal_settles_with_no_code() {
         let controller = crate::utils::abort::AbortController::new();
-        let listener = start_callback_listener_with_signal("verifier-state", "127.0.0.1", Some(controller.signal()))
-            .await
-            .expect("listener");
+        let listener = start_callback_listener_with_signal(
+            "verifier-state",
+            "127.0.0.1",
+            Some(controller.signal()),
+        )
+        .await
+        .expect("listener");
         controller.abort(None);
         assert_eq!(listener.wait_for_code().await, None);
         listener.close();
@@ -291,9 +323,10 @@ mod tests {
     async fn a_taken_preferred_port_falls_back_to_an_ephemeral_one() {
         let taken = listener().await;
         let taken_port = taken.port.expect("bound port");
-        let second = start_callback_listener_on_port("verifier-state", "127.0.0.1", taken_port, None)
-            .await
-            .expect("second listener");
+        let second =
+            start_callback_listener_on_port("verifier-state", "127.0.0.1", taken_port, None)
+                .await
+                .expect("second listener");
         assert_ne!(second.port, Some(taken_port));
         assert!(second.callback_unavailable.is_none());
         assert_ne!(second.redirect_uri, taken.redirect_uri);

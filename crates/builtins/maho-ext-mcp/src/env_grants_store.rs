@@ -185,7 +185,11 @@ pub fn list(path: &Path) -> Vec<(String, Grant)> {
 /// Latest-snapshot reconciliation. Counter resets, missed generations and invalid reads revoke conservatively.
 #[derive(Default)]
 pub struct GrantObserver {
-    previous: Option<(GrantSnapshot, Option<std::time::SystemTime>, Option<Vec<u8>>)>,
+    previous: Option<(
+        GrantSnapshot,
+        Option<std::time::SystemTime>,
+        Option<Vec<u8>>,
+    )>,
 }
 impl GrantObserver {
     pub fn reconcile(&mut self, path: &Path) -> Option<GrantObservation> {
@@ -243,9 +247,10 @@ pub fn observe(
             && let Err(error) = watcher.watch(
                 path.parent().unwrap_or(Path::new(".")),
                 notify::RecursiveMode::NonRecursive,
-            ) {
-                maho_ext_api::diagnostic(&format!("MCP grants directory watch failed: {error}"));
-            }
+            )
+        {
+            maho_ext_api::diagnostic(&format!("MCP grants directory watch failed: {error}"));
+        }
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             tokio::select! {

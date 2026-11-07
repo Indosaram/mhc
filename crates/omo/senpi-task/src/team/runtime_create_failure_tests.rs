@@ -17,9 +17,12 @@ use crate::team::registry::TeamSpecSource;
 use crate::team::runtime::{TeamRuntimeError, create_team};
 use crate::team::runtime_config::to_team_core_config;
 use crate::team::runtime_fakes::{
-    FakeTeamManager, FakeTeamManagerOptions, StartBehavior, TeamBoundsOverrides, team_bounds, temp_project_dir,
+    FakeTeamManager, FakeTeamManagerOptions, StartBehavior, TeamBoundsOverrides, team_bounds,
+    temp_project_dir,
 };
-use crate::team::runtime_types::{CreateTeamDeps, TeamNowFn, TeamRuntimeManagerPort, WriteMemberMapFn};
+use crate::team::runtime_types::{
+    CreateTeamDeps, TeamNowFn, TeamRuntimeManagerPort, WriteMemberMapFn,
+};
 use crate::team::storage::team_storage_base_dir;
 
 // Note: the TS afterEach(cleanupTeamRuntimeTmp) is intentionally not mirrored per test: Rust tests
@@ -93,7 +96,8 @@ fn given_a_spec_exceeding_max_members_when_created_then_it_is_rejected_before_an
 }
 
 #[test]
-fn given_the_2nd_member_spawn_throws_when_created_then_the_team_fails_and_the_1st_member_is_cancelled() {
+fn given_the_2nd_member_spawn_throws_when_created_then_the_team_fails_and_the_1st_member_is_cancelled()
+ {
     // given
     let project_dir = temp_project_dir();
     let base_dir = team_storage_base_dir(&state_dir_config(&project_dir));
@@ -145,13 +149,21 @@ fn given_the_2nd_member_spawn_throws_when_created_then_the_team_fails_and_the_1s
 
     // then
     let error = attempt.expect_err("create must fail");
-    assert!(matches!(error, TeamRuntimeError::Runtime(_)), "expected SenpiTeamRuntimeError, got {error:?}");
-    let cancelled: Vec<String> = manager.cancelled().into_iter().map(|entry| entry.task_id).collect();
+    assert!(
+        matches!(error, TeamRuntimeError::Runtime(_)),
+        "expected SenpiTeamRuntimeError, got {error:?}"
+    );
+    let cancelled: Vec<String> = manager
+        .cancelled()
+        .into_iter()
+        .map(|entry| entry.task_id)
+        .collect();
     assert_eq!(cancelled, vec!["st_000001".to_string()]);
     let config = to_team_core_config(&settings, &base_dir.to_string_lossy()).expect("config");
     let team_run_id = team_run_id_from(&manager);
     assert!(team_run_id.is_some());
-    let reloaded = load_runtime_state(&team_run_id.unwrap_or_default(), &config).expect("reload state");
+    let reloaded =
+        load_runtime_state(&team_run_id.unwrap_or_default(), &config).expect("reload state");
     assert_eq!(reloaded.status.as_str(), "failed");
 }
 
@@ -187,11 +199,19 @@ fn given_the_member_sidecar_write_throws_when_created_then_members_are_cancelled
     // then
     let error = attempt.expect_err("create must fail");
     assert_eq!(runtime_code(&error), "sidecar_write_failed");
-    let mut cancelled: Vec<String> = manager.cancelled().into_iter().map(|entry| entry.task_id).collect();
+    let mut cancelled: Vec<String> = manager
+        .cancelled()
+        .into_iter()
+        .map(|entry| entry.task_id)
+        .collect();
     cancelled.sort();
     assert_eq!(
         cancelled,
-        vec!["st_000001".to_string(), "st_000002".to_string(), "st_000003".to_string()]
+        vec![
+            "st_000001".to_string(),
+            "st_000002".to_string(),
+            "st_000003".to_string()
+        ]
     );
     let config = to_team_core_config(&settings, &base_dir.to_string_lossy()).expect("config");
     let team_run_id = team_run_id_from(&manager).unwrap_or_default();
@@ -200,7 +220,8 @@ fn given_the_member_sidecar_write_throws_when_created_then_members_are_cancelled
 }
 
 #[test]
-fn given_a_create_deadline_already_passed_when_created_then_it_fails_with_a_deadline_error_and_no_spawns() {
+fn given_a_create_deadline_already_passed_when_created_then_it_fails_with_a_deadline_error_and_no_spawns()
+ {
     // given
     let project_dir = temp_project_dir();
     let settings = team_bounds(TeamBoundsOverrides {

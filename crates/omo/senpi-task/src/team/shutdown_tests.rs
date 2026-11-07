@@ -4,14 +4,15 @@ use std::cell::RefCell;
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use tempfile::TempDir;
 use team_core::team_state_store::{create_runtime_state, load_runtime_state, save_runtime_state};
 use team_core::types::{RuntimeState, SpecSource, TeamSpec};
+use tempfile::TempDir;
 
 use crate::team::runtime_config::{TeamCoreConfig, TeamTaskBounds, to_team_core_config};
 use crate::team::shutdown::{
-    ApproveShutdownDeps, RejectShutdownDeps, RequestShutdownDeps, SenpiShutdownErrorCode, ShutdownFailure,
-    ShutdownMessageKind, ShutdownOutboundMessage, approve_shutdown, reject_shutdown, request_shutdown,
+    ApproveShutdownDeps, RejectShutdownDeps, RequestShutdownDeps, SenpiShutdownErrorCode,
+    ShutdownFailure, ShutdownMessageKind, ShutdownOutboundMessage, approve_shutdown,
+    reject_shutdown, request_shutdown,
 };
 
 fn temp_config() -> (TempDir, TeamCoreConfig) {
@@ -49,7 +50,8 @@ fn seed_active_team(config: &TeamCoreConfig, member_names: &[&str]) -> String {
         "members": members,
     }))
     .expect("spec");
-    let state = create_runtime_state(&spec, Some("lead-session"), SpecSource::User, config).expect("create");
+    let state = create_runtime_state(&spec, Some("lead-session"), SpecSource::User, config)
+        .expect("create");
     let team_run_id = state_json(&state)
         .get("teamRunId")
         .and_then(Value::as_str)
@@ -91,7 +93,12 @@ fn member_status(config: &TeamCoreConfig, team_run_id: &str, member_name: &str) 
             members
                 .iter()
                 .find(|member| member.get("name").and_then(Value::as_str) == Some(member_name))
-                .and_then(|member| member.get("status").and_then(Value::as_str).map(str::to_string))
+                .and_then(|member| {
+                    member
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
         })
 }
 
@@ -100,7 +107,10 @@ fn is_absent(request: &Value, key: &str) -> bool {
 }
 
 fn positive(request: &Value, key: &str) -> bool {
-    request.get(key).and_then(Value::as_f64).is_some_and(|value| value > 0.0)
+    request
+        .get(key)
+        .and_then(Value::as_f64)
+        .is_some_and(|value| value > 0.0)
 }
 
 fn shutdown_code(failure: ShutdownFailure) -> SenpiShutdownErrorCode {
@@ -123,7 +133,11 @@ fn given_active_member_when_request_shutdown_then_pending_request_recorded_and_m
         sent.borrow_mut().push(message.clone());
         Ok(())
     };
-    let deps = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let deps = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
 
     // when
     request_shutdown(&team_run_id, "alpha", &deps).expect("request");
@@ -131,7 +145,10 @@ fn given_active_member_when_request_shutdown_then_pending_request_recorded_and_m
     // then
     let requests = requests(&config, &team_run_id);
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].get("memberId").and_then(Value::as_str), Some("alpha"));
+    assert_eq!(
+        requests[0].get("memberId").and_then(Value::as_str),
+        Some("alpha")
+    );
     assert!(is_absent(&requests[0], "approvedAt"));
     assert_eq!(
         sent.borrow().clone(),
@@ -153,7 +170,11 @@ fn given_pending_request_when_request_shutdown_again_then_idempotent() {
         sent.borrow_mut().push(message.clone());
         Ok(())
     };
-    let deps = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let deps = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
     request_shutdown(&team_run_id, "alpha", &deps).expect("request");
 
     // when
@@ -174,7 +195,11 @@ fn given_unknown_member_when_request_shutdown_then_unknown_member_error_and_noth
         sent.borrow_mut().push(message.clone());
         Ok(())
     };
-    let deps = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let deps = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
 
     // when
     let rejected = request_shutdown(&team_run_id, "ghost", &deps).expect_err("should fail");
@@ -187,7 +212,8 @@ fn given_unknown_member_when_request_shutdown_then_unknown_member_error_and_noth
 }
 
 #[test]
-fn given_pending_request_when_approve_shutdown_then_member_approved_task_cancelled_request_marked() {
+fn given_pending_request_when_approve_shutdown_then_member_approved_task_cancelled_request_marked()
+{
     // given
     let (_dir, config) = temp_config();
     let team_run_id = seed_active_team(&config, &["alpha", "bravo"]);
@@ -201,7 +227,11 @@ fn given_pending_request_when_approve_shutdown_then_member_approved_task_cancell
         cancelled.borrow_mut().push(member_name.to_string());
         Ok(())
     };
-    let request_deps = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let request_deps = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
     request_shutdown(&team_run_id, "alpha", &request_deps).expect("request");
 
     // when
@@ -214,15 +244,16 @@ fn given_pending_request_when_approve_shutdown_then_member_approved_task_cancell
     approve_shutdown(&team_run_id, "alpha", &approve_deps).expect("approve");
 
     // then
-    assert_eq!(member_status(&config, &team_run_id, "alpha").as_deref(), Some("shutdown_approved"));
+    assert_eq!(
+        member_status(&config, &team_run_id, "alpha").as_deref(),
+        Some("shutdown_approved")
+    );
     assert_eq!(cancelled.borrow().clone(), vec!["alpha".to_string()]);
     let requests = requests(&config, &team_run_id);
     assert!(positive(&requests[0], "approvedAt"));
-    assert!(
-        sent.borrow()
-            .iter()
-            .any(|message| message.kind == ShutdownMessageKind::ShutdownApproved && message.to == "alpha")
-    );
+    assert!(sent.borrow().iter().any(|message| message.kind
+        == ShutdownMessageKind::ShutdownApproved
+        && message.to == "alpha"));
 }
 
 #[test]
@@ -254,13 +285,18 @@ fn given_no_pending_request_when_approve_shutdown_then_no_pending_request_error_
 }
 
 #[test]
-fn given_completed_member_with_pending_request_when_approve_shutdown_then_completed_status_preserved() {
+fn given_completed_member_with_pending_request_when_approve_shutdown_then_completed_status_preserved()
+ {
     // given
     let (_dir, config) = temp_config();
     let team_run_id = seed_active_team(&config, &["alpha"]);
     let send = |_message: &ShutdownOutboundMessage| -> Result<(), String> { Ok(()) };
     let cancel = |_member_name: &str| -> Result<(), String> { Ok(()) };
-    let request_deps = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let request_deps = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
     request_shutdown(&team_run_id, "alpha", &request_deps).expect("request");
     set_member_status(&config, &team_run_id, "alpha", "completed");
 
@@ -274,7 +310,10 @@ fn given_completed_member_with_pending_request_when_approve_shutdown_then_comple
     approve_shutdown(&team_run_id, "alpha", &approve_deps).expect("approve");
 
     // then
-    assert_eq!(member_status(&config, &team_run_id, "alpha").as_deref(), Some("completed"));
+    assert_eq!(
+        member_status(&config, &team_run_id, "alpha").as_deref(),
+        Some("completed")
+    );
     let requests = requests(&config, &team_run_id);
     assert!(positive(&requests[0], "approvedAt"));
 }
@@ -290,14 +329,21 @@ fn given_pending_request_when_reject_shutdown_then_member_left_running_and_reaso
         Ok(())
     };
     set_member_status(&config, &team_run_id, "alpha", "running");
-    let deps: RejectShutdownDeps<'_> = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let deps: RejectShutdownDeps<'_> = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
     request_shutdown(&team_run_id, "alpha", &deps).expect("request");
 
     // when
     reject_shutdown(&team_run_id, "alpha", "still needed for the release", &deps).expect("reject");
 
     // then
-    assert_eq!(member_status(&config, &team_run_id, "alpha").as_deref(), Some("running"));
+    assert_eq!(
+        member_status(&config, &team_run_id, "alpha").as_deref(),
+        Some("running")
+    );
     let requests = requests(&config, &team_run_id);
     assert!(positive(&requests[0], "rejectedAt"));
     assert_eq!(
@@ -305,7 +351,8 @@ fn given_pending_request_when_reject_shutdown_then_member_left_running_and_reaso
         Some("still needed for the release")
     );
     assert!(sent.borrow().iter().any(|message| {
-        message.kind == ShutdownMessageKind::ShutdownRejected && message.body == "still needed for the release"
+        message.kind == ShutdownMessageKind::ShutdownRejected
+            && message.body == "still needed for the release"
     }));
 }
 
@@ -315,13 +362,20 @@ fn given_no_pending_request_when_reject_shutdown_then_no_pending_request_error()
     let (_dir, config) = temp_config();
     let team_run_id = seed_active_team(&config, &["alpha"]);
     let send = |_message: &ShutdownOutboundMessage| -> Result<(), String> { Ok(()) };
-    let deps: RejectShutdownDeps<'_> = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let deps: RejectShutdownDeps<'_> = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
 
     // when
     let rejected = reject_shutdown(&team_run_id, "alpha", "no", &deps).expect_err("should fail");
 
     // then
-    assert_eq!(shutdown_code(rejected), SenpiShutdownErrorCode::NoPendingRequest);
+    assert_eq!(
+        shutdown_code(rejected),
+        SenpiShutdownErrorCode::NoPendingRequest
+    );
 }
 
 #[test]
@@ -330,7 +384,11 @@ fn given_rejected_request_when_request_shutdown_again_then_fresh_pending_request
     let (_dir, config) = temp_config();
     let team_run_id = seed_active_team(&config, &["alpha"]);
     let send = |_message: &ShutdownOutboundMessage| -> Result<(), String> { Ok(()) };
-    let deps = RequestShutdownDeps { config: &config, send_message: &send, now: None };
+    let deps = RequestShutdownDeps {
+        config: &config,
+        send_message: &send,
+        now: None,
+    };
     request_shutdown(&team_run_id, "alpha", &deps).expect("request");
     reject_shutdown(&team_run_id, "alpha", "later", &deps).expect("reject");
 

@@ -37,7 +37,11 @@ impl LiveBus {
             .block_on(async { tokio::time::timeout(CALL_BUDGET, open()).await })
             .map_err(|_| DesktopError::ax_failed("AT-SPI connection: the bus did not answer"))?
             .map_err(|err| DesktopError::ax_failed(format!("AT-SPI connection: {err}")))?;
-        Ok(Self { rt, connection, dbus })
+        Ok(Self {
+            rt,
+            connection,
+            dbus,
+        })
     }
 
     /// Runs one round trip to completion within [`CALL_BUDGET`].

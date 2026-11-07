@@ -126,11 +126,18 @@ pub fn compact_cwd(path: &str) -> String {
     if parts.len() <= 2 {
         return path.into();
     }
-    format!("{root}…{sep}{}", parts[parts.len() - 2..].join(&sep.to_string()))
+    format!(
+        "{root}…{sep}{}",
+        parts[parts.len() - 2..].join(&sep.to_string())
+    )
 }
 /// `\` for Windows-style paths (a backslash and no forward slash), otherwise `/`.
 fn path_separator(path: &str) -> char {
-    if path.contains('\\') && !path.contains('/') { '\\' } else { '/' }
+    if path.contains('\\') && !path.contains('/') {
+        '\\'
+    } else {
+        '/'
+    }
 }
 /// Head-elides a path on component boundaries (`…/project/ferryx`, then `…/ferryx`), falling back to
 /// character elision when even the last component is too wide.
@@ -144,7 +151,10 @@ pub fn elide_path(path: &str, max_width: usize) -> String {
         .filter(|p| !p.is_empty() && *p != "…")
         .collect();
     for keep in (1..parts.len()).rev() {
-        let candidate = format!("…{sep}{}", parts[parts.len() - keep..].join(&sep.to_string()));
+        let candidate = format!(
+            "…{sep}{}",
+            parts[parts.len() - keep..].join(&sep.to_string())
+        );
         if visible_width(&candidate) <= max_width {
             return candidate;
         }

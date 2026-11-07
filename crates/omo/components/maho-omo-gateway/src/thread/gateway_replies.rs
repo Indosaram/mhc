@@ -4,7 +4,10 @@
 
 use serde_json::Value;
 
-use super::adapter::{Admission, ExternalAdmissionKind, GatewayWakeReply, ReleaseErrorData, ReleaseSessionReply, ReleaseSuccessData};
+use super::adapter::{
+    Admission, ExternalAdmissionKind, GatewayWakeReply, ReleaseErrorData, ReleaseSessionReply,
+    ReleaseSuccessData,
+};
 
 fn record(value: Option<&Value>) -> Option<&serde_json::Map<String, Value>> {
     value.and_then(Value::as_object)
@@ -14,7 +17,10 @@ fn record(value: Option<&Value>) -> Option<&serde_json::Map<String, Value>> {
 /// code with its `errorData`.
 pub fn release_reply(frame: &Value) -> ReleaseSessionReply {
     let object = record(Some(frame));
-    let success = object.and_then(|object| object.get("success")).and_then(Value::as_bool) == Some(true);
+    let success = object
+        .and_then(|object| object.get("success"))
+        .and_then(Value::as_bool)
+        == Some(true);
     let data = object.and_then(|object| object.get("data"));
     if success
         && let Some(data) = record(data)
@@ -26,7 +32,10 @@ pub fn release_reply(frame: &Value) -> ReleaseSessionReply {
                 released: true,
                 session_path: session_path.to_owned(),
                 attachments: data.get("attachments").and_then(Value::as_i64).unwrap_or(0),
-                dropped: serde_json::from_value(data.get("dropped").cloned().unwrap_or(Value::Null)).unwrap_or_default(),
+                dropped: serde_json::from_value(
+                    data.get("dropped").cloned().unwrap_or(Value::Null),
+                )
+                .unwrap_or_default(),
             },
         };
     }
@@ -35,12 +44,22 @@ pub fn release_reply(frame: &Value) -> ReleaseSessionReply {
         .and_then(Value::as_str)
         .unwrap_or("release_failed")
         .to_owned();
-    match object.and_then(|object| object.get("errorData")).and_then(|value| record(Some(value))) {
+    match object
+        .and_then(|object| object.get("errorData"))
+        .and_then(|value| record(Some(value)))
+    {
         Some(error_data) => {
-            let details: ReleaseErrorData = serde_json::from_value(Value::Object(error_data.clone())).unwrap_or_default();
-            ReleaseSessionReply::Failure { error, error_data: Some(details) }
+            let details: ReleaseErrorData =
+                serde_json::from_value(Value::Object(error_data.clone())).unwrap_or_default();
+            ReleaseSessionReply::Failure {
+                error,
+                error_data: Some(details),
+            }
         }
-        None => ReleaseSessionReply::Failure { error, error_data: None },
+        None => ReleaseSessionReply::Failure {
+            error,
+            error_data: None,
+        },
     }
 }
 
@@ -57,7 +76,10 @@ pub fn wake_reply(data: &Value) -> GatewayWakeReply {
                 let entry = record(Some(entry))?;
                 let delivery_id = entry.get("delivery_id")?.as_str()?;
                 let kind = ExternalAdmissionKind::parse(entry.get("kind")?.as_str()?)?;
-                Some(Admission { delivery_id: delivery_id.to_owned(), kind })
+                Some(Admission {
+                    delivery_id: delivery_id.to_owned(),
+                    kind,
+                })
             })
             .collect(),
         unroutable: None,
@@ -71,7 +93,9 @@ mod tests {
 
     #[test]
     fn a_released_frame_keeps_its_payload() {
-        let reply = release_reply(&json!({ "success": true, "data": { "released": true, "session_path": "/s.jsonl", "attachments": 2, "dropped": { "deliveries": ["d"], "user_messages": [] } } }));
+        let reply = release_reply(
+            &json!({ "success": true, "data": { "released": true, "session_path": "/s.jsonl", "attachments": 2, "dropped": { "deliveries": ["d"], "user_messages": [] } } }),
+        );
         match reply {
             ReleaseSessionReply::Success { data } => {
                 assert_eq!(data.session_path, "/s.jsonl");
@@ -84,15 +108,26 @@ mod tests {
 
     #[test]
     fn a_refusal_keeps_its_code_and_error_data() {
-        let reply = release_reply(&json!({ "success": false, "error": "host_draining", "errorData": { "detail": "worker_runtime" } }));
+        let reply = release_reply(
+            &json!({ "success": false, "error": "host_draining", "errorData": { "detail": "worker_runtime" } }),
+        );
         match reply {
             ReleaseSessionReply::Failure { error, error_data } => {
                 assert_eq!(error, "host_draining");
-                assert_eq!(error_data.and_then(|data| data.detail).as_deref(), Some("worker_runtime"));
+                assert_eq!(
+                    error_data.and_then(|data| data.detail).as_deref(),
+                    Some("worker_runtime")
+                );
             }
             other => panic!("expected failure, got {other:?}"),
         }
-        assert_eq!(release_reply(&json!({})), ReleaseSessionReply::Failure { error: "release_failed".to_owned(), error_data: None });
+        assert_eq!(
+            release_reply(&json!({})),
+            ReleaseSessionReply::Failure {
+                error: "release_failed".to_owned(),
+                error_data: None
+            }
+        );
     }
 
     #[test]

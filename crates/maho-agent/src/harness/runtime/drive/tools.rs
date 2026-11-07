@@ -11,28 +11,96 @@ pub struct ToolOutcome {
 
 pub const INTERRUPTION_MARKER: &str = "[Tool execution was interrupted. The preceding output is the latest durable progress snapshot; newer live output may be missing, and the external outcome is unknown.]";
 
-pub async fn read_checkpoint(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive, call: &ToolCall) -> Result<Option<AgentToolResult>, SessionError> {
-    let key = crate::harness::session::values::pending_tool_output(&drive.operation_id, call.result_entry_id());
+pub async fn read_checkpoint(
+    lane: &crate::harness::runtime::lane::Lane,
+    drive: &crate::harness::runtime::types::Drive,
+    call: &ToolCall,
+) -> Result<Option<AgentToolResult>, SessionError> {
+    let key = crate::harness::session::values::pending_tool_output(
+        &drive.operation_id,
+        call.result_entry_id(),
+    );
     let context = drive.context.clone();
-    lane.command(move |_, reader| Box::pin(async move {
-        let stored = reader.get_value(&key, &context).await?;
-        let result = stored.map(|value| serde_json::from_value(value.value).map_err(|error| session_invariant_error(error.to_string()))).transpose()?;
-        Ok(crate::harness::runtime::lane::LaneCommand::Return { result })
-    }), &drive.context).await
+    lane.command(
+        move |_, reader| {
+            Box::pin(async move {
+                let stored = reader.get_value(&key, &context).await?;
+                let result = stored
+                    .map(|value| {
+                        serde_json::from_value(value.value)
+                            .map_err(|error| session_invariant_error(error.to_string()))
+                    })
+                    .transpose()?;
+                Ok(crate::harness::runtime::lane::LaneCommand::Return { result })
+            })
+        },
+        &drive.context,
+    )
+    .await
 }
 
-pub async fn clear_replay_checkpoint(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive, batch: &ToolBatch, call: &ToolCall, tool_call: &AgentToolCall) -> Result<serde_json::Value, SessionError> {
-    let args_key = crate::harness::session::values::operation_tool_args(&drive.operation_id, &batch.turn_id, call.source_index());
-    let output_key = crate::harness::session::values::pending_tool_output(&drive.operation_id, call.result_entry_id());
+pub async fn clear_replay_checkpoint(
+    lane: &crate::harness::runtime::lane::Lane,
+    drive: &crate::harness::runtime::types::Drive,
+    batch: &ToolBatch,
+    call: &ToolCall,
+    tool_call: &AgentToolCall,
+) -> Result<serde_json::Value, SessionError> {
+    let args_key = crate::harness::session::values::operation_tool_args(
+        &drive.operation_id,
+        &batch.turn_id,
+        call.source_index(),
+    );
+    let output_key = crate::harness::session::values::pending_tool_output(
+        &drive.operation_id,
+        call.result_entry_id(),
+    );
     let result_entry_id = call.result_entry_id().to_owned();
     let context = drive.context.clone();
     let name = lane.name.clone();
-    let (run_id, turn_id, tool_call_id, tool_name) = (drive.operation_id.clone(), batch.turn_id.clone(), tool_call.id.clone(), tool_call.name.clone());
-    lane.command(move |state, reader| Box::pin(async move {
-        let stored = reader.get_value(&args_key, &context).await?.ok_or_else(|| session_invariant_error(format!("Tool call {result_entry_id} is missing persisted arguments")))?;
-        let event = crate::harness::events::HarnessEvent { lane: Some(name), recovery: Some(true), payload: crate::harness::events::HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name, args: stored.value.clone() } };
-        Ok(crate::harness::runtime::lane::LaneCommand::Commit { decision: crate::harness::runtime::lane::CommitDecision { writes: vec![crate::harness::session::types::Write::Value(crate::harness::session::values::delete_value(&output_key))], materialize: std::sync::Arc::new(move |_| stored.value.clone()), events: Some(std::sync::Arc::new(move |_| vec![event.clone()])) }, next: Box::new(state) })
-    }), &drive.context).await
+    let (run_id, turn_id, tool_call_id, tool_name) = (
+        drive.operation_id.clone(),
+        batch.turn_id.clone(),
+        tool_call.id.clone(),
+        tool_call.name.clone(),
+    );
+    lane.command(
+        move |state, reader| {
+            Box::pin(async move {
+                let stored = reader
+                    .get_value(&args_key, &context)
+                    .await?
+                    .ok_or_else(|| {
+                        session_invariant_error(format!(
+                            "Tool call {result_entry_id} is missing persisted arguments"
+                        ))
+                    })?;
+                let event = crate::harness::events::HarnessEvent {
+                    lane: Some(name),
+                    recovery: Some(true),
+                    payload: crate::harness::events::HarnessEventPayload::ToolStart {
+                        run_id,
+                        turn_id,
+                        tool_call_id,
+                        tool_name,
+                        args: stored.value.clone(),
+                    },
+                };
+                Ok(crate::harness::runtime::lane::LaneCommand::Commit {
+                    decision: crate::harness::runtime::lane::CommitDecision {
+                        writes: vec![crate::harness::session::types::Write::Value(
+                            crate::harness::session::values::delete_value(&output_key),
+                        )],
+                        materialize: std::sync::Arc::new(move |_| stored.value.clone()),
+                        events: Some(std::sync::Arc::new(move |_| vec![event.clone()])),
+                    },
+                    next: Box::new(state),
+                })
+            })
+        },
+        &drive.context,
+    )
+    .await
 }
 
 pub fn find_call(
@@ -232,7 +300,9 @@ pub async fn publish_tool_outcome(
                     run.operation.control,
                     crate::harness::session::types::Control::Running
                 ) && finalized.terminate;
-                let ToolOutcome { tool_call, message, .. } = finalized;
+                let ToolOutcome {
+                    tool_call, message, ..
+                } = finalized;
                 let mut events = Vec::new();
                 if matches!(call, ToolCall::Planned { .. }) {
                     let mut start = crate::harness::events::HarnessEvent::new(
@@ -254,7 +324,9 @@ pub async fn publish_tool_outcome(
                         turn_id: run.batch.turn_id.clone(),
                         tool_call_id: tool_call.id.clone(),
                         tool_name: tool_call.name.clone(),
-                        result: crate::harness::execution::tools::tool_result_from_message(&message, terminate),
+                        result: crate::harness::execution::tools::tool_result_from_message(
+                            &message, terminate,
+                        ),
                         is_error: message.is_error,
                         terminate,
                     },
@@ -263,9 +335,9 @@ pub async fn publish_tool_outcome(
                 end.recovery = recovery.then_some(true);
                 events.push(end);
                 let pending = crate::harness::session::types::PendingEntry::Message {
-                    payload: Box::new(crate::types::AgentMessage::Llm(maho_ai::types::Message::ToolResult(
-                        message,
-                    ))),
+                    payload: Box::new(crate::types::AgentMessage::Llm(
+                        maho_ai::types::Message::ToolResult(message),
+                    )),
                 };
                 let mut writes = vec![
                     crate::harness::session::types::Write::Value(
@@ -326,17 +398,19 @@ use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventPayload};
 use crate::harness::execution::effect_gate::GateRefusal;
 use crate::harness::execution::tools::{
-    apply_before_tool_decision, create_tool_result_message, execute_tool_call, finalize_tool_call,
-    prepare_tool_call, ClearToolCallOutcome, ClearedToolCall, ExecutedToolCall, FinalizedToolCall,
-    ImmediateToolOutcome, ToolCallPreparation,
+    ClearToolCallOutcome, ClearedToolCall, ExecutedToolCall, FinalizedToolCall,
+    ImmediateToolOutcome, ToolCallPreparation, apply_before_tool_decision,
+    create_tool_result_message, execute_tool_call, finalize_tool_call, prepare_tool_call,
 };
 use crate::harness::hooks::{HookInvocation, HookName, HookResult, HookRunError};
 use crate::harness::runtime::drive::tool_placement::{
-    materialize_ready, read_tool_batch_source, tool_call_for, ToolBatchSource,
+    ToolBatchSource, materialize_ready, read_tool_batch_source, tool_call_for,
 };
 use crate::harness::runtime::lane::{Lane, LaneCommand};
 use crate::harness::runtime::progress::open_tool_progress;
-use crate::harness::runtime::types::{ContinueOperationResult, Drive, ProcedureResult, RuntimeDriveLane};
+use crate::harness::runtime::types::{
+    ContinueOperationResult, Drive, ProcedureResult, RuntimeDriveLane,
+};
 use crate::harness::session::types::{
     Control, OperationState, ToolCall as DurableCall, ToolCallReplay, ToolExecutionMode,
     ToolsOperation, Write,
@@ -350,7 +424,9 @@ use crate::harness::types::{
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Pinned `currentBatch`: the durable tools operation the lane currently owns, if any.
@@ -363,9 +439,17 @@ fn current_tools(lane: &Lane) -> Option<ToolsOperation> {
 }
 
 /// Pinned `ownsEffect`: the call is still the lane's `effect_pending` entry for its slot.
-fn owns_effect(state: &crate::harness::runtime::types::LaneState, source_index: usize, result_entry_id: &str) -> bool {
-    let Some(operation) = &state.operation else { return false; };
-    let OperationState::Tools(run) = &operation.state else { return false; };
+fn owns_effect(
+    state: &crate::harness::runtime::types::LaneState,
+    source_index: usize,
+    result_entry_id: &str,
+) -> bool {
+    let Some(operation) = &state.operation else {
+        return false;
+    };
+    let OperationState::Tools(run) = &operation.state else {
+        return false;
+    };
     run.batch.calls.iter().any(|call| {
         call.source_index() == source_index
             && call.result_entry_id() == result_entry_id
@@ -420,7 +504,10 @@ impl AgentHarnessToolInvocation for ToolInvocation {
     fn turn_id(&self) -> &str {
         &self.turn_id
     }
-    fn get_memo<'a>(&'a self, name: &'a str) -> maho_ai::types::BoxFuture<'a, Option<serde_json::Value>> {
+    fn get_memo<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> maho_ai::types::BoxFuture<'a, Option<serde_json::Value>> {
         Box::pin(async move {
             if validate_memo_name(name).is_err() || !self.active.load(Ordering::SeqCst) {
                 return None;
@@ -434,10 +521,14 @@ impl AgentHarnessToolInvocation for ToolInvocation {
                 move |state, reader| {
                     Box::pin(async move {
                         if !owns_effect(&state, source_index, &result_entry_id) {
-                            return Ok(LaneCommand::Reject { error: "Tool invocation no longer owns its durable effect".into() });
+                            return Ok(LaneCommand::Reject {
+                                error: "Tool invocation no longer owns its durable effect".into(),
+                            });
                         }
                         let stored = reader.get_value(&address, &context).await?;
-                        Ok(LaneCommand::Return { result: stored.map(|stored| stored.value) })
+                        Ok(LaneCommand::Return {
+                            result: stored.map(|stored| stored.value),
+                        })
                     })
                 },
                 &self.context,
@@ -447,7 +538,11 @@ impl AgentHarnessToolInvocation for ToolInvocation {
             .flatten()
         })
     }
-    fn set_memo<'a>(&'a self, name: &'a str, value: Option<serde_json::Value>) -> maho_ai::types::BoxFuture<'a, ()> {
+    fn set_memo<'a>(
+        &'a self,
+        name: &'a str,
+        value: Option<serde_json::Value>,
+    ) -> maho_ai::types::BoxFuture<'a, ()> {
         Box::pin(async move {
             if validate_memo_name(name).is_err() || !self.active.load(Ordering::SeqCst) {
                 return;
@@ -461,7 +556,10 @@ impl AgentHarnessToolInvocation for ToolInvocation {
                     move |state, _reader| {
                         Box::pin(async move {
                             if !owns_effect(&state, source_index, &result_entry_id) {
-                                return Ok(LaneCommand::Reject { error: "Tool invocation no longer owns its durable effect".into() });
+                                return Ok(LaneCommand::Reject {
+                                    error: "Tool invocation no longer owns its durable effect"
+                                        .into(),
+                                });
                             }
                             let write = match &value {
                                 Some(value) => set_value(&address, value.clone()),
@@ -484,7 +582,12 @@ impl AgentHarnessToolInvocation for ToolInvocation {
     }
 }
 
-fn invocation_capability(lane: &Arc<Lane>, drive: &Drive, batch: &ToolBatch, call: &DurableCall) -> (Arc<dyn AgentHarnessToolInvocation>, Arc<AtomicBool>) {
+fn invocation_capability(
+    lane: &Arc<Lane>,
+    drive: &Drive,
+    batch: &ToolBatch,
+    call: &DurableCall,
+) -> (Arc<dyn AgentHarnessToolInvocation>, Arc<AtomicBool>) {
     let active = Arc::new(AtomicBool::new(true));
     let invocation = Arc::new(ToolInvocation {
         invocation_id: call.result_entry_id().to_owned(),
@@ -513,14 +616,20 @@ async fn run_after_tool_hook<TContext: Clone + Send + Sync + 'static>(
     invocation.details = Some(executed.result.details.clone());
     invocation.is_error = executed.is_error;
     invocation.usage = executed.result.usage;
-    match lane.hooks.run_tool_with_gate(HookName::AfterTool, invocation, &drive.gate, &drive.context).await? {
-        HookResult::AfterTool(patch) => Ok(Some(crate::harness::execution::tools::AfterToolPatch {
-            content: patch.content,
-            details: patch.details,
-            is_error: patch.is_error,
-            usage: patch.usage,
-            terminate: patch.terminate,
-        })),
+    match lane
+        .hooks
+        .run_tool_with_gate(HookName::AfterTool, invocation, &drive.gate, &drive.context)
+        .await?
+    {
+        HookResult::AfterTool(patch) => {
+            Ok(Some(crate::harness::execution::tools::AfterToolPatch {
+                content: patch.content,
+                details: patch.details,
+                is_error: patch.is_error,
+                usage: patch.usage,
+                terminate: patch.terminate,
+            }))
+        }
         _ => Ok(None),
     }
 }
@@ -536,8 +645,15 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
     recovery: bool,
 ) -> Result<ToolOutcome, SessionError> {
     let (invocation, active) = invocation_capability(lane, drive, batch, call);
-    let progress = Arc::new(open_tool_progress(lane.progress_lane(), drive, &batch.turn_id, call.source_index(), call.result_entry_id()));
-    let latest: Arc<Mutex<Option<maho_ai::types::BoxFuture<'static, ()>>>> = Arc::new(Mutex::new(None));
+    let progress = Arc::new(open_tool_progress(
+        lane.progress_lane(),
+        drive,
+        &batch.turn_id,
+        call.source_index(),
+        call.result_entry_id(),
+    ));
+    let latest: Arc<Mutex<Option<maho_ai::types::BoxFuture<'static, ()>>>> =
+        Arc::new(Mutex::new(None));
     let tool_call = cleared.tool_call.clone();
     let args = cleared.args.clone();
     let tool = cleared.tool.clone();
@@ -551,23 +667,47 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
         let tool_call_id = tool_call.id.clone();
         let tool_name = tool_call.name.clone();
         let name = lane.name.clone();
-        Arc::new(move |partial, options: Option<AgentHarnessToolUpdateOptions>| {
-            let mut event = HarnessEvent::new(
-                HarnessEventPayload::ToolUpdate { run_id: run_id.clone(), turn_id: turn_id.clone(), tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), partial_result: partial.clone() },
-                Some(name.clone()),
-            );
-            event.recovery = recovery.then_some(true);
-            *latest.lock().unwrap_or_else(|error| error.into_inner()) = Some(lane.events.begin_emit_batch(vec![event], context.clone()));
-            if options.and_then(|options| options.checkpoint) == Some(true) {
-                progress.write(partial);
-            }
-        })
+        Arc::new(
+            move |partial, options: Option<AgentHarnessToolUpdateOptions>| {
+                let mut event = HarnessEvent::new(
+                    HarnessEventPayload::ToolUpdate {
+                        run_id: run_id.clone(),
+                        turn_id: turn_id.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        partial_result: partial.clone(),
+                    },
+                    Some(name.clone()),
+                );
+                event.recovery = recovery.then_some(true);
+                *latest.lock().unwrap_or_else(|error| error.into_inner()) =
+                    Some(lane.events.begin_emit_batch(vec![event], context.clone()));
+                if options.and_then(|options| options.checkpoint) == Some(true) {
+                    progress.write(partial);
+                }
+            },
+        )
     };
     // Pinned `toolContext` may be `undefined`; a typed Rust tool cannot receive an absent context,
     // so such a call settles like a tool that threw instead of faulting the harness.
     let executed = match tool_context {
-        Some(tool_context) => execute_tool_call(cleared, &drive.gate, on_update, tool_context, invocation.clone(), drive.context.clone()).await,
-        None => Ok(ExecutedToolCall { result: crate::harness::execution::tools::create_error_tool_result("Tool context is unavailable in this process"), is_error: true }),
+        Some(tool_context) => {
+            execute_tool_call(
+                cleared,
+                &drive.gate,
+                on_update,
+                tool_context,
+                invocation.clone(),
+                drive.context.clone(),
+            )
+            .await
+        }
+        None => Ok(ExecutedToolCall {
+            result: crate::harness::execution::tools::create_error_tool_result(
+                "Tool context is unavailable in this process",
+            ),
+            is_error: true,
+        }),
     };
     let execution = match executed {
         Ok(executed) => executed,
@@ -576,7 +716,11 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
             progress.seal();
             let _ = progress.drain().await;
             abort.cancellation.wait().await;
-            return Ok(if recovery { interrupted_outcome(tool_call, None, now_ms()) } else { aborted_outcome(tool_call, now_ms()) });
+            return Ok(if recovery {
+                interrupted_outcome(tool_call, None, now_ms())
+            } else {
+                aborted_outcome(tool_call, now_ms())
+            });
         }
         Err(GateRefusal::Closed(message)) => {
             active.store(false, Ordering::SeqCst);
@@ -587,23 +731,49 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
     };
     active.store(false, Ordering::SeqCst);
     progress.seal();
-    let delivery = latest.lock().unwrap_or_else(|error| error.into_inner()).take();
+    let delivery = latest
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
     if let Some(delivery) = delivery {
         delivery.await;
     }
     progress.drain().await?;
-    let patch = match run_after_tool_hook(lane, drive, &ClearedToolCall { tool_call: tool_call.clone(), tool: tool.clone(), args: args.clone() }, &execution).await {
+    let patch = match run_after_tool_hook(
+        lane,
+        drive,
+        &ClearedToolCall {
+            tool_call: tool_call.clone(),
+            tool: tool.clone(),
+            args: args.clone(),
+        },
+        &execution,
+    )
+    .await
+    {
         Ok(patch) => patch,
         Err(HookRunError::Gate(GateRefusal::Abort(_))) => None,
         Err(error) => return Err(session_invariant_error(error.to_string())),
     };
-    let finalized = finalize_tool_call(&ClearedToolCall { tool_call, tool, args }, execution, patch);
+    let finalized = finalize_tool_call(
+        &ClearedToolCall {
+            tool_call,
+            tool,
+            args,
+        },
+        execution,
+        patch,
+    );
     Ok(outcome_from_finalized(finalized))
 }
 
 enum PreparedToolInvocation<TContext> {
-    Ready { cleared: Box<ClearedToolCall<TContext>> },
-    Outcome { outcome: Box<ToolOutcome> },
+    Ready {
+        cleared: Box<ClearedToolCall<TContext>>,
+    },
+    Outcome {
+        outcome: Box<ToolOutcome>,
+    },
 }
 
 async fn prepare_tool_invocation<TContext: Clone + Send + Sync + 'static>(
@@ -615,31 +785,57 @@ async fn prepare_tool_invocation<TContext: Clone + Send + Sync + 'static>(
 ) -> Result<PreparedToolInvocation<TContext>, SessionError> {
     let tool_call = tool_call_for(sources, call)?.clone();
     if sources.assistant.stop_reason == maho_ai::types::StopReason::Length {
-        return Ok(PreparedToolInvocation::Outcome { outcome: Box::new(truncated_outcome(tool_call, now_ms())) });
+        return Ok(PreparedToolInvocation::Outcome {
+            outcome: Box::new(truncated_outcome(tool_call, now_ms())),
+        });
     }
     let prepared = match prepare_tool_call(tool_call.clone(), tools) {
-        ToolCallPreparation::Immediate(outcome) => return Ok(PreparedToolInvocation::Outcome { outcome: Box::new(outcome_from_immediate(outcome)) }),
+        ToolCallPreparation::Immediate(outcome) => {
+            return Ok(PreparedToolInvocation::Outcome {
+                outcome: Box::new(outcome_from_immediate(outcome)),
+            });
+        }
         ToolCallPreparation::Prepared(prepared) => prepared,
     };
     let mut invocation = HookInvocation::new(lane.name.clone(), drive.operation_id.clone());
     invocation.tool_call_id = Some(tool_call.id.clone());
     invocation.tool_name = Some(tool_call.name.clone());
     invocation.args = prepared.args.clone();
-    let decision = match lane.hooks.run_tool_with_gate(HookName::BeforeTool, invocation, &drive.gate, &drive.context).await {
-        Ok(HookResult::BeforeTool { args, block }) => Some(crate::harness::execution::tools::BeforeToolDecision {
-            args,
-            block: block.map(|block| crate::harness::execution::tools::BlockDecision { reason: block.reason, terminate: block.terminate }),
-        }),
+    let decision = match lane
+        .hooks
+        .run_tool_with_gate(
+            HookName::BeforeTool,
+            invocation,
+            &drive.gate,
+            &drive.context,
+        )
+        .await
+    {
+        Ok(HookResult::BeforeTool { args, block }) => {
+            Some(crate::harness::execution::tools::BeforeToolDecision {
+                args,
+                block: block.map(|block| crate::harness::execution::tools::BlockDecision {
+                    reason: block.reason,
+                    terminate: block.terminate,
+                }),
+            })
+        }
         Ok(_) => None,
         Err(HookRunError::Gate(GateRefusal::Abort(abort))) => {
             abort.cancellation.wait().await;
-            return Ok(PreparedToolInvocation::Outcome { outcome: Box::new(aborted_outcome(tool_call, now_ms())) });
+            return Ok(PreparedToolInvocation::Outcome {
+                outcome: Box::new(aborted_outcome(tool_call, now_ms())),
+            });
         }
         Err(error) => return Err(session_invariant_error(error.to_string())),
     };
     Ok(match apply_before_tool_decision(prepared, decision) {
-        ClearToolCallOutcome::Immediate(outcome) => PreparedToolInvocation::Outcome { outcome: Box::new(outcome_from_immediate(outcome)) },
-        ClearToolCallOutcome::Cleared(cleared) => PreparedToolInvocation::Ready { cleared: Box::new(cleared) },
+        ClearToolCallOutcome::Immediate(outcome) => PreparedToolInvocation::Outcome {
+            outcome: Box::new(outcome_from_immediate(outcome)),
+        },
+        ClearToolCallOutcome::Cleared(cleared) => PreparedToolInvocation::Ready {
+            cleared: Box::new(cleared),
+        },
     })
 }
 
@@ -668,12 +864,46 @@ fn start_tool_invocation<'a, TContext: Clone + Send + Sync + 'static>(
                 // Pinned `cleared.tool.replay ?? "never"`.
                 let replay = replay_policy(cleared.tool.replay);
                 let args = serde_json::Value::Object(cleared.args.clone());
-                let effect_pending = publish_tool_intent(lane.as_ref(), call.clone(), &tool_call, args, replay, recovery, &drive.context).await?;
+                let effect_pending = publish_tool_intent(
+                    lane.as_ref(),
+                    call.clone(),
+                    &tool_call,
+                    args,
+                    replay,
+                    recovery,
+                    &drive.context,
+                )
+                .await?;
                 match effect_pending {
-                    ContinueOperationResult::CancelRequested => publish_tool_outcome(lane.as_ref(), call, aborted_outcome(tool_call, now_ms()), recovery, &drive.context).await,
+                    ContinueOperationResult::CancelRequested => {
+                        publish_tool_outcome(
+                            lane.as_ref(),
+                            call,
+                            aborted_outcome(tool_call, now_ms()),
+                            recovery,
+                            &drive.context,
+                        )
+                        .await
+                    }
                     ContinueOperationResult::Result { value } => {
-                        let outcome = perform_tool_invocation(lane, drive, &run.batch, &value, *cleared, tool_context.clone(), recovery).await?;
-                        publish_tool_outcome(lane.as_ref(), value, outcome, recovery, &drive.context).await
+                        let outcome = perform_tool_invocation(
+                            lane,
+                            drive,
+                            &run.batch,
+                            &value,
+                            *cleared,
+                            tool_context.clone(),
+                            recovery,
+                        )
+                        .await?;
+                        publish_tool_outcome(
+                            lane.as_ref(),
+                            value,
+                            outcome,
+                            recovery,
+                            &drive.context,
+                        )
+                        .await
                     }
                 }
             }
@@ -701,19 +931,43 @@ fn recover_tool_invocation<'a, TContext: Clone + Send + Sync + 'static>(
         };
         let tool = tools_by_name.get(&tool_call.name).cloned();
         // Pinned `tool?.replay === "safe"`.
-        let tool_replay_safe = tool.as_ref().is_some_and(|tool| matches!(tool.replay, Some(crate::types::ReplayPolicy::Safe)));
+        let tool_replay_safe = tool
+            .as_ref()
+            .is_some_and(|tool| matches!(tool.replay, Some(crate::types::ReplayPolicy::Safe)));
         if !cancelled && replay == ToolCallReplay::Safe && tool_replay_safe {
-            let args = clear_replay_checkpoint(lane.as_ref(), drive, &run.batch, &call, &tool_call).await?;
+            let args = clear_replay_checkpoint(lane.as_ref(), drive, &run.batch, &call, &tool_call)
+                .await?;
             let args_map = match args {
                 serde_json::Value::Object(map) => map,
                 _ => serde_json::Map::new(),
             };
-            let cleared = ClearedToolCall { tool_call: tool_call.clone(), tool: tool.ok_or_else(|| session_invariant_error("Replay-safe tool is unavailable"))?, args: args_map };
-            let outcome = perform_tool_invocation(lane, drive, &run.batch, &call, cleared, tool_context.clone(), true).await?;
+            let cleared = ClearedToolCall {
+                tool_call: tool_call.clone(),
+                tool: tool
+                    .ok_or_else(|| session_invariant_error("Replay-safe tool is unavailable"))?,
+                args: args_map,
+            };
+            let outcome = perform_tool_invocation(
+                lane,
+                drive,
+                &run.batch,
+                &call,
+                cleared,
+                tool_context.clone(),
+                true,
+            )
+            .await?;
             return publish_tool_outcome(lane.as_ref(), call, outcome, true, &drive.context).await;
         }
         let checkpoint = read_checkpoint(lane.as_ref(), drive, &call).await?;
-        publish_tool_outcome(lane.as_ref(), call, interrupted_outcome(tool_call, checkpoint.as_ref(), now_ms()), true, &drive.context).await
+        publish_tool_outcome(
+            lane.as_ref(),
+            call,
+            interrupted_outcome(tool_call, checkpoint.as_ref(), now_ms()),
+            true,
+            &drive.context,
+        )
+        .await
     })
 }
 
@@ -736,13 +990,32 @@ async fn run_sequential<TContext: Clone + Send + Sync + 'static>(
 ) -> Result<ProcedureResult, SessionError> {
     let transitions = run.batch.calls.len() * 2 + 1;
     for _ in 0..=transitions {
-        materialize_ready(lane.as_ref(), drive, &OperationState::Tools(run.clone()), sources, recovery).await?;
-        let Some(current) = current_tools(lane) else { return Ok(ProcedureResult::Continue); };
-        let Some(call) = current.batch.calls.iter().find(|call| !matches!(call, DurableCall::Completed { .. })).cloned() else {
-            return Err(session_invariant_error("Tool batch remained open after every call completed"));
+        materialize_ready(
+            lane.as_ref(),
+            drive,
+            &OperationState::Tools(run.clone()),
+            sources,
+            recovery,
+        )
+        .await?;
+        let Some(current) = current_tools(lane) else {
+            return Ok(ProcedureResult::Continue);
+        };
+        let Some(call) = current
+            .batch
+            .calls
+            .iter()
+            .find(|call| !matches!(call, DurableCall::Completed { .. }))
+            .cloned()
+        else {
+            return Err(session_invariant_error(
+                "Tool batch remained open after every call completed",
+            ));
         };
         if matches!(call, DurableCall::OutcomeReady { .. }) {
-            return Err(session_invariant_error("Ready tool outcome was not materialized"));
+            return Err(session_invariant_error(
+                "Ready tool outcome was not materialized",
+            ));
         }
         if matches!(current.operation.control, Control::CancelRequested { .. }) {
             let tool_call = tool_call_for(sources, &call)?.clone();
@@ -752,19 +1025,46 @@ async fn run_sequential<TContext: Clone + Send + Sync + 'static>(
                 let checkpoint = read_checkpoint(lane.as_ref(), drive, &call).await?;
                 interrupted_outcome(tool_call, checkpoint.as_ref(), now_ms())
             };
-            publish_tool_outcome(lane.as_ref(), call.clone(), outcome, recovery, &drive.context).await?;
+            publish_tool_outcome(
+                lane.as_ref(),
+                call.clone(),
+                outcome,
+                recovery,
+                &drive.context,
+            )
+            .await?;
             continue;
         }
         let Some(execution) = execution else {
-            return Err(session_invariant_error("Running tool batch is missing execution context"));
+            return Err(session_invariant_error(
+                "Running tool batch is missing execution context",
+            ));
         };
         let task = match &call {
-            DurableCall::Planned { .. } => start_tool_invocation(lane, drive, &current, sources, call.clone(), execution, recovery),
-            _ => recover_tool_invocation(lane, drive, &current, sources, call.clone(), execution, false),
+            DurableCall::Planned { .. } => start_tool_invocation(
+                lane,
+                drive,
+                &current,
+                sources,
+                call.clone(),
+                execution,
+                recovery,
+            ),
+            _ => recover_tool_invocation(
+                lane,
+                drive,
+                &current,
+                sources,
+                call.clone(),
+                execution,
+                false,
+            ),
         };
         task.await?;
     }
-    Err(session_invariant_error("Sequential tool batch exceeded its bounded transition count"))
+    Err(session_invariant_error(
+        "Sequential tool batch exceeded its bounded transition count",
+    ))
 }
 
 async fn run_parallel<TContext: Clone + Send + Sync + 'static>(
@@ -781,26 +1081,53 @@ async fn run_parallel<TContext: Clone + Send + Sync + 'static>(
     let chain = Arc::new(tokio::sync::Mutex::new(()));
     let mut jobs: Vec<ToolTask<'_>> = Vec::new();
     for call in run.batch.calls.clone() {
-        if matches!(call, DurableCall::Completed { .. } | DurableCall::OutcomeReady { .. }) {
+        if matches!(
+            call,
+            DurableCall::Completed { .. } | DurableCall::OutcomeReady { .. }
+        ) {
             continue;
         }
         let task = match &call {
-            DurableCall::Planned { .. } => start_tool_invocation(lane, drive, run, sources, call.clone(), execution, recovery),
-            _ => recover_tool_invocation(lane, drive, run, sources, call.clone(), execution, cancelled),
+            DurableCall::Planned { .. } => {
+                start_tool_invocation(lane, drive, run, sources, call.clone(), execution, recovery)
+            }
+            _ => recover_tool_invocation(
+                lane,
+                drive,
+                run,
+                sources,
+                call.clone(),
+                execution,
+                cancelled,
+            ),
         };
         let chain = chain.clone();
         let run_owned = run.clone();
         jobs.push(Box::pin(async move {
             task.await?;
             let _guard = chain.lock().await;
-            materialize_ready(lane.as_ref(), drive, &OperationState::Tools(run_owned), sources, recovery).await
+            materialize_ready(
+                lane.as_ref(),
+                drive,
+                &OperationState::Tools(run_owned),
+                sources,
+                recovery,
+            )
+            .await
         }));
     }
     for result in futures::future::join_all(jobs).await {
         result?;
     }
     let _guard = chain.lock().await;
-    materialize_ready(lane.as_ref(), drive, &OperationState::Tools(run.clone()), sources, recovery).await?;
+    materialize_ready(
+        lane.as_ref(),
+        drive,
+        &OperationState::Tools(run.clone()),
+        sources,
+        recovery,
+    )
+    .await?;
     Ok(ProcedureResult::Continue)
 }
 
@@ -822,7 +1149,10 @@ pub struct ToolRunner<TContext> {
 }
 
 /// Pinned `resolveToolContext`: resolve the configured value or lazy source for one drive.
-async fn resolve_tool_context<TContext: Clone>(runner: &ToolRunner<TContext>, drive: &Drive) -> Option<TContext> {
+async fn resolve_tool_context<TContext: Clone>(
+    runner: &ToolRunner<TContext>,
+    drive: &Drive,
+) -> Option<TContext> {
     match &runner.tool_context {
         Some(source) => Some(source.resolve(&drive.context).await),
         None => None,
@@ -830,8 +1160,14 @@ async fn resolve_tool_context<TContext: Clone>(runner: &ToolRunner<TContext>, dr
 }
 
 impl<TContext: Clone + Send + Sync + 'static> ToolRunner<TContext> {
-    pub fn new(tools: Vec<Arc<AgentHarnessTool<TContext>>>, tool_context: Option<crate::harness::agent_harness::ToolContextSource<TContext>>) -> Self {
-        Self { tools, tool_context }
+    pub fn new(
+        tools: Vec<Arc<AgentHarnessTool<TContext>>>,
+        tool_context: Option<crate::harness::agent_harness::ToolContextSource<TContext>>,
+    ) -> Self {
+        Self {
+            tools,
+            tool_context,
+        }
     }
 }
 
@@ -857,7 +1193,10 @@ impl ToolBatchRunner for EmptyToolRunner {
         state: OperationState,
     ) -> maho_ai::types::BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
-            let runner = ToolRunner::<()> { tools: Vec::new(), tool_context: Some(crate::harness::agent_harness::ToolContextSource::Value(())) };
+            let runner = ToolRunner::<()> {
+                tools: Vec::new(),
+                tool_context: Some(crate::harness::agent_harness::ToolContextSource::Value(())),
+            };
             run_tools(lane, &runner, drive, state).await
         })
     }
@@ -871,29 +1210,65 @@ pub async fn run_tools<TContext: Clone + Send + Sync + 'static>(
     state: OperationState,
 ) -> Result<ProcedureResult, SessionError> {
     let OperationState::Tools(run) = state else {
-        return Err(session_invariant_error("Tool execution requires a tools operation"));
+        return Err(session_invariant_error(
+            "Tool execution requires a tools operation",
+        ));
     };
     let batch = run.batch.clone();
-    let recovery = batch.calls.iter().any(|call| matches!(call, DurableCall::EffectPending { .. } | DurableCall::OutcomeReady { .. }));
+    let recovery = batch.calls.iter().any(|call| {
+        matches!(
+            call,
+            DurableCall::EffectPending { .. } | DurableCall::OutcomeReady { .. }
+        )
+    });
     if recovery {
         let mut event = HarnessEvent::new(
-            HarnessEventPayload::TurnStart { run_id: drive.operation_id.clone(), turn_id: batch.turn_id.clone() },
+            HarnessEventPayload::TurnStart {
+                run_id: drive.operation_id.clone(),
+                turn_id: batch.turn_id.clone(),
+            },
             Some(lane.name.clone()),
         );
         event.recovery = Some(true);
         lane.emit_batch(vec![event], &drive.context).await;
     }
     let sources = read_tool_batch_source(lane.as_ref(), drive, &batch).await?;
-    materialize_ready(lane.as_ref(), drive, &OperationState::Tools(run.clone()), &sources, recovery).await?;
-    let Some(current) = current_tools(lane) else { return Ok(ProcedureResult::Continue); };
+    materialize_ready(
+        lane.as_ref(),
+        drive,
+        &OperationState::Tools(run.clone()),
+        &sources,
+        recovery,
+    )
+    .await?;
+    let Some(current) = current_tools(lane) else {
+        return Ok(ProcedureResult::Continue);
+    };
     if matches!(current.operation.control, Control::CancelRequested { .. }) {
         return run_sequential::<TContext>(lane, drive, &current, &sources, None, recovery).await;
     }
-    let active: std::collections::BTreeSet<String> = batch.configuration.active_tool_names.iter().cloned().collect();
-    let tools: Vec<Arc<AgentHarnessTool<TContext>>> = runner.tools.iter().filter(|tool| active.contains(tool.name())).cloned().collect();
-    let tools_by_name: BTreeMap<String, Arc<AgentHarnessTool<TContext>>> = tools.iter().map(|tool| (tool.name().to_owned(), tool.clone())).collect();
+    let active: std::collections::BTreeSet<String> = batch
+        .configuration
+        .active_tool_names
+        .iter()
+        .cloned()
+        .collect();
+    let tools: Vec<Arc<AgentHarnessTool<TContext>>> = runner
+        .tools
+        .iter()
+        .filter(|tool| active.contains(tool.name()))
+        .cloned()
+        .collect();
+    let tools_by_name: BTreeMap<String, Arc<AgentHarnessTool<TContext>>> = tools
+        .iter()
+        .map(|tool| (tool.name().to_owned(), tool.clone()))
+        .collect();
     let tool_context = resolve_tool_context(runner, drive).await;
-    let execution = ToolExecution { tools: &tools, tools_by_name: &tools_by_name, tool_context: &tool_context };
+    let execution = ToolExecution {
+        tools: &tools,
+        tools_by_name: &tools_by_name,
+        tool_context: &tool_context,
+    };
     if run.operation.settings.tool_execution == ToolExecutionMode::Sequential {
         run_sequential(lane, drive, &current, &sources, Some(&execution), recovery).await
     } else {

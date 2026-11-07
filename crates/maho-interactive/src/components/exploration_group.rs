@@ -2,7 +2,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use maho_tui::tui::{Component, Container, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType};
+use maho_tui::tui::{
+    Component, Container, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType,
+};
 use maho_tui::utils::truncate_to_width;
 
 use super::exploration_call::{ExplorationAction, ExplorationCall};
@@ -21,7 +23,10 @@ fn body_lines(calls: &[ExplorationCall], theme: &Theme) -> Vec<String> {
         index += 1;
         if first.action == ExplorationAction::Read && !first.failed {
             let mut names: Vec<String> = vec![first.label.clone()];
-            while index < calls.len() && calls[index].action == ExplorationAction::Read && !calls[index].failed {
+            while index < calls.len()
+                && calls[index].action == ExplorationAction::Read
+                && !calls[index].failed
+            {
                 names.push(calls[index].label.clone());
                 index += 1;
             }
@@ -32,19 +37,32 @@ fn body_lines(calls: &[ExplorationCall], theme: &Theme) -> Vec<String> {
                 }
             }
             lines.push(
-                format!("{} {}", theme.fg(ThemeColor::Accent, "Read"), unique.join(&theme.fg(ThemeColor::Dim, ", ")))
-                    .trim_end()
-                    .to_owned(),
+                format!(
+                    "{} {}",
+                    theme.fg(ThemeColor::Accent, "Read"),
+                    unique.join(&theme.fg(ThemeColor::Dim, ", "))
+                )
+                .trim_end()
+                .to_owned(),
             );
             continue;
         }
-        let failed = if first.failed { theme.fg(ThemeColor::Error, " (failed)") } else { String::new() };
+        let failed = if first.failed {
+            theme.fg(ThemeColor::Error, " (failed)")
+        } else {
+            String::new()
+        };
         let action = match first.action {
             ExplorationAction::Read => "Read",
             ExplorationAction::Search => "Search",
             ExplorationAction::List => "List",
         };
-        lines.push(format!("{} {}", theme.fg(ThemeColor::Accent, action), first.label).trim_end().to_owned() + &failed);
+        lines.push(
+            format!("{} {}", theme.fg(ThemeColor::Accent, action), first.label)
+                .trim_end()
+                .to_owned()
+                + &failed,
+        );
     }
     lines
 }
@@ -59,7 +77,13 @@ pub struct ExplorationGroup {
 
 impl ExplorationGroup {
     pub fn new(theme: Theme) -> Self {
-        Self { children: Container::new(), calls: Vec::new(), rules: Vec::new(), theme, now_ms: 0. }
+        Self {
+            children: Container::new(),
+            calls: Vec::new(),
+            rules: Vec::new(),
+            theme,
+            now_ms: 0.,
+        }
     }
 
     pub fn set_now_ms(&mut self, now_ms: f64) {
@@ -82,7 +106,9 @@ impl ExplorationGroup {
     }
 
     fn expanded(&self) -> bool {
-        self.calls.iter().any(|(component, _)| component.borrow().is_expanded())
+        self.calls
+            .iter()
+            .any(|(component, _)| component.borrow().is_expanded())
     }
 }
 
@@ -102,14 +128,29 @@ impl Component for ExplorationGroup {
         let header = format!(
             "{marker} {}{}",
             self.theme.bold(title),
-            if failed > 0 { self.theme.fg(ThemeColor::Error, &format!(" · {failed} failed")) } else { String::new() }
+            if failed > 0 {
+                self.theme
+                    .fg(ThemeColor::Error, &format!(" · {failed} failed"))
+            } else {
+                String::new()
+            }
         );
-        let mut lines = vec![String::new(), truncate_to_width(&header, width, "...", false)];
+        let mut lines = vec![
+            String::new(),
+            truncate_to_width(&header, width, "...", false),
+        ];
         if self.expanded() {
             lines.extend(self.children.render(width));
             return lines;
         }
-        let mut body = body_lines(&self.calls.iter().map(|(_, call)| call.clone()).collect::<Vec<_>>(), &self.theme);
+        let mut body = body_lines(
+            &self
+                .calls
+                .iter()
+                .map(|(_, call)| call.clone())
+                .collect::<Vec<_>>(),
+            &self.theme,
+        );
         let mut unique_rules: Vec<&String> = Vec::new();
         for rule in &self.rules {
             if !unique_rules.contains(&rule) {
@@ -127,22 +168,44 @@ impl Component for ExplorationGroup {
         let shown: Vec<String> = body.iter().take(MAX_BODY_LINES).cloned().collect();
         if body.len() > shown.len() {
             let mut shown = shown;
-            shown.push(self.theme.fg(ThemeColor::Dim, &format!("… +{} more", body.len() - shown.len())));
+            shown.push(self.theme.fg(
+                ThemeColor::Dim,
+                &format!("… +{} more", body.len() - shown.len()),
+            ));
             for (index, line) in shown.iter().enumerate() {
-                let prefix = if index == 0 { self.theme.fg(ThemeColor::Dim, "  └ ") } else { String::from("    ") };
-                lines.push(truncate_to_width(&format!("{prefix}{line}"), width, "...", false));
+                let prefix = if index == 0 {
+                    self.theme.fg(ThemeColor::Dim, "  └ ")
+                } else {
+                    String::from("    ")
+                };
+                lines.push(truncate_to_width(
+                    &format!("{prefix}{line}"),
+                    width,
+                    "...",
+                    false,
+                ));
             }
             return lines;
         }
         for (index, line) in shown.iter().enumerate() {
-            let prefix = if index == 0 { self.theme.fg(ThemeColor::Dim, "  └ ") } else { String::from("    ") };
-            lines.push(truncate_to_width(&format!("{prefix}{line}"), width, "...", false));
+            let prefix = if index == 0 {
+                self.theme.fg(ThemeColor::Dim, "  └ ")
+            } else {
+                String::from("    ")
+            };
+            lines.push(truncate_to_width(
+                &format!("{prefix}{line}"),
+                width,
+                "...",
+                false,
+            ));
         }
         lines
     }
 
     fn handle_mouse(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseEventResult> {
-        if (event.event_type == TuiMouseEventType::Press || event.event_type == TuiMouseEventType::Click)
+        if (event.event_type == TuiMouseEventType::Press
+            || event.event_type == TuiMouseEventType::Click)
             && event.button == TuiMouseButton::Left
             && (event.y == 1 || !self.expanded())
         {
@@ -152,10 +215,17 @@ impl Component for ExplorationGroup {
                     component.borrow_mut().set_expanded(expanded);
                 }
             }
-            return Some(TuiMouseEventResult { handled: true, ..Default::default() });
+            return Some(TuiMouseEventResult {
+                handled: true,
+                ..Default::default()
+            });
         }
         if self.expanded() && event.y >= 2 {
-            let sub_event = TuiMouseEvent { y: event.y - 2, height: event.height.saturating_sub(2), ..*event };
+            let sub_event = TuiMouseEvent {
+                y: event.y - 2,
+                height: event.height.saturating_sub(2),
+                ..*event
+            };
             return self.children.handle_mouse(&sub_event);
         }
         None

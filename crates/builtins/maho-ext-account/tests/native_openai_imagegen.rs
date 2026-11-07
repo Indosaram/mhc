@@ -1,25 +1,68 @@
-use crate::support;
 use crate::native_state;
+use crate::support;
 use maho_ext_api::*;
 use std::sync::Arc;
 struct Registry;
-impl ModelRegistry for Registry{
-    fn get_all(&self)->Vec<Model>{vec![]}
-    fn get_available(&self)->Vec<Model>{vec![]}
-    fn find(&self,_:&str,_:&str)->Option<Model>{None}
-    fn has_configured_auth(&self,_:&Model)->bool{true}
-    fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{Box::pin(async{panic!("resolved auth required")})}
-    fn get_stored_credential_type(&self,_:&str)->Result<Option<maho_ai::auth::types::CredentialType>,ExtensionFailure>{Ok(Some(maho_ai::auth::types::CredentialType::ApiKey))}
-    fn get_provider_auth<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<maho_ai::models::AuthResolution>>{Box::pin(async{Ok(Some(maho_ai::models::AuthResolution{ambient:false,auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture-secret".into()),..Default::default()},env:None}))})}
+impl ModelRegistry for Registry {
+    fn get_all(&self) -> Vec<Model> {
+        vec![]
+    }
+    fn get_available(&self) -> Vec<Model> {
+        vec![]
+    }
+    fn find(&self, _: &str, _: &str) -> Option<Model> {
+        None
+    }
+    fn has_configured_auth(&self, _: &Model) -> bool {
+        true
+    }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
+        Box::pin(async { panic!("resolved auth required") })
+    }
+    fn get_stored_credential_type(
+        &self,
+        _: &str,
+    ) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
+        Ok(Some(maho_ai::auth::types::CredentialType::ApiKey))
+    }
+    fn get_provider_auth<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        Box::pin(async {
+            Ok(Some(maho_ai::models::AuthResolution {
+                ambient: false,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: Some("fixture-secret".into()),
+                    ..Default::default()
+                },
+                env: None,
+            }))
+        })
+    }
 }
 #[tokio::test]
-async fn registered_native_image_handler_uses_effective_model_and_scrubs_history_bytes()->Result<(),Box<dyn std::error::Error>>{
-    let _guard=native_state::GlobalNativeStateGuard::acquire().await;
-    let root=tempfile::tempdir()?;let mut ctx=support::context(Arc::new(Registry),Arc::new(support::TestUi::default()));ctx.cwd=root.path().into();
-    let mut api=ExtensionApi::new(LoadedExtension::new("native-image",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+async fn registered_native_image_handler_uses_effective_model_and_scrubs_history_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _guard = native_state::GlobalNativeStateGuard::acquire().await;
+    let root = tempfile::tempdir()?;
+    let mut ctx = support::context(Arc::new(Registry), Arc::new(support::TestUi::default()));
+    ctx.cwd = root.path().into();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("native-image", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
     maho_ext_openai_image_gen::OpenAiImageGen.register(&mut api);
-    let model=serde_json::from_value(serde_json::json!({"id":"native","name":"Native","api":"openai-responses","provider":"openai","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}))?;
-    let mut request=ExtensionEvent::BeforeProviderRequest{model:Some(model),payload:serde_json::json!({"model":"native","tools":[{"name":"generate_image"},{"name":"other"}]}),headers:None};
+    let model = serde_json::from_value(
+        serde_json::json!({"id":"native","name":"Native","api":"openai-responses","provider":"openai","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}),
+    )?;
+    let mut request = ExtensionEvent::BeforeProviderRequest {
+        model: Some(model),
+        payload: serde_json::json!({"model":"native","tools":[{"name":"generate_image"},{"name":"other"}]}),
+        headers: None,
+    };
     let outcome=async{
         let original=match &request{ExtensionEvent::BeforeProviderRequest{payload,..}=>payload.clone(),_=>unreachable!("request is a provider request")};
         // `None` means the handler left the payload untouched.
@@ -38,8 +81,24 @@ async fn registered_native_image_handler_uses_effective_model_and_scrubs_history
         assert!(matches!((api.registered.handlers[&EventKind::MessageEnd][0])(&mut ExtensionEvent::MessageEnd{message:replaced},&ctx).await?,EventResult::None));
         Ok::<(),Box<dyn std::error::Error>>(())
     }.await;
-    let shutdown=(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut ExtensionEvent::SessionShutdown(SessionShutdownEvent{reason:SessionReason::Quit,target_session_file:None,signal:None}),&ctx).await;
-    let bypass=maho_ext_imagegen::state::is_native_bypass();drop(api);drop(ctx);root.close()?;
-    shutdown?;outcome?;assert!(!bypass);Ok(())
+    let shutdown = (api.registered.handlers[&EventKind::SessionShutdown][0])(
+        &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            reason: SessionReason::Quit,
+            target_session_file: None,
+            signal: None,
+        }),
+        &ctx,
+    )
+    .await;
+    let bypass = maho_ext_imagegen::state::is_native_bypass();
+    drop(api);
+    drop(ctx);
+    root.close()?;
+    shutdown?;
+    outcome?;
+    assert!(!bypass);
+    Ok(())
 }
-fn maho_agent_message(message:AssistantMessage)->AgentMessage{AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(message)))}
+fn maho_agent_message(message: AssistantMessage) -> AgentMessage {
+    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(message)))
+}

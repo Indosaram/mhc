@@ -32,5 +32,5 @@ pub mod child_stderr;
 pub mod piped_stdin;
 pub mod version_check;
 // ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
-pub mod zip_archive;
 pub mod process_identity;
+pub mod zip_archive;

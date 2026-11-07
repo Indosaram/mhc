@@ -45,16 +45,19 @@ pub fn salvage_crashed_isolation(ports: &SalvagePorts<'_>, record: &TaskRecord) 
         baseline: None,
         handle: None,
     });
-    (ports.mutate)(&record.task_id, &|fresh: &TaskRecord| match fresh.isolation.as_ref() {
-        None => fresh.clone(),
-        Some(current) => TaskRecord {
-            isolation: Some(IsolationRecord {
-                spec: current.spec.clone(),
-                merge_result: Some(merge_result.clone()),
-            }),
-            ..fresh.clone()
+    (ports.mutate)(
+        &record.task_id,
+        &|fresh: &TaskRecord| match fresh.isolation.as_ref() {
+            None => fresh.clone(),
+            Some(current) => TaskRecord {
+                isolation: Some(IsolationRecord {
+                    spec: current.spec.clone(),
+                    merge_result: Some(merge_result.clone()),
+                }),
+                ..fresh.clone()
+            },
         },
-    });
+    );
 }
 
 /// The sweep roots: this runtime's own roots plus every base dir seen on a record.

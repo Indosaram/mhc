@@ -4,8 +4,8 @@ use crate::brand::env_value;
 use crate::config::current_env;
 
 pub mod server;
-pub mod session_worker_ownership;
 pub mod session_worker;
+pub mod session_worker_ownership;
 
 /// PREFER_STRICT_TOOL_SAMPLING, returned only when experimental features are enabled.
 pub fn get_experimental_tool_sampling() -> Option<serde_json::Value> {
@@ -38,7 +38,10 @@ mod tests {
 
     #[test]
     fn the_public_hint_follows_the_gate() {
-        assert_eq!(get_experimental_tool_sampling(), tool_sampling_for(are_experimental_features_enabled()));
+        assert_eq!(
+            get_experimental_tool_sampling(),
+            tool_sampling_for(are_experimental_features_enabled())
+        );
     }
 
     #[test]

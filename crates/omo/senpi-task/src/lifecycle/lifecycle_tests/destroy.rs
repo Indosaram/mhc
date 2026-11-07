@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use super::*;
 use crate::lifecycle::{
-    DestroyCause, HostSessionCloseRequest, HostSessionCloser, HostSessionLiveness, HostSessionProbe,
-    LifecycleDeps, create_task_lifecycle,
+    DestroyCause, HostSessionCloseRequest, HostSessionCloser, HostSessionLiveness,
+    HostSessionProbe, LifecycleDeps, create_task_lifecycle,
 };
 use crate::state::{HostSessionIdentity, ResidencyState::*, RunnerKind, TaskStatus::*};
 

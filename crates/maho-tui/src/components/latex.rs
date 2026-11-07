@@ -215,11 +215,7 @@ impl LatexParser {
             output.push(character);
             self.index += 1;
         }
-        if stop_at_brace {
-            None
-        } else {
-            Some(output)
-        }
+        if stop_at_brace { None } else { Some(output) }
     }
 
     fn parse_group(&mut self, depth: usize) -> Option<String> {
@@ -332,7 +328,11 @@ impl LatexParser {
 
     fn parse_script(&mut self, marker: char, depth: usize) -> Option<String> {
         self.index += 1;
-        let alphabet = if marker == '^' { superscript } else { subscript };
+        let alphabet = if marker == '^' {
+            superscript
+        } else {
+            subscript
+        };
         if self.current() == Some('{') {
             let body = self.parse_group(depth)?;
             return Some(
@@ -347,7 +347,11 @@ impl LatexParser {
             return Some(marker.to_string());
         };
         self.index += 1;
-        Some(alphabet(body).map(str::to_string).unwrap_or_else(|| format!("{marker}{body}")))
+        Some(
+            alphabet(body)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{marker}{body}")),
+        )
     }
 
     fn skip_spaces(&mut self) {

@@ -64,11 +64,15 @@ static PASS_SIGNATURES: LazyLock<Vec<FancyRegex>> = LazyLock::new(|| {
 });
 
 static HARNESS_REFUSAL: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)\bTool \S+ not found\b|\bpermission denied by\b|\b(?:was|were) denied\b|\bblocked by (?:policy|the user|a hook)\b|\brequires approval\b|\b(?:aborted|cancelled) by the user\b")
+    pattern(
+        r"(?i)\bTool \S+ not found\b|\bpermission denied by\b|\b(?:was|were) denied\b|\bblocked by (?:policy|the user|a hook)\b|\brequires approval\b|\b(?:aborted|cancelled) by the user\b",
+    )
 });
 
 static NON_CODE_PATH: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)(?:^|/)(?:\.omo|omo-runs|tmp|evidence|notepads?)/|^/(?:private/)?tmp/|\.(?:md|txt|log|jsonl|csv)$")
+    pattern(
+        r"(?i)(?:^|/)(?:\.omo|omo-runs|tmp|evidence|notepads?)/|^/(?:private/)?tmp/|\.(?:md|txt|log|jsonl|csv)$",
+    )
 });
 
 fn matches_any(patterns: &[FancyRegex], text: &str) -> bool {
@@ -144,7 +148,10 @@ mod tests {
             judge_structured(true, "Permission denied by policy: bash"),
             CheckOutcome::Unknown
         );
-        assert_eq!(judge_structured(true, " 2 pass\n 1 fail"), CheckOutcome::Failed);
+        assert_eq!(
+            judge_structured(true, " 2 pass\n 1 fail"),
+            CheckOutcome::Failed
+        );
     }
 
     #[test]

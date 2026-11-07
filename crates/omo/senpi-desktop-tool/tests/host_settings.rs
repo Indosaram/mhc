@@ -2,8 +2,7 @@
 
 use senpi_desktop_tool::host_policy::is_supported_host;
 use senpi_desktop_tool::settings::{
-    resolve_computer_settings, AuditLogSettings, ComputerSettings,
-    ScreenshotGcSettings,
+    AuditLogSettings, ComputerSettings, ScreenshotGcSettings, resolve_computer_settings,
 };
 use serde_json::json;
 
@@ -81,6 +80,10 @@ fn resolve_computer_settings_rejects_unknown_key_and_wrongly_typed_value() {
         "stopChord": "ctrl+escape"
     });
     let err = resolve_computer_settings(Some(&raw), "linux").unwrap_err();
-    assert!(err.issues.iter().any(|i| i.contains("unknown property 'stopChord'")));
+    assert!(
+        err.issues
+            .iter()
+            .any(|i| i.contains("unknown property 'stopChord'"))
+    );
     assert!(err.issues.iter().any(|i| i.contains("maxWidth")));
 }

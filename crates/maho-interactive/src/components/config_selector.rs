@@ -126,7 +126,10 @@ pub struct ResourceGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlatEntry {
     Group(ResourceGroup),
-    Subgroup { subgroup: ResourceSubgroup, group: ResourceGroup },
+    Subgroup {
+        subgroup: ResourceSubgroup,
+        group: ResourceGroup,
+    },
     Item(ResourceItem),
 }
 
@@ -138,11 +141,20 @@ pub fn format_base_dir(base_dir: &str, home_dir: &str) -> String {
     } else {
         base_dir.replace('\\', "/")
     };
-    if display.ends_with('/') { display } else { format!("{display}/") }
+    if display.ends_with('/') {
+        display
+    } else {
+        format!("{display}/")
+    }
 }
 
 /// senpi's getGroupLabel.
-pub fn get_group_label(metadata: &PathMetadata, agent_dir: &str, home_dir: &str, config_dir_name: &str) -> String {
+pub fn get_group_label(
+    metadata: &PathMetadata,
+    agent_dir: &str,
+    home_dir: &str,
+    config_dir_name: &str,
+) -> String {
     if metadata.origin == maho_core::source_info::SourceOrigin::Package {
         return format!("{} ({})", metadata.source, metadata.scope.as_str());
     }
@@ -190,16 +202,22 @@ pub fn build_groups(
                 metadata.source,
                 metadata.base_dir.clone().unwrap_or_default()
             );
-            let group = group_map.entry(group_key.clone()).or_insert_with(|| ResourceGroup {
-                key: group_key.clone(),
-                label: get_group_label(metadata, agent_dir, home_dir, config_dir_name),
-                scope: metadata.scope,
-                origin: metadata.origin,
-                source: metadata.source.clone(),
-                subgroups: Vec::new(),
-            });
+            let group = group_map
+                .entry(group_key.clone())
+                .or_insert_with(|| ResourceGroup {
+                    key: group_key.clone(),
+                    label: get_group_label(metadata, agent_dir, home_dir, config_dir_name),
+                    scope: metadata.scope,
+                    origin: metadata.origin,
+                    source: metadata.source.clone(),
+                    subgroups: Vec::new(),
+                });
             let subgroup_key = format!("{group_key}:{}", resource_type.key());
-            if !group.subgroups.iter().any(|sg| sg.resource_type == resource_type) {
+            if !group
+                .subgroups
+                .iter()
+                .any(|sg| sg.resource_type == resource_type)
+            {
                 group.subgroups.push(ResourceSubgroup {
                     resource_type,
                     label: resource_type.label().to_owned(),
@@ -265,7 +283,9 @@ pub fn build_groups(
     for group in &mut groups {
         group.subgroups.sort_by_key(|sg| sg.resource_type.order());
         for subgroup in &mut group.subgroups {
-            subgroup.items.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+            subgroup
+                .items
+                .sort_by(|a, b| a.display_name.cmp(&b.display_name));
         }
     }
     groups
@@ -307,7 +327,10 @@ impl Component for ConfigSelectorHeader {
         });
         let sep = self.theme.fg(ThemeColor::Muted, " · ");
         let switch_hint = if self.project_mode_available {
-            format!("{}{sep}", key_hint("tui.input.tab", "switch mode", &self.theme))
+            format!(
+                "{}{sep}",
+                key_hint("tui.input.tab", "switch mode", &self.theme)
+            )
         } else {
             String::new()
         };
@@ -331,12 +354,18 @@ impl Component for ConfigSelectorHeader {
                     self.config_dir_name
                 ),
             ),
-            ConfigWriteScope::Global => self
-                .theme
-                .fg(ThemeColor::Muted, &format!("~/{}/agent/settings.json", self.config_dir_name)),
+            ConfigWriteScope::Global => self.theme.fg(
+                ThemeColor::Muted,
+                &format!("~/{}/agent/settings.json", self.config_dir_name),
+            ),
         };
         vec![
-            truncate_to_width(&format!("{title}{}{hint}", " ".repeat(spacing)), width, "", false),
+            truncate_to_width(
+                &format!("{title}{}{hint}", " ".repeat(spacing)),
+                width,
+                "",
+                false,
+            ),
             truncate_to_width(&scope_hint, width, "", false),
         ]
     }
@@ -348,7 +377,13 @@ fn settings_array(settings: &Value, key: &str) -> Vec<String> {
     settings
         .get(key)
         .and_then(Value::as_array)
-        .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -363,7 +398,11 @@ fn pattern_entry_target(entry: &str) -> &str {
 fn package_source_string(package: &Value) -> String {
     match package {
         Value::String(source) => source.clone(),
-        other => other.get("source").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        other => other
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
     }
 }
 
@@ -406,12 +445,16 @@ impl ResourceList {
         write_scope: ConfigWriteScope,
     ) -> Self {
         let inherited_enabled_by_key = build_inherited_enabled_map(
-            groups_by_scope.get(&ConfigWriteScope::Global).map_or(&[][..], Vec::as_slice),
+            groups_by_scope
+                .get(&ConfigWriteScope::Global)
+                .map_or(&[][..], Vec::as_slice),
         );
         // 8 lines of chrome: top spacer + top border + spacer + header (2 lines) + spacer +
         // bottom spacer + bottom border.
         let chrome = 8;
-        let max_visible = (terminal_height.unwrap_or(24)).saturating_sub(chrome).max(5);
+        let max_visible = (terminal_height.unwrap_or(24))
+            .saturating_sub(chrome)
+            .max(5);
         let mut list = Self {
             theme: theme.clone(),
             groups_by_scope,
@@ -453,7 +496,9 @@ impl ResourceList {
     }
 
     fn groups(&self) -> &[ResourceGroup] {
-        self.groups_by_scope.get(&self.write_scope).map_or(&[][..], Vec::as_slice)
+        self.groups_by_scope
+            .get(&self.write_scope)
+            .map_or(&[][..], Vec::as_slice)
     }
 
     fn groups_mut(&mut self) -> &mut Vec<ResourceGroup> {
@@ -466,7 +511,10 @@ impl ResourceList {
         for group in groups {
             self.flat_items.push(FlatEntry::Group(group.clone()));
             for subgroup in &group.subgroups {
-                self.flat_items.push(FlatEntry::Subgroup { subgroup: subgroup.clone(), group: group.clone() });
+                self.flat_items.push(FlatEntry::Subgroup {
+                    subgroup: subgroup.clone(),
+                    group: group.clone(),
+                });
                 for item in &subgroup.items {
                     self.flat_items.push(FlatEntry::Item(item.clone()));
                 }
@@ -525,7 +573,9 @@ impl ResourceList {
             .iter()
             .filter(|entry| match entry {
                 FlatEntry::Group(group) => matching_groups.contains(&group.key),
-                FlatEntry::Subgroup { subgroup, group } => matching_subgroups.contains(&subgroup_label_key(group, subgroup)),
+                FlatEntry::Subgroup { subgroup, group } => {
+                    matching_subgroups.contains(&subgroup_label_key(group, subgroup))
+                }
                 FlatEntry::Item(item) => matching_items.contains(&item.path),
             })
             .cloned()
@@ -560,9 +610,9 @@ impl ResourceList {
             return match self.get_project_override_state(item) {
                 ProjectOverrideState::Load => self.theme.fg(ThemeColor::Success, "[+]"),
                 ProjectOverrideState::Unload => self.theme.fg(ThemeColor::Warning, "[-]"),
-                ProjectOverrideState::Inherit => {
-                    self.theme.fg(ThemeColor::Dim, if item.enabled { "[x]" } else { "[ ]" })
-                }
+                ProjectOverrideState::Inherit => self
+                    .theme
+                    .fg(ThemeColor::Dim, if item.enabled { "[x]" } else { "[ ]" }),
             };
         }
         if item.enabled {
@@ -636,15 +686,32 @@ impl ResourceList {
         self.write_top_level_paths(scope, item.resource_type, &updated);
     }
 
-    fn write_top_level_paths(&mut self, scope: SettingsScope, resource_type: ResourceType, paths: &[String]) {
+    fn write_top_level_paths(
+        &mut self,
+        scope: SettingsScope,
+        resource_type: ResourceType,
+        paths: &[String],
+    ) {
         match (scope, resource_type) {
-            (SettingsScope::Project, ResourceType::Extensions) => self.settings.set_project_extension_paths(paths),
-            (SettingsScope::Project, ResourceType::Skills) => self.settings.set_project_skill_paths(paths),
-            (SettingsScope::Project, ResourceType::Prompts) => self.settings.set_project_prompt_template_paths(paths),
-            (SettingsScope::Project, ResourceType::Themes) => self.settings.set_project_theme_paths(paths),
-            (SettingsScope::User, ResourceType::Extensions) => self.settings.set_extension_paths(paths),
+            (SettingsScope::Project, ResourceType::Extensions) => {
+                self.settings.set_project_extension_paths(paths)
+            }
+            (SettingsScope::Project, ResourceType::Skills) => {
+                self.settings.set_project_skill_paths(paths)
+            }
+            (SettingsScope::Project, ResourceType::Prompts) => {
+                self.settings.set_project_prompt_template_paths(paths)
+            }
+            (SettingsScope::Project, ResourceType::Themes) => {
+                self.settings.set_project_theme_paths(paths)
+            }
+            (SettingsScope::User, ResourceType::Extensions) => {
+                self.settings.set_extension_paths(paths)
+            }
             (SettingsScope::User, ResourceType::Skills) => self.settings.set_skill_paths(paths),
-            (SettingsScope::User, ResourceType::Prompts) => self.settings.set_prompt_template_paths(paths),
+            (SettingsScope::User, ResourceType::Prompts) => {
+                self.settings.set_prompt_template_paths(paths)
+            }
             (SettingsScope::User, ResourceType::Themes) => self.settings.set_theme_paths(paths),
         }
     }
@@ -684,7 +751,13 @@ impl ResourceList {
         let current: Vec<String> = package
             .get(array_key)
             .and_then(Value::as_array)
-            .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default();
         let pattern = self.get_package_resource_pattern(item);
         let mut updated: Vec<String> = current
@@ -762,7 +835,10 @@ impl ResourceList {
 
     fn get_top_level_base_dir(&self, scope: SettingsScope) -> String {
         match scope {
-            SettingsScope::Project => Path::new(&self.cwd).join(&self.config_dir_name).to_string_lossy().into_owned(),
+            SettingsScope::Project => Path::new(&self.cwd)
+                .join(&self.config_dir_name)
+                .to_string_lossy()
+                .into_owned(),
             SettingsScope::User => self.agent_dir.clone(),
         }
     }
@@ -772,11 +848,13 @@ impl ResourceList {
             return item.path.clone();
         }
         let scope = item.metadata.scope;
-        let base_dir = item
-            .metadata
-            .base_dir
-            .clone()
-            .unwrap_or_else(|| self.get_top_level_base_dir(if scope == SourceScope::Project { SettingsScope::Project } else { SettingsScope::User }));
+        let base_dir = item.metadata.base_dir.clone().unwrap_or_else(|| {
+            self.get_top_level_base_dir(if scope == SourceScope::Project {
+                SettingsScope::Project
+            } else {
+                SettingsScope::User
+            })
+        });
         relative_path(&base_dir, &item.path)
     }
 
@@ -801,7 +879,11 @@ impl ResourceList {
         relative_path(&base_dir, &item.path)
     }
 
-    fn get_top_level_override_patterns(&self, item: &ResourceItem, scope: SettingsScope) -> BTreeSet<String> {
+    fn get_top_level_override_patterns(
+        &self,
+        item: &ResourceItem,
+        scope: SettingsScope,
+    ) -> BTreeSet<String> {
         let base_dir = self.get_top_level_base_dir(scope);
         let mut patterns: BTreeSet<String> = BTreeSet::new();
         patterns.insert(self.get_resource_pattern_for_scope(item, scope));
@@ -821,7 +903,10 @@ impl ResourceList {
     }
 
     fn is_inherited_global_item(&self, item: &ResourceItem) -> bool {
-        self.get_item_scope(item) == SettingsScope::User || self.inherited_enabled_by_key.contains_key(&resource_item_key(item))
+        self.get_item_scope(item) == SettingsScope::User
+            || self
+                .inherited_enabled_by_key
+                .contains_key(&resource_item_key(item))
     }
 
     fn get_override_state_from_entries(
@@ -847,21 +932,31 @@ impl ResourceList {
         state
     }
 
-    fn find_matching_package_source(&self, item: &ResourceItem, target_scope: SettingsScope) -> Option<Value> {
+    fn find_matching_package_source(
+        &self,
+        item: &ResourceItem,
+        target_scope: SettingsScope,
+    ) -> Option<Value> {
         let settings = match target_scope {
             SettingsScope::Project => self.settings.get_project_settings(),
             SettingsScope::User => self.settings.get_global_settings(),
         };
-        settings.get("packages").and_then(Value::as_array).and_then(|packages| {
-            packages.iter().find(|package| {
-                self.package_source_string_matches(
-                    &item.metadata.source,
-                    self.get_item_scope(item),
-                    &package_source_string(package),
-                    target_scope,
-                )
-            }).cloned()
-        })
+        settings
+            .get("packages")
+            .and_then(Value::as_array)
+            .and_then(|packages| {
+                packages
+                    .iter()
+                    .find(|package| {
+                        self.package_source_string_matches(
+                            &item.metadata.source,
+                            self.get_item_scope(item),
+                            &package_source_string(package),
+                            target_scope,
+                        )
+                    })
+                    .cloned()
+            })
     }
 
     fn package_source_string_matches(
@@ -874,12 +969,25 @@ impl ResourceList {
         if left_source == right_source {
             return true;
         }
-        if !maho_core::paths::is_local_path(left_source) || !maho_core::paths::is_local_path(right_source) {
+        if !maho_core::paths::is_local_path(left_source)
+            || !maho_core::paths::is_local_path(right_source)
+        {
             return false;
         }
-        let options = maho_core::paths::PathInputOptions { trim: true, ..Default::default() };
-        let left = maho_core::paths::resolve_path(left_source, &self.get_top_level_base_dir(left_scope), &options);
-        let right = maho_core::paths::resolve_path(right_source, &self.get_top_level_base_dir(right_scope), &options);
+        let options = maho_core::paths::PathInputOptions {
+            trim: true,
+            ..Default::default()
+        };
+        let left = maho_core::paths::resolve_path(
+            left_source,
+            &self.get_top_level_base_dir(left_scope),
+            &options,
+        );
+        let right = maho_core::paths::resolve_path(
+            right_source,
+            &self.get_top_level_base_dir(right_scope),
+            &options,
+        );
         left == right
     }
 
@@ -888,12 +996,22 @@ impl ResourceList {
         if !maho_core::paths::is_local_path(&source) {
             return serde_json::json!({ "source": source, "autoload": false });
         }
-        let options = maho_core::paths::PathInputOptions { trim: true, ..Default::default() };
-        let source_path =
-            maho_core::paths::resolve_path(&source, &self.get_top_level_base_dir(self.get_item_scope(item)), &options);
+        let options = maho_core::paths::PathInputOptions {
+            trim: true,
+            ..Default::default()
+        };
+        let source_path = maho_core::paths::resolve_path(
+            &source,
+            &self.get_top_level_base_dir(self.get_item_scope(item)),
+            &options,
+        );
         let project_base = self.get_top_level_base_dir(SettingsScope::Project);
         let relative = relative_path(&project_base, &source_path);
-        let source = if relative.is_empty() { ".".to_owned() } else { relative };
+        let source = if relative.is_empty() {
+            ".".to_owned()
+        } else {
+            relative
+        };
         serde_json::json!({ "source": source, "autoload": false })
     }
 
@@ -902,7 +1020,10 @@ impl ResourceList {
             return ProjectOverrideState::Inherit;
         }
         if item.metadata.origin == maho_core::source_info::SourceOrigin::TopLevel {
-            let entries = settings_array(&self.settings.get_project_settings(), item.resource_type.key());
+            let entries = settings_array(
+                &self.settings.get_project_settings(),
+                item.resource_type.key(),
+            );
             let patterns = self.get_top_level_override_patterns(item, SettingsScope::Project);
             return self.get_override_state_from_entries(&entries, &patterns, false);
         }
@@ -917,10 +1038,20 @@ impl ResourceList {
         };
         let entries: Vec<String> = entries
             .as_array()
-            .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         let patterns: BTreeSet<String> = BTreeSet::from([self.get_package_resource_pattern(item)]);
-        self.get_override_state_from_entries(&entries, &patterns, package.get("autoload").and_then(Value::as_bool) != Some(false))
+        self.get_override_state_from_entries(
+            &entries,
+            &patterns,
+            package.get("autoload").and_then(Value::as_bool) != Some(false),
+        )
     }
 
     fn get_next_override_state(&self, item: &ResourceItem) -> ProjectOverrideState {
@@ -951,7 +1082,11 @@ impl ResourceList {
         }
     }
 
-    fn set_project_resource_override(&mut self, item: &ResourceItem, state: ProjectOverrideState) -> bool {
+    fn set_project_resource_override(
+        &mut self,
+        item: &ResourceItem,
+        state: ProjectOverrideState,
+    ) -> bool {
         if item.metadata.origin == maho_core::source_info::SourceOrigin::TopLevel {
             self.set_project_top_level_override(item, state)
         } else {
@@ -959,8 +1094,15 @@ impl ResourceList {
         }
     }
 
-    fn set_project_top_level_override(&mut self, item: &ResourceItem, state: ProjectOverrideState) -> bool {
-        let current = settings_array(&self.settings.get_project_settings(), item.resource_type.key());
+    fn set_project_top_level_override(
+        &mut self,
+        item: &ResourceItem,
+        state: ProjectOverrideState,
+    ) -> bool {
+        let current = settings_array(
+            &self.settings.get_project_settings(),
+            item.resource_type.key(),
+        );
         let pattern = if self.is_inherited_global_item(item) {
             item.path.clone()
         } else {
@@ -990,14 +1132,22 @@ impl ResourceList {
             }
             updated.push(format!(
                 "{}{pattern}",
-                if state == ProjectOverrideState::Load { "+" } else { "-" }
+                if state == ProjectOverrideState::Load {
+                    "+"
+                } else {
+                    "-"
+                }
             ));
         }
         self.write_top_level_paths(SettingsScope::Project, item.resource_type, &updated);
         true
     }
 
-    fn set_project_package_override(&mut self, item: &ResourceItem, state: ProjectOverrideState) -> bool {
+    fn set_project_package_override(
+        &mut self,
+        item: &ResourceItem,
+        state: ProjectOverrideState,
+    ) -> bool {
         let settings = self.settings.get_project_settings();
         let mut packages: Vec<Value> = settings
             .get("packages")
@@ -1031,7 +1181,11 @@ impl ResourceList {
             .get(item.resource_type.key())
             .and_then(Value::as_array)
             .map(|values| -> Vec<String> {
-                values.iter().filter_map(Value::as_str).map(str::to_owned).collect()
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
             })
             .unwrap_or_default()
             .into_iter()
@@ -1041,7 +1195,11 @@ impl ResourceList {
         if state != ProjectOverrideState::Inherit {
             updated.push(format!(
                 "{}{pattern}",
-                if state == ProjectOverrideState::Load { "+" } else { "-" }
+                if state == ProjectOverrideState::Load {
+                    "+"
+                } else {
+                    "-"
+                }
             ));
         }
         if let Some(object) = package.as_object_mut() {
@@ -1094,17 +1252,31 @@ impl Component for ResourceList {
             let is_selected = index == self.selected_index;
             match entry {
                 FlatEntry::Group(group) => {
-                    let inherited =
-                        self.write_scope == ConfigWriteScope::Project && group.scope == SourceScope::User;
+                    let inherited = self.write_scope == ConfigWriteScope::Project
+                        && group.scope == SourceScope::User;
                     let label = self.theme.bold(&format!(
                         "{}{}",
                         group.label,
-                        if inherited { " · inherited global" } else { "" }
+                        if inherited {
+                            " · inherited global"
+                        } else {
+                            ""
+                        }
                     ));
-                    let group_line = self
-                        .theme
-                        .fg(if inherited { ThemeColor::Dim } else { ThemeColor::Accent }, &label);
-                    lines.push(truncate_to_width(&format!("  {group_line}"), width, "", false));
+                    let group_line = self.theme.fg(
+                        if inherited {
+                            ThemeColor::Dim
+                        } else {
+                            ThemeColor::Accent
+                        },
+                        &label,
+                    );
+                    lines.push(truncate_to_width(
+                        &format!("  {group_line}"),
+                        width,
+                        "",
+                        false,
+                    ));
                 }
                 FlatEntry::Subgroup { subgroup, group } => {
                     let color = if self.write_scope == ConfigWriteScope::Project
@@ -1115,7 +1287,12 @@ impl Component for ResourceList {
                         ThemeColor::Muted
                     };
                     let subgroup_line = self.theme.fg(color, &subgroup.label);
-                    lines.push(truncate_to_width(&format!("    {subgroup_line}"), width, "", false));
+                    lines.push(truncate_to_width(
+                        &format!("    {subgroup_line}"),
+                        width,
+                        "",
+                        false,
+                    ));
                 }
                 FlatEntry::Item(item) => {
                     let cursor = if is_selected { "> " } else { "  " };
@@ -1125,7 +1302,11 @@ impl Component for ResourceList {
                     } else {
                         item.display_name.clone()
                     };
-                    let name = if dimmed { self.theme.fg(ThemeColor::Dim, &name_text) } else { name_text };
+                    let name = if dimmed {
+                        self.theme.fg(ThemeColor::Dim, &name_text)
+                    } else {
+                        name_text
+                    };
                     lines.push(truncate_to_width(
                         &format!(
                             "{cursor}    {} {name}{}",
@@ -1151,7 +1332,10 @@ impl Component for ResourceList {
                 .filter(|entry| matches!(entry, FlatEntry::Item(_)))
                 .count()
                 + 1;
-            lines.push(self.theme.fg(ThemeColor::Dim, &format!("  ({current_item_index}/{item_count})")));
+            lines.push(self.theme.fg(
+                ThemeColor::Dim,
+                &format!("  ({current_item_index}/{item_count})"),
+            ));
         }
 
         lines
@@ -1170,7 +1354,9 @@ impl Component for ResourceList {
         }
         if kb.matches(data, "tui.select.pageUp") {
             let mut target = self.selected_index.saturating_sub(self.max_visible);
-            while target < self.filtered_items.len() && !matches!(self.filtered_items[target], FlatEntry::Item(_)) {
+            while target < self.filtered_items.len()
+                && !matches!(self.filtered_items[target], FlatEntry::Item(_))
+            {
                 target += 1;
             }
             if target < self.filtered_items.len() {
@@ -1288,7 +1474,8 @@ impl ConfigSelectorComponent {
                 build_groups(resolved, agent_dir, &home_dir(), config_dir_name),
             );
         }
-        let header = ConfigSelectorHeader::new(theme, write_scope, project_mode_available, config_dir_name);
+        let header =
+            ConfigSelectorHeader::new(theme, write_scope, project_mode_available, config_dir_name);
         let mut resource_list = ResourceList::new(
             theme,
             groups_by_scope,
@@ -1389,8 +1576,8 @@ fn home_dir() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maho_core::source_info::SourceOrigin;
     use crate::theme::ColorMode;
+    use maho_core::source_info::SourceOrigin;
 
     #[derive(Default)]
     struct Settings {
@@ -1399,8 +1586,12 @@ mod tests {
     }
 
     impl ConfigSettingsHost for Settings {
-        fn get_global_settings(&self) -> Value { self.global.clone() }
-        fn get_project_settings(&self) -> Value { self.project.clone() }
+        fn get_global_settings(&self) -> Value {
+            self.global.clone()
+        }
+        fn get_project_settings(&self) -> Value {
+            self.project.clone()
+        }
         fn set_packages(&mut self, packages: &[Value]) {
             self.global["packages"] = serde_json::json!(packages);
         }
@@ -1437,7 +1628,8 @@ mod tests {
         ResourceItem {
             path: "builtin:task".to_owned(),
             enabled: true,
-            metadata: PathMetadata { skill_provenance: None,
+            metadata: PathMetadata {
+                skill_provenance: None,
                 source: "builtin".to_owned(),
                 scope,
                 origin: SourceOrigin::TopLevel,
@@ -1483,11 +1675,14 @@ mod tests {
 
             // Then the shipped labels and native resource identity are retained.
             assert_eq!(groups.len(), 1);
-            assert_eq!(groups[0].label, if scope == SourceScope::User {
-                "Built-in"
-            } else {
-                "Built-in (project override)"
-            });
+            assert_eq!(
+                groups[0].label,
+                if scope == SourceScope::User {
+                    "Built-in"
+                } else {
+                    "Built-in (project override)"
+                }
+            );
             let row = &groups[0].subgroups[0].items[0];
             assert_eq!(row.display_name, "task");
             assert_eq!(row.path, item.path);
@@ -1530,7 +1725,10 @@ mod tests {
             list.toggle_top_level_resource(&item, enabled);
 
             // Then settings contain one signed native ID without changing other entries.
-            assert_eq!(list.settings.get_global_settings()["extensions"], serde_json::json!(["other", expected]));
+            assert_eq!(
+                list.settings.get_global_settings()["extensions"],
+                serde_json::json!(["other", expected])
+            );
         }
     }
 
@@ -1538,8 +1736,14 @@ mod tests {
     fn project_builtin_overrides_never_insert_an_inherited_load_path() {
         for scope in [SourceScope::User, SourceScope::Project] {
             for (state, expected) in [
-                (ProjectOverrideState::Load, serde_json::json!(["other", "+builtin:task"])),
-                (ProjectOverrideState::Unload, serde_json::json!(["other", "-builtin:task"])),
+                (
+                    ProjectOverrideState::Load,
+                    serde_json::json!(["other", "+builtin:task"]),
+                ),
+                (
+                    ProjectOverrideState::Unload,
+                    serde_json::json!(["other", "-builtin:task"]),
+                ),
                 (ProjectOverrideState::Inherit, serde_json::json!(["other"])),
             ] {
                 // Given an inherited builtin and previously written signed project overrides.
@@ -1549,14 +1753,18 @@ mod tests {
                     project: serde_json::json!({"extensions": ["other", "+builtin:task", "-builtin:task"]}),
                 };
                 let mut list = list(settings, ConfigWriteScope::Project);
-                list.inherited_enabled_by_key.insert(resource_item_key(&item), true);
+                list.inherited_enabled_by_key
+                    .insert(resource_item_key(&item), true);
 
                 // When the selector writes the chosen project override state.
                 assert!(list.set_project_resource_override(&item, state));
 
                 // Then only the signed override is written, or all target overrides are removed.
                 assert_eq!(list.settings.get_project_settings()["extensions"], expected);
-                assert_eq!(list.settings.get_global_settings()["extensions"], serde_json::json!(["-builtin:other"]));
+                assert_eq!(
+                    list.settings.get_global_settings()["extensions"],
+                    serde_json::json!(["-builtin:other"])
+                );
                 assert_eq!(list.get_project_override_state(&item), state);
             }
         }
@@ -1574,8 +1782,9 @@ mod tests {
         assert!(list.set_project_resource_override(&item, ProjectOverrideState::Unload));
 
         // Then filesystem resource discovery retains the plain inherited path.
-        assert_eq!(list.settings.get_project_settings()["extensions"], serde_json::json!([
-            "/agent/extensions/task.rs", "-/agent/extensions/task.rs"
-        ]));
+        assert_eq!(
+            list.settings.get_project_settings()["extensions"],
+            serde_json::json!(["/agent/extensions/task.rs", "-/agent/extensions/task.rs"])
+        );
     }
 }

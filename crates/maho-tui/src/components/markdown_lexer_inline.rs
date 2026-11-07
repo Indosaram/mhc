@@ -4,10 +4,10 @@
 
 use std::sync::LazyLock;
 
-use super::markdown_helpers::{find_closing_bracket, normalize_label, rtrim, Captures, Rule};
+use super::markdown_helpers::{Captures, Rule, find_closing_bracket, normalize_label, rtrim};
 use super::markdown_lexer::{
-    drop_utf16, find_inline_math, find_malformed_inline_span, is_likely_literal_dollar_body,
-    is_word_character, latex_token, repeated_malformed_openers, slice_utf16, utf16_len, Lexer,
+    Lexer, drop_utf16, find_inline_math, find_malformed_inline_span, is_likely_literal_dollar_body,
+    is_word_character, latex_token, repeated_malformed_openers, slice_utf16, utf16_len,
 };
 use super::markdown_rules as rules;
 use super::markdown_token::{Inline, Token};
@@ -20,10 +20,13 @@ static R_TAG: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_TAG, "")
 static R_LINK: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_LINK, ""));
 static R_REFLINK: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_REFLINK, ""));
 static R_NOLINK: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_NOLINK, ""));
-static R_REFLINK_SEARCH: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_REFLINKSEARCH, "g"));
-static R_ANY_PUNCTUATION: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_ANYPUNCTUATION, "gu"));
+static R_REFLINK_SEARCH: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::INLINE_REFLINKSEARCH, "g"));
+static R_ANY_PUNCTUATION: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::INLINE_ANYPUNCTUATION, "gu"));
 static R_BLOCK_SKIP: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_BLOCKSKIP, "g"));
-static R_EM_STRONG_LDELIM: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_EMSTRONGLDELIM, "u"));
+static R_EM_STRONG_LDELIM: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::INLINE_EMSTRONGLDELIM, "u"));
 static R_EM_STRONG_RDELIM_AST: LazyLock<Rule> =
     LazyLock::new(|| Rule::new(rules::INLINE_EMSTRONGRDELIMAST, "gu"));
 static R_EM_STRONG_RDELIM_UND: LazyLock<Rule> =
@@ -41,11 +44,15 @@ static R_END_PRE_SCRIPT: LazyLock<Rule> =
     LazyLock::new(|| Rule::new(r"^</(pre|code|kbd|script)(\s|>)", "i"));
 static R_START_ANGLE: LazyLock<Rule> = LazyLock::new(|| Rule::new(r"^<", ""));
 static R_END_ANGLE: LazyLock<Rule> = LazyLock::new(|| Rule::new(r">$", ""));
-static R_MULTIPLE_SPACE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::OTHER_MULTIPLESPACEGLOBAL, "g"));
-static R_STARTING_SPACE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::OTHER_STARTINGSPACECHAR, ""));
-static R_ENDING_SPACE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::OTHER_ENDINGSPACECHAR, ""));
+static R_MULTIPLE_SPACE: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::OTHER_MULTIPLESPACEGLOBAL, "g"));
+static R_STARTING_SPACE: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::OTHER_STARTINGSPACECHAR, ""));
+static R_ENDING_SPACE: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::OTHER_ENDINGSPACECHAR, ""));
 static R_NON_SPACE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::OTHER_NONSPACECHAR, ""));
-static R_NEWLINE_CHAR: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::OTHER_NEWLINECHARGLOBAL, "g"));
+static R_NEWLINE_CHAR: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(rules::OTHER_NEWLINECHARGLOBAL, "g"));
 static R_OUTPUT_LINK_REPLACE: LazyLock<Rule> =
     LazyLock::new(|| Rule::new(rules::OTHER_OUTPUTLINKREPLACE, "g"));
 
@@ -59,7 +66,8 @@ static R_STRICT_STRIKETHROUGH: LazyLock<Rule> = LazyLock::new(|| {
 static R_INLINE_LATEX_START: LazyLock<Rule> = LazyLock::new(|| Rule::new(r"\$|\\[()\[\]]", ""));
 static R_CODE_SPAN_LITERAL: LazyLock<Rule> =
     LazyLock::new(|| Rule::new(r"^(?:\${1,2}|\\\(|\\\)|\\\[|\\\])", ""));
-static R_LATEX_LITERAL: LazyLock<Rule> = LazyLock::new(|| Rule::new(r"^(?:\\\(|\\\)|\\\[|\\\])", ""));
+static R_LATEX_LITERAL: LazyLock<Rule> =
+    LazyLock::new(|| Rule::new(r"^(?:\\\(|\\\)|\\\[|\\\])", ""));
 
 #[derive(Debug, Clone, Default)]
 pub struct InlinePrefixState {
@@ -69,7 +77,9 @@ pub struct InlinePrefixState {
 }
 
 fn previous_raw_character(tokens: &[Token]) -> Option<char> {
-    tokens.last().and_then(|token| token.raw().chars().next_back())
+    tokens
+        .last()
+        .and_then(|token| token.raw().chars().next_back())
 }
 
 fn first_character(value: &str) -> Option<char> {
@@ -116,9 +126,10 @@ impl Lexer {
             }
             let found = find_inline_math(src, "$", "$");
             if let Some((raw, text)) = &found
-                && is_likely_literal_dollar_body(text) {
-                    return Some(latex_token("latex_literal", raw, raw));
-                }
+                && is_likely_literal_dollar_body(text)
+            {
+                return Some(latex_token("latex_literal", raw, raw));
+            }
             let previous = previous_raw_character(tokens);
             let next = found
                 .as_ref()
@@ -193,11 +204,21 @@ impl Lexer {
             if matched.starts_with('!') {
                 continue;
             }
-            let label = slice_utf16(matched, utf16_len(&matched[..ref_start]) + 1, utf16_len(matched).saturating_sub(1));
+            let label = slice_utf16(
+                matched,
+                utf16_len(&matched[..ref_start]) + 1,
+                utf16_len(matched).saturating_sub(1),
+            );
             if !self.links.contains_key(&normalize_label(label)) {
                 continue;
             }
-            if ref_start > 1 && !self.link_in_text(slice_utf16(matched, 1, utf16_len(&matched[..ref_start]) - 1)) {
+            if ref_start > 1
+                && !self.link_in_text(slice_utf16(
+                    matched,
+                    1,
+                    utf16_len(&matched[..ref_start]) - 1,
+                ))
+            {
                 continue;
             }
             return true;
@@ -254,10 +275,7 @@ impl Lexer {
         masked = replace_with_length(&masked, &R_ANY_PUNCTUATION, |_| None);
         masked = replace_with_length(&masked, &R_BLOCK_SKIP, |captures| {
             let matched = captures.whole();
-            let offset = captures
-                .group(2)
-                .map(utf16_len)
-                .unwrap_or(0);
+            let offset = captures.group(2).map(utf16_len).unwrap_or(0);
             Some(format!(
                 "{}{}{}]",
                 slice_utf16(matched, 0, offset),
@@ -320,8 +338,14 @@ impl Lexer {
                 let mergeable = matches!(token, Token::Text { .. })
                     && matches!(tokens.last(), Some(Token::Text { .. }));
                 if mergeable {
-                    if let (Some(Token::Text { raw: lraw, text: ltext, .. }), Token::Text { raw, text, .. }) =
-                        (tokens.last_mut(), &token)
+                    if let (
+                        Some(Token::Text {
+                            raw: lraw,
+                            text: ltext,
+                            ..
+                        }),
+                        Token::Text { raw, text, .. },
+                    ) = (tokens.last_mut(), &token)
                     {
                         lraw.push_str(raw);
                         ltext.push_str(text);
@@ -363,24 +387,35 @@ impl Lexer {
             }
 
             if !self.state.in_link
-                && let Some(token) = self.tokenizer_url(&src) {
-                    src = drop_utf16(&src, utf16_len(token.raw())).to_string();
-                    push_inline(tokens, token);
-                    continue;
-                }
+                && let Some(token) = self.tokenizer_url(&src)
+            {
+                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+                push_inline(tokens, token);
+                continue;
+            }
 
             let cut_src = clip_to_inline_extension(&src);
             if let Some(token) = self.tokenizer_inline_text(cut_src) {
                 let raw = token.raw().to_string();
                 src = drop_utf16(&src, utf16_len(&raw)).to_string();
                 if !raw.ends_with('_') {
-                    prev_char = raw.chars().next_back().map(String::from).unwrap_or_default();
+                    prev_char = raw
+                        .chars()
+                        .next_back()
+                        .map(String::from)
+                        .unwrap_or_default();
                 }
                 keep_prev_char = true;
                 let mergeable = matches!(tokens.last(), Some(Token::Text { .. }));
                 if mergeable {
-                    if let (Some(Token::Text { raw: lraw, text: ltext, .. }), Token::Text { raw, text, .. }) =
-                        (tokens.last_mut(), &token)
+                    if let (
+                        Some(Token::Text {
+                            raw: lraw,
+                            text: ltext,
+                            ..
+                        }),
+                        Token::Text { raw, text, .. },
+                    ) = (tokens.last_mut(), &token)
                     {
                         lraw.push_str(raw);
                         ltext.push_str(text);
@@ -431,7 +466,11 @@ impl Lexer {
 
     fn tokenizer_link(&mut self, src: &str) -> Option<Token> {
         let captures = R_LINK.exec(src)?;
-        let label_start = if captures.whole().starts_with('!') { 2 } else { 1 };
+        let label_start = if captures.whole().starts_with('!') {
+            2
+        } else {
+            1
+        };
         if is_label_end_inside_token(src, captures.group_or(1, ""), label_start) {
             return None;
         }
@@ -456,7 +495,11 @@ impl Lexer {
                 return None;
             }
             if last_paren > -1 {
-                let start = if captures.whole().starts_with('!') { 5 } else { 4 };
+                let start = if captures.whole().starts_with('!') {
+                    5
+                } else {
+                    4
+                };
                 let link_len = start + utf16_len(&label) + last_paren as usize;
                 cap2 = slice_utf16(&cap2, 0, last_paren as usize).to_string();
                 raw = slice_utf16(&raw, 0, link_len).trim().to_string();
@@ -484,7 +527,13 @@ impl Lexer {
             R_ANY_PUNCTUATION.replace_all(&title, "$1")
         };
 
-        self.output_link(&label, &href, &title, &raw, captures.whole().starts_with('!'))
+        self.output_link(
+            &label,
+            &href,
+            &title,
+            &raw,
+            captures.whole().starts_with('!'),
+        )
     }
 
     fn output_link(
@@ -520,7 +569,11 @@ impl Lexer {
             self.state.link_emitted = true;
         }
 
-        let title = if title.is_empty() { None } else { Some(title.to_string()) };
+        let title = if title.is_empty() {
+            None
+        } else {
+            Some(title.to_string())
+        };
         if is_image {
             Some(Token::Image {
                 raw: raw.to_string(),
@@ -546,18 +599,29 @@ impl Lexer {
             Some(captures) => (captures, false),
             None => (R_NOLINK.exec(src)?, true),
         };
-        let label_start = if captures.whole().starts_with('!') { 2 } else { 1 };
+        let label_start = if captures.whole().starts_with('!') {
+            2
+        } else {
+            1
+        };
         if is_label_end_inside_token(src, captures.group_or(1, ""), label_start) {
             return None;
         }
         let link_string = if from_nolink {
             captures.group_or(1, "")
         } else {
-            captures.group(2).unwrap_or_else(|| captures.group_or(1, ""))
+            captures
+                .group(2)
+                .unwrap_or_else(|| captures.group_or(1, ""))
         };
         let link_string = R_MULTIPLE_SPACE.replace_all(link_string, " ");
         let Some(link) = self.links.get(&normalize_label(&link_string)).cloned() else {
-            let text = captures.whole().chars().next().map(String::from).unwrap_or_default();
+            let text = captures
+                .whole()
+                .chars()
+                .next()
+                .map(String::from)
+                .unwrap_or_default();
             return Some(Token::Text {
                 raw: text.clone(),
                 text,
@@ -576,7 +640,12 @@ impl Lexer {
         )
     }
 
-    fn tokenizer_em_strong(&mut self, src: &str, masked_src: &str, prev_char: &str) -> Option<Token> {
+    fn tokenizer_em_strong(
+        &mut self,
+        src: &str,
+        masked_src: &str,
+        prev_char: &str,
+    ) -> Option<Token> {
         let captures = R_EM_STRONG_LDELIM.exec(src)?;
         let g1 = captures.group(1).is_some();
         let g2 = captures.group(2).is_some();
@@ -588,7 +657,10 @@ impl Lexer {
         if g4 && !prev_char.is_empty() && is_unicode_alphanumeric(prev_char) {
             return None;
         }
-        let next_char = captures.group(1).or_else(|| captures.group(3)).unwrap_or("");
+        let next_char = captures
+            .group(1)
+            .or_else(|| captures.group(3))
+            .unwrap_or("");
         if next_char.is_empty() || prev_char.is_empty() || R_PUNCTUATION.matches(prev_char) {
             let l_length = utf16_len(captures.whole()) - 1;
             let mut delim_total = l_length as i64;
@@ -600,7 +672,10 @@ impl Lexer {
             } else {
                 &R_EM_STRONG_RDELIM_UND
             };
-            let masked = drop_utf16(masked_src, utf16_len(masked_src).saturating_sub(utf16_len(src)) + l_length);
+            let masked = drop_utf16(
+                masked_src,
+                utf16_len(masked_src).saturating_sub(utf16_len(src)) + l_length,
+            );
 
             let mut cursor = 0usize;
             while let Some(match_captures) = end_rule.exec_from(masked, cursor) {
@@ -618,7 +693,8 @@ impl Lexer {
                     continue;
                 }
                 let r_length = utf16_len(r_delim) as i64;
-                let left_delim = match_captures.group(3).is_some() || match_captures.group(4).is_some();
+                let left_delim =
+                    match_captures.group(3).is_some() || match_captures.group(4).is_some();
                 let either = match_captures.group(5).is_some() || match_captures.group(6).is_some();
                 if left_delim {
                     delim_total += r_length;
@@ -658,7 +734,8 @@ impl Lexer {
                         .unwrap_or_default()
                         .as_str(),
                 );
-                let raw_len = l_length + utf16_len(&masked[..start]) + last_char_length + r_length as usize;
+                let raw_len =
+                    l_length + utf16_len(&masked[..start]) + last_char_length + r_length as usize;
                 let raw = slice_utf16(src, 0, raw_len).to_string();
                 if (l_length.min(r_length as usize)) % 2 == 1 {
                     let text = slice_utf16(&raw, 1, utf16_len(&raw).saturating_sub(1)).to_string();
@@ -669,7 +746,11 @@ impl Lexer {
                         self.inline_slots.push(inner);
                         index
                     });
-                    return Some(Token::Em { raw, text, tokens: slot });
+                    return Some(Token::Em {
+                        raw,
+                        text,
+                        tokens: slot,
+                    });
                 }
                 let text = slice_utf16(&raw, 2, utf16_len(&raw).saturating_sub(2)).to_string();
                 let mut inner = Vec::new();
@@ -679,7 +760,11 @@ impl Lexer {
                     self.inline_slots.push(inner);
                     index
                 });
-                return Some(Token::Strong { raw, text, tokens: slot });
+                return Some(Token::Strong {
+                    raw,
+                    text,
+                    tokens: slot,
+                });
             }
         }
         None
@@ -839,7 +924,8 @@ fn is_label_end_inside_token(src: &str, label: &str, label_start: usize) -> bool
     }
     static R_INLINE_CODE_RULE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_CODE, ""));
     static R_TAG_RULE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_TAG, ""));
-    static R_AUTOLINK_RULE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_AUTOLINK, ""));
+    static R_AUTOLINK_RULE: LazyLock<Rule> =
+        LazyLock::new(|| Rule::new(rules::INLINE_AUTOLINK, ""));
     let chars: Vec<char> = label.chars().collect();
     let mut index = 0usize;
     while index < chars.len() {

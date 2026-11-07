@@ -40,7 +40,11 @@ fn phrase_corpus() -> (Vec<RecallDocument>, Vec<String>) {
         "Dana wants weekly status updates on Friday with the release date first.",
     );
     let noise = [
-        doc("archive/a.md", "updates written", "updates written updates written"),
+        doc(
+            "archive/a.md",
+            "updates written",
+            "updates written updates written",
+        ),
         doc("archive/b.md", "written updates", "written updates written"),
     ];
     let documents = vec![phrase, noise[0].clone(), noise[1].clone()];
@@ -50,18 +54,11 @@ fn phrase_corpus() -> (Vec<RecallDocument>, Vec<String>) {
 
 #[test]
 fn given_a_phrase_match_bm25_ranks_below_lone_word_matches_when_hybrid_selects_then_the_phrase_stays_first()
-{
+ {
     let (documents, queries) = phrase_corpus();
-    let bm25 = select_recall_candidates(
-        &documents,
-        &queries,
-        &options(5, RecallStrategy::Bm25),
-    );
-    let hybrid = select_recall_candidates(
-        &documents,
-        &queries,
-        &options(5, RecallStrategy::Hybrid),
-    );
+    let bm25 = select_recall_candidates(&documents, &queries, &options(5, RecallStrategy::Bm25));
+    let hybrid =
+        select_recall_candidates(&documents, &queries, &options(5, RecallStrategy::Hybrid));
 
     assert_ne!(paths(&bm25).first(), Some(&"people/dana.md".to_string()));
     assert_eq!(paths(&hybrid).first(), Some(&"people/dana.md".to_string()));
@@ -76,11 +73,8 @@ fn given_a_phrase_match_bm25_ranks_below_lone_word_matches_when_hybrid_selects_t
 #[test]
 fn given_the_pinned_phrase_match_when_scores_are_read_then_they_stay_ascending() {
     let (documents, queries) = phrase_corpus();
-    let hybrid = select_recall_candidates(
-        &documents,
-        &queries,
-        &options(5, RecallStrategy::Hybrid),
-    );
+    let hybrid =
+        select_recall_candidates(&documents, &queries, &options(5, RecallStrategy::Hybrid));
     let scores: Vec<f64> = hybrid.iter().map(|candidate| candidate.score).collect();
     let mut sorted = scores.clone();
     sorted.sort_by(|left, right| left.partial_cmp(right).expect("comparable scores"));
@@ -111,31 +105,41 @@ fn given_only_lone_word_queries_when_hybrid_selects_then_fusion_alone_orders_the
 
 #[test]
 fn given_a_korean_phrase_match_when_hybrid_selects_then_fusion_orders_the_notes_instead_of_the_floor()
-{
+ {
     let korean = [
         doc("reference/ko/early.md", "배포 절차", "배포 절차 문서"),
-        doc("reference/ko/rich.md", "절차", "배포할 때 절차를 지키고 배포하면 절차 확인"),
+        doc(
+            "reference/ko/rich.md",
+            "절차",
+            "배포할 때 절차를 지키고 배포하면 절차 확인",
+        ),
     ];
     let korean_queries = queries(&["배포할", "절차를", "\"배포 절차\""]);
-    let bm25 = select_recall_candidates(
-        &korean,
-        &korean_queries,
-        &options(5, RecallStrategy::Bm25),
-    );
+    let bm25 =
+        select_recall_candidates(&korean, &korean_queries, &options(5, RecallStrategy::Bm25));
     let hybrid = select_recall_candidates(
         &korean,
         &korean_queries,
         &options(5, RecallStrategy::Hybrid),
     );
 
-    assert_eq!(paths(&bm25).first(), Some(&"reference/ko/rich.md".to_string()));
-    assert_eq!(paths(&hybrid).first(), Some(&"reference/ko/rich.md".to_string()));
+    assert_eq!(
+        paths(&bm25).first(),
+        Some(&"reference/ko/rich.md".to_string())
+    );
+    assert_eq!(
+        paths(&hybrid).first(),
+        Some(&"reference/ko/rich.md".to_string())
+    );
 }
 
 #[test]
 fn given_no_queries_when_selecting_then_nothing_returns() {
     let documents = [doc("a.md", "alpha", "alpha body")];
-    assert!(select_recall_candidates(&documents, &[], &options(5, RecallStrategy::Substring)).is_empty());
+    assert!(
+        select_recall_candidates(&documents, &[], &options(5, RecallStrategy::Substring))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -154,7 +158,11 @@ fn given_zero_max_items_when_selecting_then_nothing_returns() {
 #[test]
 fn given_a_small_english_corpus_when_substring_selects_then_the_matching_note_is_found() {
     let documents = [
-        doc("notes/a.md", "deploy", "rollback the canary before the release"),
+        doc(
+            "notes/a.md",
+            "deploy",
+            "rollback the canary before the release",
+        ),
         doc("notes/b.md", "unrelated", "nothing to see here"),
     ];
     let selected = select_recall_candidates(
@@ -171,7 +179,9 @@ fn given_a_surfaced_path_when_substring_selects_then_it_is_excluded() {
     let documents = [doc("notes/a.md", "deploy", "rollback the canary")];
     let mut select_options = options(5, RecallStrategy::Substring);
     select_options.surfaced = BTreeSet::from(["notes/a.md".to_string()]);
-    assert!(select_recall_candidates(&documents, &queries(&["canary"]), &select_options).is_empty());
+    assert!(
+        select_recall_candidates(&documents, &queries(&["canary"]), &select_options).is_empty()
+    );
 }
 
 #[test]

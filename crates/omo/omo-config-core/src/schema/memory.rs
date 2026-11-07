@@ -476,10 +476,7 @@ pub fn omo_memory_settings_layer_schema() -> Node {
         optional_field("sync", omo_memory_sync_layer_schema()),
         optional_field("search", omo_memory_search_layer_schema()),
         optional_field("recall", omo_memory_recall_layer_schema()),
-        optional(
-            "project_scope",
-            omo_memory_project_scope_layer_schema(),
-        ),
+        optional("project_scope", omo_memory_project_scope_layer_schema()),
         optional_field("compile_warn_tokens", positive_integer()),
         optional_field("agents", record(omo_memory_agent_overrides_schema())),
     ])

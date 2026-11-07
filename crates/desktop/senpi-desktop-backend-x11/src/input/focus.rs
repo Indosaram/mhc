@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::Window;
 
-use super::X11Input;
 use super::server::InputServer;
+use super::X11Input;
 
 /// How long the window manager gets to honour an activation request.
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(1);

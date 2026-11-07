@@ -17,7 +17,7 @@ pub mod native_reasoning;
 pub mod native_service_tier;
 
 // Helpers several test modules share, declared once so each file compiles once.
-#[path = "native_account/support.rs"]
-pub mod support;
 #[path = "native_account/native_state.rs"]
 pub mod native_state;
+#[path = "native_account/support.rs"]
+pub mod support;

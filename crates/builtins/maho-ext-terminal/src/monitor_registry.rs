@@ -618,7 +618,8 @@ impl MonitorRegistry {
         let expires = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         let wake = watcher.wake();
         #[cfg(test)]
-        self.watcher_errors.insert(id.clone(), watcher.error_injector());
+        self.watcher_errors
+            .insert(id.clone(), watcher.error_injector());
         let watch = tokio::spawn(async move {
             let period =
                 std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);

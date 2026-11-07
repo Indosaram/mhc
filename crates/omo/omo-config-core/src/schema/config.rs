@@ -5,9 +5,7 @@ use crate::internal::validate::{
 };
 use crate::schema::agent::omo_agents_config_schema;
 use crate::schema::category::omo_categories_config_schema;
-use crate::schema::computer::{
-    omo_computer_settings_layer_schema, omo_computer_settings_schema,
-};
+use crate::schema::computer::{omo_computer_settings_layer_schema, omo_computer_settings_schema};
 use crate::schema::format_on_mutation::{
     omo_format_on_mutation_layer_schema, omo_format_on_mutation_schema,
 };
@@ -17,12 +15,12 @@ use crate::schema::git_master::{
 use crate::schema::memory::{omo_memory_settings_layer_schema, omo_memory_settings_schema};
 use crate::schema::model_catalog::{omo_model_catalog_layer_schema, omo_model_catalog_schema};
 use crate::schema::model_pad::omo_model_pad_schema;
-use crate::schema::model_profile::{
-    omo_model_profiles_layer_schema, omo_model_profiles_schema,
-};
+use crate::schema::model_profile::{omo_model_profiles_layer_schema, omo_model_profiles_schema};
 use crate::schema::provenance::omo_provenance_settings_schema;
+use crate::schema::side_panel::{
+    omo_side_panel_settings_layer_schema, omo_side_panel_settings_schema,
+};
 use crate::schema::task::{omo_task_settings_layer_schema, omo_task_settings_schema};
-use crate::schema::side_panel::{omo_side_panel_settings_layer_schema, omo_side_panel_settings_schema};
 use crate::schema::team::{omo_teams_config_layer_schema, omo_teams_config_schema};
 use crate::schema::telemetry::{
     omo_telemetry_settings_layer_schema, omo_telemetry_settings_schema,

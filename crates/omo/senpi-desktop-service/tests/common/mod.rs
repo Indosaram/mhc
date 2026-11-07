@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use senpi_desktop_service::child::{ChildFactory, EngineChild};
 use senpi_desktop_service::rpc_client::DesktopServiceError;
@@ -43,8 +43,8 @@ impl SpawnLog {
             let child_idx = child_counter.fetch_add(1, Ordering::SeqCst);
 
             Box::pin(async move {
-                let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/fake_engine.py");
+                let script_path =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_engine.py");
                 let python_cmd = if cfg!(windows) { "python" } else { "python3" };
                 let mut cmd = Command::new(python_cmd);
                 cmd.arg(&script_path).arg("--stdio");
@@ -80,7 +80,10 @@ impl SpawnLog {
         }
     }
 
-    pub fn notification_tracer(&self, _child_idx: usize) -> senpi_desktop_service::service::NotificationObserver {
+    pub fn notification_tracer(
+        &self,
+        _child_idx: usize,
+    ) -> senpi_desktop_service::service::NotificationObserver {
         let reqs = Arc::clone(&self.requests);
         let notify = Arc::clone(&self.notify);
 
@@ -89,18 +92,19 @@ impl SpawnLog {
                 && let Some(msg) = params.get("message").and_then(Value::as_str)
                 && let Some(rest) = msg.strip_prefix("recv ")
                 && let Ok(req_val) = serde_json::from_str::<Value>(rest)
-                && let Some(req_method) = req_val.get("method").and_then(Value::as_str) {
-                                let wire = WireRequest {
-                                    id: req_val.get("id").and_then(Value::as_u64),
-                                    method: req_method.to_string(),
-                                    params: req_val.get("params").cloned(),
-                                };
-                                let reqs_inner = Arc::clone(&reqs);
-                                let notif_inner = Arc::clone(&notify);
-                                tokio::spawn(async move {
-                                    reqs_inner.lock().await.push(wire);
-                                    notif_inner.notify_waiters();
-                                });
+                && let Some(req_method) = req_val.get("method").and_then(Value::as_str)
+            {
+                let wire = WireRequest {
+                    id: req_val.get("id").and_then(Value::as_u64),
+                    method: req_method.to_string(),
+                    params: req_val.get("params").cloned(),
+                };
+                let reqs_inner = Arc::clone(&reqs);
+                let notif_inner = Arc::clone(&notify);
+                tokio::spawn(async move {
+                    reqs_inner.lock().await.push(wire);
+                    notif_inner.notify_waiters();
+                });
             }
         })
     }
@@ -133,12 +137,18 @@ impl SpawnLog {
 
             let elapsed = start.elapsed();
             if elapsed >= guard_dur {
-                panic!("timed out waiting for {}-th request of method '{}'", n, method);
+                panic!(
+                    "timed out waiting for {}-th request of method '{}'",
+                    n, method
+                );
             }
             let remaining = guard_dur - elapsed;
 
             if timeout(remaining, notified).await.is_err() {
-                panic!("timed out waiting for {}-th request of method '{}'", n, method);
+                panic!(
+                    "timed out waiting for {}-th request of method '{}'",
+                    n, method
+                );
             }
         }
     }

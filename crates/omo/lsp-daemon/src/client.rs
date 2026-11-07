@@ -5,8 +5,8 @@ pub use crate::daemon_client::{
     call_format_via_daemon, call_tool_via_daemon, current_request_context,
 };
 pub use crate::runtime_contract::{
-    DaemonRuntime, DaemonRuntimeDefaults, Env, InvalidRuntimeOverrideError,
-    OMO_LSP_DAEMON_CLI, OMO_LSP_DAEMON_VERSION,
+    DaemonRuntime, DaemonRuntimeDefaults, Env, InvalidRuntimeOverrideError, OMO_LSP_DAEMON_CLI,
+    OMO_LSP_DAEMON_VERSION,
 };
 use crate::runtime_contract::{DaemonRuntimeError, InvalidRuntimeOverrideReason};
 
@@ -69,21 +69,40 @@ mod tests {
             version: "1".to_string(),
         };
         for (path, reason, message) in [
-            (root.path().join("missing"), InvalidRuntimeOverrideReason::CliNotFound,
-             "OMO_LSP_DAEMON_CLI points to a missing file"),
-            (root.path().to_path_buf(), InvalidRuntimeOverrideReason::CliNotFile,
-             "OMO_LSP_DAEMON_CLI must point to a regular file"),
+            (
+                root.path().join("missing"),
+                InvalidRuntimeOverrideReason::CliNotFound,
+                "OMO_LSP_DAEMON_CLI points to a missing file",
+            ),
+            (
+                root.path().to_path_buf(),
+                InvalidRuntimeOverrideReason::CliNotFile,
+                "OMO_LSP_DAEMON_CLI must point to a regular file",
+            ),
         ] {
             let env = Env::from([
-                (OMO_LSP_DAEMON_CLI.to_string(), path.to_string_lossy().into_owned()),
+                (
+                    OMO_LSP_DAEMON_CLI.to_string(),
+                    path.to_string_lossy().into_owned(),
+                ),
                 (OMO_LSP_DAEMON_VERSION.to_string(), "1".to_string()),
             ]);
             let error = resolve_daemon_runtime(&env, &defaults).expect_err("invalid CLI");
-            assert_eq!(error, ClientRuntimeError::Override(InvalidRuntimeOverrideError {
-                reason, message: message.to_string(),
-            }));
+            assert_eq!(
+                error,
+                ClientRuntimeError::Override(InvalidRuntimeOverrideError {
+                    reason,
+                    message: message.to_string(),
+                })
+            );
         }
-        let invalid = DaemonRuntime { version: "../bad".to_string(), ..defaults };
-        assert!(matches!(resolve_daemon_runtime(&Env::new(), &invalid), Err(ClientRuntimeError::Version(_))));
+        let invalid = DaemonRuntime {
+            version: "../bad".to_string(),
+            ..defaults
+        };
+        assert!(matches!(
+            resolve_daemon_runtime(&Env::new(), &invalid),
+            Err(ClientRuntimeError::Version(_))
+        ));
     }
 }

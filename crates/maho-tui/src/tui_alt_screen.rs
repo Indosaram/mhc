@@ -10,30 +10,33 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::alt_screen_search::{
-    get_alt_screen_search_match_key, AltScreenSearchComponent, AltScreenSearchIndex, AltScreenSearchMatch,
-    NavigationButtonStyle,
+    AltScreenSearchComponent, AltScreenSearchIndex, AltScreenSearchMatch, NavigationButtonStyle,
+    get_alt_screen_search_match_key,
 };
 use crate::components::alt_screen_flash::AltScreenFlashContainer;
-use crate::components::scroll_view::{ScrollToOptions, ScrollView, ScrollViewFollow, ScrollViewOptions};
+use crate::components::scroll_view::{
+    ScrollToOptions, ScrollView, ScrollViewFollow, ScrollViewOptions,
+};
 use crate::image_stub::{self, ImageProtocol};
 use crate::keybindings::get_keybindings;
 use crate::layout::{
-    get_layout_boxes_at, get_scroll_view_box, get_scroll_views_at, get_scrollbar_geometry, render_layout_frame,
-    strip_osc133_zone_prefix, LayoutFrame,
+    LayoutFrame, get_layout_boxes_at, get_scroll_view_box, get_scroll_views_at,
+    get_scrollbar_geometry, render_layout_frame, strip_osc133_zone_prefix,
 };
 use crate::mouse_input::{
-    decode_mouse_button, is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, to_tui_mouse_event, MouseTracking,
-    SgrMouseEvent, ToTuiMouseEventExtra, WheelEvent,
+    MouseTracking, SgrMouseEvent, ToTuiMouseEventExtra, WheelEvent, decode_mouse_button,
+    is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, to_tui_mouse_event,
 };
 use crate::terminal::Terminal;
 use crate::tui::{
-    can_receive_keys, composite_tui_line, dispatch_mouse_event, retarget_mouse_event, Component, Container, MouseBlocker,
-    OverlayAnchor, OverlayHandle, OverlayMargin, OverlayOptions, SizeValue, TuiBase, TuiMouseButton, TuiMouseDispatchResult,
-    TuiMouseDispatchTarget, TuiMouseEvent, TuiMouseEventType, CURSOR_MARKER,
+    CURSOR_MARKER, Component, Container, MouseBlocker, OverlayAnchor, OverlayHandle, OverlayMargin,
+    OverlayOptions, SizeValue, TuiBase, TuiMouseButton, TuiMouseDispatchResult,
+    TuiMouseDispatchTarget, TuiMouseEvent, TuiMouseEventType, can_receive_keys, composite_tui_line,
+    dispatch_mouse_event, retarget_mouse_event,
 };
 use crate::utils::{
-    extract_ansi_code, get_grapheme_cell_range, get_osc8_link_at_column, slice_by_column, strip_terminal_sequences,
-    truncate_to_width, visible_width, word_segments,
+    extract_ansi_code, get_grapheme_cell_range, get_osc8_link_at_column, slice_by_column,
+    strip_terminal_sequences, truncate_to_width, visible_width, word_segments,
 };
 
 /// Opens a URL from the transcript (Ctrl+click).
@@ -71,11 +74,18 @@ struct ScreenPoint {
 
 impl From<&SelectionPoint> for ScreenPoint {
     fn from(point: &SelectionPoint) -> Self {
-        Self { row: point.row as i64, col: point.col as i64, boundary: point.boundary }
+        Self {
+            row: point.row as i64,
+            col: point.col as i64,
+            boundary: point.boundary,
+        }
     }
 }
 
-fn same_scroll_view(a: &Option<Rc<RefCell<ScrollView>>>, b: &Option<Rc<RefCell<ScrollView>>>) -> bool {
+fn same_scroll_view(
+    a: &Option<Rc<RefCell<ScrollView>>>,
+    b: &Option<Rc<RefCell<ScrollView>>>,
+) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => Rc::ptr_eq(a, b),
         (None, None) => true,
@@ -84,7 +94,8 @@ fn same_scroll_view(a: &Option<Rc<RefCell<ScrollView>>>, b: &Option<Rc<RefCell<S
 }
 
 pub type CopySelectionHook = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<bool>>;
-pub type CopySelectionHookWithError = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<Result<(), String>>>;
+pub type CopySelectionHookWithError =
+    Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<Result<(), String>>>;
 
 const SELECTION_AUTO_SCROLL_INTERVAL_MS: u64 = 50;
 const COPY_ERROR_FLASH_DURATION_MS: u64 = 5000;
@@ -134,7 +145,10 @@ const WHEEL_REFERENCE_GAP_MS: f64 = 100.0;
 const MAX_AUTO_WHEEL_LINES: f64 = 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WheelScrollLines { Fixed(i64), Auto }
+pub enum WheelScrollLines {
+    Fixed(i64),
+    Auto,
+}
 
 #[derive(Default)]
 pub struct WheelScrollAccelerator {
@@ -147,17 +161,37 @@ pub struct WheelScrollAccelerator {
 
 impl WheelScrollAccelerator {
     fn next(&mut self, direction: i64, now: u64) -> i64 {
-        if let Some(lines) = self.lines { return lines.max(1); }
-        if cfg!(target_os = "macos") && ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|key| std::env::var_os(key).is_some()) { return 1; }
-        let Some(previous) = self.last_time.replace(now) else { self.last_direction = direction; return 1; };
+        if let Some(lines) = self.lines {
+            return lines.max(1);
+        }
+        if cfg!(target_os = "macos")
+            && ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+                .iter()
+                .any(|key| std::env::var_os(key).is_some())
+        {
+            return 1;
+        }
+        let Some(previous) = self.last_time.replace(now) else {
+            self.last_direction = direction;
+            return 1;
+        };
         let gap = now.saturating_sub(previous);
         let same = direction == self.last_direction && gap <= WHEEL_GESTURE_GAP_MS;
         self.last_direction = direction;
-        if !same { self.average_gap = None; self.carry = 0.0; return 1; }
-        if gap < WHEEL_BURST_GAP_MS { return 1; }
-        let average = self.average_gap.map_or(gap as f64, |old| (old + gap as f64) / 2.0);
+        if !same {
+            self.average_gap = None;
+            self.carry = 0.0;
+            return 1;
+        }
+        if gap < WHEEL_BURST_GAP_MS {
+            return 1;
+        }
+        let average = self
+            .average_gap
+            .map_or(gap as f64, |old| (old + gap as f64) / 2.0);
         self.average_gap = Some(average);
-        let value = (WHEEL_REFERENCE_GAP_MS / average).clamp(1.0, MAX_AUTO_WHEEL_LINES) + self.carry;
+        let value =
+            (WHEEL_REFERENCE_GAP_MS / average).clamp(1.0, MAX_AUTO_WHEEL_LINES) + self.carry;
         let whole = value.floor() as i64;
         self.carry = value - whole as f64;
         whole
@@ -310,8 +344,12 @@ type SearchHighlightRanges = (usize, Vec<(usize, usize, bool)>);
 /// a `tmux*`/`screen*` `TERM`) get button-motion tracking because forwarding every pointer
 /// movement lags there.
 pub fn prefers_button_motion_mouse() -> bool {
-    let term = crate::process_env::var("TERM").unwrap_or_default().to_lowercase();
-    ["TMUX", "ZELLIJ", "STY"].iter().any(|name| crate::process_env::var(name).is_some())
+    let term = crate::process_env::var("TERM")
+        .unwrap_or_default()
+        .to_lowercase();
+    ["TMUX", "ZELLIJ", "STY"]
+        .iter()
+        .any(|name| crate::process_env::var(name).is_some())
         || term.starts_with("tmux")
         || term.starts_with("screen")
 }
@@ -325,7 +363,11 @@ impl TuiAltScreen {
         let implicit_document = Rc::new(RefCell::new(Container::new()));
         let implicit_scroll_view = ScrollView::new(
             Rc::clone(&implicit_document) as Rc<RefCell<dyn Component>>,
-            ScrollViewOptions { follow: ScrollViewFollow::End, primary: true, ..Default::default() },
+            ScrollViewOptions {
+                follow: ScrollViewFollow::End,
+                primary: true,
+                ..Default::default()
+            },
         );
         Self {
             base,
@@ -412,7 +454,12 @@ impl TuiAltScreen {
         self.base.request_render(false, 0);
     }
 
-    pub fn apply_mouse_tracking(&mut self, enabled: bool, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn apply_mouse_tracking(
+        &mut self,
+        enabled: bool,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         let supported = support.is_tty && !support.is_termux && !support.is_windows_without_wt;
         let stopped = self.base.state.borrow().stopped;
         let next = enabled && supported && !stopped;
@@ -420,7 +467,11 @@ impl TuiAltScreen {
             return;
         }
         self.tracking_enabled = next;
-        terminal.write(if next { MouseTracking::ALL_MOTION } else { MouseTracking::DISABLE });
+        terminal.write(if next {
+            MouseTracking::ALL_MOTION
+        } else {
+            MouseTracking::DISABLE
+        });
     }
 
     /// senpi's `beforeTerminalStop`: close search, drop transient gesture state, and hand the
@@ -445,7 +496,12 @@ impl TuiAltScreen {
         self.uploaded_kitty_images.clear();
     }
 
-    pub fn acquire_mouse_capture(&mut self, reason: impl Into<String>, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn acquire_mouse_capture(
+        &mut self,
+        reason: impl Into<String>,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         let (token, should_apply) = self.base.acquire_mouse_capture(reason);
         self.mouse_capture_token = Some(token);
         if should_apply {
@@ -454,7 +510,11 @@ impl TuiAltScreen {
         }
     }
 
-    pub fn release_mouse_capture(&mut self, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn release_mouse_capture(
+        &mut self,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         let Some(token) = self.mouse_capture_token.take() else {
             return;
         };
@@ -463,7 +523,13 @@ impl TuiAltScreen {
         }
     }
 
-    pub fn set_mouse_blocker(&mut self, name: MouseBlocker, on: bool, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn set_mouse_blocker(
+        &mut self,
+        name: MouseBlocker,
+        on: bool,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         if self.base.set_mouse_blocker(name, on) {
             let enabled = self.base.mouse_capture_enabled();
             self.apply_mouse_tracking(enabled, support, terminal);
@@ -508,7 +574,11 @@ impl TuiAltScreen {
         self.set_scrollbar_hover(None, 0);
     }
 
-    fn get_scrollbar_target_at(&self, x: i64, y: i64) -> Option<(Rc<RefCell<ScrollView>>, crate::layout::ScrollbarGeometry)> {
+    fn get_scrollbar_target_at(
+        &self,
+        x: i64,
+        y: i64,
+    ) -> Option<(Rc<RefCell<ScrollView>>, crate::layout::ScrollbarGeometry)> {
         let frame = self.current_layout.as_ref()?;
         if self.base.has_overlay() {
             return None;
@@ -520,7 +590,10 @@ impl TuiAltScreen {
             let Some(geometry) = get_scrollbar_geometry(boxed, true) else {
                 continue;
             };
-            if x == geometry.column && y >= geometry.track_top && y < geometry.track_top + geometry.track_height as i64 {
+            if x == geometry.column
+                && y >= geometry.track_top
+                && y < geometry.track_top + geometry.track_height as i64
+            {
                 return Some((scroll_view, geometry));
             }
         }
@@ -556,7 +629,9 @@ impl TuiAltScreen {
             .collect();
         screen = self.apply_search_highlights(screen, &next_layout);
         screen = self.composite_scroll_to_end_indicator(screen, &next_layout, width);
-        screen = self.base.composite_overlays(screen, terminal.columns(), terminal.rows());
+        screen = self
+            .base
+            .composite_overlays(screen, terminal.columns(), terminal.rows());
         if screen.len() > height {
             let excess = screen.len() - height;
             screen.drain(0..excess);
@@ -581,26 +656,33 @@ impl TuiAltScreen {
             || self.previous_screen_width != width
             || self.previous_screen_height != height;
         let images_need_redraw = screen.iter().enumerate().any(|(row, line)| {
-            let previous = self.previous_screen.get(row).map(String::as_str).unwrap_or("");
-            line != previous && (image_stub::is_image_line(line) || image_stub::is_image_line(previous))
+            let previous = self
+                .previous_screen
+                .get(row)
+                .map(String::as_str)
+                .unwrap_or("");
+            line != previous
+                && (image_stub::is_image_line(line) || image_stub::is_image_line(previous))
         });
 
         let redraw_images = full_redraw || images_need_redraw;
         let had_uploaded_kitty_images = !self.uploaded_kitty_images.is_empty();
-        let (prepared_lines, evicted_image_deletion) = if redraw_images && self.image_protocol == ImageProtocol::Kitty {
-            self.prepare_kitty_screen(&screen)
-        } else {
-            (screen.clone(), String::new())
-        };
+        let (prepared_lines, evicted_image_deletion) =
+            if redraw_images && self.image_protocol == ImageProtocol::Kitty {
+                self.prepare_kitty_screen(&screen)
+            } else {
+                (screen.clone(), String::new())
+            };
 
         let mut buffer = String::from(BEGIN_SYNCHRONIZED_OUTPUT);
         if full_redraw {
             self.full_redraw_count += 1;
-            let clear_images = if self.image_protocol == ImageProtocol::Kitty && had_uploaded_kitty_images {
-                DELETE_ALL_KITTY_PLACEMENTS.to_string()
-            } else {
-                self.delete_alt_screen_kitty_images()
-            };
+            let clear_images =
+                if self.image_protocol == ImageProtocol::Kitty && had_uploaded_kitty_images {
+                    DELETE_ALL_KITTY_PLACEMENTS.to_string()
+                } else {
+                    self.delete_alt_screen_kitty_images()
+                };
             buffer.push_str(&clear_images);
             buffer.push_str("\x1b[2J");
         } else if images_need_redraw {
@@ -614,7 +696,11 @@ impl TuiAltScreen {
 
         for row in 0..height {
             let line = screen.get(row).map(String::as_str).unwrap_or("");
-            let previous = self.previous_screen.get(row).map(String::as_str).unwrap_or("");
+            let previous = self
+                .previous_screen
+                .get(row)
+                .map(String::as_str)
+                .unwrap_or("");
             if !full_redraw && !images_need_redraw && line == previous {
                 continue;
             }
@@ -624,7 +710,11 @@ impl TuiAltScreen {
 
         if let Some((row, col)) = cursor_pos {
             buffer.push_str(&format!("\x1b[{};{}H", row + 1, col.min(width) + 1));
-            buffer.push_str(if self.base.get_show_hardware_cursor() { "\x1b[?25h" } else { "\x1b[?25l" });
+            buffer.push_str(if self.base.get_show_hardware_cursor() {
+                "\x1b[?25h"
+            } else {
+                "\x1b[?25l"
+            });
         } else {
             buffer.push_str("\x1b[?25l");
         }
@@ -639,7 +729,12 @@ impl TuiAltScreen {
 
     /// senpi's `beforeTerminalStart`: enter the alternate screen, disable autowrap, enable mouse
     /// reporting, clear, and reset the diff state.
-    pub fn before_terminal_start(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool, multiplexer: bool) {
+    pub fn before_terminal_start(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        mouse_enabled: bool,
+        multiplexer: bool,
+    ) {
         self.clear_text_selection();
         self.last_click = None;
         self.clear_component_mouse_gesture();
@@ -655,11 +750,18 @@ impl TuiAltScreen {
         // screen they break the viewport, so senpi disables them until the alt screen is left.
         if capabilities.images == Some(crate::terminal_capabilities::ImageProtocol::Iterm2) {
             self.saved_capabilities = Some(capabilities);
-            crate::terminal_image::set_capabilities(crate::terminal_image::TerminalCapabilities { images: None, ..capabilities });
+            crate::terminal_image::set_capabilities(crate::terminal_image::TerminalCapabilities {
+                images: None,
+                ..capabilities
+            });
             self.base.invalidate();
         }
         self.reset_render_state();
-        let mouse_sequence = if multiplexer { ENABLE_BUTTON_MOTION_MOUSE } else { ENABLE_ALL_MOTION_MOUSE };
+        let mouse_sequence = if multiplexer {
+            ENABLE_BUTTON_MOTION_MOUSE
+        } else {
+            ENABLE_ALL_MOTION_MOUSE
+        };
         terminal.write(&format!(
             "{ENTER_ALT_SCREEN}{DISABLE_AUTOWRAP}{}\x1b[2J\x1b[H\x1b[?25l",
             if mouse_enabled { mouse_sequence } else { "" }
@@ -674,7 +776,9 @@ impl TuiAltScreen {
         }
         self.alt_screen_active = false;
         if preserve_screen {
-            terminal.write(&format!("{BEGIN_SYNCHRONIZED_OUTPUT}{EXIT_ALT_SCREEN}\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"));
+            terminal.write(&format!(
+                "{BEGIN_SYNCHRONIZED_OUTPUT}{EXIT_ALT_SCREEN}\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"
+            ));
         } else {
             self.write_last_document(terminal);
         }
@@ -693,8 +797,13 @@ impl TuiAltScreen {
             .iter()
             .map(|line| strip_osc133_zone_prefix(line).to_string())
             .collect();
-        let without_cursor: Vec<String> = document_lines.iter().map(|line| line.replace(CURSOR_MARKER, "")).collect();
-        let normalized = TuiBase::apply_line_reset_result(&mut self.base.state.borrow_mut(), &without_cursor).lines;
+        let without_cursor: Vec<String> = document_lines
+            .iter()
+            .map(|line| line.replace(CURSOR_MARKER, ""))
+            .collect();
+        let normalized =
+            TuiBase::apply_line_reset_result(&mut self.base.state.borrow_mut(), &without_cursor)
+                .lines;
         self.last_document = normalized
             .into_iter()
             .map(|line| {
@@ -712,7 +821,9 @@ impl TuiAltScreen {
             }
             buffer.push_str(&format!("\r\x1b[2K{line}"));
         }
-        buffer.push_str(&format!("\x1b[0m{ENABLE_AUTOWRAP}\r\n\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"));
+        buffer.push_str(&format!(
+            "\x1b[0m{ENABLE_AUTOWRAP}\r\n\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"
+        ));
         terminal.write(&buffer);
     }
 
@@ -777,12 +888,16 @@ impl TuiAltScreen {
     }
 
     pub fn scroll_by(&mut self, lines: i64) {
-        self.get_primary_scroll_view().borrow_mut().scroll_by(lines, 0);
+        self.get_primary_scroll_view()
+            .borrow_mut()
+            .scroll_by(lines, 0);
         self.base.request_render(false, 0);
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.get_primary_scroll_view().borrow_mut().scroll_to_start(0);
+        self.get_primary_scroll_view()
+            .borrow_mut()
+            .scroll_to_start(0);
         self.base.request_render(false, 0);
     }
 
@@ -798,7 +913,9 @@ impl TuiAltScreen {
             return;
         };
         let scroll_view = self.get_primary_scroll_view();
-        let Some(lines) = get_scroll_view_box(frame, &scroll_view).and_then(|boxed| boxed.scroll_content_lines.as_ref()) else {
+        let Some(lines) = get_scroll_view_box(frame, &scroll_view)
+            .and_then(|boxed| boxed.scroll_content_lines.as_ref())
+        else {
             return;
         };
         let mut row = scroll_view.borrow().scroll_top() as i64 + direction;
@@ -811,7 +928,9 @@ impl TuiAltScreen {
             row += direction;
         }
         if let Some(target) = target {
-            scroll_view.borrow_mut().scroll_to(target, Default::default(), 0);
+            scroll_view
+                .borrow_mut()
+                .scroll_to(target, Default::default(), 0);
             self.base.request_render(false, 0);
         }
     }
@@ -833,7 +952,11 @@ impl TuiAltScreen {
     }
 
     fn apply_search_text_highlight(&self, text: &str, current: bool) -> String {
-        let style = if current { &self.search_current_match_style } else { &self.search_match_style };
+        let style = if current {
+            &self.search_current_match_style
+        } else {
+            &self.search_match_style
+        };
         let mut result = String::new();
         let mut plain_start = 0;
         let mut index = 0;
@@ -863,21 +986,30 @@ impl TuiAltScreen {
         current_match_style: Option<MatchStyleFn>,
         navigation_button_style: Option<NavigationButtonStyle>,
     ) {
-        self.search_match_style = match_style.unwrap_or_else(|| Rc::new(default_search_match_style));
-        self.search_current_match_style = current_match_style.unwrap_or_else(|| Rc::new(default_search_current_match_style));
-        self.search_navigation_button_style =
-            navigation_button_style.unwrap_or_else(|| Rc::new(|text: &str, _hovered: bool| text.to_string()));
+        self.search_match_style =
+            match_style.unwrap_or_else(|| Rc::new(default_search_match_style));
+        self.search_current_match_style =
+            current_match_style.unwrap_or_else(|| Rc::new(default_search_current_match_style));
+        self.search_navigation_button_style = navigation_button_style
+            .unwrap_or_else(|| Rc::new(|text: &str, _hovered: bool| text.to_string()));
     }
 
     /// senpi's `applySearchHighlights`: underline every visible match and reverse the current one.
-    fn apply_search_highlights(&mut self, screen: Vec<String>, layout: &LayoutFrame) -> Vec<String> {
+    fn apply_search_highlights(
+        &mut self,
+        screen: Vec<String>,
+        layout: &LayoutFrame,
+    ) -> Vec<String> {
         let Some(search) = self.active_search.as_ref() else {
             return screen;
         };
         if search.selected_index < 0 || search.matches.is_empty() {
             return screen;
         }
-        let scroll_view = layout.primary_scroll_view.clone().unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
+        let scroll_view = layout
+            .primary_scroll_view
+            .clone()
+            .unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
         let Some(boxed) = get_scroll_view_box(layout, &scroll_view) else {
             return screen;
         };
@@ -895,12 +1027,23 @@ impl TuiAltScreen {
         let min_content_row = scroll_top + min_row - boxed.rect.y;
         let max_content_row = scroll_top + max_row - boxed.rect.y - 1;
         let first_visible = search.matches.partition_point(|search_match| {
-            search_match.segments.last().map(|segment| segment.row as i64).unwrap_or(-1) < min_content_row
+            search_match
+                .segments
+                .last()
+                .map(|segment| segment.row as i64)
+                .unwrap_or(-1)
+                < min_content_row
         });
 
         let mut ranges_by_row: Vec<SearchHighlightRanges> = Vec::new();
         for (match_index, search_match) in search.matches.iter().enumerate().skip(first_visible) {
-            if search_match.segments.first().map(|segment| segment.row as i64).unwrap_or(0) > max_content_row {
+            if search_match
+                .segments
+                .first()
+                .map(|segment| segment.row as i64)
+                .unwrap_or(0)
+                > max_content_row
+            {
                 break;
             }
             for segment in &search_match.segments {
@@ -914,8 +1057,15 @@ impl TuiAltScreen {
                     continue;
                 }
                 let row = row as usize;
-                let range = (start_col as usize, end_col as usize, match_index as i64 == search.selected_index);
-                match ranges_by_row.iter_mut().find(|(candidate, _)| *candidate == row) {
+                let range = (
+                    start_col as usize,
+                    end_col as usize,
+                    match_index as i64 == search.selected_index,
+                );
+                match ranges_by_row
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == row)
+                {
                     Some((_, ranges)) => ranges.push(range),
                     None => ranges_by_row.push((row, vec![range])),
                 }
@@ -941,8 +1091,12 @@ impl TuiAltScreen {
                 }
                 let before = slice_by_column(&line, 0, start_col, true);
                 let highlighted = slice_by_column(&line, start_col, end_col - start_col, true);
-                let after = slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
-                line = format!("{before}{}{after}", self.apply_search_text_highlight(&highlighted, current));
+                let after =
+                    slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
+                line = format!(
+                    "{before}{}{after}",
+                    self.apply_search_text_highlight(&highlighted, current)
+                );
             }
             result[row] = line;
         }
@@ -950,12 +1104,20 @@ impl TuiAltScreen {
     }
 
     /// senpi's `compositeScrollToEndIndicator`; records the pill's rect for click handling.
-    fn composite_scroll_to_end_indicator(&mut self, screen: Vec<String>, layout: &LayoutFrame, width: usize) -> Vec<String> {
+    fn composite_scroll_to_end_indicator(
+        &mut self,
+        screen: Vec<String>,
+        layout: &LayoutFrame,
+        width: usize,
+    ) -> Vec<String> {
         self.scroll_to_end_indicator_rect = None;
         let Some(indicator) = self.scroll_to_end_indicator.clone() else {
             return screen;
         };
-        let scroll_view = layout.primary_scroll_view.clone().unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
+        let scroll_view = layout
+            .primary_scroll_view
+            .clone()
+            .unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
         if !scroll_view.borrow().follows_end() || scroll_view.borrow().is_following_end() {
             return screen;
         }
@@ -967,7 +1129,10 @@ impl TuiAltScreen {
             return screen;
         }
         let row = clip.y + clip.height as i64 - 1;
-        if row < 0 || row as usize >= screen.len() || image_stub::is_image_line(&screen[row as usize]) {
+        if row < 0
+            || row as usize >= screen.len()
+            || image_stub::is_image_line(&screen[row as usize])
+        {
             return screen;
         }
         let scrollbar_column = get_scrollbar_geometry(boxed, false).map(|geometry| geometry.column);
@@ -984,7 +1149,8 @@ impl TuiAltScreen {
         }
         let mut result = screen;
         let base = result[row as usize].clone();
-        result[row as usize] = composite_tui_line(&base, &text, column.max(0) as usize, text_width, width);
+        result[row as usize] =
+            composite_tui_line(&base, &text, column.max(0) as usize, text_width, width);
         self.scroll_to_end_indicator_rect = Some((row, column, text_width as i64));
         result
     }
@@ -993,9 +1159,12 @@ impl TuiAltScreen {
     /// senpi's `handleRightClickPaste`: an unmodified secondary-button press on Windows (outside
     /// VS Code's terminal) pastes the clipboard.
     fn handle_right_click_paste(&mut self, event: &SgrMouseEvent) -> bool {
-        let Some(on_right_click_paste) = self.on_right_click_paste.clone() else { return false; };
+        let Some(on_right_click_paste) = self.on_right_click_paste.clone() else {
+            return false;
+        };
         if !cfg!(windows)
-            || crate::process_env::var("TERM_PROGRAM").is_some_and(|program| program.to_lowercase() == "vscode")
+            || crate::process_env::var("TERM_PROGRAM")
+                .is_some_and(|program| program.to_lowercase() == "vscode")
             || event.release
             || event.button != 2
         {
@@ -1020,7 +1189,12 @@ impl TuiAltScreen {
     }
 
     /// senpi's `compositeFlashes`.
-    fn composite_flashes(&mut self, screen: Vec<String>, width: usize, height: usize) -> Vec<String> {
+    fn composite_flashes(
+        &mut self,
+        screen: Vec<String>,
+        width: usize,
+        height: usize,
+    ) -> Vec<String> {
         let rendered = self.flashes.render(width);
         let flash_lines: Vec<String> = if rendered.len() > height {
             rendered[rendered.len() - height..].to_vec()
@@ -1040,7 +1214,13 @@ impl TuiAltScreen {
                 continue;
             }
             let base = result.get(row).cloned().unwrap_or_default();
-            result[row] = composite_tui_line(&base, line, width.saturating_sub(flash_width), flash_width, width);
+            result[row] = composite_tui_line(
+                &base,
+                line,
+                width.saturating_sub(flash_width),
+                flash_width,
+                width,
+            );
         }
         result
     }
@@ -1067,7 +1247,9 @@ impl TuiAltScreen {
                 .min(boxed.rect.y + boxed.rect.height as i64 - 1)
                 .min(boxed.clip.y + boxed.clip.height as i64 - 1);
             min_column = boxed.rect.x.max(boxed.clip.x).max(0);
-            max_column = columns.min(boxed.rect.x + boxed.rect.width as i64).min(boxed.clip.x + boxed.clip.width as i64);
+            max_column = columns
+                .min(boxed.rect.x + boxed.rect.width as i64)
+                .min(boxed.clip.x + boxed.clip.width as i64);
             let scroll_top = scroll_view.borrow().scroll_top() as i64;
             screen_start.row = boxed.rect.y + start.row as i64 - scroll_top;
             screen_start.col += boxed.rect.x;
@@ -1079,19 +1261,31 @@ impl TuiAltScreen {
             .enumerate()
             .map(|(row, line)| {
                 let row = row as i64;
-                if row < min_row || row > max_row || row < screen_start.row || row > screen_end.row || image_stub::is_image_line(&line) {
+                if row < min_row
+                    || row > max_row
+                    || row < screen_start.row
+                    || row > screen_end.row
+                    || image_stub::is_image_line(&line)
+                {
                     return line;
                 }
                 let line_width = visible_width(&line);
-                let (start_col, end_col) =
-                    get_selection_columns(&line, row, &screen_start, &screen_end, min_column, max_column);
+                let (start_col, end_col) = get_selection_columns(
+                    &line,
+                    row,
+                    &screen_start,
+                    &screen_end,
+                    min_column,
+                    max_column,
+                );
                 if end_col <= start_col {
                     return line;
                 }
                 let (start_col, end_col) = (start_col as usize, end_col as usize);
                 let before = slice_by_column(&line, 0, start_col, true);
                 let selected = slice_by_column(&line, start_col, end_col - start_col, true);
-                let after = slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
+                let after =
+                    slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
                 format!("{before}{}{after}", apply_selection_highlight(&selected))
             })
             .collect()
@@ -1119,7 +1313,12 @@ impl TuiAltScreen {
                 anchor: Some(OverlayAnchor::TopRight),
                 width: Some(SizeValue::Percent(40.0)),
                 min_width: Some(32),
-                margin: Some(OverlayMargin { top: Some(1), right: Some(1), bottom: Some(1), left: Some(1) }),
+                margin: Some(OverlayMargin {
+                    top: Some(1),
+                    right: Some(1),
+                    bottom: Some(1),
+                    left: Some(1),
+                }),
                 ..Default::default()
             }),
         );
@@ -1148,7 +1347,10 @@ impl TuiAltScreen {
 
     /// Applies a query the search component reported through its callback.
     fn apply_pending_search_query(&mut self) {
-        let pending = self.active_search.as_ref().and_then(|search| search.pending_query.borrow_mut().take());
+        let pending = self
+            .active_search
+            .as_ref()
+            .and_then(|search| search.pending_query.borrow_mut().take());
         if let Some(query) = pending {
             self.update_search_query(query);
         }
@@ -1184,7 +1386,11 @@ impl TuiAltScreen {
         if search.query.is_empty() {
             return;
         }
-        search.selection_mode = if direction < 0 { SearchSelectionMode::Previous } else { SearchSelectionMode::Next };
+        search.selection_mode = if direction < 0 {
+            SearchSelectionMode::Previous
+        } else {
+            SearchSelectionMode::Next
+        };
         self.base.request_render(false, 0);
     }
 
@@ -1192,10 +1398,17 @@ impl TuiAltScreen {
     fn get_search_navigation_direction_at(&self, x: i64, y: i64) -> Option<i64> {
         let search = self.active_search.as_ref()?;
         let bounds = search.overlay.get_bounds()?;
-        if x < bounds.col || x >= bounds.col + bounds.width as i64 || y < bounds.row || y >= bounds.row + bounds.height as i64 {
+        if x < bounds.col
+            || x >= bounds.col + bounds.width as i64
+            || y < bounds.row
+            || y >= bounds.row + bounds.height as i64
+        {
             return None;
         }
-        search.component.borrow().get_navigation_direction_at(y - bounds.row, x - bounds.col)
+        search
+            .component
+            .borrow()
+            .get_navigation_direction_at(y - bounds.row, x - bounds.col)
     }
 
     /// senpi's `handleSearchMouseEvent`: hover and click the find bar's prev/next buttons.
@@ -1205,7 +1418,10 @@ impl TuiAltScreen {
         };
         let component = Rc::clone(&search.component);
         let direction = self.get_search_navigation_direction_at(event.x, event.y);
-        if component.borrow_mut().set_hovered_navigation_direction(direction) {
+        if component
+            .borrow_mut()
+            .set_hovered_navigation_direction(direction)
+        {
             self.base.request_render(false, 0);
         }
         let Some(direction) = direction else {
@@ -1222,7 +1438,10 @@ impl TuiAltScreen {
     /// selection for the pending mode, and reveal it. Returns whether the viewport moved, in
     /// which case the caller lays the frame out again.
     fn refresh_search(&mut self, layout: &LayoutFrame) -> bool {
-        let scroll_view = layout.primary_scroll_view.clone().unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
+        let scroll_view = layout
+            .primary_scroll_view
+            .clone()
+            .unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
         let Some(search) = self.active_search.as_mut() else {
             return false;
         };
@@ -1255,7 +1474,11 @@ impl TuiAltScreen {
             search
                 .selected_key
                 .as_ref()
-                .and_then(|key| matches.iter().position(|candidate| &get_alt_screen_search_match_key(candidate) == key))
+                .and_then(|key| {
+                    matches
+                        .iter()
+                        .position(|candidate| &get_alt_screen_search_match_key(candidate) == key)
+                })
                 .map_or(-1, |index| index as i64)
         } else {
             search.selected_index
@@ -1265,29 +1488,59 @@ impl TuiAltScreen {
             selected_index = match search.selection_mode {
                 SearchSelectionMode::Query => {
                     let first_at_anchor = matches.partition_point(|candidate| {
-                        candidate.segments.first().map_or(0, |segment| segment.row) < search.anchor_row
+                        candidate.segments.first().map_or(0, |segment| segment.row)
+                            < search.anchor_row
                     }) as i64;
-                    if first_at_anchor < len { first_at_anchor } else { 0 }
+                    if first_at_anchor < len {
+                        first_at_anchor
+                    } else {
+                        0
+                    }
                 }
                 SearchSelectionMode::Next => {
-                    let base_index = if exact_index >= 0 { exact_index } else { search.selected_index.min(len - 1) };
-                    if base_index < 0 { 0 } else { (base_index + 1) % len }
+                    let base_index = if exact_index >= 0 {
+                        exact_index
+                    } else {
+                        search.selected_index.min(len - 1)
+                    };
+                    if base_index < 0 {
+                        0
+                    } else {
+                        (base_index + 1) % len
+                    }
                 }
                 SearchSelectionMode::Previous => {
-                    let base_index = if exact_index >= 0 { exact_index } else { search.selected_index.min(len - 1) };
-                    if base_index < 0 { len - 1 } else { (base_index - 1 + len) % len }
+                    let base_index = if exact_index >= 0 {
+                        exact_index
+                    } else {
+                        search.selected_index.min(len - 1)
+                    };
+                    if base_index < 0 {
+                        len - 1
+                    } else {
+                        (base_index - 1 + len) % len
+                    }
                 }
                 SearchSelectionMode::Retain => {
-                    if exact_index >= 0 { exact_index } else { search.selected_index.max(0).min(len - 1) }
+                    if exact_index >= 0 {
+                        exact_index
+                    } else {
+                        search.selected_index.max(0).min(len - 1)
+                    }
                 }
             };
         }
 
         search.selected_index = selected_index;
-        let selected = usize::try_from(selected_index).ok().and_then(|index| matches.get(index));
+        let selected = usize::try_from(selected_index)
+            .ok()
+            .and_then(|index| matches.get(index));
         search.selected_key = selected.map(get_alt_screen_search_match_key);
         search.selection_mode = SearchSelectionMode::Retain;
-        search.component.borrow_mut().set_result(selected_index, matches.len());
+        search
+            .component
+            .borrow_mut()
+            .set_result(selected_index, matches.len());
         if !should_reveal_selection {
             return false;
         }
@@ -1307,7 +1560,13 @@ impl TuiAltScreen {
         if first_segment.row < before || last_segment.row > visible_bottom {
             target = first_segment.row as i64 - (viewport_height / 3) as i64;
         }
-        scroll_view.borrow_mut().scroll_to(target, ScrollToOptions { disable_follow: true }, 0);
+        scroll_view.borrow_mut().scroll_to(
+            target,
+            ScrollToOptions {
+                disable_follow: true,
+            },
+            0,
+        );
         scroll_view.borrow().scroll_top() != before
     }
 
@@ -1317,7 +1576,8 @@ impl TuiAltScreen {
     fn handle_focus_input(&mut self, data: &str) -> bool {
         if data == FOCUS_OUT {
             let had_active_selection = self.selection_press_active;
-            let had_non_empty_active_selection = had_active_selection && self.get_selection_bounds().is_some();
+            let had_non_empty_active_selection =
+                had_active_selection && self.get_selection_bounds().is_some();
             self.selection_press_active = false;
             self.stop_scrollbar_hover();
             self.stop_scrollbar_drag();
@@ -1337,7 +1597,12 @@ impl TuiAltScreen {
 
     /// Registered via `TuiBase::add_input_listener` (senpi's `handleViewportInput` mouse half,
     /// preceded by its focus-report branch).
-    pub fn handle_mouse_input(&mut self, data: &str, now_ms: i64, terminal: &mut dyn Terminal) -> bool {
+    pub fn handle_mouse_input(
+        &mut self,
+        data: &str,
+        now_ms: i64,
+        terminal: &mut dyn Terminal,
+    ) -> bool {
         if self.handle_focus_input(data) {
             return true;
         }
@@ -1351,11 +1616,20 @@ impl TuiAltScreen {
                 wheel.button,
                 wheel.x,
                 wheel.y,
-                ToTuiMouseEventExtra { wheel_delta: Some(wheel_delta), click_count: None },
+                ToTuiMouseEventExtra {
+                    wheel_delta: Some(wheel_delta),
+                    click_count: None,
+                },
                 terminal,
             );
             let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&event);
-            let result = overlay_result.or_else(|| if hit { None } else { self.dispatch_mouse_to_layout(&event) });
+            let result = overlay_result.or_else(|| {
+                if hit {
+                    None
+                } else {
+                    self.dispatch_mouse_to_layout(&event)
+                }
+            });
             if let Some(result) = result {
                 if self.apply_mouse_dispatch_result(&event, &result, true) {
                     self.base.request_render(false, 0);
@@ -1382,7 +1656,9 @@ impl TuiAltScreen {
         self.wheel_scroll_accelerator.lines = Some(lines.max(1));
     }
 
-    pub fn set_wheel_scroll_auto(&mut self) { self.wheel_scroll_accelerator.lines = None; }
+    pub fn set_wheel_scroll_auto(&mut self) {
+        self.wheel_scroll_accelerator.lines = None;
+    }
 
     /// senpi's `getWheelScrollLines`: SGR button bit 3 (value 8) is the Alt modifier.
     fn get_wheel_scroll_lines(&mut self, button: i64) -> i64 {
@@ -1406,7 +1682,12 @@ impl TuiAltScreen {
     ) -> TuiMouseEvent {
         to_tui_mouse_event(
             event_type,
-            SgrMouseEvent { button, x, y, release: event_type == TuiMouseEventType::Release },
+            SgrMouseEvent {
+                button,
+                x,
+                y,
+                release: event_type == TuiMouseEventType::Release,
+            },
             terminal.columns() as usize,
             terminal.rows() as usize,
             extra,
@@ -1419,10 +1700,11 @@ impl TuiAltScreen {
     /// their children are visited through their own layout boxes.
     fn dispatch_mouse_to_layout(&self, event: &TuiMouseEvent) -> Option<TuiMouseDispatchResult> {
         let frame = self.current_layout.as_ref()?;
-        let targets: Vec<(Rc<RefCell<dyn Component>>, crate::layout::LayoutRect)> = get_layout_boxes_at(frame, event.screen_x, event.screen_y)
-            .into_iter()
-            .map(|boxed| (Rc::clone(&boxed.component), boxed.rect))
-            .collect();
+        let targets: Vec<(Rc<RefCell<dyn Component>>, crate::layout::LayoutRect)> =
+            get_layout_boxes_at(frame, event.screen_x, event.screen_y)
+                .into_iter()
+                .map(|boxed| (Rc::clone(&boxed.component), boxed.rect))
+                .collect();
         let mut visited: Vec<*const ()> = Vec::new();
         for (component, rect) in targets {
             let key = Rc::as_ptr(&component) as *const ();
@@ -1452,15 +1734,27 @@ impl TuiAltScreen {
     }
 
     /// senpi's `applyMouseDispatchResult`: apply focus and capture, and report whether to render.
-    fn apply_mouse_dispatch_result(&mut self, event: &TuiMouseEvent, result: &TuiMouseDispatchResult, apply_focus: bool) -> bool {
+    fn apply_mouse_dispatch_result(
+        &mut self,
+        event: &TuiMouseEvent,
+        result: &TuiMouseDispatchResult,
+        apply_focus: bool,
+    ) -> bool {
         let focus_target = if apply_focus && result.result.focus {
-            self.base
-                .resolve_mouse_focus_target(result.focus_target.as_ref().unwrap_or(&result.target.component))
+            self.base.resolve_mouse_focus_target(
+                result
+                    .focus_target
+                    .as_ref()
+                    .unwrap_or(&result.target.component),
+            )
         } else {
             None
         };
         let focus_changed = focus_target.as_ref().is_some_and(|target| {
-            !self.base.get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, target))
+            !self
+                .base
+                .get_focused_component()
+                .is_some_and(|focused| Rc::ptr_eq(&focused, target))
         });
         if let Some(target) = focus_target {
             self.base.set_focus(Some(target));
@@ -1472,13 +1766,22 @@ impl TuiAltScreen {
             focus_changed
                 || matches!(
                     event.event_type,
-                    TuiMouseEventType::Press | TuiMouseEventType::Click | TuiMouseEventType::Drag | TuiMouseEventType::Wheel
+                    TuiMouseEventType::Press
+                        | TuiMouseEventType::Click
+                        | TuiMouseEventType::Drag
+                        | TuiMouseEventType::Wheel
                 ),
         )
     }
 
     /// senpi's `getComponentClickCount`: double/triple clicks on the same component cell.
-    fn get_component_click_count(&mut self, target: &TuiMouseDispatchTarget, x: i64, y: i64, now_ms: i64) -> u32 {
+    fn get_component_click_count(
+        &mut self,
+        target: &TuiMouseDispatchTarget,
+        x: i64,
+        y: i64,
+        now_ms: i64,
+    ) -> u32 {
         let count = match &self.last_component_click {
             Some(previous)
                 if now_ms - previous.timestamp_ms <= DOUBLE_CLICK_INTERVAL_MS
@@ -1518,7 +1821,8 @@ impl TuiAltScreen {
         let mut seen: Vec<*const RefCell<ScrollView>> = Vec::new();
         for scroll_view in &scroll_views {
             seen.push(Rc::as_ptr(scroll_view));
-            let contain = scroll_view.borrow().overscroll() == crate::components::scroll_view::Overscroll::Contain;
+            let contain = scroll_view.borrow().overscroll()
+                == crate::components::scroll_view::Overscroll::Contain;
             remaining = scroll_view.borrow_mut().scroll_by(remaining, 0);
             if remaining == 0 || contain {
                 break;
@@ -1533,7 +1837,11 @@ impl TuiAltScreen {
     }
 
     fn update_scrollbar_hover(&mut self, x: i64, y: i64) {
-        self.set_scrollbar_hover(self.get_scrollbar_target_at(x, y).map(|(scroll_view, _)| scroll_view), 0);
+        self.set_scrollbar_hover(
+            self.get_scrollbar_target_at(x, y)
+                .map(|(scroll_view, _)| scroll_view),
+            0,
+        );
     }
 
     /// senpi's `handleMouseEvent`: captured/pressed component gestures (with click synthesis)
@@ -1544,19 +1852,39 @@ impl TuiAltScreen {
         let event_type = if raw.release {
             TuiMouseEventType::Release
         } else if is_motion {
-            if decode_mouse_button(raw.button) == TuiMouseButton::None { TuiMouseEventType::Move } else { TuiMouseEventType::Drag }
+            if decode_mouse_button(raw.button) == TuiMouseButton::None {
+                TuiMouseEventType::Move
+            } else {
+                TuiMouseEventType::Drag
+            }
         } else {
             TuiMouseEventType::Press
         };
-        let event = self.create_mouse_event(event_type, raw.button, raw.x, raw.y, ToTuiMouseEventExtra::default(), terminal);
+        let event = self.create_mouse_event(
+            event_type,
+            raw.button,
+            raw.x,
+            raw.y,
+            ToTuiMouseEventExtra::default(),
+            terminal,
+        );
 
-        if let Some(target) = self.mouse_capture.clone().or_else(|| self.mouse_press_target.clone()) {
-            if self.mouse_press_point.is_some_and(|point| point != (raw.x, raw.y)) {
+        if let Some(target) = self
+            .mouse_capture
+            .clone()
+            .or_else(|| self.mouse_press_target.clone())
+        {
+            if self
+                .mouse_press_point
+                .is_some_and(|point| point != (raw.x, raw.y))
+            {
                 self.mouse_press_moved = true;
                 self.last_component_click = None;
             }
             let mut render = false;
-            if let Some(target_result) = dispatch_mouse_event(&target.component, &retarget_mouse_event(&event, &target)) {
+            if let Some(target_result) =
+                dispatch_mouse_event(&target.component, &retarget_mouse_event(&event, &target))
+            {
                 render = self.apply_mouse_dispatch_result(&event, &target_result, true);
             }
             if raw.release {
@@ -1567,13 +1895,19 @@ impl TuiAltScreen {
                         raw.button,
                         raw.x,
                         raw.y,
-                        ToTuiMouseEventExtra { wheel_delta: None, click_count: Some(click_count) },
+                        ToTuiMouseEventExtra {
+                            wheel_delta: None,
+                            click_count: Some(click_count),
+                        },
                         terminal,
                     );
                     // A click handler that moves focus owns the outcome; only re-apply the click
                     // target's focus when the handler left focus untouched.
                     let focus_before_click = self.base.get_focused_component();
-                    let click_result = dispatch_mouse_event(&target.component, &retarget_mouse_event(&click_event, &target));
+                    let click_result = dispatch_mouse_event(
+                        &target.component,
+                        &retarget_mouse_event(&click_event, &target),
+                    );
                     if let Some(click_result) = click_result {
                         let focus_after_click = self.base.get_focused_component();
                         let keep_handler_focus = match (&focus_before_click, &focus_after_click) {
@@ -1581,7 +1915,11 @@ impl TuiAltScreen {
                             (None, None) => false,
                             _ => true,
                         };
-                        render = self.apply_mouse_dispatch_result(&click_event, &click_result, !keep_handler_focus) || render;
+                        render = self.apply_mouse_dispatch_result(
+                            &click_event,
+                            &click_result,
+                            !keep_handler_focus,
+                        ) || render;
                     }
                 }
                 self.clear_component_mouse_gesture();
@@ -1612,7 +1950,13 @@ impl TuiAltScreen {
             self.stop_scrollbar_hover();
         }
 
-        let result = overlay_result.or_else(|| if hit { None } else { self.dispatch_mouse_to_layout(&event) });
+        let result = overlay_result.or_else(|| {
+            if hit {
+                None
+            } else {
+                self.dispatch_mouse_to_layout(&event)
+            }
+        });
         if let Some(result) = result {
             let render = self.apply_mouse_dispatch_result(&event, &result, true);
             if event_type == TuiMouseEventType::Press {
@@ -1663,19 +2007,32 @@ impl TuiAltScreen {
         self.clear_text_selection();
         self.last_click = None;
         self.set_scrollbar_hover(Some(Rc::clone(&scroll_view)), 0);
-        let on_thumb = event.y >= geometry.thumb_top && event.y < geometry.thumb_top + geometry.thumb_height as i64;
-        let grab_offset = if on_thumb { event.y - geometry.thumb_top } else { (geometry.thumb_height / 2) as i64 };
+        let on_thumb = event.y >= geometry.thumb_top
+            && event.y < geometry.thumb_top + geometry.thumb_height as i64;
+        let grab_offset = if on_thumb {
+            event.y - geometry.thumb_top
+        } else {
+            (geometry.thumb_height / 2) as i64
+        };
         if !on_thumb {
             scroll_scrollbar_to_pointer(&scroll_view, &geometry, event.y, grab_offset);
         }
-        self.scrollbar_drag = Some(ScrollbarDrag { scroll_view, grab_offset });
+        self.scrollbar_drag = Some(ScrollbarDrag {
+            scroll_view,
+            grab_offset,
+        });
         self.base.request_render(false, 0);
         true
     }
 
     /// senpi's `getScrollSelectionPoint`: a content-row point inside `scroll_view`, with the
     /// pointer clamped to the view's visible rows.
-    fn get_scroll_selection_point(&self, scroll_view: &Rc<RefCell<ScrollView>>, x: i64, y: i64) -> Option<SelectionPoint> {
+    fn get_scroll_selection_point(
+        &self,
+        scroll_view: &Rc<RefCell<ScrollView>>,
+        x: i64,
+        y: i64,
+    ) -> Option<SelectionPoint> {
         let frame = self.current_layout.as_ref()?;
         let boxed = get_scroll_view_box(frame, scroll_view)?;
         if boxed.rect.height == 0 || boxed.clip.height == 0 {
@@ -1690,15 +2047,33 @@ impl TuiAltScreen {
             return None;
         }
         let pointer_row = y.min(visible_bottom).max(visible_top);
-        let max_content_row = (boxed.scroll_content_lines.as_ref().map_or(1, |lines| lines.len()) as i64 - 1).max(0);
-        let row = (scroll_view.borrow().scroll_top() as i64 + pointer_row - boxed.rect.y).min(max_content_row).max(0);
+        let max_content_row = (boxed
+            .scroll_content_lines
+            .as_ref()
+            .map_or(1, |lines| lines.len()) as i64
+            - 1)
+        .max(0);
+        let row = (scroll_view.borrow().scroll_top() as i64 + pointer_row - boxed.rect.y)
+            .min(max_content_row)
+            .max(0);
         let col = (x - boxed.rect.x).min(boxed.rect.width as i64 - 1).max(0);
-        Some(SelectionPoint { row: row as usize, col: col as usize, scroll_view: Some(Rc::clone(scroll_view)), boundary: false })
+        Some(SelectionPoint {
+            row: row as usize,
+            col: col as usize,
+            scroll_view: Some(Rc::clone(scroll_view)),
+            boundary: false,
+        })
     }
 
     /// senpi's `getSelectionPoint`.
-    fn get_selection_point(&self, event: &SgrMouseEvent, scroll_view: Option<&Rc<RefCell<ScrollView>>>) -> SelectionPoint {
-        if let Some(point) = scroll_view.and_then(|scroll_view| self.get_scroll_selection_point(scroll_view, event.x, event.y)) {
+    fn get_selection_point(
+        &self,
+        event: &SgrMouseEvent,
+        scroll_view: Option<&Rc<RefCell<ScrollView>>>,
+    ) -> SelectionPoint {
+        if let Some(point) = scroll_view
+            .and_then(|scroll_view| self.get_scroll_selection_point(scroll_view, event.x, event.y))
+        {
             return point;
         }
         SelectionPoint {
@@ -1712,14 +2087,21 @@ impl TuiAltScreen {
     /// senpi's `getSelectionSourceLine`: scroll content for scroll-view points, else the screen.
     fn get_selection_source_line(&self, point: &SelectionPoint) -> String {
         if let (Some(scroll_view), Some(frame)) = (&point.scroll_view, &self.current_layout)
-            && let Some(lines) = get_scroll_view_box(frame, scroll_view).and_then(|boxed| boxed.scroll_content_lines.as_ref())
+            && let Some(lines) = get_scroll_view_box(frame, scroll_view)
+                .and_then(|boxed| boxed.scroll_content_lines.as_ref())
         {
             return lines.get(point.row).cloned().unwrap_or_default();
         }
-        self.previous_screen.get(point.row).cloned().unwrap_or_default()
+        self.previous_screen
+            .get(point.row)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    fn get_word_selection(&self, point: &SelectionPoint) -> Option<(SelectionPoint, SelectionPoint)> {
+    fn get_word_selection(
+        &self,
+        point: &SelectionPoint,
+    ) -> Option<(SelectionPoint, SelectionPoint)> {
         let line = strip_terminal_sequences(&self.get_selection_source_line(point));
         let segments = word_segments(&line);
         struct Seg {
@@ -1733,11 +2115,20 @@ impl TuiAltScreen {
         for seg in &segments {
             let width = visible_width(seg.segment);
             let joiner = WORD_SELECTION_JOINERS.contains(&seg.segment);
-            cols.push(Seg { start: start_col, end: start_col + width, selectable: seg.is_word_like || joiner, joiner });
+            cols.push(Seg {
+                start: start_col,
+                end: start_col + width,
+                selectable: seg.is_word_like || joiner,
+                joiner,
+            });
             start_col += width;
         }
-        let clicked_index = cols.iter().position(|s| point.col >= s.start && point.col < s.end)?;
-        let can_join = |left: &Seg, right: &Seg| left.selectable && right.selectable && (left.joiner || right.joiner);
+        let clicked_index = cols
+            .iter()
+            .position(|s| point.col >= s.start && point.col < s.end)?;
+        let can_join = |left: &Seg, right: &Seg| {
+            left.selectable && right.selectable && (left.joiner || right.joiner)
+        };
         let mut selection_start = cols[clicked_index].start;
         let mut selection_end = cols[clicked_index].end;
         let mut index = clicked_index;
@@ -1751,16 +2142,32 @@ impl TuiAltScreen {
             selection_end = cols[index].end;
         }
         Some((
-            SelectionPoint { col: selection_start, boundary: false, ..point.clone() },
-            SelectionPoint { col: selection_end, boundary: true, ..point.clone() },
+            SelectionPoint {
+                col: selection_start,
+                boundary: false,
+                ..point.clone()
+            },
+            SelectionPoint {
+                col: selection_end,
+                boundary: true,
+                ..point.clone()
+            },
         ))
     }
 
     fn get_line_selection(&self, point: &SelectionPoint) -> (SelectionPoint, SelectionPoint) {
         let width = visible_width(&self.get_selection_source_line(point));
         (
-            SelectionPoint { col: 0, boundary: false, ..point.clone() },
-            SelectionPoint { col: width, boundary: true, ..point.clone() },
+            SelectionPoint {
+                col: 0,
+                boundary: false,
+                ..point.clone()
+            },
+            SelectionPoint {
+                col: width,
+                boundary: true,
+                ..point.clone()
+            },
         )
     }
 
@@ -1792,7 +2199,12 @@ impl TuiAltScreen {
         }
     }
 
-    fn get_click_count(&mut self, point: &SelectionPoint, word: Option<&(SelectionPoint, SelectionPoint)>, now_ms: i64) -> u32 {
+    fn get_click_count(
+        &mut self,
+        point: &SelectionPoint,
+        word: Option<&(SelectionPoint, SelectionPoint)>,
+        now_ms: i64,
+    ) -> u32 {
         let count = match (&self.last_click, word) {
             (Some(previous), Some((word_start, word_end)))
                 if now_ms - previous.timestamp_ms <= DOUBLE_CLICK_INTERVAL_MS
@@ -1820,20 +2232,28 @@ impl TuiAltScreen {
     /// pointer sits on the anchor scroll view's top or bottom visible row. senpi's 50ms
     /// `setInterval` becomes a deadline fired by [`TuiAltScreen::tick`].
     fn update_selection_auto_scroll(&mut self, event: &SgrMouseEvent) {
-        let Some(scroll_view) = self.selection_anchor.as_ref().and_then(|anchor| anchor.scroll_view.clone()) else {
+        let Some(scroll_view) = self
+            .selection_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.scroll_view.clone())
+        else {
             self.stop_selection_auto_scroll();
             return;
         };
-        let bounds = self.current_layout.as_ref().and_then(|frame| get_scroll_view_box(frame, &scroll_view)).and_then(|boxed| {
-            if boxed.rect.height == 0 || boxed.clip.height == 0 {
-                return None;
-            }
-            let visible_top = boxed.rect.y.max(boxed.clip.y).max(0);
-            let visible_bottom = (self.previous_screen_height as i64 - 1)
-                .min(boxed.rect.y + boxed.rect.height as i64 - 1)
-                .min(boxed.clip.y + boxed.clip.height as i64 - 1);
-            Some((visible_top, visible_bottom))
-        });
+        let bounds = self
+            .current_layout
+            .as_ref()
+            .and_then(|frame| get_scroll_view_box(frame, &scroll_view))
+            .and_then(|boxed| {
+                if boxed.rect.height == 0 || boxed.clip.height == 0 {
+                    return None;
+                }
+                let visible_top = boxed.rect.y.max(boxed.clip.y).max(0);
+                let visible_bottom = (self.previous_screen_height as i64 - 1)
+                    .min(boxed.rect.y + boxed.rect.height as i64 - 1)
+                    .min(boxed.clip.y + boxed.clip.height as i64 - 1);
+                Some((visible_top, visible_bottom))
+            });
         let Some((visible_top, visible_bottom)) = bounds else {
             self.stop_selection_auto_scroll();
             return;
@@ -1851,13 +2271,17 @@ impl TuiAltScreen {
             return;
         }
         if self.selection_auto_scroll_due_ms.is_none() {
-            self.selection_auto_scroll_due_ms = Some(self.now_ms + SELECTION_AUTO_SCROLL_INTERVAL_MS);
+            self.selection_auto_scroll_due_ms =
+                Some(self.now_ms + SELECTION_AUTO_SCROLL_INTERVAL_MS);
         }
     }
 
     /// senpi's `autoScrollSelection`: one auto-scroll step while dragging past an edge.
     fn auto_scroll_selection(&mut self) {
-        let scroll_view = self.selection_anchor.as_ref().and_then(|anchor| anchor.scroll_view.clone());
+        let scroll_view = self
+            .selection_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.scroll_view.clone());
         let direction = self.selection_auto_scroll_direction;
         let (Some(scroll_view), Some((x, y))) = (scroll_view, self.selection_drag_pointer) else {
             self.stop_selection_auto_scroll();
@@ -1891,17 +2315,18 @@ impl TuiAltScreen {
         self.now_ms = now_ms;
         let mut render = false;
         let mut finished: Vec<Result<(), String>> = Vec::new();
-        self.pending_copy_results.retain(|receiver| match receiver.try_recv() {
-            Ok(result) => {
-                finished.push(result);
-                false
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => true,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                finished.push(Err("Copy failed".to_string()));
-                false
-            }
-        });
+        self.pending_copy_results
+            .retain(|receiver| match receiver.try_recv() {
+                Ok(result) => {
+                    finished.push(result);
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished.push(Err("Copy failed".to_string()));
+                    false
+                }
+            });
         // senpi's `copyTextToClipboard`: one flash per settled copy; failures (the hook's own
         // message, else "Copy failed") stay up for COPY_ERROR_FLASH_DURATION_MS.
         for result in finished {
@@ -1914,7 +2339,10 @@ impl TuiAltScreen {
         if self.flashes.tick(now_ms) {
             render = true;
         }
-        if self.selection_auto_scroll_due_ms.is_some_and(|due| due <= now_ms) {
+        if self
+            .selection_auto_scroll_due_ms
+            .is_some_and(|due| due <= now_ms)
+        {
             self.selection_auto_scroll_due_ms = Some(now_ms + SELECTION_AUTO_SCROLL_INTERVAL_MS);
             self.auto_scroll_selection();
             render = true;
@@ -1925,13 +2353,20 @@ impl TuiAltScreen {
         render
     }
 
-
-    fn handle_selection_mouse_event(&mut self, event: SgrMouseEvent, now_ms: i64, terminal: &mut dyn Terminal) {
+    fn handle_selection_mouse_event(
+        &mut self,
+        event: SgrMouseEvent,
+        now_ms: i64,
+        terminal: &mut dyn Terminal,
+    ) {
         let button = event.button & 3;
         if button != 0 && !(event.release && button == 3) {
             return;
         }
-        let anchor_scroll_view = self.selection_anchor.as_ref().and_then(|anchor| anchor.scroll_view.clone());
+        let anchor_scroll_view = self
+            .selection_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.scroll_view.clone());
         let point = self.get_selection_point(&event, anchor_scroll_view.as_ref());
 
         if event.release {
@@ -1964,11 +2399,20 @@ impl TuiAltScreen {
                     event.button,
                     event.x,
                     event.y,
-                    ToTuiMouseEventExtra { wheel_delta: None, click_count: Some(click_count) },
+                    ToTuiMouseEventExtra {
+                        wheel_delta: None,
+                        click_count: Some(click_count),
+                    },
                     terminal,
                 );
                 let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&click_event);
-                let result = overlay_result.or_else(|| if hit { None } else { self.dispatch_mouse_to_layout(&click_event) });
+                let result = overlay_result.or_else(|| {
+                    if hit {
+                        None
+                    } else {
+                        self.dispatch_mouse_to_layout(&click_event)
+                    }
+                });
                 if let Some(result) = result {
                     let render = self.apply_mouse_dispatch_result(&click_event, &result, true);
                     self.clear_text_selection();
@@ -2003,9 +2447,11 @@ impl TuiAltScreen {
         let scroll_view = if self.base.has_overlay() {
             None
         } else {
-            self.current_layout
-                .as_ref()
-                .and_then(|frame| get_scroll_views_at(frame, event.x, event.y).into_iter().next())
+            self.current_layout.as_ref().and_then(|frame| {
+                get_scroll_views_at(frame, event.x, event.y)
+                    .into_iter()
+                    .next()
+            })
         };
         let anchor = self.get_selection_point(&event, scroll_view.as_ref());
         let word = self.get_word_selection(&anchor);
@@ -2031,7 +2477,10 @@ impl TuiAltScreen {
         } else {
             let row = event.y.min(self.previous_screen_height as i64 - 1).max(0) as usize;
             let column = event.x.min(self.previous_screen_width as i64 - 1).max(0) as usize;
-            get_osc8_link_at_column(self.previous_screen.get(row).map_or("", String::as_str), column)
+            get_osc8_link_at_column(
+                self.previous_screen.get(row).map_or("", String::as_str),
+                column,
+            )
         };
         self.base.request_render(false, 0);
 
@@ -2052,8 +2501,13 @@ impl TuiAltScreen {
         if anchor.row == focus.row && anchor.col == focus.col {
             return None;
         }
-        let anchor_before_focus = anchor.row < focus.row || (anchor.row == focus.row && anchor.col < focus.col);
-        Some(if anchor_before_focus { (anchor.clone(), focus.clone()) } else { (focus.clone(), anchor.clone()) })
+        let anchor_before_focus =
+            anchor.row < focus.row || (anchor.row == focus.row && anchor.col < focus.col);
+        Some(if anchor_before_focus {
+            (anchor.clone(), focus.clone())
+        } else {
+            (focus.clone(), anchor.clone())
+        })
     }
 
     pub fn has_active_selection(&self) -> bool {
@@ -2063,7 +2517,10 @@ impl TuiAltScreen {
     fn get_active_selection_text(&self) -> Option<String> {
         let (start, end) = self.get_selection_bounds()?;
         let source_lines: &[String] = match &start.scroll_view {
-            Some(scroll_view) => get_scroll_view_box(self.current_layout.as_ref()?, scroll_view)?.scroll_content_lines.as_deref().map(Vec::as_slice)?,
+            Some(scroll_view) => get_scroll_view_box(self.current_layout.as_ref()?, scroll_view)?
+                .scroll_content_lines
+                .as_deref()
+                .map(Vec::as_slice)?,
             None => self.previous_screen.as_slice(),
         };
         let start_point = ScreenPoint::from(&start);
@@ -2071,8 +2528,14 @@ impl TuiAltScreen {
         let mut lines = Vec::new();
         for row in start.row..=end.row {
             let line = source_lines.get(row).map_or("", String::as_str);
-            let (start_col, end_col) =
-                get_selection_columns(line, row as i64, &start_point, &end_point, 0, visible_width(line) as i64);
+            let (start_col, end_col) = get_selection_columns(
+                line,
+                row as i64,
+                &start_point,
+                &end_point,
+                0,
+                visible_width(line) as i64,
+            );
             let length = (end_col - start_col).max(0) as usize;
             let selected = slice_by_column(line, start_col.max(0) as usize, length, true);
             lines.push(strip_terminal_sequences(&selected).trim_end().to_string());
@@ -2106,7 +2569,10 @@ impl TuiAltScreen {
         self.copy_selection = copy_selection;
     }
 
-    pub fn set_copy_selection_with_error(&mut self, copy_selection: Option<CopySelectionHookWithError>) {
+    pub fn set_copy_selection_with_error(
+        &mut self,
+        copy_selection: Option<CopySelectionHookWithError>,
+    ) {
         self.copy_selection_with_error = copy_selection;
     }
 
@@ -2134,7 +2600,16 @@ impl TuiAltScreen {
             let (sender, receiver) = std::sync::mpsc::channel();
             let original = copy_selection(text);
             std::thread::spawn(move || {
-                let result = original.recv().map(|ok| if ok { Ok(()) } else { Err("Copy failed".to_string()) }).unwrap_or_else(|_| Err("Copy failed".to_string()));
+                let result = original
+                    .recv()
+                    .map(|ok| {
+                        if ok {
+                            Ok(())
+                        } else {
+                            Err("Copy failed".to_string())
+                        }
+                    })
+                    .unwrap_or_else(|_| Err("Copy failed".to_string()));
                 let _ = sender.send(result);
             });
             self.pending_copy_results.push(receiver);
@@ -2149,7 +2624,10 @@ impl TuiAltScreen {
     pub fn current_search_match_key(&self) -> Option<String> {
         let search = self.active_search.as_ref()?;
         let index = usize::try_from(search.selected_index).ok()?;
-        search.matches.get(index).map(get_alt_screen_search_match_key)
+        search
+            .matches
+            .get(index)
+            .map(get_alt_screen_search_match_key)
     }
 
     /// senpi's `prepareKittyScreen`: swap an already-uploaded image's full transmission for its
@@ -2176,7 +2654,9 @@ impl TuiAltScreen {
                         estimated_decoded_bytes: placement.estimated_decoded_bytes,
                     },
                 ));
-                if cached_image.is_some_and(|cached| cached.transmission_generation == placement.transmission_generation) {
+                if cached_image.is_some_and(|cached| {
+                    cached.transmission_generation == placement.transmission_generation
+                }) {
                     placement.replacement_line
                 } else {
                     line.clone()
@@ -2222,7 +2702,11 @@ impl TuiAltScreen {
     /// senpi's `shouldDeferViewportInputToOverlay`: a focused overlay other than the find bar
     /// owns the keyboard.
     fn should_defer_viewport_input_to_overlay(&self) -> bool {
-        self.base.is_overlay_focused() && !self.active_search.as_ref().is_some_and(|search| search.overlay.is_focused())
+        self.base.is_overlay_focused()
+            && !self
+                .active_search
+                .as_ref()
+                .is_some_and(|search| search.overlay.is_focused())
     }
 
     pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
@@ -2246,7 +2730,11 @@ impl TuiAltScreen {
             }
             return true;
         }
-        if self.active_search.as_ref().is_some_and(|search| search.overlay.is_focused()) {
+        if self
+            .active_search
+            .as_ref()
+            .is_some_and(|search| search.overlay.is_focused())
+        {
             if kb.matches(data, "tui.altScreen.searchNext") {
                 if !is_key_release {
                     self.navigate_search(1);
@@ -2340,15 +2828,25 @@ impl Default for TuiAltScreen {
     }
 }
 
-fn scroll_scrollbar_to_pointer(scroll_view: &Rc<RefCell<ScrollView>>, geometry: &crate::layout::ScrollbarGeometry, pointer_y: i64, grab_offset: i64) {
+fn scroll_scrollbar_to_pointer(
+    scroll_view: &Rc<RefCell<ScrollView>>,
+    geometry: &crate::layout::ScrollbarGeometry,
+    pointer_y: i64,
+    grab_offset: i64,
+) {
     let max_thumb_offset = geometry.track_height.saturating_sub(geometry.thumb_height);
-    let thumb_offset = (pointer_y - geometry.track_top - grab_offset).max(0).min(max_thumb_offset as i64);
+    let thumb_offset = (pointer_y - geometry.track_top - grab_offset)
+        .max(0)
+        .min(max_thumb_offset as i64);
     let scroll_top = if max_thumb_offset == 0 {
         0
     } else {
-        ((thumb_offset as f64 / max_thumb_offset as f64) * geometry.max_scroll_top as f64).round() as i64
+        ((thumb_offset as f64 / max_thumb_offset as f64) * geometry.max_scroll_top as f64).round()
+            as i64
     };
-    scroll_view.borrow_mut().scroll_to(scroll_top, Default::default(), 0);
+    scroll_view
+        .borrow_mut()
+        .scroll_to(scroll_top, Default::default(), 0);
 }
 
 /// senpi's `applySelectionHighlight`: reverse-video the selected span while keeping its own
@@ -2377,7 +2875,14 @@ fn apply_selection_highlight(text: &str) -> String {
 
 /// senpi's `getSelectionColumns`: the selected cell range on `row`, widened to whole graphemes
 /// at the selection's start and (non-boundary) end.
-fn get_selection_columns(line: &str, row: i64, start: &ScreenPoint, end: &ScreenPoint, min_column: i64, max_column: i64) -> (i64, i64) {
+fn get_selection_columns(
+    line: &str,
+    row: i64,
+    start: &ScreenPoint,
+    end: &ScreenPoint,
+    min_column: i64,
+    max_column: i64,
+) -> (i64, i64) {
     let line_width = visible_width(line) as i64;
     let mut start_col = min_column.max(0);
     let mut end_col = line_width.min(max_column);
@@ -2389,7 +2894,8 @@ fn get_selection_columns(line: &str, row: i64, start: &ScreenPoint, end: &Screen
         end_col = if end.boundary {
             end.col.min(line_width)
         } else {
-            get_grapheme_cell_range(line, end.col.max(0) as usize).map_or((end.col + 1).min(line_width), |range| range.end as i64)
+            get_grapheme_cell_range(line, end.col.max(0) as usize)
+                .map_or((end.col + 1).min(line_width), |range| range.end as i64)
         };
     }
     (start_col.max(min_column), end_col.min(max_column))
@@ -2407,8 +2913,16 @@ mod base64_encode {
             let b2 = *chunk.get(2).unwrap_or(&0);
             out.push(ALPHABET[(b0 >> 2) as usize] as char);
             out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-            out.push(if chunk.len() > 1 { ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char } else { '=' });
-            out.push(if chunk.len() > 2 { ALPHABET[(b2 & 0x3f) as usize] as char } else { '=' });
+            out.push(if chunk.len() > 1 {
+                ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                ALPHABET[(b2 & 0x3f) as usize] as char
+            } else {
+                '='
+            });
         }
         out
     }

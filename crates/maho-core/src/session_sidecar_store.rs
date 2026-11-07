@@ -36,7 +36,8 @@ pub struct SidecarStoreRef {
     pub session_id: String,
 }
 
-pub type SidecarPayloadParser = Arc<dyn Fn(&Value, &SidecarStoreRef) -> Result<Value, SidecarError> + Send + Sync>;
+pub type SidecarPayloadParser =
+    Arc<dyn Fn(&Value, &SidecarStoreRef) -> Result<Value, SidecarError> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct CreateSidecarStoreOptions {
@@ -51,7 +52,18 @@ pub fn encoded_session_id(session_id: &str) -> String {
     let mut encoded = String::new();
     for byte in session_id.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => {
                 encoded.push(byte as char);
             }
             _ => encoded.push_str(&format!("%{byte:02X}")),
@@ -61,7 +73,13 @@ pub fn encoded_session_id(session_id: &str) -> String {
 }
 
 pub fn sidecar_file_path(reference: &SidecarStoreRef) -> String {
-    Path::new(&reference.base_dir).join(format!("{}.json", encoded_session_id(&reference.session_id))).to_string_lossy().into_owned()
+    Path::new(&reference.base_dir)
+        .join(format!(
+            "{}.json",
+            encoded_session_id(&reference.session_id)
+        ))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Most recent sidecar states kept for [`SidecarStore::snapshot`]. Only tests read them, so the map
@@ -74,7 +92,9 @@ fn snapshots() -> &'static Mutex<IndexMap<String, Value>> {
 }
 
 fn record_snapshot(file_path: &str, state: &Value) {
-    let mut snapshots = snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut snapshots = snapshots()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     snapshots.shift_remove(file_path);
     snapshots.insert(file_path.to_owned(), state.clone());
     while snapshots.len() > SNAPSHOT_LIMIT {
@@ -88,10 +108,16 @@ fn tails() -> &'static Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>> {
 }
 
 fn tail_for(key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    let mut tails = tails().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut tails = tails()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Drop tails no operation holds any more so the map does not grow with every key ever seen.
     tails.retain(|_, tail| Arc::strong_count(tail) > 1);
-    Arc::clone(tails.entry(key.to_owned()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))))
+    Arc::clone(
+        tails
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+    )
 }
 
 /// Serializes read-modify-write cycles per key across every sidecar consumer.
@@ -126,9 +152,14 @@ impl SidecarStore {
 
     pub async fn write(&self, state: &Value) -> Result<(), SidecarError> {
         if let Some(parent) = Path::new(&self.file_path).parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| SidecarError::Io(error.to_string()))?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| SidecarError::Io(error.to_string()))?;
         }
-        let contents = format!("{}\n", serde_json::to_string_pretty(state).unwrap_or_default());
+        let contents = format!(
+            "{}\n",
+            serde_json::to_string_pretty(state).unwrap_or_default()
+        );
         write_atomic(&self.file_path, &contents, &self.options.temp_prefix).await?;
         record_snapshot(&self.file_path, state);
         Ok(())
@@ -149,19 +180,33 @@ impl SidecarStore {
     }
 
     pub fn snapshot(&self) -> Option<Value> {
-        snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&self.file_path).cloned()
+        snapshots()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.file_path)
+            .cloned()
     }
 
     pub fn clear(&self) {
-        snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner).shift_remove(&self.file_path);
+        snapshots()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shift_remove(&self.file_path);
     }
 }
 
 /// Creates a per-session store bound to baseDir/<encoded session id>.json.
 pub fn create_sidecar_store(options: CreateSidecarStoreOptions) -> SidecarStore {
-    let reference = SidecarStoreRef { base_dir: options.base_dir.clone(), session_id: options.session_id.clone() };
+    let reference = SidecarStoreRef {
+        base_dir: options.base_dir.clone(),
+        session_id: options.session_id.clone(),
+    };
     let file_path = sidecar_file_path(&reference);
-    SidecarStore { file_path, options, reference }
+    SidecarStore {
+        file_path,
+        options,
+        reference,
+    }
 }
 
 fn set_mode(path: &Path, mode: u32) {
@@ -178,13 +223,24 @@ fn set_mode(path: &Path, mode: u32) {
 
 /// Writes contents to filePath atomically: a hidden temp file (0600) next to the target, then a
 /// rename over it.
-pub async fn write_atomic(file_path: &str, contents: &str, temp_prefix: &str) -> Result<(), SidecarError> {
-    let directory = Path::new(file_path).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+pub async fn write_atomic(
+    file_path: &str,
+    contents: &str,
+    temp_prefix: &str,
+) -> Result<(), SidecarError> {
+    let directory = Path::new(file_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     let temp_path = directory.join(format!(".{temp_prefix}-{}.tmp", uuid::Uuid::now_v7()));
     let write_result = async {
-        tokio::fs::write(&temp_path, contents).await.map_err(|error| SidecarError::Io(error.to_string()))?;
+        tokio::fs::write(&temp_path, contents)
+            .await
+            .map_err(|error| SidecarError::Io(error.to_string()))?;
         set_mode(&temp_path, 0o600);
-        tokio::fs::rename(&temp_path, file_path).await.map_err(|error| SidecarError::Io(error.to_string()))
+        tokio::fs::rename(&temp_path, file_path)
+            .await
+            .map_err(|error| SidecarError::Io(error.to_string()))
     }
     .await;
     if let Err(error) = write_result {
@@ -194,11 +250,17 @@ pub async fn write_atomic(file_path: &str, contents: &str, temp_prefix: &str) ->
     Ok(())
 }
 
-fn parse_payload(raw: &str, options: &CreateSidecarStoreOptions, reference: &SidecarStoreRef) -> Result<Value, SidecarError> {
+fn parse_payload(
+    raw: &str,
+    options: &CreateSidecarStoreOptions,
+    reference: &SidecarStoreRef,
+) -> Result<Value, SidecarError> {
     let parsed: Value = serde_json::from_str(raw)
         .map_err(|_| SidecarError::Invalid("sidecar store contains unparseable JSON".to_owned()))?;
     let Some(object) = parsed.as_object() else {
-        return Err(SidecarError::Invalid("sidecar store must be a JSON object".to_owned()));
+        return Err(SidecarError::Invalid(
+            "sidecar store must be a JSON object".to_owned(),
+        ));
     };
     if object.get("version").and_then(Value::as_i64) != Some(options.version) {
         let found = object.get("version").cloned().unwrap_or(Value::Null);
@@ -207,9 +269,14 @@ fn parse_payload(raw: &str, options: &CreateSidecarStoreOptions, reference: &Sid
             found, options.version
         )));
     }
-    let session_id = object.get("sessionId").and_then(Value::as_str).filter(|value| !value.is_empty());
+    let session_id = object
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
     let Some(session_id) = session_id else {
-        return Err(SidecarError::Invalid("sidecar store is missing a sessionId".to_owned()));
+        return Err(SidecarError::Invalid(
+            "sidecar store is missing a sessionId".to_owned(),
+        ));
     };
     if session_id != reference.session_id {
         return Err(SidecarError::Invalid(format!(
@@ -242,8 +309,14 @@ mod tests {
 
     #[test]
     fn the_sidecar_path_uses_the_encoded_id() {
-        let reference = SidecarStoreRef { base_dir: "/tmp/x".to_owned(), session_id: "a/b".to_owned() };
-        let expected = std::path::Path::new("/tmp/x").join("a%2Fb.json").to_string_lossy().into_owned();
+        let reference = SidecarStoreRef {
+            base_dir: "/tmp/x".to_owned(),
+            session_id: "a/b".to_owned(),
+        };
+        let expected = std::path::Path::new("/tmp/x")
+            .join("a%2Fb.json")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(sidecar_file_path(&reference), expected);
     }
 
@@ -251,7 +324,10 @@ mod tests {
     async fn writing_then_reading_round_trips() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = create_sidecar_store(options(&dir.path().to_string_lossy()));
-        store.write(&json!({ "version": 2, "sessionId": "session/one", "value": 7 })).await.expect("write");
+        store
+            .write(&json!({ "version": 2, "sessionId": "session/one", "value": 7 }))
+            .await
+            .expect("write");
         let read = store.read().await.expect("read").expect("present");
         assert_eq!(read["value"], json!(7));
         assert_eq!(store.snapshot().expect("snapshot")["value"], json!(7));
@@ -280,15 +356,24 @@ mod tests {
     async fn a_version_mismatch_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = create_sidecar_store(options(&dir.path().to_string_lossy()));
-        store.write(&json!({ "version": 1, "sessionId": "session/one" })).await.expect("write");
-        assert!(matches!(store.read().await, Err(SidecarError::UnsupportedVersion(_))));
+        store
+            .write(&json!({ "version": 1, "sessionId": "session/one" }))
+            .await
+            .expect("write");
+        assert!(matches!(
+            store.read().await,
+            Err(SidecarError::UnsupportedVersion(_))
+        ));
     }
 
     #[tokio::test]
     async fn a_session_mismatch_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = create_sidecar_store(options(&dir.path().to_string_lossy()));
-        store.write(&json!({ "version": 2, "sessionId": "other" })).await.expect("write");
+        store
+            .write(&json!({ "version": 2, "sessionId": "other" }))
+            .await
+            .expect("write");
         assert!(matches!(store.read().await, Err(SidecarError::Invalid(_))));
     }
 
@@ -296,7 +381,10 @@ mod tests {
     async fn clear_drops_the_snapshot() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = create_sidecar_store(options(&dir.path().to_string_lossy()));
-        store.write(&json!({ "version": 2, "sessionId": "session/one" })).await.expect("write");
+        store
+            .write(&json!({ "version": 2, "sessionId": "session/one" }))
+            .await
+            .expect("write");
         store.clear();
         assert!(store.snapshot().is_none());
     }
@@ -310,9 +398,14 @@ mod tests {
         for index in 0..SNAPSHOT_LIMIT {
             record_snapshot(&format!("{base}/{index}.json"), &json!(index));
         }
-        let snapshots = snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshots = snapshots()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(snapshots.len() <= SNAPSHOT_LIMIT);
         assert!(!snapshots.contains_key(&first));
-        assert_eq!(snapshots.get(&format!("{base}/{}.json", SNAPSHOT_LIMIT - 1)), Some(&json!(SNAPSHOT_LIMIT - 1)));
+        assert_eq!(
+            snapshots.get(&format!("{base}/{}.json", SNAPSHOT_LIMIT - 1)),
+            Some(&json!(SNAPSHOT_LIMIT - 1))
+        );
     }
 }

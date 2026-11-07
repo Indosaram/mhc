@@ -59,7 +59,9 @@ pub async fn resolve_refresh_credential(
         Credential::ApiKey(ApiKeyCredential {
             key: result.auth.api_key,
             env: result.env,
-            extra: credential.map(|credential| credential.extra.clone()).unwrap_or_default(),
+            extra: credential
+                .map(|credential| credential.extra.clone())
+                .unwrap_or_default(),
         })
     }))
 }
@@ -273,18 +275,29 @@ mod tests {
             "type": "api_key", "key": "old",
             "accounts": [{"name": "work", "key": "sibling"}],
             "pinned": "work", "order": ["work"]
-        })).unwrap();
+        }))
+        .unwrap();
         let credentials = seeded(stored.clone()).await;
         let provider_auth = ProviderAuth {
             api_key: Some(Arc::new(FauxApiKeyAuth)),
             oauth: None,
         };
-        let ctx = FauxCtx { env: [("KEY".into(), "resolved".into())].into() };
+        let ctx = FauxCtx {
+            env: [("KEY".into(), "resolved".into())].into(),
+        };
 
         // When
         let result = resolve_refresh_credential(
-            "p", &provider_auth, &credentials, &ctx, Some(&stored), &signal(),
-        ).await.unwrap().unwrap();
+            "p",
+            &provider_auth,
+            &credentials,
+            &ctx,
+            Some(&stored),
+            &signal(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // Then
         let key = result.as_api_key().unwrap();

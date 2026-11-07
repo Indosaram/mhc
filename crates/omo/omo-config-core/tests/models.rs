@@ -145,11 +145,29 @@ fn resolve_model_references_expands_profiles_and_reports_shadowing_and_splicing(
         "agents": { "worker": { "models": ["daily"] } },
         "categories": { "quick": { "models": ["daily"] } },
     })));
-    assert_eq!(result.view["model_profiles"]["daily"]["models"], json!([{ "model": "openai/gpt-5", "reasoning": "high" }]));
+    assert_eq!(
+        result.view["model_profiles"]["daily"]["models"],
+        json!([{ "model": "openai/gpt-5", "reasoning": "high" }])
+    );
     assert_eq!(result.diagnostics.len(), 3);
-    assert!(result.diagnostics.iter().any(|item| item.path == "model_profiles.clash"));
-    assert!(result.diagnostics.iter().any(|item| item.path == "agents.worker.models.0"));
-    assert!(result.diagnostics.iter().any(|item| item.path == "categories.quick.models.0"));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|item| item.path == "model_profiles.clash")
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|item| item.path == "agents.worker.models.0")
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|item| item.path == "categories.quick.models.0")
+    );
 }
 
 fn pattern_list(values: &[&str]) -> Vec<String> {
@@ -184,7 +202,10 @@ fn excluded_model_pattern_matches_a_wildcard_case_insensitively() {
     let patterns = pattern_list(&["CLAUDE*"]);
 
     assert!(is_excluded_model("anthropic/claude", Some(&patterns)));
-    assert!(is_excluded_model("anthropic-subscription/claude", Some(&patterns)));
+    assert!(is_excluded_model(
+        "anthropic-subscription/claude",
+        Some(&patterns)
+    ));
     assert!(!is_excluded_model("anthropic/gpt-6.1-sol", Some(&patterns)));
 }
 
@@ -193,13 +214,22 @@ fn excluded_model_pattern_matches_every_tail_of_a_nested_gateway_selector() {
     let nested = "openrouter/anthropic/";
 
     assert!(is_excluded_model(nested, Some(&pattern_list(&["*"]))));
-    assert!(is_excluded_model(nested, Some(&pattern_list(&["anthropic/"]))));
+    assert!(is_excluded_model(
+        nested,
+        Some(&pattern_list(&["anthropic/"]))
+    ));
     assert!(is_excluded_model(
         nested,
         Some(&pattern_list(&["openrouter/anthropic/"]))
     ));
-    assert!(!is_excluded_model(nested, Some(&pattern_list(&["openrouter/"]))));
-    assert!(!is_excluded_model(nested, Some(&pattern_list(&["anthropic"]))));
+    assert!(!is_excluded_model(
+        nested,
+        Some(&pattern_list(&["openrouter/"]))
+    ));
+    assert!(!is_excluded_model(
+        nested,
+        Some(&pattern_list(&["anthropic"]))
+    ));
 }
 
 #[test]

@@ -3,9 +3,9 @@
 use crate::google_fixtures;
 
 use google_fixtures::{assistant, context, text, text_model, tool_call, tool_result, user_text};
-use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};
+use maho_ai::api::google_shared::{ConvertMessagesOptions, convert_messages};
 use maho_ai::types::StopReason;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 #[test]
@@ -28,7 +28,10 @@ fn never_collides_when_truncating_long_foreign_tool_call_ids_sharing_a_64_char_p
             user_text("run tools"),
             assistant(
                 &foreign,
-                vec![tool_call(&first, "bash", json!({})), tool_call(&second, "read", json!({}))],
+                vec![
+                    tool_call(&first, "bash", json!({})),
+                    tool_call(&second, "read", json!({})),
+                ],
                 StopReason::ToolUse,
             ),
             tool_result(&first, "bash", vec![text("ok")], false),
@@ -39,7 +42,10 @@ fn never_collides_when_truncating_long_foreign_tool_call_ids_sharing_a_64_char_p
     .expect("contents serialize");
 
     let items = contents.as_array().expect("contents is an array");
-    let model_turn = items.iter().find(|content| content["role"] == json!("model")).expect("a model turn");
+    let model_turn = items
+        .iter()
+        .find(|content| content["role"] == json!("model"))
+        .expect("a model turn");
     let call_ids: Vec<String> = model_turn["parts"]
         .as_array()
         .expect("parts is an array")
@@ -54,12 +60,21 @@ fn never_collides_when_truncating_long_foreign_tool_call_ids_sharing_a_64_char_p
         .collect();
 
     assert_eq!(call_ids.len(), 2);
-    assert_eq!(call_ids.iter().collect::<BTreeSet<_>>().len(), 2, "tool call ids must not collide");
-    assert_eq!(response_ids.iter().collect::<BTreeSet<_>>(), call_ids.iter().collect::<BTreeSet<_>>());
+    assert_eq!(
+        call_ids.iter().collect::<BTreeSet<_>>().len(),
+        2,
+        "tool call ids must not collide"
+    );
+    assert_eq!(
+        response_ids.iter().collect::<BTreeSet<_>>(),
+        call_ids.iter().collect::<BTreeSet<_>>()
+    );
     for id in &call_ids {
         assert!(id.len() <= 64, "{id} must not exceed 64 characters");
         assert!(
-            id.chars().all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-'),
+            id.chars().all(|character| character.is_ascii_alphanumeric()
+                || character == '_'
+                || character == '-'),
             "{id} must match the tool call id pattern"
         );
     }

@@ -250,13 +250,31 @@ async fn without_a_thread_offer_the_stub_answers_unavailable_and_asks_nothing() 
         "senpi:extension-rpc-event",
         Arc::new(move |_| *counter.lock().unwrap() += 1),
     );
-    let unavailable = execute("c", json!({"op":"acquire","toolkit":"browser"}), None, None, &context)
-        .await
-        .unwrap();
-    assert_eq!(unavailable.details, json!({"ok":false,"reason":"unavailable"}));
-    let invalid = execute("c", json!({"op":"nope","toolkit":"browser"}), None, None, &context)
-        .await
-        .unwrap();
-    assert_eq!(invalid.details, json!({"ok":false,"reason":"invalid_request"}));
+    let unavailable = execute(
+        "c",
+        json!({"op":"acquire","toolkit":"browser"}),
+        None,
+        None,
+        &context,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unavailable.details,
+        json!({"ok":false,"reason":"unavailable"})
+    );
+    let invalid = execute(
+        "c",
+        json!({"op":"nope","toolkit":"browser"}),
+        None,
+        None,
+        &context,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        invalid.details,
+        json!({"ok":false,"reason":"invalid_request"})
+    );
     assert_eq!(*asked.lock().unwrap(), 0);
 }

@@ -214,9 +214,13 @@ mod recovered_spawn_cancellation {
         let mut process = spawn(
             &sh("echo payload; echo ready >&2; while :; do read _; done"),
             &options,
-        ).unwrap_or_else(|error| panic!("{error}"));
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
         let handle = process.handle().unwrap_or_else(|error| panic!("{error}"));
-        let stderr = process.stderr.take().unwrap_or_else(|| panic!("stderr is piped"));
+        let stderr = process
+            .stderr
+            .take()
+            .unwrap_or_else(|| panic!("stderr is piped"));
         let (ready_sender, ready_receiver) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let mut line = String::new();
@@ -232,7 +236,9 @@ mod recovered_spawn_cancellation {
             outcome => {
                 let killed = handle.kill();
                 let exit = receiver.recv_timeout(BOUND);
-                if exit.is_ok() { worker.join().unwrap_or_else(|_| panic!("waiter panicked")); }
+                if exit.is_ok() {
+                    worker.join().unwrap_or_else(|_| panic!("waiter panicked"));
+                }
                 panic!("child readiness failed: {outcome:?}; kill: {killed:?}; exit: {exit:?}");
             }
         }
@@ -243,7 +249,9 @@ mod recovered_spawn_cancellation {
             Err(error) => {
                 let killed = handle.kill();
                 let exit = receiver.recv_timeout(BOUND);
-                if exit.is_ok() { worker.join().unwrap_or_else(|_| panic!("waiter panicked")); }
+                if exit.is_ok() {
+                    worker.join().unwrap_or_else(|_| panic!("waiter panicked"));
+                }
                 panic!("cancelled wait failed: {error}; kill: {killed:?}; exit: {exit:?}");
             }
         };
@@ -270,12 +278,17 @@ mod recovered_spawn_cancellation {
             Err(error) => {
                 let killed = handle.kill();
                 let exit = receiver.recv_timeout(BOUND);
-                if exit.is_ok() { worker.join().unwrap_or_else(|_| panic!("waiter panicked")); }
+                if exit.is_ok() {
+                    worker.join().unwrap_or_else(|_| panic!("waiter panicked"));
+                }
                 panic!("signal-less wait failed: {error}; kill: {killed:?}; exit: {exit:?}");
             }
         };
         worker.join().unwrap_or_else(|_| panic!("waiter panicked"));
-        assert_eq!(output, (0, "plain-ok\n".to_string(), "plain-err\n".to_string()));
+        assert_eq!(
+            output,
+            (0, "plain-ok\n".to_string(), "plain-err\n".to_string())
+        );
     }
 
     #[test]
@@ -287,11 +300,17 @@ mod recovered_spawn_cancellation {
             signal: Some(controller.signal()),
             ..Default::default()
         };
-        let result = spawn_sync(&sh("echo sync-ok"), &options)
-            .unwrap_or_else(|error| panic!("{error}"));
+        let result =
+            spawn_sync(&sh("echo sync-ok"), &options).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout.as_deref(), Some(b"sync-ok
-".as_slice()));
+        assert_eq!(
+            result.stdout.as_deref(),
+            Some(
+                b"sync-ok
+"
+                .as_slice()
+            )
+        );
     }
 
     #[test]
@@ -302,12 +321,12 @@ mod recovered_spawn_cancellation {
             stderr: Some(StdioMode::Pipe),
             ..Default::default()
         };
-        let mut process = spawn(
-            &sh("echo ready >&2; exit 0"),
-            &options,
-        ).unwrap_or_else(|error| panic!("{error}"));
+        let mut process = spawn(&sh("echo ready >&2; exit 0"), &options)
+            .unwrap_or_else(|error| panic!("{error}"));
         let handle = process.handle().unwrap_or_else(|error| panic!("{error}"));
-        let (code, _out, _err) = process.wait_with_output().unwrap_or_else(|error| panic!("{error}"));
+        let (code, _out, _err) = process
+            .wait_with_output()
+            .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(code, 0);
         // After reap, handle operations are synchronized: on Linux pidfd returns ESRCH
         // (reaped child), on non-Linux unix_child it safely short-circuits without signaling.
@@ -329,7 +348,6 @@ fn bun_which_constrains_lookup() {
     assert_eq!(bun_which("../sh"), None);
     assert_eq!(bun_which("sh\0evil"), None);
 }
-
 
 #[test]
 fn runtime_file_round_trips() {
@@ -567,7 +585,9 @@ fn contiguous_block_in_range(base_port: u16, count: u16, held: u16) -> (u16, Vec
         if held == 0 {
             // A "free" port must actually be bindable right now: other processes on the host
             // (parallel test binaries, unrelated services) can occupy any fixed range.
-            if (0..count).all(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).is_ok()) {
+            if (0..count)
+                .all(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).is_ok())
+            {
                 return (start, Vec::new());
             }
             continue;
@@ -576,7 +596,8 @@ fn contiguous_block_in_range(base_port: u16, count: u16, held: u16) -> (u16, Vec
             .map_while(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).ok())
             .collect();
         if listeners.len() == usize::from(held)
-            && (held..count).all(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).is_ok())
+            && (held..count)
+                .all(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).is_ok())
         {
             return (start, listeners);
         }

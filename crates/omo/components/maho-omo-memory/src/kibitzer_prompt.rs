@@ -98,7 +98,11 @@ fn render_envelope(tag: &str, input: &KibitzerEnvelopeInput) -> String {
     let mut ordered: Vec<&KibitzerEvent> = input.events.iter().collect();
     ordered.sort_by_key(|left| left.cursor);
     // `ordered.length <= window ? ordered : ordered.slice(ordered.length - window)`: newest window.
-    let kept: &[&KibitzerEvent] = if ordered.len() <= window { &ordered } else { &ordered[ordered.len() - window..] };
+    let kept: &[&KibitzerEvent] = if ordered.len() <= window {
+        &ordered
+    } else {
+        &ordered[ordered.len() - window..]
+    };
 
     let mut attributes: Vec<(String, String)> = vec![
         ("version".to_string(), "1".to_string()),
@@ -120,7 +124,10 @@ fn render_envelope(tag: &str, input: &KibitzerEnvelopeInput) -> String {
         attributes.push(("cursor-to".to_string(), max.to_string()));
     }
 
-    let borrowed: Vec<(&str, &str)> = attributes.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
+    let borrowed: Vec<(&str, &str)> = attributes
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
     let mut parts = vec![open_tag(tag, &borrowed), render_contract()];
     if let Some(summary) = input.task_summary {
         parts.push(render_task(summary, caps));
@@ -137,17 +144,29 @@ fn render_envelope(tag: &str, input: &KibitzerEnvelopeInput) -> String {
 
 /// `<digest cursor-from cursor-to folded>` + the single-lined, capped, escaped fold text.
 fn render_digest(digest: &KibitzerSidecarDigest, caps: KibitzerFieldCaps) -> String {
-    let open = open_tag("digest", &[
-        ("cursor-from", &digest.cursor_from.to_string()),
-        ("cursor-to", &digest.cursor_to.to_string()),
-        ("folded", &digest.folded.to_string()),
-    ]);
-    format!("{open}{}</digest>", escape_text(&single_line(&field(&digest.text, caps.digest))))
+    let open = open_tag(
+        "digest",
+        &[
+            ("cursor-from", &digest.cursor_from.to_string()),
+            ("cursor-to", &digest.cursor_to.to_string()),
+            ("folded", &digest.folded.to_string()),
+        ],
+    );
+    format!(
+        "{open}{}</digest>",
+        escape_text(&single_line(&field(&digest.text, caps.digest)))
+    )
 }
 
 /// `<events count=".." omitted="..">`: the newest window, each event one `<event>` block.
 fn render_events(events: &[&KibitzerEvent], omitted: usize, caps: KibitzerFieldCaps) -> String {
-    let open = open_tag("events", &[("count", &events.len().to_string()), ("omitted", &omitted.to_string())]);
+    let open = open_tag(
+        "events",
+        &[
+            ("count", &events.len().to_string()),
+            ("omitted", &omitted.to_string()),
+        ],
+    );
     if events.is_empty() {
         return format!("{open}</events>");
     }
@@ -163,17 +182,30 @@ fn render_events(events: &[&KibitzerEvent], omitted: usize, caps: KibitzerFieldC
 /// render (redact, then cap, then escape). The prompt wire carries no `seq` / `error` / `truncated`.
 fn render_event(event: &KibitzerEvent, caps: KibitzerFieldCaps) -> String {
     let cursor = event.cursor.to_string();
-    let mut attributes: Vec<(&str, &str)> = vec![("cursor", cursor.as_str()), ("kind", event.kind.as_str())];
+    let mut attributes: Vec<(&str, &str)> =
+        vec![("cursor", cursor.as_str()), ("kind", event.kind.as_str())];
     if let Some(tool) = event.tool.as_deref() {
         attributes.push(("tool", tool));
     }
     let open = open_tag("event", &attributes);
     let mut body: Vec<String> = Vec::new();
     match event.kind.as_str() {
-        "prompt" => body.push(format!("<text>{}</text>", escape_text(&field(&event.body, caps.prompt)))),
-        "assistant" => body.push(format!("<text>{}</text>", escape_text(&field(&event.body, caps.assistant)))),
-        "tool_call" => body.push(format!("<args>{}</args>", escape_text(&field(&event.body, caps.tool_args)))),
-        "tool_result" => body.push(format!("<result>{}</result>", escape_text(&field(&event.body, caps.result_head)))),
+        "prompt" => body.push(format!(
+            "<text>{}</text>",
+            escape_text(&field(&event.body, caps.prompt))
+        )),
+        "assistant" => body.push(format!(
+            "<text>{}</text>",
+            escape_text(&field(&event.body, caps.assistant))
+        )),
+        "tool_call" => body.push(format!(
+            "<args>{}</args>",
+            escape_text(&field(&event.body, caps.tool_args))
+        )),
+        "tool_result" => body.push(format!(
+            "<result>{}</result>",
+            escape_text(&field(&event.body, caps.result_head))
+        )),
         _ => {}
     }
     let mut lines = vec![open];
@@ -182,8 +214,18 @@ fn render_event(event: &KibitzerEvent, caps: KibitzerFieldCaps) -> String {
     lines.join("\n")
 }
 
-fn render_candidates(candidates: &[KibitzerSidecarCandidate], max_items: usize, caps: KibitzerFieldCaps) -> String {
-    let open = open_tag("candidates", &[("count", &candidates.len().to_string()), ("max-items", &max_items.to_string())]);
+fn render_candidates(
+    candidates: &[KibitzerSidecarCandidate],
+    max_items: usize,
+    caps: KibitzerFieldCaps,
+) -> String {
+    let open = open_tag(
+        "candidates",
+        &[
+            ("count", &candidates.len().to_string()),
+            ("max-items", &max_items.to_string()),
+        ],
+    );
     if candidates.is_empty() {
         return format!("{open}</candidates>");
     }
@@ -203,10 +245,16 @@ fn render_candidate(candidate: &KibitzerSidecarCandidate, caps: KibitzerFieldCap
     }
     let mut body: Vec<String> = Vec::new();
     if let Some(description) = &candidate.description {
-        body.push(format!("<description>{}</description>", escape_text(&single_line(&field(description, caps.candidate)))));
+        body.push(format!(
+            "<description>{}</description>",
+            escape_text(&single_line(&field(description, caps.candidate)))
+        ));
     }
     if let Some(excerpt) = &candidate.excerpt {
-        body.push(format!("<excerpt>{}</excerpt>", escape_text(&field(excerpt, caps.candidate))));
+        body.push(format!(
+            "<excerpt>{}</excerpt>",
+            escape_text(&field(excerpt, caps.candidate))
+        ));
     }
     let mut lines = vec![open_tag("candidate", &attributes)];
     lines.extend(body);
@@ -228,25 +276,54 @@ pub fn render_kibitzer_reseed_prompt(input: &KibitzerReseedInput) -> String {
     if let Some(budget) = input.tool_budget {
         attributes.push(("tool-budget".to_string(), budget.to_string()));
     }
-    let borrowed: Vec<(&str, &str)> = attributes.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
+    let borrowed: Vec<(&str, &str)> = attributes
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
     let head = [
         open_tag("kibitzer-reseed", &borrowed),
         render_contract(),
         render_task(input.task_summary, input.caps),
     ]
     .join("\n");
-    let rejected: Vec<String> = input.rejected_paths.iter().map(|path| format!("<path>{}</path>", escape_text(path))).collect();
-    let delivered: Vec<String> = input.delivered_paths.iter().map(|path| format!("<path>{}</path>", escape_text(path))).collect();
+    let rejected: Vec<String> = input
+        .rejected_paths
+        .iter()
+        .map(|path| format!("<path>{}</path>", escape_text(path)))
+        .collect();
+    let delivered: Vec<String> = input
+        .delivered_paths
+        .iter()
+        .map(|path| format!("<path>{}</path>", escape_text(path)))
+        .collect();
     // The fixed part is measured with the LARGEST omitted counts the lists can produce, so the
     // rendered envelope can only be shorter than the length this budget was computed from.
-    let fixed = utf16_len(&reseed_envelope(&head, &[], rejected.len(), &[], delivered.len()));
+    let fixed = utf16_len(&reseed_envelope(
+        &head,
+        &[],
+        rejected.len(),
+        &[],
+        delivered.len(),
+    ));
     let budget = bound.saturating_sub(fixed);
     let (kept_rejected, rejected_used) = fit_lines(&rejected, budget / 2);
     let (kept_delivered, _) = fit_lines(&delivered, budget.saturating_sub(rejected_used));
-    reseed_envelope(&head, &kept_rejected, rejected.len(), &kept_delivered, delivered.len())
+    reseed_envelope(
+        &head,
+        &kept_rejected,
+        rejected.len(),
+        &kept_delivered,
+        delivered.len(),
+    )
 }
 
-fn reseed_envelope(head: &str, rejected: &[String], rejected_total: usize, delivered: &[String], delivered_total: usize) -> String {
+fn reseed_envelope(
+    head: &str,
+    rejected: &[String],
+    rejected_total: usize,
+    delivered: &[String],
+    delivered_total: usize,
+) -> String {
     [
         head.to_string(),
         render_path_list("rejected", rejected, rejected_total),
@@ -258,7 +335,13 @@ fn reseed_envelope(head: &str, rejected: &[String], rejected_total: usize, deliv
 }
 
 fn render_path_list(tag: &str, lines: &[String], total: usize) -> String {
-    let open = open_tag(tag, &[("count", &lines.len().to_string()), ("omitted", &(total - lines.len()).to_string())]);
+    let open = open_tag(
+        tag,
+        &[
+            ("count", &lines.len().to_string()),
+            ("omitted", &(total - lines.len()).to_string()),
+        ],
+    );
     if lines.is_empty() {
         format!("{open}</{tag}>")
     } else {

@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::{
-    BackendKind, IsolationBackend, IsolationContext, IsolationError, ProbeResult, Result,
-    StartDetail, BACKEND_FILE,
+    BACKEND_FILE, BackendKind, IsolationBackend, IsolationContext, IsolationError, ProbeResult,
+    Result, StartDetail,
 };
 use crate::backend_marker::mark_started;
 use crate::backends::btrfs::remove_dir_all_force;
-use crate::backends::runtime::{checked, BackendRuntime, SystemRuntime};
+use crate::backends::runtime::{BackendRuntime, SystemRuntime, checked};
 use crate::util::dirname;
 
 pub struct OverlayfsBackend {
@@ -62,9 +62,13 @@ impl OverlayfsBackend {
                 path
             };
             if cfg!(windows) {
-                [',', ':', '\n'].iter().any(|separator| to_check.contains(*separator))
+                [',', ':', '\n']
+                    .iter()
+                    .any(|separator| to_check.contains(*separator))
             } else {
-                [',', ':', '\n', '\\'].iter().any(|separator| to_check.contains(*separator))
+                [',', ':', '\n', '\\']
+                    .iter()
+                    .any(|separator| to_check.contains(*separator))
             }
         };
         if has_unsupported(&lower_text) || has_unsupported(&base_text) {
@@ -125,7 +129,9 @@ impl OverlayfsBackend {
             }
             message = result.stderr;
         }
-        Err(IsolationError::other(format!("fusermount3 failed: {message}")))
+        Err(IsolationError::other(format!(
+            "fusermount3 failed: {message}"
+        )))
     }
 }
 

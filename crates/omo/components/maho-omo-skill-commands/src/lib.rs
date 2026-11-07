@@ -13,4 +13,6 @@ pub use bare_skill_command::{
     BareSkillCommand, BareSkillCommandResolution, HostCommandInfo, SKILL_COMMAND_PREFIX,
     parse_bare_skill_command, read_bundled_skill_names, resolve_bare_skill_command,
 };
-pub use index::{SKILL_COMMANDS_COMPONENT_NAME, SkillCommandsComponent, SkillCommandsComponentOptions};
+pub use index::{
+    SKILL_COMMANDS_COMPONENT_NAME, SkillCommandsComponent, SkillCommandsComponentOptions,
+};

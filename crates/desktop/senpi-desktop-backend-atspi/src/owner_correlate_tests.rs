@@ -4,7 +4,7 @@
 use senpi_desktop_core::types::DesktopWindow;
 
 use crate::bus::Extents;
-use crate::owner::{FrameFacts, correlate_owner};
+use crate::owner::{correlate_owner, FrameFacts};
 
 const PID: u32 = 4242;
 

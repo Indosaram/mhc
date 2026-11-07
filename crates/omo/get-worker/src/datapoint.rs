@@ -71,7 +71,11 @@ pub fn record_download(sink: &dyn AnalyticsSink, event: &DownloadEvent) {
             event.version.clone(),
             event.asset.clone(),
             event.country.clone(),
-            if event.qa { "qa".to_string() } else { String::new() },
+            if event.qa {
+                "qa".to_string()
+            } else {
+                String::new()
+            },
         ],
         doubles: vec![1.0],
         indexes: vec![event.kind.as_str().to_string()],

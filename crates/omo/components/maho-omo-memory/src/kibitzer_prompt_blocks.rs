@@ -11,7 +11,8 @@
 use memory_core::sync::redact::redact_url;
 
 /// The model-visible tool registry of the resident sidecar, in registry order.
-pub const KIBITZER_SIDECAR_TOOL_NAMES: [&str; 5] = ["read", "grep", "session_entries", "memory", "nudge"];
+pub const KIBITZER_SIDECAR_TOOL_NAMES: [&str; 5] =
+    ["read", "grep", "session_entries", "memory", "nudge"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KibitzerFieldCaps {
@@ -37,7 +38,13 @@ pub struct KibitzerFieldCapsOverride {
 }
 
 pub const KIBITZER_FIELD_CAPS: KibitzerFieldCaps = KibitzerFieldCaps {
-    prompt: 4000, assistant: 1500, tool_args: 400, result_head: 600, digest: 1024, summary: 200, candidate: 200,
+    prompt: 4000,
+    assistant: 1500,
+    tool_args: 400,
+    result_head: 600,
+    digest: 1024,
+    summary: 200,
+    candidate: 200,
 };
 
 /// `resolveCaps(overrides)`: `{ ...KIBITZER_FIELD_CAPS, ...overrides }`, field by field.
@@ -46,41 +53,97 @@ pub fn resolve_caps(overrides: KibitzerFieldCapsOverride) -> KibitzerFieldCaps {
         prompt: overrides.prompt.unwrap_or(KIBITZER_FIELD_CAPS.prompt),
         assistant: overrides.assistant.unwrap_or(KIBITZER_FIELD_CAPS.assistant),
         tool_args: overrides.tool_args.unwrap_or(KIBITZER_FIELD_CAPS.tool_args),
-        result_head: overrides.result_head.unwrap_or(KIBITZER_FIELD_CAPS.result_head),
+        result_head: overrides
+            .result_head
+            .unwrap_or(KIBITZER_FIELD_CAPS.result_head),
         digest: overrides.digest.unwrap_or(KIBITZER_FIELD_CAPS.digest),
         summary: overrides.summary.unwrap_or(KIBITZER_FIELD_CAPS.summary),
         candidate: overrides.candidate.unwrap_or(KIBITZER_FIELD_CAPS.candidate),
     }
 }
 
-struct Rule { id: &'static str, text: &'static str }
+struct Rule {
+    id: &'static str,
+    text: &'static str,
+}
 const RULES: [Rule; 3] = [
-    Rule { id: "no-memory-write", text: "You never write, edit, move or delete memory, files or state; the parent process owns every write." },
-    Rule { id: "nudge-only", text: "Only the nudge tool reaches the primary agent; anything you write outside a tool call is discarded." },
-    Rule { id: "silence-default", text: "Stay silent unless a stored memory would change what the primary agent does next." },
+    Rule {
+        id: "no-memory-write",
+        text: "You never write, edit, move or delete memory, files or state; the parent process owns every write.",
+    },
+    Rule {
+        id: "nudge-only",
+        text: "Only the nudge tool reaches the primary agent; anything you write outside a tool call is discarded.",
+    },
+    Rule {
+        id: "silence-default",
+        text: "Stay silent unless a stored memory would change what the primary agent does next.",
+    },
 ];
 
-struct ToolContract { name: &'static str, args: &'static str, operations: Option<&'static str>, summary: &'static str }
+struct ToolContract {
+    name: &'static str,
+    args: &'static str,
+    operations: Option<&'static str>,
+    summary: &'static str,
+}
 const TOOL_CONTRACTS: [ToolContract; 5] = [
-    ToolContract { name: "read", args: "path, offset?, limit?", operations: None, summary: "Read one workspace file; the result is capped." },
-    ToolContract { name: "grep", args: "pattern, path?, glob?", operations: None, summary: "Search the workspace; the match list is capped." },
-    ToolContract { name: "session_entries", args: "since", operations: None, summary: "Read the parent session entries after a cursor." },
-    ToolContract { name: "memory", args: "operation, query|path", operations: Some("search,read"), summary: "Read memory: search and read only, there is no write operation." },
-    ToolContract { name: "nudge", args: "path, hint", operations: None, summary: "Your only output: one candidate path and one factual hint of at most 200 characters." },
+    ToolContract {
+        name: "read",
+        args: "path, offset?, limit?",
+        operations: None,
+        summary: "Read one workspace file; the result is capped.",
+    },
+    ToolContract {
+        name: "grep",
+        args: "pattern, path?, glob?",
+        operations: None,
+        summary: "Search the workspace; the match list is capped.",
+    },
+    ToolContract {
+        name: "session_entries",
+        args: "since",
+        operations: None,
+        summary: "Read the parent session entries after a cursor.",
+    },
+    ToolContract {
+        name: "memory",
+        args: "operation, query|path",
+        operations: Some("search,read"),
+        summary: "Read memory: search and read only, there is no write operation.",
+    },
+    ToolContract {
+        name: "nudge",
+        args: "path, hint",
+        operations: None,
+        summary: "Your only output: one candidate path and one factual hint of at most 200 characters.",
+    },
 ];
 
 /// `renderContract()`.
 pub fn render_contract() -> String {
     let mut lines = vec!["<contract>".to_string()];
     for rule in RULES {
-        lines.push(format!("<rule id=\"{}\">{}</rule>", rule.id, escape_text(rule.text)));
+        lines.push(format!(
+            "<rule id=\"{}\">{}</rule>",
+            rule.id,
+            escape_text(rule.text)
+        ));
     }
     for tool in TOOL_CONTRACTS {
         let attributes = match tool.operations {
-            Some(operations) => vec![("name", tool.name), ("args", tool.args), ("operations", operations)],
+            Some(operations) => vec![
+                ("name", tool.name),
+                ("args", tool.args),
+                ("operations", operations),
+            ],
             None => vec![("name", tool.name), ("args", tool.args)],
         };
-        lines.push(format!("{}{}</tool>", open_tag("tool", &attributes), escape_text(tool.summary)));
+        lines.push(format!(
+            "{}{}</tool>",
+            open_tag("tool", &attributes),
+            escape_text(tool.summary)
+        ));
     }
     lines.push("</contract>".to_string());
     lines.join("\n")
@@ -88,12 +151,18 @@ pub fn render_contract() -> String {
 
 /// `renderTask(summary, caps)`.
 pub fn render_task(summary: &str, caps: KibitzerFieldCaps) -> String {
-    format!("<task>\n<summary>{}</summary>\n</task>", escape_text(&single_line(&field(summary, caps.summary))))
+    format!(
+        "<task>\n<summary>{}</summary>\n</task>",
+        escape_text(&single_line(&field(summary, caps.summary)))
+    )
 }
 
 /// `openTag(name, attributes)`: attribute values are redacted, control-stripped and escaped.
 pub fn open_tag(name: &str, attributes: &[(&str, &str)]) -> String {
-    let rendered: String = attributes.iter().map(|(key, value)| format!(" {key}=\"{}\"", escape_attribute(value))).collect();
+    let rendered: String = attributes
+        .iter()
+        .map(|(key, value)| format!(" {key}=\"{}\"", escape_attribute(value)))
+        .collect();
     format!("<{name}{rendered}>")
 }
 
@@ -149,11 +218,19 @@ fn strip_control(value: &str) -> String {
 
 /// `escapeText(value)`.
 pub fn escape_text(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\'', "&apos;").replace('"', "&quot;")
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\'', "&apos;")
+        .replace('"', "&quot;")
 }
 
 fn escape_attribute(value: &str) -> String {
-    escape_text(&strip_control(&redact_url(value))).replace('\n', "&#10;").replace('\r', "&#13;").replace('\t', "&#9;")
+    escape_text(&strip_control(&redact_url(value)))
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
+        .replace('\t', "&#9;")
 }
 
 #[cfg(test)]
@@ -162,7 +239,10 @@ mod tests {
 
     #[test]
     fn given_partial_overrides_when_resolved_then_only_named_fields_change() {
-        let caps = resolve_caps(KibitzerFieldCapsOverride { summary: Some(50), ..Default::default() });
+        let caps = resolve_caps(KibitzerFieldCapsOverride {
+            summary: Some(50),
+            ..Default::default()
+        });
         assert_eq!(caps.summary, 50);
         assert_eq!(caps.prompt, KIBITZER_FIELD_CAPS.prompt);
         assert_eq!(caps.digest, KIBITZER_FIELD_CAPS.digest);
@@ -170,7 +250,10 @@ mod tests {
 
     #[test]
     fn given_empty_overrides_when_resolved_then_defaults_are_returned() {
-        assert_eq!(resolve_caps(KibitzerFieldCapsOverride::default()), KIBITZER_FIELD_CAPS);
+        assert_eq!(
+            resolve_caps(KibitzerFieldCapsOverride::default()),
+            KIBITZER_FIELD_CAPS
+        );
     }
 
     #[test]

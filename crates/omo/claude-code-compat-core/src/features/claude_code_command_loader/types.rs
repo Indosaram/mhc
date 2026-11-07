@@ -1,15 +1,22 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf};
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum CommandScope { User, Project, Opencode, OpencodeProject }
+pub enum CommandScope {
+    User,
+    Project,
+    Opencode,
+    OpencodeProject,
+}
 
 impl fmt::Display for CommandScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::User => "user", Self::Project => "project",
-            Self::Opencode => "opencode", Self::OpencodeProject => "opencode-project",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Opencode => "opencode",
+            Self::OpencodeProject => "opencode-project",
         })
     }
 }

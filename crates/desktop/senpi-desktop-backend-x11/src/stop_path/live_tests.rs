@@ -12,7 +12,7 @@ use senpi_desktop_safety::{
 };
 
 use super::xi2::CONNECTION_FAILED;
-use super::{DEFAULT_STOP_CHORD, Xi2Listener};
+use super::{Xi2Listener, DEFAULT_STOP_CHORD};
 
 /// Hang guard only; the latency is printed for the evidence, not asserted.
 const HANG_GUARD: Duration = Duration::from_secs(30);

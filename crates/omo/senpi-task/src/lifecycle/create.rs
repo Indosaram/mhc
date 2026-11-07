@@ -81,6 +81,9 @@ impl TaskLifecycle {
     /// Parent shutdown: every startup pass in flight is invalidated for good.
     pub fn dispose(&self) {
         self.disposed.store(true, Ordering::Release);
+        // The recovery worker scans the store on a timer, so shut it down before the caller may
+        // reclaim the store directory.
+        self._recovery.close();
         super::deferred_revival::dispose_scoped_retries(&self.context);
     }
 
@@ -161,11 +164,7 @@ impl TaskLifecycle {
         &self,
         task_id: &str,
     ) -> Result<super::host_session_revive::HostSessionParkOutcome, LifecycleError> {
-        super::host_session_revive::park_host_session_on_daemon_loss(
-            &self.context,
-            task_id,
-            None,
-        )
+        super::host_session_revive::park_host_session_on_daemon_loss(&self.context, task_id, None)
     }
 
     pub fn park_host_session_on_daemon_loss_with_options(

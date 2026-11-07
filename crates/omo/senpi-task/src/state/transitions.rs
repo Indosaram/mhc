@@ -144,7 +144,10 @@ fn is_status_transition_allowed(current: TaskStatus, transition: &TaskTransition
         TaskTransition::Unpause { .. } => current == TaskStatus::Paused,
         TaskTransition::Start { .. } => current == TaskStatus::Pending,
         TaskTransition::Cancel { .. } => {
-            matches!(current, TaskStatus::Running | TaskStatus::Pending | TaskStatus::Paused)
+            matches!(
+                current,
+                TaskStatus::Running | TaskStatus::Pending | TaskStatus::Paused
+            )
         }
         TaskTransition::Complete { .. }
         | TaskTransition::Fail { .. }

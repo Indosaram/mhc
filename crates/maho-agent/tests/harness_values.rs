@@ -1,30 +1,44 @@
 //! Port of senpi packages/agent/test/harness/values.test.ts.
 
 use maho_agent::harness::session::values::{
-    branch_tip, branch_tip_inventory_prefix, entry_label, lane_config, lane_state, list, operation_meta,
-    operation_preparation, operation_preparation_prefix, operation_result, operation_state, operation_tool_args,
-    operation_tool_args_prefix, operation_tool_memo, operation_tool_memo_prefix, pending_assistant_frames,
-    pending_entry, pending_tool_output, pending_tool_output_prefix, session_name, value,
+    branch_tip, branch_tip_inventory_prefix, entry_label, lane_config, lane_state, list,
+    operation_meta, operation_preparation, operation_preparation_prefix, operation_result,
+    operation_state, operation_tool_args, operation_tool_args_prefix, operation_tool_memo,
+    operation_tool_memo_prefix, pending_assistant_frames, pending_entry, pending_tool_output,
+    pending_tool_output_prefix, session_name, value,
 };
 
 #[test]
 fn binds_immutable_scalar_and_list_addresses_with_validated_components() {
-    assert_eq!(value("app.state", "").expect("address").namespace, "app.state");
-    assert_eq!(list("app.events", "workspace").expect("address").key, "workspace");
+    assert_eq!(
+        value("app.state", "").expect("address").namespace,
+        "app.state"
+    );
+    assert_eq!(
+        list("app.events", "workspace").expect("address").key,
+        "workspace"
+    );
     assert!(value("", "").is_err());
     assert_eq!(
         value("", "").expect_err("empty namespace").message,
         "Value namespace must not be empty"
     );
     assert_eq!(
-        value("app\u{0}state", "").expect_err("nul namespace").message,
+        value("app\u{0}state", "")
+            .expect_err("nul namespace")
+            .message,
         "Value namespace must not contain \\u0000"
     );
     assert_eq!(
-        list("app.events", "bad\u{0}key").expect_err("nul key").message,
+        list("app.events", "bad\u{0}key")
+            .expect_err("nul key")
+            .message,
         "Value key must not contain \\u0000"
     );
-    assert_eq!(value("pi.application", "").expect("address").namespace, "pi.application");
+    assert_eq!(
+        value("pi.application", "").expect("address").namespace,
+        "pi.application"
+    );
 }
 
 #[test]
@@ -101,5 +115,8 @@ fn exports_exactly_the_five_documented_scan_prefix_constructors() {
         operation_tool_args_prefix("operation", Some("step")).key,
         "operation:step:"
     );
-    assert_eq!(operation_tool_memo_prefix("operation", Some("invocation")).key, "operation:invocation:");
+    assert_eq!(
+        operation_tool_memo_prefix("operation", Some("invocation")).key,
+        "operation:invocation:"
+    );
 }

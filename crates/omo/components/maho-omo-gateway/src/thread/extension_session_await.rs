@@ -30,14 +30,19 @@ pub struct SessionAwait<'a> {
 fn settle(read: &dyn Fn() -> StoreExtensionResult<Value>) -> StoreExtensionResult<Value> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)) {
         Ok(result) => result,
-        Err(_) => StoreExtensionResult::refused(StoreExtensionRefusalCode::ExtensionOperationFailed, "the extension operation failed"),
+        Err(_) => StoreExtensionResult::refused(
+            StoreExtensionRefusalCode::ExtensionOperationFailed,
+            "the extension operation failed",
+        ),
     }
 }
 
 /// Only a status the op itself reports as not `pending` is final; a refused status call never is.
 fn is_final(result: &StoreExtensionResult<Value>) -> bool {
     match result {
-        StoreExtensionResult::Ok { value } => value.get("status").and_then(Value::as_str) != Some("pending"),
+        StoreExtensionResult::Ok { value } => {
+            value.get("status").and_then(Value::as_str) != Some("pending")
+        }
         StoreExtensionResult::Refused { .. } => false,
     }
 }
@@ -45,12 +50,16 @@ fn is_final(result: &StoreExtensionResult<Value>) -> bool {
 fn unresolved(id: &str, why: &str) -> StoreExtensionResult<Value> {
     StoreExtensionResult::refused(
         StoreExtensionRefusalCode::AwaitUnresolved,
-        format!("The request {id} has no final status: {why}. It may still complete; read its status again before retrying, so a retry does not repeat it."),
+        format!(
+            "The request {id} has no final status: {why}. It may still complete; read its status again before retrying, so a retry does not repeat it."
+        ),
     )
 }
 
 fn request_id(file: &Path) -> String {
-    file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+    file.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// The deadline: `expire`, then one final `status`.
@@ -58,27 +67,46 @@ fn expire_and_read(request: &SessionAwait<'_>) -> StoreExtensionResult<Value> {
     let id = request_id(&request.file);
     let expired = settle(request.expire);
     if let StoreExtensionResult::Refused { code, message } = &expired {
-        return unresolved(&id, &format!("expiring it was refused ({}: {message})", code.as_str()));
+        return unresolved(
+            &id,
+            &format!("expiring it was refused ({}: {message})", code.as_str()),
+        );
     }
     let last = settle(request.status);
     if is_final(&last) {
         return last;
     }
     match &last {
-        StoreExtensionResult::Ok { .. } => unresolved(&id, "its status still reads pending after it was expired"),
-        StoreExtensionResult::Refused { code, message } => unresolved(&id, &format!("its status after expiry was refused ({}: {message})", code.as_str())),
+        StoreExtensionResult::Ok { .. } => {
+            unresolved(&id, "its status still reads pending after it was expired")
+        }
+        StoreExtensionResult::Refused { code, message } => unresolved(
+            &id,
+            &format!(
+                "its status after expiry was refused ({}: {message})",
+                code.as_str()
+            ),
+        ),
     }
 }
 
 pub fn await_session_request(request: SessionAwait<'_>) -> StoreExtensionResult<Value> {
     let Some(directory) = request.file.parent() else {
         let current = settle(request.status);
-        return if is_final(&current) { current } else { expire_and_read(&request) };
+        return if is_final(&current) {
+            current
+        } else {
+            expire_and_read(&request)
+        };
     };
     if !directory.exists() {
         // No connector has started, so nothing can complete the request: it expires at once.
         let current = settle(request.status);
-        return if is_final(&current) { current } else { expire_and_read(&request) };
+        return if is_final(&current) {
+            current
+        } else {
+            expire_and_read(&request)
+        };
     }
     let deadline = Instant::now() + Duration::from_millis(request.timeout_ms.max(0) as u64);
     let mut saw_wake_file = false;
@@ -121,12 +149,24 @@ mod tests {
     #[test]
     fn a_final_status_ends_the_wait_without_a_deadline() {
         let directory = tempfile::tempdir().expect("temp dir");
-        let file = directory.path().join("alpha").join("tor_0123456789abcdef0123456789abcdef");
+        let file = directory
+            .path()
+            .join("alpha")
+            .join("tor_0123456789abcdef0123456789abcdef");
         std::fs::create_dir_all(directory.path().join("alpha")).expect("wake dir");
         let status = || ok(serde_json::json!({ "status": "opened", "value": 1 }));
         let expire = || panic!("expire must not run");
-        let result = await_session_request(SessionAwait { file, timeout_ms: 60_000, status: &status, expire: &expire, on_armed: None });
-        assert_eq!(result, ok(serde_json::json!({ "status": "opened", "value": 1 })));
+        let result = await_session_request(SessionAwait {
+            file,
+            timeout_ms: 60_000,
+            status: &status,
+            expire: &expire,
+            on_armed: None,
+        });
+        assert_eq!(
+            result,
+            ok(serde_json::json!({ "status": "opened", "value": 1 }))
+        );
     }
 
     #[test]
@@ -145,21 +185,38 @@ mod tests {
             }
         };
         let expire = || panic!("expire must not run");
-        let result = await_session_request(SessionAwait { file, timeout_ms: 60_000, status: &status, expire: &expire, on_armed: None });
+        let result = await_session_request(SessionAwait {
+            file,
+            timeout_ms: 60_000,
+            status: &status,
+            expire: &expire,
+            on_armed: None,
+        });
         assert_eq!(result, ok(serde_json::json!({ "status": "opened" })));
     }
 
     #[test]
     fn a_missing_wake_directory_expires_at_once() {
         let directory = tempfile::tempdir().expect("temp dir");
-        let file = directory.path().join("missing").join("tor_0123456789abcdef0123456789abcdef");
+        let file = directory
+            .path()
+            .join("missing")
+            .join("tor_0123456789abcdef0123456789abcdef");
         let expired = std::cell::Cell::new(false);
-        let status = || ok(serde_json::json!({ "status": if expired.get() { "expired" } else { "pending" } }));
+        let status = || {
+            ok(serde_json::json!({ "status": if expired.get() { "expired" } else { "pending" } }))
+        };
         let expire = || {
             expired.set(true);
             ok(serde_json::json!({ "expired": true }))
         };
-        let result = await_session_request(SessionAwait { file, timeout_ms: 60_000, status: &status, expire: &expire, on_armed: None });
+        let result = await_session_request(SessionAwait {
+            file,
+            timeout_ms: 60_000,
+            status: &status,
+            expire: &expire,
+            on_armed: None,
+        });
         assert_eq!(result, ok(serde_json::json!({ "status": "expired" })));
     }
 
@@ -171,7 +228,15 @@ mod tests {
         let file = wake_dir.join("tor_0123456789abcdef0123456789abcdef");
         let status = || ok(serde_json::json!({ "status": "pending" }));
         let expire = || ok(serde_json::json!({ "status": "pending" }));
-        let result = await_session_request(SessionAwait { file, timeout_ms: 1, status: &status, expire: &expire, on_armed: None });
-        assert!(matches!(result, StoreExtensionResult::Refused { code, .. } if code == StoreExtensionRefusalCode::AwaitUnresolved));
+        let result = await_session_request(SessionAwait {
+            file,
+            timeout_ms: 1,
+            status: &status,
+            expire: &expire,
+            on_armed: None,
+        });
+        assert!(
+            matches!(result, StoreExtensionResult::Refused { code, .. } if code == StoreExtensionRefusalCode::AwaitUnresolved)
+        );
     }
 }

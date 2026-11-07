@@ -451,15 +451,16 @@ pub async fn record_thread_creator(
         return Ok(());
     };
     if let Some(creator) = resolve_caller_durable_id(resolve, runtime_id).await
-        && creator != created_id {
-            store.record_thread_creation(
-                &super::store_extension_facade::ThreadCreationRecord {
-                    creator_durable_id: creator,
-                    created_durable_id: created_id.to_owned(),
-                },
-                store.now(),
-            )?;
-        }
+        && creator != created_id
+    {
+        store.record_thread_creation(
+            &super::store_extension_facade::ThreadCreationRecord {
+                creator_durable_id: creator,
+                created_durable_id: created_id.to_owned(),
+            },
+            store.now(),
+        )?;
+    }
     Ok(())
 }
 

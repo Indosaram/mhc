@@ -3,20 +3,43 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum GoalStatus { Active, Paused, Blocked, Complete }
+pub enum GoalStatus {
+    Active,
+    Paused,
+    Blocked,
+    Complete,
+}
 impl std::fmt::Display for GoalStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self { Self::Active => "active", Self::Paused => "paused", Self::Blocked => "blocked", Self::Complete => "complete" })
+        f.write_str(match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Blocked => "blocked",
+            Self::Complete => "complete",
+        })
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelSettableGoalStatus { Complete, Blocked }
+pub enum ModelSettableGoalStatus {
+    Complete,
+    Blocked,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GoalAccountingMode { Active, ActiveOrBlocked, ActiveOrComplete }
+pub enum GoalAccountingMode {
+    Active,
+    ActiveOrBlocked,
+    ActiveOrComplete,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GoalUpdateSource { Model, User }
+pub enum GoalUpdateSource {
+    Model,
+    User,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GoalStoreRef { pub base_dir: std::path::PathBuf, pub thread_id: String }
+pub struct GoalStoreRef {
+    pub base_dir: std::path::PathBuf,
+    pub thread_id: String,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
@@ -50,26 +73,54 @@ pub struct Goal {
     pub completed_at: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GoalFile { pub version: u8, pub goal: Option<Goal> }
+pub struct GoalFile {
+    pub version: u8,
+    pub goal: Option<Goal>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TokenUsageSnapshot { pub input: u64, pub output: u64, pub cache_read: u64, pub cache_write: u64, pub total_tokens: u64 }
+pub struct TokenUsageSnapshot {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub total_tokens: u64,
+}
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GoalUpdate { pub objective: Option<String>, pub status: Option<GoalStatus>, pub reason: Option<String>, pub token_budget: Option<Option<f64>> }
+pub struct GoalUpdate {
+    pub objective: Option<String>,
+    pub status: Option<GoalStatus>,
+    pub reason: Option<String>,
+    pub token_budget: Option<Option<f64>>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalToolSnapshot {
-    pub thread_id: String, pub objective: String, pub status: GoalStatus,
+    pub thread_id: String,
+    pub objective: String,
+    pub status: GoalStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continuation_stopped_at: Option<f64>,
-    pub tokens_used: f64, pub time_used_seconds: f64, pub created_at: f64, pub updated_at: f64,
+    pub tokens_used: f64,
+    pub time_used_seconds: f64,
+    pub created_at: f64,
+    pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_at: Option<f64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GoalToolResponse { pub goal: Option<GoalToolSnapshot>, #[serde(skip_serializing_if = "Option::is_none")] pub continuation: Option<GoalToolContinuation> }
+pub struct GoalToolResponse {
+    pub goal: Option<GoalToolSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<GoalToolContinuation>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GoalToolContinuation { pub status: String, pub message: String }
-pub fn is_record(value: &serde_json::Value) -> bool { value.is_object() || value.is_array() }
+pub struct GoalToolContinuation {
+    pub status: String,
+    pub message: String,
+}
+pub fn is_record(value: &serde_json::Value) -> bool {
+    value.is_object() || value.is_array()
+}

@@ -1,9 +1,10 @@
-use std::collections::HashSet;
-use maho_tools::definition::KernelPrelude;
 use crate::bridges::schema_bridge::EvalSchemaToolInfo;
+use maho_tools::definition::KernelPrelude;
+use std::collections::HashSet;
 
 pub type ActiveToolsSource = std::sync::Arc<dyn Fn() -> Result<Vec<String>, String> + Send + Sync>;
-pub type AllToolsSource = std::sync::Arc<dyn Fn() -> Result<Vec<EvalSchemaToolInfo>, String> + Send + Sync>;
+pub type AllToolsSource =
+    std::sync::Arc<dyn Fn() -> Result<Vec<EvalSchemaToolInfo>, String> + Send + Sync>;
 
 pub const KERNEL_BUILTIN_GLOBALS: &[&str] = &[
     "agent",
@@ -25,13 +26,18 @@ pub const KERNEL_BUILTIN_GLOBALS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("Tool \"{tool_name}\" kernelPrelude export \"{colliding_export}\" collides with a built-in eval kernel global.")]
+#[error(
+    "Tool \"{tool_name}\" kernelPrelude export \"{colliding_export}\" collides with a built-in eval kernel global."
+)]
 pub struct KernelPreludeCollisionError {
     pub tool_name: String,
     pub colliding_export: String,
 }
 
-pub fn project_kernel_prelude(tool_name: &str, prelude: Option<KernelPrelude>) -> Result<Option<KernelPrelude>, KernelPreludeCollisionError> {
+pub fn project_kernel_prelude(
+    tool_name: &str,
+    prelude: Option<KernelPrelude>,
+) -> Result<Option<KernelPrelude>, KernelPreludeCollisionError> {
     if let Some(prelude) = prelude {
         let builtins: HashSet<&str> = KERNEL_BUILTIN_GLOBALS.iter().copied().collect();
         for export in &prelude.exports {

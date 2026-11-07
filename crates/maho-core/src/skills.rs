@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::{config_dir_name, get_agent_dir};
-use crate::diagnostics::{ResourceCollision, ResourceCollisionType, ResourceDiagnostic, ResourceDiagnosticType};
+use crate::diagnostics::{
+    ResourceCollision, ResourceCollisionType, ResourceDiagnostic, ResourceDiagnosticType,
+};
 use crate::frontmatter::parse_frontmatter;
 use crate::paths::{PathInputOptions, canonicalize_path, lexical_resolve, resolve_path};
 use crate::skill_discovery::{
@@ -45,11 +47,17 @@ pub fn validate_name(name: &str) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
 
     if name.chars().count() > MAX_NAME_LENGTH {
-        errors.push(format!("name exceeds {MAX_NAME_LENGTH} characters ({})", name.chars().count()));
+        errors.push(format!(
+            "name exceeds {MAX_NAME_LENGTH} characters ({})",
+            name.chars().count()
+        ));
     }
 
     if !is_valid_name_characters(name) {
-        errors.push("name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)".to_string());
+        errors.push(
+            "name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)"
+                .to_string(),
+        );
     }
 
     if name.starts_with('-') || name.ends_with('-') {
@@ -65,7 +73,9 @@ pub fn validate_name(name: &str) -> Vec<String> {
 
 fn is_valid_name_characters(name: &str) -> bool {
     !name.is_empty()
-        && name.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
 }
 
 /// `validateDescription`.
@@ -158,8 +168,8 @@ pub fn load_skills_from_dir(options: &LoadSkillsFromDirOptions) -> LoadSkillsRes
     load_skills_from_dir_internal(
         &options.dir,
         &options.source,
-        true, (None,
-        None),
+        true,
+        (None, None),
         Some(&provenance),
         options.allowed_set.as_ref(),
         &std::collections::BTreeSet::new(),
@@ -171,7 +181,10 @@ fn to_posix_path(path: &str) -> String {
 }
 
 fn relative_path(root: &str, path: &str) -> String {
-    Path::new(path).strip_prefix(Path::new(root)).map(|path| path.to_string_lossy().into_owned()).unwrap_or_default()
+    Path::new(path)
+        .strip_prefix(Path::new(root))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn file_is(path: &Path) -> Option<bool> {
@@ -207,19 +220,35 @@ fn load_skills_from_dir_internal(
     let mut diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
     if !Path::new(dir).exists() {
-        return LoadSkillsResult { skills, diagnostics };
+        return LoadSkillsResult {
+            skills,
+            diagnostics,
+        };
     }
 
     let default_allowed = crate::skill_access::SkillAllowedSet::default();
     let allowed = allowed_set.unwrap_or(&default_allowed);
 
-    let canonical = match crate::skill_access::authorize_skill_path(Path::new(dir), provenance, allowed, true) {
+    let canonical = match crate::skill_access::authorize_skill_path(
+        Path::new(dir),
+        provenance,
+        allowed,
+        true,
+    ) {
         Ok(c) => c,
-        Err(error) => return LoadSkillsResult { skills, diagnostics: vec![*error.diagnostic] },
+        Err(error) => {
+            return LoadSkillsResult {
+                skills,
+                diagnostics: vec![*error.diagnostic],
+            };
+        }
     };
     let canonical_str = canonical.to_string_lossy().into_owned();
     if ancestry.contains(&canonical_str) {
-        return LoadSkillsResult { skills, diagnostics };
+        return LoadSkillsResult {
+            skills,
+            diagnostics,
+        };
     }
     let mut descendants = ancestry.clone();
     descendants.insert(canonical_str);
@@ -228,13 +257,19 @@ fn load_skills_from_dir_internal(
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
 
     let Ok(entries) = crate::utils::read_dir_sorted(dir) else {
-        return LoadSkillsResult { skills, diagnostics };
+        return LoadSkillsResult {
+            skills,
+            diagnostics,
+        };
     };
     let entries: Vec<std::path::PathBuf> = entries.into_iter().map(|entry| entry.path()).collect();
     add_ignore_rules_from_entries(&mut matcher, dir, &root, &entries);
 
     for full_path in &entries {
-        let name = full_path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = full_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if name != "SKILL.md" {
             continue;
         }
@@ -258,11 +293,17 @@ fn load_skills_from_dir_internal(
             skills.push(skill);
         }
         diagnostics.extend(found);
-        return LoadSkillsResult { skills, diagnostics };
+        return LoadSkillsResult {
+            skills,
+            diagnostics,
+        };
     }
 
     for full_path in &entries {
-        let name = full_path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = full_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if should_skip_skill_walk_directory_name(&name) {
             continue;
         }
@@ -272,7 +313,11 @@ fn load_skills_from_dir_internal(
         };
 
         let rel_path = to_posix_path(&relative_path(&root, &full_path.to_string_lossy()));
-        let ignore_path = if is_directory { format!("{rel_path}/") } else { rel_path.clone() };
+        let ignore_path = if is_directory {
+            format!("{rel_path}/")
+        } else {
+            rel_path.clone()
+        };
         if matcher.ignores(&ignore_path) {
             continue;
         }
@@ -281,8 +326,8 @@ fn load_skills_from_dir_internal(
             let sub_result = load_skills_from_dir_internal(
                 &full_path.to_string_lossy(),
                 source,
-                false, (Some(&matcher),
-                Some(&root)),
+                false,
+                (Some(&matcher), Some(&root)),
                 provenance,
                 Some(allowed),
                 &descendants,
@@ -309,7 +354,10 @@ fn load_skills_from_dir_internal(
         diagnostics.extend(found);
     }
 
-    LoadSkillsResult { skills, diagnostics }
+    LoadSkillsResult {
+        skills,
+        diagnostics,
+    }
 }
 
 fn warning(message: impl Into<String>, path: &str) -> ResourceDiagnostic {
@@ -323,7 +371,10 @@ fn warning(message: impl Into<String>, path: &str) -> ResourceDiagnostic {
 }
 
 /// `loadSkillFromFile`.
-pub fn load_skill_from_file(file_path: &str, source: &str) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
+pub fn load_skill_from_file(
+    file_path: &str,
+    source: &str,
+) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
     load_skill_from_file_internal(file_path, source, None, None, None)
 }
 
@@ -335,12 +386,19 @@ pub fn load_skill_from_file_internal(
     stats: Option<&std::fs::Metadata>,
 ) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
     let mut diagnostics: Vec<ResourceDiagnostic> = Vec::new();
-    let is_declared_skill = Path::new(file_path).file_name().map(|name| name.to_string_lossy() == "SKILL.md").unwrap_or(false);
+    let is_declared_skill = Path::new(file_path)
+        .file_name()
+        .map(|name| name.to_string_lossy() == "SKILL.md")
+        .unwrap_or(false);
 
     let raw_content = match provenance {
         Some(p) if p.kind != crate::skill_access::SkillProvenanceKind::User => {
             let allowed = allowed_set.cloned().unwrap_or_default();
-            match crate::skill_access::read_skill_file_checked(Path::new(file_path), Some(p), &allowed) {
+            match crate::skill_access::read_skill_file_checked(
+                Path::new(file_path),
+                Some(p),
+                &allowed,
+            ) {
                 Ok(content) => content,
                 Err(err) => return (None, vec![*err.diagnostic]),
             }
@@ -367,21 +425,39 @@ pub fn load_skill_from_file_internal(
         }
     };
 
-    let description = parsed.frontmatter.get("description").and_then(|value| value.as_str()).map(str::to_string);
-    let has_description = description.as_deref().is_some_and(|description| !description.trim().is_empty());
+    let description = parsed
+        .frontmatter
+        .get("description")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let has_description = description
+        .as_deref()
+        .is_some_and(|description| !description.trim().is_empty());
     if !is_declared_skill && !has_description {
         return (None, diagnostics);
     }
 
-    let skill_dir = Path::new(file_path).parent().map(|parent| parent.to_string_lossy().into_owned()).unwrap_or_default();
-    let parent_dir_name = Path::new(&skill_dir).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let skill_dir = Path::new(file_path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent_dir_name = Path::new(&skill_dir)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
     for error in validate_description(description.as_deref()) {
         diagnostics.push(warning(error, file_path));
     }
 
-    let frontmatter_name = parsed.frontmatter.get("name").and_then(|value| value.as_str()).map(str::to_string);
-    let name = frontmatter_name.filter(|name| !name.is_empty()).unwrap_or(parent_dir_name);
+    let frontmatter_name = parsed
+        .frontmatter
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let name = frontmatter_name
+        .filter(|name| !name.is_empty())
+        .unwrap_or(parent_dir_name);
 
     for error in validate_name(&name) {
         diagnostics.push(warning(error, file_path));
@@ -417,7 +493,10 @@ pub enum FileReadTool {
 
 /// `formatSkillsForPrompt`: the Agent Skills XML block, with shared roots aliased.
 pub fn format_skills_for_prompt(skills: &[Skill], file_read_tool: FileReadTool) -> String {
-    let visible_skills: Vec<&Skill> = skills.iter().filter(|skill| !skill.disable_model_invocation).collect();
+    let visible_skills: Vec<&Skill> = skills
+        .iter()
+        .filter(|skill| !skill.disable_model_invocation)
+        .collect();
 
     if visible_skills.is_empty() {
         return String::new();
@@ -454,12 +533,26 @@ pub fn format_skills_for_prompt(skills: &[Skill], file_read_tool: FileReadTool) 
 
     for skill in &visible_skills {
         let dir = skill_root_dir(&skill.file_path);
-        let alias = root_by_path.iter().find(|(path, _)| *path == dir).map(|(_, alias)| alias.clone()).unwrap_or_default();
-        let relative = skill.file_path.strip_prefix(&format!("{dir}/")).unwrap_or(&skill.file_path).to_string();
+        let alias = root_by_path
+            .iter()
+            .find(|(path, _)| *path == dir)
+            .map(|(_, alias)| alias.clone())
+            .unwrap_or_default();
+        let relative = skill
+            .file_path
+            .strip_prefix(&format!("{dir}/"))
+            .unwrap_or(&skill.file_path)
+            .to_string();
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!("    <description>{}</description>", escape_xml(&skill.description)));
-        lines.push(format!("    <location>{}</location>", escape_xml(&format!("{alias}/{relative}"))));
+        lines.push(format!(
+            "    <description>{}</description>",
+            escape_xml(&skill.description)
+        ));
+        lines.push(format!(
+            "    <location>{}</location>",
+            escape_xml(&format!("{alias}/{relative}"))
+        ));
         lines.push("  </skill>".to_string());
     }
 
@@ -477,7 +570,12 @@ fn skill_root_dir(file_path: &str) -> String {
 }
 
 fn escape_xml(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// `LoadSkillsOptions`.
@@ -490,24 +588,62 @@ pub struct LoadSkillsOptions {
 }
 
 /// Provenance-aware loading used by resource discovery. Authorization precedes all skill bytes.
-pub fn load_skills_with_provenance(options: &LoadSkillsOptions, provenance_by_path: &std::collections::HashMap<String, crate::skill_access::SkillProvenance>, user_skill_roots: &[String]) -> LoadSkillsResult {
-    let allowed = crate::skill_access::build_skill_allowed_set(&user_skill_roots.iter().map(std::path::PathBuf::from).collect::<Vec<_>>());
+pub fn load_skills_with_provenance(
+    options: &LoadSkillsOptions,
+    provenance_by_path: &std::collections::HashMap<String, crate::skill_access::SkillProvenance>,
+    user_skill_roots: &[String],
+) -> LoadSkillsResult {
+    let allowed = crate::skill_access::build_skill_allowed_set(
+        &user_skill_roots
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>(),
+    );
     let mut result = LoadSkillsResult::default();
     let mut seen = HashSet::new();
     for path in &options.skill_paths {
         let provenance = provenance_by_path.get(path);
         let loaded = if Path::new(path).is_dir() {
-            load_skills_from_dir_internal(path, "path", true, (None, None), provenance, Some(&allowed), &std::collections::BTreeSet::new())
+            load_skills_from_dir_internal(
+                path,
+                "path",
+                true,
+                (None, None),
+                provenance,
+                Some(&allowed),
+                &std::collections::BTreeSet::new(),
+            )
         } else {
-            let (skill, diagnostics) = load_skill_from_file_internal(path, "path", provenance, Some(&allowed), None);
-            LoadSkillsResult { skills:skill.into_iter().collect(), diagnostics }
+            let (skill, diagnostics) =
+                load_skill_from_file_internal(path, "path", provenance, Some(&allowed), None);
+            LoadSkillsResult {
+                skills: skill.into_iter().collect(),
+                diagnostics,
+            }
         };
         result.diagnostics.extend(loaded.diagnostics);
         for skill in loaded.skills {
-            if !seen.insert(canonicalize_path(&skill.file_path)) { continue; }
+            if !seen.insert(canonicalize_path(&skill.file_path)) {
+                continue;
+            }
             if let Some(existing) = result.skills.iter().find(|s| s.name == skill.name) {
-                result.diagnostics.push(ResourceDiagnostic { category: None, diagnostic_type:ResourceDiagnosticType::Collision, message:format!("name \"{}\" collision",skill.name), path:Some(skill.file_path.clone()), collision:Some(ResourceCollision { resource_type:ResourceCollisionType::Skill, name:skill.name, winner_path:existing.file_path.clone(), loser_path:skill.file_path, winner_source:None, loser_source:None }) });
-            } else { result.skills.push(skill); }
+                result.diagnostics.push(ResourceDiagnostic {
+                    category: None,
+                    diagnostic_type: ResourceDiagnosticType::Collision,
+                    message: format!("name \"{}\" collision", skill.name),
+                    path: Some(skill.file_path.clone()),
+                    collision: Some(ResourceCollision {
+                        resource_type: ResourceCollisionType::Skill,
+                        name: skill.name,
+                        winner_path: existing.file_path.clone(),
+                        loser_path: skill.file_path,
+                        winner_source: None,
+                        loser_source: None,
+                    }),
+                });
+            } else {
+                result.skills.push(skill);
+            }
         }
     }
     result
@@ -515,9 +651,15 @@ pub fn load_skills_with_provenance(options: &LoadSkillsOptions, provenance_by_pa
 
 /// `loadSkills`: every configured location, with name collisions reported as diagnostics.
 pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
-    let process_cwd = std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
+    let process_cwd = std::env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let resolved_cwd = resolve_path(&options.cwd, &process_cwd, &PathInputOptions::default());
-    let agent_dir = if options.agent_dir.is_empty() { get_agent_dir() } else { options.agent_dir.clone() };
+    let agent_dir = if options.agent_dir.is_empty() {
+        get_agent_dir()
+    } else {
+        options.agent_dir.clone()
+    };
     let resolved_agent_dir = resolve_path(&agent_dir, &process_cwd, &PathInputOptions::default());
 
     let mut skill_map: Vec<(String, Skill)> = Vec::new();
@@ -525,7 +667,11 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let mut all_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
     let mut collision_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
-    let add_skills = |result: LoadSkillsResult, all: &mut Vec<ResourceDiagnostic>, collisions: &mut Vec<ResourceDiagnostic>, map: &mut Vec<(String, Skill)>, seen: &mut HashSet<String>| {
+    let add_skills = |result: LoadSkillsResult,
+                      all: &mut Vec<ResourceDiagnostic>,
+                      collisions: &mut Vec<ResourceDiagnostic>,
+                      map: &mut Vec<(String, Skill)>,
+                      seen: &mut HashSet<String>| {
         all.extend(result.diagnostics);
         for skill in result.skills {
             let real_path = canonicalize_path(&skill.file_path);
@@ -557,29 +703,56 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
 
     if options.include_defaults {
         let user = load_skills_from_dir_internal(
-            &Path::new(&resolved_agent_dir).join("skills").to_string_lossy(),
+            &Path::new(&resolved_agent_dir)
+                .join("skills")
+                .to_string_lossy(),
             "user",
-            true, (None,
-            None),
+            true,
+            (None, None),
             None,
             None,
             &std::collections::BTreeSet::new(),
         );
-        add_skills(user, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
+        add_skills(
+            user,
+            &mut all_diagnostics,
+            &mut collision_diagnostics,
+            &mut skill_map,
+            &mut real_path_set,
+        );
         let project = load_skills_from_dir_internal(
-            &lexical_resolve(&Path::new(&resolved_cwd).join(config_dir_name()).join("skills").to_string_lossy()),
+            &lexical_resolve(
+                &Path::new(&resolved_cwd)
+                    .join(config_dir_name())
+                    .join("skills")
+                    .to_string_lossy(),
+            ),
             "project",
-            true, (None,
-            None),
+            true,
+            (None, None),
             None,
             None,
             &std::collections::BTreeSet::new(),
         );
-        add_skills(project, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
+        add_skills(
+            project,
+            &mut all_diagnostics,
+            &mut collision_diagnostics,
+            &mut skill_map,
+            &mut real_path_set,
+        );
     }
 
-    let user_skills_dir = Path::new(&resolved_agent_dir).join("skills").to_string_lossy().into_owned();
-    let project_skills_dir = lexical_resolve(&Path::new(&resolved_cwd).join(config_dir_name()).join("skills").to_string_lossy());
+    let user_skills_dir = Path::new(&resolved_agent_dir)
+        .join("skills")
+        .to_string_lossy()
+        .into_owned();
+    let project_skills_dir = lexical_resolve(
+        &Path::new(&resolved_cwd)
+            .join(config_dir_name())
+            .join("skills")
+            .to_string_lossy(),
+    );
 
     let get_source = |resolved_path: &str| -> String {
         if !options.include_defaults {
@@ -594,20 +767,45 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     };
 
     for raw_path in &options.skill_paths {
-        let resolved_path = resolve_path(raw_path, &resolved_cwd, &PathInputOptions { trim: true, ..Default::default() });
+        let resolved_path = resolve_path(
+            raw_path,
+            &resolved_cwd,
+            &PathInputOptions {
+                trim: true,
+                ..Default::default()
+            },
+        );
         let Ok(metadata) = std::fs::metadata(&resolved_path) else {
             all_diagnostics.push(warning("skill path does not exist", &resolved_path));
             continue;
         };
         let source = get_source(&resolved_path);
         if metadata.is_dir() {
-            let result = load_skills_from_dir_internal(&resolved_path, &source, true, (None, None), None, None, &std::collections::BTreeSet::new());
-            add_skills(result, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
+            let result = load_skills_from_dir_internal(
+                &resolved_path,
+                &source,
+                true,
+                (None, None),
+                None,
+                None,
+                &std::collections::BTreeSet::new(),
+            );
+            add_skills(
+                result,
+                &mut all_diagnostics,
+                &mut collision_diagnostics,
+                &mut skill_map,
+                &mut real_path_set,
+            );
         } else if metadata.is_file() && resolved_path.ends_with(".md") {
-            let (skill, diagnostics) = load_skill_from_file_internal(&resolved_path, &source, None, None, Some(&metadata));
+            let (skill, diagnostics) =
+                load_skill_from_file_internal(&resolved_path, &source, None, None, Some(&metadata));
             match skill {
                 Some(skill) => add_skills(
-                    LoadSkillsResult { skills: vec![skill], diagnostics },
+                    LoadSkillsResult {
+                        skills: vec![skill],
+                        diagnostics,
+                    },
                     &mut all_diagnostics,
                     &mut collision_diagnostics,
                     &mut skill_map,
@@ -621,7 +819,10 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     }
 
     all_diagnostics.extend(collision_diagnostics);
-    LoadSkillsResult { skills: skill_map.into_iter().map(|(_, skill)| skill).collect(), diagnostics: all_diagnostics }
+    LoadSkillsResult {
+        skills: skill_map.into_iter().map(|(_, skill)| skill).collect(),
+        diagnostics: all_diagnostics,
+    }
 }
 
 fn is_under_path(target: &str, root: &str) -> bool {
@@ -646,7 +847,10 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} description"),
             file_path: file_path.to_string(),
-            base_dir: Path::new(file_path).parent().map(|parent| parent.to_string_lossy().into_owned()).unwrap_or_default(),
+            base_dir: Path::new(file_path)
+                .parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             source_info: create_skill_source_info(file_path, "/skills", "path"),
             disable_model_invocation: false,
             provenance: None,
@@ -674,40 +878,71 @@ mod tests {
     #[test]
     fn descriptions_are_required_and_bounded() {
         assert!(validate_description(Some("ok")).is_empty());
-        assert_eq!(validate_description(Some("   ")), vec!["description is required".to_string()]);
-        assert_eq!(validate_description(None), vec!["description is required".to_string()]);
-        assert_eq!(validate_description(Some(&"d".repeat(MAX_DESCRIPTION_LENGTH + 1))).len(), 1);
+        assert_eq!(
+            validate_description(Some("   ")),
+            vec!["description is required".to_string()]
+        );
+        assert_eq!(
+            validate_description(None),
+            vec!["description is required".to_string()]
+        );
+        assert_eq!(
+            validate_description(Some(&"d".repeat(MAX_DESCRIPTION_LENGTH + 1))).len(),
+            1
+        );
     }
 
     #[test]
     fn source_scopes_follow_the_source_name() {
-        assert_eq!(create_skill_source_info("/s/SKILL.md", "/s", "user").scope, SourceScope::User);
-        assert_eq!(create_skill_source_info("/s/SKILL.md", "/s", "project").scope, SourceScope::Project);
-        assert_eq!(create_skill_source_info("/s/SKILL.md", "/s", "path").scope, SourceScope::Temporary);
-        assert_eq!(create_skill_source_info("/s/SKILL.md", "/s", "auto").source, "auto");
+        assert_eq!(
+            create_skill_source_info("/s/SKILL.md", "/s", "user").scope,
+            SourceScope::User
+        );
+        assert_eq!(
+            create_skill_source_info("/s/SKILL.md", "/s", "project").scope,
+            SourceScope::Project
+        );
+        assert_eq!(
+            create_skill_source_info("/s/SKILL.md", "/s", "path").scope,
+            SourceScope::Temporary
+        );
+        assert_eq!(
+            create_skill_source_info("/s/SKILL.md", "/s", "auto").source,
+            "auto"
+        );
     }
 
     #[test]
     fn a_declared_skill_without_a_description_warns_and_does_not_load() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_skill(dir.path(), "pack/SKILL.md", "---\nname: pack\n---\nbody");
-        let (skill, diagnostics) = load_skill_from_file(&dir.path().join("pack/SKILL.md").to_string_lossy(), "path");
+        let (skill, diagnostics) =
+            load_skill_from_file(&dir.path().join("pack/SKILL.md").to_string_lossy(), "path");
         assert!(skill.is_none());
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "description is required");
-        assert_eq!(diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
+        assert_eq!(
+            diagnostics[0].diagnostic_type,
+            ResourceDiagnosticType::Warning
+        );
     }
 
     #[test]
     fn a_plain_markdown_file_needs_a_description_to_load() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_skill(dir.path(), "pack/notes.md", "no frontmatter here");
-        let (skill, diagnostics) = load_skill_from_file(&dir.path().join("pack/notes.md").to_string_lossy(), "path");
+        let (skill, diagnostics) =
+            load_skill_from_file(&dir.path().join("pack/notes.md").to_string_lossy(), "path");
         assert!(skill.is_none());
         assert!(diagnostics.is_empty());
 
-        write_skill(dir.path(), "pack/named.md", "---\ndescription: useful\n---\nbody");
-        let (skill, diagnostics) = load_skill_from_file(&dir.path().join("pack/named.md").to_string_lossy(), "path");
+        write_skill(
+            dir.path(),
+            "pack/named.md",
+            "---\ndescription: useful\n---\nbody",
+        );
+        let (skill, diagnostics) =
+            load_skill_from_file(&dir.path().join("pack/named.md").to_string_lossy(), "path");
         let skill = skill.expect("skill");
         assert_eq!(skill.name, "pack");
         assert_eq!(skill.description, "useful");
@@ -717,25 +952,49 @@ mod tests {
     #[test]
     fn a_frontmatter_name_overrides_the_directory_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "folder/SKILL.md", "---\nname: custom\ndescription: d\n---\nbody");
-        let (skill, _) = load_skill_from_file(&dir.path().join("folder/SKILL.md").to_string_lossy(), "path");
+        write_skill(
+            dir.path(),
+            "folder/SKILL.md",
+            "---\nname: custom\ndescription: d\n---\nbody",
+        );
+        let (skill, _) = load_skill_from_file(
+            &dir.path().join("folder/SKILL.md").to_string_lossy(),
+            "path",
+        );
         assert_eq!(skill.expect("skill").name, "custom");
     }
 
     #[test]
     fn disable_model_invocation_is_read_from_frontmatter() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "pack/SKILL.md", "---\ndescription: d\ndisable-model-invocation: true\n---\nbody");
-        let (skill, _) = load_skill_from_file(&dir.path().join("pack/SKILL.md").to_string_lossy(), "path");
+        write_skill(
+            dir.path(),
+            "pack/SKILL.md",
+            "---\ndescription: d\ndisable-model-invocation: true\n---\nbody",
+        );
+        let (skill, _) =
+            load_skill_from_file(&dir.path().join("pack/SKILL.md").to_string_lossy(), "path");
         assert!(skill.expect("skill").disable_model_invocation);
     }
 
     #[test]
     fn a_directory_with_skill_md_is_a_root_and_is_not_walked_further() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "pack/SKILL.md", "---\nname: pack\ndescription: d\n---\nbody");
-        write_skill(dir.path(), "pack/nested/SKILL.md", "---\nname: nested\ndescription: d\n---\nbody");
-        let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.path().to_string_lossy().into_owned(), source: "path".to_string(), ..Default::default() });
+        write_skill(
+            dir.path(),
+            "pack/SKILL.md",
+            "---\nname: pack\ndescription: d\n---\nbody",
+        );
+        write_skill(
+            dir.path(),
+            "pack/nested/SKILL.md",
+            "---\nname: nested\ndescription: d\n---\nbody",
+        );
+        let result = load_skills_from_dir(&LoadSkillsFromDirOptions {
+            dir: dir.path().to_string_lossy().into_owned(),
+            source: "path".to_string(),
+            ..Default::default()
+        });
         assert_eq!(result.skills.len(), 1);
         assert_eq!(result.skills[0].name, "pack");
     }
@@ -743,38 +1002,101 @@ mod tests {
     #[test]
     fn root_markdown_files_load_only_when_the_root_is_scanned() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "skills/top.md", "---\ndescription: top\n---\nbody");
-        write_skill(dir.path(), "skills/nested/deep.md", "---\ndescription: deep\n---\nbody");
-        let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.path().join("skills").to_string_lossy().into_owned(), source: "path".to_string(), ..Default::default() });
-        let descriptions: Vec<&str> = result.skills.iter().map(|skill| skill.description.as_str()).collect();
+        write_skill(
+            dir.path(),
+            "skills/top.md",
+            "---\ndescription: top\n---\nbody",
+        );
+        write_skill(
+            dir.path(),
+            "skills/nested/deep.md",
+            "---\ndescription: deep\n---\nbody",
+        );
+        let result = load_skills_from_dir(&LoadSkillsFromDirOptions {
+            dir: dir.path().join("skills").to_string_lossy().into_owned(),
+            source: "path".to_string(),
+            ..Default::default()
+        });
+        let descriptions: Vec<&str> = result
+            .skills
+            .iter()
+            .map(|skill| skill.description.as_str())
+            .collect();
         assert_eq!(descriptions, vec!["top"]);
 
-        let nested = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.path().join("skills/nested").to_string_lossy().into_owned(), source: "path".to_string(), ..Default::default() });
-        let nested_descriptions: Vec<&str> = nested.skills.iter().map(|skill| skill.description.as_str()).collect();
+        let nested = load_skills_from_dir(&LoadSkillsFromDirOptions {
+            dir: dir
+                .path()
+                .join("skills/nested")
+                .to_string_lossy()
+                .into_owned(),
+            source: "path".to_string(),
+            ..Default::default()
+        });
+        let nested_descriptions: Vec<&str> = nested
+            .skills
+            .iter()
+            .map(|skill| skill.description.as_str())
+            .collect();
         assert_eq!(nested_descriptions, vec!["deep"]);
     }
 
     #[test]
     fn an_invalid_frontmatter_document_is_skipped_with_a_warning() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "bad/SKILL.md", "---\nname: invalid-yaml\ndescription: [unclosed bracket\n---\n\n# Invalid YAML Skill\n");
-        let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.path().to_string_lossy().into_owned(), source: "path".to_string(), ..Default::default() });
+        write_skill(
+            dir.path(),
+            "bad/SKILL.md",
+            "---\nname: invalid-yaml\ndescription: [unclosed bracket\n---\n\n# Invalid YAML Skill\n",
+        );
+        let result = load_skills_from_dir(&LoadSkillsFromDirOptions {
+            dir: dir.path().to_string_lossy().into_owned(),
+            source: "path".to_string(),
+            ..Default::default()
+        });
         assert!(result.skills.is_empty());
         assert_eq!(result.diagnostics.len(), 1);
-        assert_eq!(result.diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
-        assert!(result.diagnostics[0].message.contains("at line"), "{}", result.diagnostics[0].message);
-        assert_eq!(result.diagnostics[0].path.as_deref(), Some(dir.path().join("bad").join("SKILL.md").to_string_lossy().as_ref()));
+        assert_eq!(
+            result.diagnostics[0].diagnostic_type,
+            ResourceDiagnosticType::Warning
+        );
+        assert!(
+            result.diagnostics[0].message.contains("at line"),
+            "{}",
+            result.diagnostics[0].message
+        );
+        assert_eq!(
+            result.diagnostics[0].path.as_deref(),
+            Some(
+                dir.path()
+                    .join("bad")
+                    .join("SKILL.md")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
     }
 
     #[test]
     fn duplicate_names_collide_and_the_first_wins() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "a/SKILL.md", "---\nname: same\ndescription: first\n---\nbody");
-        write_skill(dir.path(), "b/SKILL.md", "---\nname: same\ndescription: second\n---\nbody");
+        write_skill(
+            dir.path(),
+            "a/SKILL.md",
+            "---\nname: same\ndescription: first\n---\nbody",
+        );
+        write_skill(
+            dir.path(),
+            "b/SKILL.md",
+            "---\nname: same\ndescription: second\n---\nbody",
+        );
         let result = load_skills(&LoadSkillsOptions {
             cwd: dir.path().to_string_lossy().into_owned(),
             agent_dir: dir.path().join("agent").to_string_lossy().into_owned(),
-            skill_paths: vec![dir.path().join("a").to_string_lossy().into_owned(), dir.path().join("b").to_string_lossy().into_owned()],
+            skill_paths: vec![
+                dir.path().join("a").to_string_lossy().into_owned(),
+                dir.path().join("b").to_string_lossy().into_owned(),
+            ],
             include_defaults: false,
         });
         assert_eq!(result.skills.len(), 1);
@@ -783,8 +1105,18 @@ mod tests {
         let collision = result.diagnostics[0].collision.as_ref().expect("collision");
         assert_eq!(collision.resource_type, ResourceCollisionType::Skill);
         assert_eq!(collision.name, "same");
-        assert!(collision.winner_path.replace('\\', "/").ends_with("a/SKILL.md"));
-        assert!(collision.loser_path.replace('\\', "/").ends_with("b/SKILL.md"));
+        assert!(
+            collision
+                .winner_path
+                .replace('\\', "/")
+                .ends_with("a/SKILL.md")
+        );
+        assert!(
+            collision
+                .loser_path
+                .replace('\\', "/")
+                .ends_with("b/SKILL.md")
+        );
     }
 
     #[test]
@@ -806,8 +1138,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let agent_dir = dir.path().join("agent");
         let cwd = dir.path().join("project");
-        write_skill(&agent_dir, "skills/user-skill/SKILL.md", "---\ndescription: u\n---\nbody");
-        write_skill(&cwd, &format!("{}/skills/project-skill/SKILL.md", config_dir_name()), "---\ndescription: p\n---\nbody");
+        write_skill(
+            &agent_dir,
+            "skills/user-skill/SKILL.md",
+            "---\ndescription: u\n---\nbody",
+        );
+        write_skill(
+            &cwd,
+            &format!("{}/skills/project-skill/SKILL.md", config_dir_name()),
+            "---\ndescription: p\n---\nbody",
+        );
 
         let result = load_skills(&LoadSkillsOptions {
             cwd: cwd.to_string_lossy().into_owned(),
@@ -815,7 +1155,11 @@ mod tests {
             skill_paths: Vec::new(),
             include_defaults: true,
         });
-        let names: Vec<&str> = result.skills.iter().map(|skill| skill.name.as_str()).collect();
+        let names: Vec<&str> = result
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
         assert_eq!(names, vec!["user-skill", "project-skill"]);
         assert_eq!(result.skills[0].source_info.scope, SourceScope::User);
         assert_eq!(result.skills[1].source_info.scope, SourceScope::Project);
@@ -885,7 +1229,13 @@ mod tests {
             )]);
             let result = from_dir(dir.path());
             assert_eq!(result.skills.len(), 1, "{name}");
-            assert!(result.diagnostics.iter().any(|d| d.message.contains(needle)), "{name}");
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(needle)),
+                "{name}"
+            );
         }
     }
 
@@ -930,7 +1280,12 @@ mod tests {
         let dir = fixture_dir(&[("no-frontmatter/SKILL.md", "# No Frontmatter\n\nbody")]);
         let result = from_dir(dir.path());
         assert!(result.skills.is_empty());
-        assert!(result.diagnostics.iter().any(|d| d.message.contains("description is required")));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("description is required"))
+        );
     }
 
     #[test]
@@ -942,7 +1297,11 @@ mod tests {
         let result = from_dir(dir.path());
         assert_eq!(result.skills.len(), 1);
         assert!(result.skills[0].description.contains('\n'));
-        assert!(result.skills[0].description.contains("This is a multiline description."));
+        assert!(
+            result.skills[0]
+                .description
+                .contains("This is a multiline description.")
+        );
         assert!(result.diagnostics.is_empty());
     }
 
@@ -973,8 +1332,17 @@ mod tests {
         )]);
         let result = load_skills(&LoadSkillsOptions {
             cwd: dir.path().join("empty-cwd").to_string_lossy().into_owned(),
-            agent_dir: dir.path().join("empty-agent").to_string_lossy().into_owned(),
-            skill_paths: vec![dir.path().join("valid-skill").to_string_lossy().into_owned()],
+            agent_dir: dir
+                .path()
+                .join("empty-agent")
+                .to_string_lossy()
+                .into_owned(),
+            skill_paths: vec![
+                dir.path()
+                    .join("valid-skill")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
             include_defaults: true,
         });
         assert_eq!(result.skills.len(), 1);

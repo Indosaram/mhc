@@ -25,7 +25,12 @@ pub struct JsonlStorageHeader {
 }
 
 impl JsonlStorageHeader {
-    pub fn new(id: impl Into<String>, storage_version: u32, created_at: i64, cwd: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        storage_version: u32,
+        created_at: i64,
+        cwd: impl Into<String>,
+    ) -> Self {
         Self {
             v: JSONL_FORMAT_VERSION,
             kind: "header".to_owned(),

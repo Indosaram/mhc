@@ -9,7 +9,7 @@ use maho_tui::components::markdown::{DefaultTextStyle, MarkdownOptions, Markdown
 use maho_tui::tui::{Component, Container};
 use std::sync::Arc;
 
-use super::markdown_transform::{create_markdown_transform, MessageType, TransformedMarkdown};
+use super::markdown_transform::{MessageType, TransformedMarkdown, create_markdown_transform};
 use crate::theme::{Theme, ThemeBg, ThemeColor};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
@@ -47,7 +47,9 @@ impl UserMessageComponent {
         component
     }
 
-    pub fn render_revision(&self) -> u64 { self.render_revision }
+    pub fn render_revision(&self) -> u64 {
+        self.render_revision
+    }
 
     pub fn set_output_pad(&mut self, padding: usize) {
         self.output_pad = padding;
@@ -64,23 +66,26 @@ impl UserMessageComponent {
             false,
             self.markdown_transformers.clone(),
         ));
-        self.content.add_child(Rc::new(RefCell::new(TransformedMarkdown::new(
-            &self.text,
-            self.output_pad,
-            1,
-            self.markdown_theme.clone(),
-            Some(DefaultTextStyle {
-                color: Some(Arc::new(move |text| fg.fg(ThemeColor::UserMessageText, text))),
-                bg_color: Some(Arc::new(move |text| bg.bg(ThemeBg::UserMessageBg, text))),
-                ..Default::default()
-            }),
-            MarkdownOptions {
-                preserve_ordered_list_markers: true,
-                preserve_backslash_escapes: true,
-                ..Default::default()
-            },
-            transform,
-        ))));
+        self.content
+            .add_child(Rc::new(RefCell::new(TransformedMarkdown::new(
+                &self.text,
+                self.output_pad,
+                1,
+                self.markdown_theme.clone(),
+                Some(DefaultTextStyle {
+                    color: Some(Arc::new(move |text| {
+                        fg.fg(ThemeColor::UserMessageText, text)
+                    })),
+                    bg_color: Some(Arc::new(move |text| bg.bg(ThemeBg::UserMessageBg, text))),
+                    ..Default::default()
+                }),
+                MarkdownOptions {
+                    preserve_ordered_list_markers: true,
+                    preserve_backslash_escapes: true,
+                    ..Default::default()
+                },
+                transform,
+            ))));
     }
 }
 
@@ -91,7 +96,10 @@ impl Component for UserMessageComponent {
             return lines;
         }
         if lines.len() == 1 {
-            lines[0] = format!("{OSC133_ZONE_START}{}{OSC133_ZONE_END}{OSC133_ZONE_FINAL}", lines[0]);
+            lines[0] = format!(
+                "{OSC133_ZONE_START}{}{OSC133_ZONE_END}{OSC133_ZONE_FINAL}",
+                lines[0]
+            );
             return lines;
         }
         if let Some(first) = lines.first_mut() {

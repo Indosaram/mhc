@@ -20,8 +20,13 @@ use crate::tools::render_utils::{render_tool_path, str_value};
 
 #[derive(Clone, Debug)]
 pub enum EditPreview {
-    Diff { diff: String, first_changed_line: Option<usize> },
-    Error { error: String },
+    Diff {
+        diff: String,
+        first_changed_line: Option<usize>,
+    },
+    Error {
+        error: String,
+    },
 }
 
 struct RenderablePreviewInput {
@@ -43,25 +48,46 @@ fn get_renderable_preview_input(args: Option<&Value>) -> Option<RenderablePrevie
     }
     if let Some(edits) = args.get("edits").and_then(Value::as_array)
         && !edits.is_empty()
-        && edits.iter().all(|edit| edit.get("oldText").is_some_and(Value::is_string) && edit.get("newText").is_some_and(Value::is_string))
+        && edits.iter().all(|edit| {
+            edit.get("oldText").is_some_and(Value::is_string)
+                && edit.get("newText").is_some_and(Value::is_string)
+        })
     {
         return Some(RenderablePreviewInput {
             path,
             edits: edits
                 .iter()
                 .map(|edit| Edit {
-                    old_text: edit.get("oldText").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                    new_text: edit.get("newText").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    old_text: edit
+                        .get("oldText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    new_text: edit
+                        .get("newText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                 })
                 .collect(),
         });
     }
-    if args.get("oldText").is_some_and(Value::is_string) && args.get("newText").is_some_and(Value::is_string) {
+    if args.get("oldText").is_some_and(Value::is_string)
+        && args.get("newText").is_some_and(Value::is_string)
+    {
         return Some(RenderablePreviewInput {
             path,
             edits: vec![Edit {
-                old_text: args.get("oldText").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                new_text: args.get("newText").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                old_text: args
+                    .get("oldText")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                new_text: args
+                    .get("newText")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
             }],
         });
     }
@@ -71,16 +97,23 @@ fn get_renderable_preview_input(args: Option<&Value>) -> Option<RenderablePrevie
 fn compute_preview(input: &RenderablePreviewInput, cwd: &str) -> EditPreview {
     let absolute_path = resolve_to_cwd(&input.path, std::path::Path::new(cwd));
     let Ok(raw) = std::fs::read_to_string(&absolute_path) else {
-        return EditPreview::Error { error: format!("Could not edit file: {}.", input.path) };
+        return EditPreview::Error {
+            error: format!("Could not edit file: {}.", input.path),
+        };
     };
     let content = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
     let normalized = normalize_to_lf(content);
     match apply_edits_to_normalized_content(&normalized, &input.edits, &input.path) {
         Ok(applied) => {
             let diff = generate_diff_string(&applied.base_content, &applied.new_content, 4);
-            EditPreview::Diff { diff: diff.diff, first_changed_line: diff.first_changed_line }
+            EditPreview::Diff {
+                diff: diff.diff,
+                first_changed_line: diff.first_changed_line,
+            }
         }
-        Err(error) => EditPreview::Error { error: error.to_string() },
+        Err(error) => EditPreview::Error {
+            error: error.to_string(),
+        },
     }
 }
 
@@ -95,11 +128,21 @@ fn preview_args_key(input: Option<&RenderablePreviewInput>) -> Option<String> {
 }
 
 fn format_edit_call(args: Option<&Value>, theme: &Theme, cwd: &str) -> String {
-    let raw_path = args.and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path")))).flatten();
-    format!("{} {}", theme.fg(ThemeColor::ToolTitle, &theme.bold("edit")), render_tool_path(raw_path, theme, cwd, None))
+    let raw_path = args
+        .and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path"))))
+        .flatten();
+    format!(
+        "{} {}",
+        theme.fg(ThemeColor::ToolTitle, &theme.bold("edit")),
+        render_tool_path(raw_path, theme, cwd, None)
+    )
 }
 
-fn get_edit_header_bg(preview: Option<&EditPreview>, settled_error: bool, theme: &Theme) -> Rc<dyn Fn(&str) -> String> {
+fn get_edit_header_bg(
+    preview: Option<&EditPreview>,
+    settled_error: bool,
+    theme: &Theme,
+) -> Rc<dyn Fn(&str) -> String> {
     match preview {
         Some(EditPreview::Error { .. }) => {
             let theme = theme.clone();
@@ -140,7 +183,9 @@ fn build_edit_call_component(
             EditPreview::Error { error } => theme.fg(ThemeColor::Error, error),
             EditPreview::Diff { diff, .. } => render_tool_diff(
                 diff,
-                args.and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path")))).flatten().as_deref(),
+                args.and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path"))))
+                    .flatten()
+                    .as_deref(),
                 theme,
             ),
         };
@@ -157,7 +202,9 @@ fn format_edit_result(
     theme: &Theme,
     is_error: bool,
 ) -> Option<String> {
-    let raw_path = args.and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path")))).flatten();
+    let raw_path = args
+        .and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path"))))
+        .flatten();
     let preview_diff = match preview {
         Some(EditPreview::Diff { diff, .. }) => Some(diff.clone()),
         _ => None,
@@ -181,7 +228,11 @@ fn format_edit_result(
         }
         return Some(theme.fg(ThemeColor::Error, &error_text));
     }
-    let result_diff = result.details.as_ref().and_then(|details| details.get("diff")).and_then(Value::as_str);
+    let result_diff = result
+        .details
+        .as_ref()
+        .and_then(|details| details.get("diff"))
+        .and_then(Value::as_str);
     if let Some(result_diff) = result_diff
         && Some(result_diff.to_owned()) != preview_diff
     {
@@ -204,7 +255,11 @@ impl ToolRenderers for EditRenderers {
     fn rebuild_call_after_result(&self) -> bool {
         true
     }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
         let preview_input = get_renderable_preview_input(Some(context.args));
         let args_key = preview_args_key(preview_input.as_ref());
         if self.preview_args_key != args_key {
@@ -213,9 +268,17 @@ impl ToolRenderers for EditRenderers {
             self.settled_error = false;
         }
         if context.args_complete && preview_input.is_some() && self.preview.is_none() {
-            self.preview = preview_input.as_ref().map(|input| compute_preview(input, context.cwd));
+            self.preview = preview_input
+                .as_ref()
+                .map(|input| compute_preview(input, context.cwd));
         }
-        Some(build_edit_call_component(Some(context.args), self.preview.as_ref(), self.settled_error, theme, context.cwd))
+        Some(build_edit_call_component(
+            Some(context.args),
+            self.preview.as_ref(),
+            self.settled_error,
+            theme,
+            context.cwd,
+        ))
     }
 
     fn render_result(
@@ -226,7 +289,11 @@ impl ToolRenderers for EditRenderers {
         context: &ToolRenderContext<'_>,
     ) -> Option<RenderedComponent> {
         let result_diff = if !context.is_error {
-            result.details.as_ref().and_then(|details| details.get("diff")).and_then(Value::as_str)
+            result
+                .details
+                .as_ref()
+                .and_then(|details| details.get("diff"))
+                .and_then(Value::as_str)
         } else {
             None
         };
@@ -244,7 +311,13 @@ impl ToolRenderers for EditRenderers {
         self.settled_error = context.is_error;
 
         let mut component = Container::new();
-        if let Some(output) = format_edit_result(Some(context.args), self.preview.as_ref(), result, theme, context.is_error) {
+        if let Some(output) = format_edit_result(
+            Some(context.args),
+            self.preview.as_ref(),
+            result,
+            theme,
+            context.is_error,
+        ) {
             component.add_child(Rc::new(RefCell::new(Spacer::new(1))));
             component.add_child(Rc::new(RefCell::new(Text::with_padding(output, 1, 0))));
         }

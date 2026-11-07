@@ -1,7 +1,7 @@
 //! Success criteria input parsing and defaults.
 
-use std::collections::BTreeMap;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::constants::ULW_LOOP_SUCCESS_CRITERION_USER_MODELS;
 use crate::domain_types::UlwLoopSuccessCriterion;
@@ -42,7 +42,10 @@ pub fn criteria_from_input(input: &[Value]) -> Result<Vec<UlwLoopSuccessCriterio
             let mut details = BTreeMap::new();
             details.insert("index".into(), serde_json::json!(index));
             return Err(UlwLoopError::with_details(
-                format!("Invalid successCriteria: entry {} must be an object.", index + 1),
+                format!(
+                    "Invalid successCriteria: entry {} must be an object.",
+                    index + 1
+                ),
                 "ULW_LOOP_ARGUMENT_INVALID",
                 details,
             ));
@@ -74,7 +77,10 @@ pub fn criteria_from_input(input: &[Value]) -> Result<Vec<UlwLoopSuccessCriterio
                     let mut details = BTreeMap::new();
                     details.insert("index".into(), serde_json::json!(index));
                     return Err(UlwLoopError::with_details(
-                        format!("Invalid successCriteria: entry {} essential must be a boolean.", index + 1),
+                        format!(
+                            "Invalid successCriteria: entry {} essential must be a boolean.",
+                            index + 1
+                        ),
                         "ULW_LOOP_ARGUMENT_INVALID",
                         details,
                     ));
@@ -95,7 +101,10 @@ pub fn criteria_from_input(input: &[Value]) -> Result<Vec<UlwLoopSuccessCriterio
                 details.insert("index".into(), serde_json::json!(index));
                 details.insert("field".into(), serde_json::json!("scenario"));
                 return Err(UlwLoopError::with_details(
-                    format!("Invalid successCriteria: entry {} needs a non-empty scenario.", index + 1),
+                    format!(
+                        "Invalid successCriteria: entry {} needs a non-empty scenario.",
+                        index + 1
+                    ),
                     "ULW_LOOP_ARGUMENT_INVALID",
                     details,
                 ));
@@ -114,7 +123,10 @@ pub fn criteria_from_input(input: &[Value]) -> Result<Vec<UlwLoopSuccessCriterio
                 details.insert("index".into(), serde_json::json!(index));
                 details.insert("field".into(), serde_json::json!("expectedEvidence"));
                 return Err(UlwLoopError::with_details(
-                    format!("Invalid successCriteria: entry {} needs a non-empty expectedEvidence.", index + 1),
+                    format!(
+                        "Invalid successCriteria: entry {} needs a non-empty expectedEvidence.",
+                        index + 1
+                    ),
                     "ULW_LOOP_ARGUMENT_INVALID",
                     details,
                 ));

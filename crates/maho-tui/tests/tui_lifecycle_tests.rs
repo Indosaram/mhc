@@ -75,7 +75,11 @@ fn start_hides_cursor_and_enables_tmux_focus_reporting_only_under_tmux() {
         let mut terminal = RecordingTerminal::default();
         base.prepare_start();
         base.after_terminal_start(&mut terminal);
-        assert!(terminal.out.starts_with("\x1b[?1004h\x1b[?25l"), "{:?}", terminal.out);
+        assert!(
+            terminal.out.starts_with("\x1b[?1004h\x1b[?25l"),
+            "{:?}",
+            terminal.out
+        );
     });
     with_overrides(&[("TMUX", None)], || {
         let mut base = TuiBase::new();
@@ -139,7 +143,14 @@ fn osc11_reply_settles_the_background_query_and_is_consumed() {
     base.handle_terminal_input("\x1b]11;rgb:ffff/ffff/ffff\x07", false);
     assert!(ticket.result().is_none());
     base.handle_terminal_input("\x1b[?62;22c", false);
-    assert_eq!(ticket.result().and_then(|colors| colors.background), Some(RgbColor { r: 255, g: 255, b: 255 }));
+    assert_eq!(
+        ticket.result().and_then(|colors| colors.background),
+        Some(RgbColor {
+            r: 255,
+            g: 255,
+            b: 255
+        })
+    );
     assert!(seen.borrow().is_empty());
 }
 
@@ -169,7 +180,9 @@ fn color_scheme_report_settles_query_and_notifies_listeners() {
     let mut terminal = RecordingTerminal::default();
     let reports = Rc::new(RefCell::new(Vec::new()));
     let captured = reports.clone();
-    base.on_terminal_color_scheme_change(Box::new(move |scheme| captured.borrow_mut().push(scheme)));
+    base.on_terminal_color_scheme_change(Box::new(move |scheme| {
+        captured.borrow_mut().push(scheme)
+    }));
     let ticket = base.query_terminal_color_scheme(&mut terminal, 100, 0);
     let seen = focused_recorder(&mut base);
     base.handle_terminal_input("\x1b[?997;2n", false);
@@ -215,7 +228,8 @@ fn alt_screen_consumes_focus_reports_before_the_editor() {
 #[test]
 fn alt_screen_focus_out_drops_an_active_drag_selection() {
     let mut alt = TuiAltScreen::new();
-    let root: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::with_padding("hello world", 0, 0)));
+    let root: Rc<RefCell<dyn Component>> =
+        Rc::new(RefCell::new(Text::with_padding("hello world", 0, 0)));
     alt.set_layout_root(Some(root));
     let mut terminal = RecordingTerminal::default();
     alt.before_terminal_start(&mut terminal, true, false);

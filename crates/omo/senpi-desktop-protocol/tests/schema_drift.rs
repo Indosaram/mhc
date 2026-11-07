@@ -12,7 +12,10 @@ fn load_engine_schema() -> Value {
 #[test]
 fn keeps_protocol_version_equal_to_the_committed_schema() {
     let schema = load_engine_schema();
-    assert_eq!(PROTOCOL_VERSION, schema["protocolVersion"].as_str().unwrap());
+    assert_eq!(
+        PROTOCOL_VERSION,
+        schema["protocolVersion"].as_str().unwrap()
+    );
 }
 
 #[test]
@@ -28,7 +31,9 @@ fn keeps_error_codes_equal_to_schema_errors_and_definitions_error_code() {
     let mut from_errors: Vec<String> = errors_obj.keys().cloned().collect();
     from_errors.sort();
 
-    let def_one_of = schema["definitions"]["ErrorCode"]["oneOf"].as_array().unwrap();
+    let def_one_of = schema["definitions"]["ErrorCode"]["oneOf"]
+        .as_array()
+        .unwrap();
     let mut from_definition = Vec::new();
     for branch in def_one_of {
         if let Some(c) = branch.get("const").and_then(|v| v.as_str()) {
@@ -58,7 +63,10 @@ fn keeps_engine_methods_equal_to_the_schema_method_list() {
     from_methods.sort();
 
     let def_enum = schema["definitions"]["Method"]["enum"].as_array().unwrap();
-    let mut from_enum: Vec<String> = def_enum.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+    let mut from_enum: Vec<String> = def_enum
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
     from_enum.sort();
 
     let mut exported: Vec<String> = ENGINE_METHODS.iter().map(|s| (*s).to_string()).collect();
@@ -75,7 +83,10 @@ fn keeps_engine_notifications_equal_to_the_schema_notification_list() {
     let mut from_notifs: Vec<String> = notifs_obj.keys().cloned().collect();
     from_notifs.sort();
 
-    let mut exported: Vec<String> = ENGINE_NOTIFICATIONS.iter().map(|s| (*s).to_string()).collect();
+    let mut exported: Vec<String> = ENGINE_NOTIFICATIONS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     exported.sort();
 
     assert_eq!(exported, from_notifs);

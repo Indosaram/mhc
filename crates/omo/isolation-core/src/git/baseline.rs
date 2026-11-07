@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::backend::{IsolationError, Result};
-use crate::git::command::{exists, run_git, str_args, GitOptions, GitOutput};
+use crate::git::command::{GitOptions, GitOutput, exists, run_git, str_args};
 use crate::util::relative_path;
 
 pub const ISOLATION_BASELINE_MAX_CONTENT_BYTES: u64 = 1024 * 1024 * 1024;
@@ -145,7 +145,9 @@ pub fn discover_nested_repos(repo_root: &Path) -> Result<Vec<String>> {
     let mut submodules: HashSet<String> = HashSet::new();
     for line in status.split('\n').filter(|line| !line.is_empty()) {
         let mut rest: String = line.chars().skip(42).collect();
-        if rest.ends_with(')') && let Some(index) = rest.rfind(" (") {
+        if rest.ends_with(')')
+            && let Some(index) = rest.rfind(" (")
+        {
             rest.truncate(index);
         }
         submodules.insert(rest);
@@ -172,7 +174,9 @@ fn walk_nested(
             continue;
         }
         let full = dir.join(&name);
-        let relative = relative_path(root, &full).to_string_lossy().replace('\\', "/");
+        let relative = relative_path(root, &full)
+            .to_string_lossy()
+            .replace('\\', "/");
         if submodules.contains(&relative) {
             continue;
         }

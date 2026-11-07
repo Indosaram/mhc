@@ -62,10 +62,16 @@ pub fn format_extension_error_headline(path: &str, event: Option<&str>, error: &
     let message = sanitize_tui_error_message(error);
     if path == RUNTIME_EXTENSION_PATH {
         match event.filter(|event| !event.is_empty()) {
-            Some(event) => format!("Runtime error ({}): {message}", sanitize_tui_error_message(event)),
+            Some(event) => format!(
+                "Runtime error ({}): {message}",
+                sanitize_tui_error_message(event)
+            ),
             None => format!("Runtime error: {message}"),
         }
     } else {
-        format!("Extension \"{}\" error: {message}", sanitize_tui_error_message(path))
+        format!(
+            "Extension \"{}\" error: {message}",
+            sanitize_tui_error_message(path)
+        )
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Duration;
@@ -35,8 +35,8 @@ impl SpawnLog {
             let child_idx = child_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             Box::pin(async move {
-                let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/fake_engine.py");
+                let script_path =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_engine.py");
                 let python_cmd = if cfg!(windows) { "python" } else { "python3" };
                 let mut cmd = Command::new(python_cmd);
                 cmd.arg(&script_path).arg("--stdio");
@@ -51,10 +51,7 @@ impl SpawnLog {
                     DesktopServiceError::closed(format!("failed to spawn fake child: {e}"))
                 })?;
 
-                let engine_child = EngineChild::new(
-                    format!("fake-engine-{child_idx}"),
-                    child,
-                );
+                let engine_child = EngineChild::new(format!("fake-engine-{child_idx}"), child);
                 Ok(engine_child)
             })
         });
@@ -77,7 +74,8 @@ impl SpawnLog {
                 && let Some(text) = params.get("message").and_then(Value::as_str)
                 && let Some(json_str) = text.strip_prefix("recv ")
                 && let Ok(parsed) = serde_json::from_str::<Value>(json_str)
-                && let Some(req_method) = parsed.get("method").and_then(Value::as_str) {
+                && let Some(req_method) = parsed.get("method").and_then(Value::as_str)
+            {
                 let wire = WireRequest {
                     id: parsed.get("id").and_then(Value::as_u64),
                     method: req_method.to_string(),
@@ -101,7 +99,11 @@ impl SpawnLog {
             notified.as_mut().enable();
             {
                 let reqs = self.requests.lock().await;
-                let matching: Vec<_> = reqs.iter().filter(|r| r.method == method).cloned().collect();
+                let matching: Vec<_> = reqs
+                    .iter()
+                    .filter(|r| r.method == method)
+                    .cloned()
+                    .collect();
                 if matching.len() >= n {
                     return matching[n - 1].clone();
                 }
@@ -109,7 +111,9 @@ impl SpawnLog {
             if tokio::time::Instant::now() >= deadline {
                 panic!("timed out waiting for {n}th request to method {method}");
             }
-            tokio::time::timeout_at(deadline, notified).await.expect("request notification deadline");
+            tokio::time::timeout_at(deadline, notified)
+                .await
+                .expect("request notification deadline");
         }
     }
 }

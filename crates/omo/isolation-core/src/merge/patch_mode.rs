@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use crate::backend::{error_text, IsolationError, Result};
-use crate::git::command::{run_git, str_args, GitOptions};
+use crate::backend::{IsolationError, Result, error_text};
+use crate::git::command::{GitOptions, run_git, str_args};
 use crate::git::delta::DeltaPatchResult;
 use crate::merge::shared::{
-    nested_path, stash_pop, stash_push, summarize, with_repo_lock, write_artifacts, ArtifactOptions,
-    IsolationMergeResult, MergeKind, MergeState, NestedFailure, WrittenArtifacts,
+    ArtifactOptions, IsolationMergeResult, MergeKind, MergeState, NestedFailure, WrittenArtifacts,
+    nested_path, stash_pop, stash_push, summarize, with_repo_lock, write_artifacts,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -23,7 +23,12 @@ fn already_applied(cwd: &Path, patch_path: &Path) -> Result<bool> {
     let mut options = git_options(cwd);
     options.allowed_exit_codes = Some(vec![0, 1, 128]);
     let reverse = run_git(
-        &str_args(&["apply", "--check", "--reverse", &patch_path.to_string_lossy()]),
+        &str_args(&[
+            "apply",
+            "--check",
+            "--reverse",
+            &patch_path.to_string_lossy(),
+        ]),
         &options,
     )?;
     let forward = run_git(
@@ -69,7 +74,9 @@ pub fn apply_nested_patches(
             )?;
             Ok(())
         })();
-        if let Some(stashed) = &stashed && let Some(warning) = stash_pop(&cwd, stashed)? {
+        if let Some(stashed) = &stashed
+            && let Some(warning) = stash_pop(&cwd, stashed)?
+        {
             warnings.push(format!("{}: {warning}", nested.relative_path));
         }
         if let Err(error) = apply {
@@ -126,8 +133,10 @@ pub fn apply_delta_patch_locked(
                 Err(IsolationError::Git { stderr, .. }) => {
                     let mut state = MergeState::new(MergeKind::NotApplied, false);
                     state.conflict = Some(stderr);
-                    state.manual_command =
-                        Some(format!("git apply --3way {}", artifacts.patch_path.display()));
+                    state.manual_command = Some(format!(
+                        "git apply --3way {}",
+                        artifacts.patch_path.display()
+                    ));
                     return summarize(artifacts.base_result(state));
                 }
                 Err(error) => return Err(error),

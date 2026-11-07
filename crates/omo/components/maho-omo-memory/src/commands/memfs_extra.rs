@@ -5,9 +5,11 @@ use super::backup::{create_repo_backup, list_repo_backups, restore_repo_backup};
 use super::memfs_shared::{MemfsSubcommandInput, require_existing_repo};
 use super::repo::run_git;
 use super::tokens::estimate_system_tokens;
-use super::types::{BoxFuture, respond, NotifyLevel};
+use super::types::{BoxFuture, NotifyLevel, respond};
 
-pub fn memfs_backup<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
+pub fn memfs_backup<'a>(
+    input: &'a MemfsSubcommandInput<'a>,
+) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(_repo) => _repo,
@@ -15,13 +17,19 @@ pub fn memfs_backup<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, su
         };
         let _ = repo;
         match create_repo_backup(input.deps, input.identity) {
-            Ok(path) => respond(input.ctx, format!("backup written to {}", path.display()), NotifyLevel::Info),
+            Ok(path) => respond(
+                input.ctx,
+                format!("backup written to {}", path.display()),
+                NotifyLevel::Info,
+            ),
             Err(error) => respond(input.ctx, error, NotifyLevel::Error),
         }
     })
 }
 
-pub fn memfs_restore<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
+pub fn memfs_restore<'a>(
+    input: &'a MemfsSubcommandInput<'a>,
+) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let backups = list_repo_backups(input.identity);
         if backups.is_empty() {
@@ -51,7 +59,13 @@ pub fn memfs_restore<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, s
                 }
                 let selected = input.ctx.ui.select("Restore memory backup", &backups).await;
                 match selected {
-                    None => return respond(input.ctx, "restore cancelled; nothing changed", NotifyLevel::Info),
+                    None => {
+                        return respond(
+                            input.ctx,
+                            "restore cancelled; nothing changed",
+                            NotifyLevel::Info,
+                        );
+                    }
                     Some(selected) => selected,
                 }
             }
@@ -87,7 +101,9 @@ pub fn memfs_restore<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, s
     })
 }
 
-pub fn memfs_diff<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
+pub fn memfs_diff<'a>(
+    input: &'a MemfsSubcommandInput<'a>,
+) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,
@@ -97,7 +113,11 @@ pub fn memfs_diff<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, supe
         let result = match run_git(input.deps, &repo.dir, &["diff"]) {
             Ok(result) => result,
             Err(error) => {
-                return respond(input.ctx, format!("git diff failed: {error}"), NotifyLevel::Error);
+                return respond(
+                    input.ctx,
+                    format!("git diff failed: {error}"),
+                    NotifyLevel::Error,
+                );
             }
         };
         if result.code != 0 {
@@ -106,7 +126,11 @@ pub fn memfs_diff<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, supe
             } else {
                 result.stderr.trim().to_owned()
             };
-            return respond(input.ctx, format!("git diff failed: {detail}"), NotifyLevel::Error);
+            return respond(
+                input.ctx,
+                format!("git diff failed: {detail}"),
+                NotifyLevel::Error,
+            );
         }
         let diff = result.stdout.trim();
         if diff.is_empty() {
@@ -120,7 +144,9 @@ pub fn memfs_diff<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, supe
     })
 }
 
-pub fn memfs_tokens<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
+pub fn memfs_tokens<'a>(
+    input: &'a MemfsSubcommandInput<'a>,
+) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,
@@ -156,7 +182,10 @@ mod tests {
     use crate::commands::types::NotifyLevel;
 
     fn seeds() -> Vec<memory_core::git::GitSeedFile> {
-        vec![seed("system/persona.md", "---\ndescription: Persona\n---\nseeded persona\n")]
+        vec![seed(
+            "system/persona.md",
+            "---\ndescription: Persona\n---\nseeded persona\n",
+        )]
     }
 
     fn identity_root(root: &std::path::Path) -> std::path::PathBuf {
@@ -191,13 +220,19 @@ mod tests {
         let name = &backups[0];
         assert!(name.len() == "memory-backup-YYYYMMDD-HHMMSS".len());
         assert!(response.text.contains(name.as_str()));
-        let copied = std::fs::read_to_string(identity_root(root.path()).join(name).join("system").join("persona.md"))
-            .expect("copied persona");
+        let copied = std::fs::read_to_string(
+            identity_root(root.path())
+                .join(name)
+                .join("system")
+                .join("persona.md"),
+        )
+        .expect("copied persona");
         assert!(copied.contains("seeded persona"));
     }
 
     #[tokio::test]
-    async fn given_a_backup_already_exists_for_the_same_clock_when_backup_runs_again_then_the_existing_backup_is_not_clobbered() {
+    async fn given_a_backup_already_exists_for_the_same_clock_when_backup_runs_again_then_the_existing_backup_is_not_clobbered()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
@@ -213,7 +248,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_named_backup_when_restore_runs_then_repo_content_is_replaced_and_a_safety_backup_is_kept() {
+    async fn given_a_named_backup_when_restore_runs_then_repo_content_is_replaced_and_a_safety_backup_is_kept()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
@@ -221,15 +257,26 @@ mod tests {
         handle_memfs(&fake.deps, &context.ctx, "backup").await;
         let backup_name = backup_names(root.path())[0].clone();
         std::fs::write(
-            identity.identity_paths.repo.join("system").join("persona.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
             "---\ndescription: Persona\n---\nlocal edit\n",
         )
         .expect("local edit");
 
-        let response = handle_memfs(&fake.deps, &context.ctx, &format!("restore {backup_name}")).await;
+        let response =
+            handle_memfs(&fake.deps, &context.ctx, &format!("restore {backup_name}")).await;
 
-        let restored = std::fs::read_to_string(identity.identity_paths.repo.join("system").join("persona.md"))
-            .expect("restored");
+        let restored = std::fs::read_to_string(
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
+        )
+        .expect("restored");
         assert!(restored.contains("seeded persona"));
         assert!(response.text.contains("restored"));
         assert_eq!(backup_names(root.path()).len(), 2);
@@ -249,47 +296,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_backups_and_an_interactive_session_when_restore_runs_without_a_name_then_the_user_selects_one() {
+    async fn given_backups_and_an_interactive_session_when_restore_runs_without_a_name_then_the_user_selects_one()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions { has_ui: Some(true), ..Default::default() });
+        let context = fake_command_context(FakeContextOptions {
+            has_ui: Some(true),
+            ..Default::default()
+        });
         handle_memfs(&fake.deps, &context.ctx, "backup").await;
         let backup_name = backup_names(root.path())[0].clone();
         context.ui.set_select_result(Some(backup_name.clone()));
         std::fs::write(
-            identity.identity_paths.repo.join("system").join("persona.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
             "---\ndescription: Persona\n---\nlocal edit\n",
         )
         .expect("local edit");
 
         let response = handle_memfs(&fake.deps, &context.ctx, "restore").await;
 
-        let selects = context.ui.selects.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let selects = context
+            .ui
+            .selects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(selects.len(), 1);
         assert!(selects[0].1.contains(&backup_name));
         assert!(response.text.contains("restored"));
-        assert!(std::fs::read_to_string(identity.identity_paths.repo.join("system").join("persona.md"))
+        assert!(
+            std::fs::read_to_string(
+                identity
+                    .identity_paths
+                    .repo
+                    .join("system")
+                    .join("persona.md")
+            )
             .expect("restored")
-            .contains("seeded persona"));
+            .contains("seeded persona")
+        );
     }
 
     #[tokio::test]
-    async fn given_backups_and_a_noninteractive_session_when_restore_runs_without_a_name_then_available_backups_are_listed() {
+    async fn given_backups_and_a_noninteractive_session_when_restore_runs_without_a_name_then_available_backups_are_listed()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
-        let interactive = fake_command_context(FakeContextOptions { has_ui: Some(true), ..Default::default() });
+        let interactive = fake_command_context(FakeContextOptions {
+            has_ui: Some(true),
+            ..Default::default()
+        });
         handle_memfs(&fake.deps, &interactive.ctx, "backup").await;
         let backup_name = backup_names(root.path())[0].clone();
-        let headless = fake_command_context(FakeContextOptions { has_ui: Some(false), ..Default::default() });
+        let headless = fake_command_context(FakeContextOptions {
+            has_ui: Some(false),
+            ..Default::default()
+        });
 
         let response = handle_memfs(&fake.deps, &headless.ctx, "restore").await;
 
         assert!(response.text.contains("specify a backup name"));
         assert!(response.text.contains(&backup_name));
         assert_eq!(headless.ui.last_level(), Some(NotifyLevel::Error));
-        assert!(interactive.ui.selects.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
+        assert!(
+            interactive
+                .ui
+                .selects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -300,7 +382,12 @@ mod tests {
         let context = fake_command_context(FakeContextOptions::default());
         handle_memfs(&fake.deps, &context.ctx, "backup").await;
 
-        let response = handle_memfs(&fake.deps, &context.ctx, "restore memory-backup-19700101-000000").await;
+        let response = handle_memfs(
+            &fake.deps,
+            &context.ctx,
+            "restore memory-backup-19700101-000000",
+        )
+        .await;
 
         assert!(response.text.contains("unknown backup"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
@@ -324,7 +411,11 @@ mod tests {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         std::fs::write(
-            identity.identity_paths.repo.join("system").join("persona.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
             "---\ndescription: Persona\n---\nedited body\n",
         )
         .expect("edit");
@@ -339,18 +430,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_system_files_when_tokens_runs_then_a_bytes_four_estimate_and_per_file_rows_render() {
+    async fn given_system_files_when_tokens_runs_then_a_bytes_four_estimate_and_per_file_rows_render()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
-        let persona = std::fs::read_to_string(identity.identity_paths.repo.join("system").join("persona.md"))
-            .expect("persona");
+        let persona = std::fs::read_to_string(
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
+        )
+        .expect("persona");
         let expected = persona.len().div_ceil(4);
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 
         let response = handle_memfs(&fake.deps, &context.ctx, "tokens").await;
 
-        assert!(response.text.contains(&format!("Total: ~{expected} tokens")));
+        assert!(
+            response
+                .text
+                .contains(&format!("Total: ~{expected} tokens"))
+        );
         assert!(response.text.contains("system/persona.md"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Info));
     }

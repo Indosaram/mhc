@@ -40,8 +40,8 @@ pub mod posthog_immediate_send;
 pub mod posthog_transport;
 pub mod record_daily_active;
 pub mod system_os;
-pub mod terminal_program;
 pub mod telemetry_delivery_error;
+pub mod terminal_program;
 pub mod turn_trace_bridge;
 pub mod types;
 
@@ -83,7 +83,7 @@ pub use posthog_immediate_send::*;
 pub use posthog_transport::*;
 pub use record_daily_active::*;
 pub use system_os::*;
-pub use terminal_program::*;
 pub use telemetry_delivery_error::*;
+pub use terminal_program::*;
 pub use turn_trace_bridge::*;
 pub use types::*;

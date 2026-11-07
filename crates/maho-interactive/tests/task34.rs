@@ -11,7 +11,7 @@ use maho_interactive::components::ask_user_question::{
     AskUserQuestionComponent, AskUserQuestionOptions,
 };
 use maho_interactive::components::ask_user_question_state::{
-    format_countdown_label, QuestionDraft, QuestionRequest, QuestionResponse, NOT_ANSWERED_NOTICE,
+    NOT_ANSWERED_NOTICE, QuestionDraft, QuestionRequest, QuestionResponse, format_countdown_label,
 };
 use maho_interactive::components::first_time_setup::{
     FirstTimeSetupComponent, FirstTimeSetupOptions, FirstTimeSetupResult,
@@ -20,13 +20,13 @@ use maho_interactive::grok::tool_row::{GrokToolRow, GrokToolRowState};
 use maho_interactive::grok::welcome_card::GrokWelcomeCard;
 use maho_interactive::theme::{ColorMode, TerminalTheme, Theme};
 use maho_interactive::tips::favorite_messages::{
-    build_favorite_cycle_status_message, FavoriteCycleStatusKind,
+    FavoriteCycleStatusKind, build_favorite_cycle_status_message,
 };
 use maho_interactive::tips::history_writer::record_tip_shown;
 use maho_interactive::tips::registry::TIP_DEFINITIONS;
-use maho_interactive::tips::scheduler::{select_tip, SelectTipOptions};
-use maho_interactive::tips::startup_tip::{resolve_startup_tip_line, StartupTipOptions};
-use maho_interactive::tips::working_tip::{resolve_working_tip_line, WorkingTipOptions};
+use maho_interactive::tips::scheduler::{SelectTipOptions, select_tip};
+use maho_interactive::tips::startup_tip::{StartupTipOptions, resolve_startup_tip_line};
+use maho_interactive::tips::working_tip::{WorkingTipOptions, resolve_working_tip_line};
 use maho_tui::keybindings::get_keybindings;
 use maho_tui::tui::Component;
 use serde_json::Value;
@@ -46,7 +46,8 @@ fn install_keybindings() -> crate::global_keybindings::GlobalKeybindings {
 
 fn golden(name: &str) -> Value {
     let path = format!("{}/tests/golden/{name}", env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("parse {path}: {error}"))
 }
 
@@ -67,10 +68,16 @@ fn ask_user_own_answer_accepts_encoded_and_batched_text() {
         ("\x1b[200~custom reply\x1b[201~", "custom reply"),
         ("custom reply", "custom reply"),
     ] {
-        let request: QuestionRequest = serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone()).expect("request");
+        let request: QuestionRequest =
+            serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone())
+                .expect("request");
         let captured = Rc::new(RefCell::new(None));
         let sink = Rc::clone(&captured);
-        let mut component = AskUserQuestionComponent::new(request, Box::new(move |response| *sink.borrow_mut() = Some(response)), AskUserQuestionOptions::new(theme()));
+        let mut component = AskUserQuestionComponent::new(
+            request,
+            Box::new(move |response| *sink.borrow_mut() = Some(response)),
+            AskUserQuestionOptions::new(theme()),
+        );
         let id = component.state.active_question().id.clone();
 
         component.handle_input(input);
@@ -84,10 +91,16 @@ fn ask_user_own_answer_accepts_encoded_and_batched_text() {
 #[test]
 fn ask_user_option_replaces_previously_typed_answer() {
     let _keybindings = install_keybindings();
-    let request: QuestionRequest = serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone()).expect("request");
+    let request: QuestionRequest =
+        serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone())
+            .expect("request");
     let captured = Rc::new(RefCell::new(None));
     let sink = Rc::clone(&captured);
-    let mut component = AskUserQuestionComponent::new(request, Box::new(move |response| *sink.borrow_mut() = Some(response)), AskUserQuestionOptions::new(theme()));
+    let mut component = AskUserQuestionComponent::new(
+        request,
+        Box::new(move |response| *sink.borrow_mut() = Some(response)),
+        AskUserQuestionOptions::new(theme()),
+    );
     let id = component.state.active_question().id.clone();
     let label = component.state.active_question().options[0].label.clone();
     component.state.set_own_answer(&id, "previous reply");
@@ -162,7 +175,10 @@ fn ask_user_question_matches_pinned_golden() {
         fixture["notice"]["notice"],
         "empty submit keeps the overlay open with the notice"
     );
-    assert!(notice_captured.borrow().is_none(), "no response is produced yet");
+    assert!(
+        notice_captured.borrow().is_none(),
+        "no response is produced yet"
+    );
 }
 
 #[test]
@@ -218,7 +234,11 @@ fn tips_registry_scheduler_and_lines_match_pinned_golden() {
         .collect();
     assert_eq!(Value::Array(ids), fixture["registryIds"], "registry order");
 
-    for binding in ["app.thinking.cycle", "app.model.select", "app.models.toggleFavorite"] {
+    for binding in [
+        "app.thinking.cycle",
+        "app.model.select",
+        "app.models.toggleFavorite",
+    ] {
         assert_eq!(
             Value::from(key_string(binding)),
             fixture["keys"][binding],
@@ -226,7 +246,8 @@ fn tips_registry_scheduler_and_lines_match_pinned_golden() {
         );
     }
 
-    let has_command = |command: &str| ["help", "diff", "memory", "tasks", "fallback"].contains(&command);
+    let has_command =
+        |command: &str| ["help", "diff", "memory", "tasks", "fallback"].contains(&command);
     for selection in fixture["selections"].as_array().expect("selections") {
         let history: HashMap<String, u64> = selection["history"]
             .as_object()
@@ -306,11 +327,15 @@ fn tips_registry_scheduler_and_lines_match_pinned_golden() {
     );
 
     assert_eq!(
-        Value::from(build_favorite_cycle_status_message(FavoriteCycleStatusKind::Empty)),
+        Value::from(build_favorite_cycle_status_message(
+            FavoriteCycleStatusKind::Empty
+        )),
         fixture["favoriteEmpty"]
     );
     assert_eq!(
-        Value::from(build_favorite_cycle_status_message(FavoriteCycleStatusKind::Single)),
+        Value::from(build_favorite_cycle_status_message(
+            FavoriteCycleStatusKind::Single
+        )),
         fixture["favoriteSingle"]
     );
 }

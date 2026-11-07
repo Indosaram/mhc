@@ -18,7 +18,8 @@ fn chain_provider_ids() -> Vec<String> {
 }
 
 #[test]
-fn given_builtin_profiles_when_each_provider_id_is_checked_against_the_engine_registry_then_every_id_is_a_builtin_or_an_allow_listed_alias() {
+fn given_builtin_profiles_when_each_provider_id_is_checked_against_the_engine_registry_then_every_id_is_a_builtin_or_an_allow_listed_alias()
+ {
     let unknown: Vec<String> = chain_provider_ids()
         .into_iter()
         .filter(|id| !support::is_known_provider(id))
@@ -27,7 +28,8 @@ fn given_builtin_profiles_when_each_provider_id_is_checked_against_the_engine_re
 }
 
 #[test]
-fn given_the_allow_list_when_compared_with_the_engine_registry_then_no_allow_listed_id_is_a_builtin_so_the_list_cannot_hide_drift() {
+fn given_the_allow_list_when_compared_with_the_engine_registry_then_no_allow_listed_id_is_a_builtin_so_the_list_cannot_hide_drift()
+ {
     let overlapping: Vec<&str> = support::CHAIN_PROVIDER_ID_ALLOWLIST
         .iter()
         .map(|(id, _)| *id)

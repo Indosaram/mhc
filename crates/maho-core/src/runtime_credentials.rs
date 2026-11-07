@@ -8,12 +8,16 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use maho_ai::auth::types::{
-    ApiKeyCredential, AuthOperationOptions, Credential, CredentialInfo, CredentialStore, CredentialType,
+    ApiKeyCredential, AuthOperationOptions, Credential, CredentialInfo, CredentialStore,
+    CredentialType,
 };
 
 type ModifyFn = Box<
-    dyn FnOnce(Option<Credential>) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<Credential>>> + Send>>
-        + Send,
+    dyn FnOnce(
+            Option<Credential>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<Option<Credential>>> + Send>,
+        > + Send,
 >;
 
 pub struct RuntimeCredentials {
@@ -23,7 +27,10 @@ pub struct RuntimeCredentials {
 
 impl RuntimeCredentials {
     pub fn new(store: Arc<dyn CredentialStore>) -> Self {
-        Self { store, overrides: Mutex::new(BTreeMap::new()) }
+        Self {
+            store,
+            overrides: Mutex::new(BTreeMap::new()),
+        }
     }
 
     pub fn set_runtime_api_key(&self, provider_id: &str, api_key: &str) {
@@ -34,31 +41,51 @@ impl RuntimeCredentials {
     }
 
     pub fn remove_runtime_api_key(&self, provider_id: &str) {
-        self.overrides.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(provider_id);
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_id);
     }
 
     pub fn has_runtime_api_key(&self, provider_id: &str) -> bool {
-        self.overrides.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(provider_id)
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(provider_id)
     }
 
     fn override_for(&self, provider_id: &str) -> Option<String> {
-        self.overrides.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider_id).cloned()
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider_id)
+            .cloned()
     }
 }
 
 fn throw_if_aborted(options: &Option<AuthOperationOptions>) -> anyhow::Result<()> {
     if let Some(signal) = options.as_ref().and_then(|options| options.signal.as_ref()) {
-        signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        signal
+            .throw_if_aborted()
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
     }
     Ok(())
 }
 
 #[async_trait::async_trait]
 impl CredentialStore for RuntimeCredentials {
-    async fn read(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<Option<Credential>> {
+    async fn read(
+        &self,
+        provider_id: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
         throw_if_aborted(&options)?;
         if let Some(key) = self.override_for(provider_id) {
-            return Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None, ..Default::default() })));
+            return Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                key: Some(key),
+                env: None,
+                ..Default::default()
+            })));
         }
         self.store.read(provider_id, options).await
     }
@@ -78,17 +105,26 @@ impl CredentialStore for RuntimeCredentials {
         use maho_ai::auth::pool::slots::{PooledCredential, project_slot};
         throw_if_aborted(&options)?;
         if let Some(key) = self.override_for(provider_id) {
-            let flat = PooledCredential::from(Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None, ..Default::default() }));
+            let flat = PooledCredential::from(Credential::ApiKey(ApiKeyCredential {
+                key: Some(key),
+                env: None,
+                ..Default::default()
+            }));
             return Ok(project_slot(Some(&flat), slot_name));
         }
         if self.store.has_read_slot() {
             return self.store.read_slot(provider_id, slot_name, options).await;
         }
         let stored = self.store.read(provider_id, options).await?;
-        Ok(stored.map(PooledCredential::from).and_then(|pooled| project_slot(Some(&pooled), slot_name)))
+        Ok(stored
+            .map(PooledCredential::from)
+            .and_then(|pooled| project_slot(Some(&pooled), slot_name)))
     }
 
-    async fn list(&self, options: Option<AuthOperationOptions>) -> anyhow::Result<Vec<CredentialInfo>> {
+    async fn list(
+        &self,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Vec<CredentialInfo>> {
         let mut entries: BTreeMap<String, CredentialInfo> = self
             .store
             .list(options.clone())
@@ -97,9 +133,19 @@ impl CredentialStore for RuntimeCredentials {
             .map(|entry| (entry.provider_id.clone(), entry))
             .collect();
         throw_if_aborted(&options)?;
-        let overrides = self.overrides.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let overrides = self
+            .overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for provider_id in overrides.keys() {
-            entries.insert(provider_id.clone(), CredentialInfo { provider_id: provider_id.clone(), credential_type: CredentialType::ApiKey });
+            entries.insert(
+                provider_id.clone(),
+                CredentialInfo {
+                    provider_id: provider_id.clone(),
+                    credential_type: CredentialType::ApiKey,
+                },
+            );
         }
         Ok(entries.into_values().collect())
     }
@@ -122,10 +168,17 @@ impl CredentialStore for RuntimeCredentials {
         self.store.modify_or_delete(provider_id, f, options).await
     }
 
-    async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
+    async fn delete(
+        &self,
+        provider_id: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<()> {
         throw_if_aborted(&options)?;
         self.store.delete(provider_id, options).await?;
-        self.overrides.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(provider_id);
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_id);
         Ok(())
     }
 }
@@ -142,17 +195,32 @@ mod tests {
 
     #[async_trait::async_trait]
     impl CredentialStore for MemoryStore {
-        async fn read(&self, provider_id: &str, _options: Option<AuthOperationOptions>) -> anyhow::Result<Option<Credential>> {
-            Ok(self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider_id).cloned())
+        async fn read(
+            &self,
+            provider_id: &str,
+            _options: Option<AuthOperationOptions>,
+        ) -> anyhow::Result<Option<Credential>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(provider_id)
+                .cloned())
         }
 
-        async fn list(&self, _options: Option<AuthOperationOptions>) -> anyhow::Result<Vec<CredentialInfo>> {
+        async fn list(
+            &self,
+            _options: Option<AuthOperationOptions>,
+        ) -> anyhow::Result<Vec<CredentialInfo>> {
             Ok(self
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
-                .map(|(provider_id, credential)| CredentialInfo { provider_id: provider_id.clone(), credential_type: credential.credential_type() })
+                .map(|(provider_id, credential)| CredentialInfo {
+                    provider_id: provider_id.clone(),
+                    credential_type: credential.credential_type(),
+                })
                 .collect())
         }
 
@@ -163,9 +231,17 @@ mod tests {
             _options: Option<AuthOperationOptions>,
         ) -> anyhow::Result<Option<Credential>> {
             let _mutation = self.mutations.lock().await;
-            let current = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider_id).cloned();
+            let current = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(provider_id)
+                .cloned();
             let next = f(current.clone()).await?.or(current);
-            let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match &next {
                 Some(credential) => {
                     entries.insert(provider_id.to_owned(), credential.clone());
@@ -185,19 +261,38 @@ mod tests {
         ) -> anyhow::Result<Option<Credential>> {
             throw_if_aborted(&options)?;
             let _mutation = self.mutations.lock().await;
-            let current = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider_id).cloned();
+            let current = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(provider_id)
+                .cloned();
             let next = f(current).await?;
-            let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match &next {
-                Some(credential) => { entries.insert(provider_id.to_owned(), credential.clone()); }
-                None => { entries.remove(provider_id); }
+                Some(credential) => {
+                    entries.insert(provider_id.to_owned(), credential.clone());
+                }
+                None => {
+                    entries.remove(provider_id);
+                }
             }
             Ok(next)
         }
 
-        async fn delete(&self, provider_id: &str, _options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
+        async fn delete(
+            &self,
+            provider_id: &str,
+            _options: Option<AuthOperationOptions>,
+        ) -> anyhow::Result<()> {
             let _mutation = self.mutations.lock().await;
-            self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(provider_id);
+            self.entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(provider_id);
             Ok(())
         }
     }
@@ -210,31 +305,83 @@ mod tests {
     async fn conditional_delete_mutates_persistent_state_without_removing_runtime_override() {
         // Given different persistent and runtime credentials.
         let underlying = store();
-        underlying.modify("p", Box::new(|_| Box::pin(async {
-            Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("stored".into()), ..Default::default() })))
-        })), None).await.expect("seed");
+        underlying
+            .modify(
+                "p",
+                Box::new(|_| {
+                    Box::pin(async {
+                        Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                            key: Some("stored".into()),
+                            ..Default::default()
+                        })))
+                    })
+                }),
+                None,
+            )
+            .await
+            .expect("seed");
         let credentials = RuntimeCredentials::new(Arc::clone(&underlying));
         credentials.set_runtime_api_key("p", "runtime");
         // When conditional deletion is forwarded to persistent storage.
-        let deleted = credentials.modify_or_delete("p", Box::new(|current| Box::pin(async move {
-            assert_eq!(current.expect("persistent credential").as_api_key().and_then(|key| key.key.as_deref()), Some("stored"));
-            Ok(None)
-        })), None).await.expect("conditional delete");
+        let deleted = credentials
+            .modify_or_delete(
+                "p",
+                Box::new(|current| {
+                    Box::pin(async move {
+                        assert_eq!(
+                            current
+                                .expect("persistent credential")
+                                .as_api_key()
+                                .and_then(|key| key.key.as_deref()),
+                            Some("stored")
+                        );
+                        Ok(None)
+                    })
+                }),
+                None,
+            )
+            .await
+            .expect("conditional delete");
         // Then persistent state is removed while the runtime override remains usable.
         assert_eq!(deleted, None);
-        assert_eq!(underlying.read("p", None).await.expect("persistent read"), None);
-        assert_eq!(credentials.read("p", None).await.expect("overlay read").expect("runtime credential").as_api_key().and_then(|key| key.key.as_deref()), Some("runtime"));
+        assert_eq!(
+            underlying.read("p", None).await.expect("persistent read"),
+            None
+        );
+        assert_eq!(
+            credentials
+                .read("p", None)
+                .await
+                .expect("overlay read")
+                .expect("runtime credential")
+                .as_api_key()
+                .and_then(|key| key.key.as_deref()),
+            Some("runtime")
+        );
     }
 
     #[tokio::test]
     async fn memory_fixture_modify_none_preserves_existing_credential() {
         // Given the fixture's pre-existing no-op contract mismatch, corrected separately from production.
         let store = store();
-        let initial = Credential::ApiKey(ApiKeyCredential { key: Some("stored".into()), ..Default::default() });
+        let initial = Credential::ApiKey(ApiKeyCredential {
+            key: Some("stored".into()),
+            ..Default::default()
+        });
         let seed = initial.clone();
-        store.modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(seed)) })), None).await.expect("seed");
+        store
+            .modify(
+                "p",
+                Box::new(move |_| Box::pin(async move { Ok(Some(seed)) })),
+                None,
+            )
+            .await
+            .expect("seed");
         // When modify returns None rather than requesting explicit deletion.
-        let unchanged = store.modify("p", Box::new(|_| Box::pin(async { Ok(None) })), None).await.expect("no-op");
+        let unchanged = store
+            .modify("p", Box::new(|_| Box::pin(async { Ok(None) })), None)
+            .await
+            .expect("no-op");
         // Then the fixture follows the production no-op contract.
         assert_eq!(unchanged, Some(initial.clone()));
         assert_eq!(store.read("p", None).await.expect("read"), Some(initial));
@@ -245,8 +392,15 @@ mod tests {
         let credentials = RuntimeCredentials::new(store());
         credentials.set_runtime_api_key("p", "runtime-key");
         assert!(credentials.has_runtime_api_key("p"));
-        let read = credentials.read("p", None).await.expect("read").expect("present");
-        assert_eq!(read.as_api_key().and_then(|key| key.key.clone()), Some("runtime-key".to_owned()));
+        let read = credentials
+            .read("p", None)
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(
+            read.as_api_key().and_then(|key| key.key.clone()),
+            Some("runtime-key".to_owned())
+        );
     }
 
     #[tokio::test]
@@ -282,8 +436,16 @@ mod tests {
         let runtime = RuntimeCredentials::new(Arc::new(MemoryStore::default()));
         runtime.set_runtime_api_key("p", "runtime-key");
         let slot = runtime.read_slot("p", "default", None).await.expect("read");
-        let Some(Credential::ApiKey(credential)) = slot else { panic!("api key") };
+        let Some(Credential::ApiKey(credential)) = slot else {
+            panic!("api key")
+        };
         assert_eq!(credential.key.as_deref(), Some("runtime-key"));
-        assert!(runtime.read_slot("absent", "default", None).await.expect("read").is_none());
+        assert!(
+            runtime
+                .read_slot("absent", "default", None)
+                .await
+                .expect("read")
+                .is_none()
+        );
     }
 }

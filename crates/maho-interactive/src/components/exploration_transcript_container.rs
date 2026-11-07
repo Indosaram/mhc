@@ -13,7 +13,9 @@ use super::custom_entry::CustomEntryComponent;
 use super::exploration_call::{ExplorationCall, exploration_call};
 use super::exploration_group::ExplorationGroup;
 use super::exploration_rules::project_rules_of_call;
-use super::progressive_transcript_container::{ProgressiveTranscriptContainer, ProgressiveTranscriptOptions};
+use super::progressive_transcript_container::{
+    ProgressiveTranscriptContainer, ProgressiveTranscriptOptions,
+};
 use super::tool_execution::ToolExecutionComponent;
 use crate::theme::Theme;
 
@@ -46,7 +48,10 @@ impl TranscriptChild {
     }
 }
 
-pub type GroupEntry = (Rc<RefCell<ToolExecutionComponent>>, Rc<RefCell<ExplorationGroup>>);
+pub type GroupEntry = (
+    Rc<RefCell<ToolExecutionComponent>>,
+    Rc<RefCell<ExplorationGroup>>,
+);
 
 /// Paint-path hydration must not lay out the full warm chunk (100) before the frame returns.
 const PAINT_PATH_WARM_CAP: usize = 8;
@@ -198,7 +203,10 @@ impl ExplorationTranscriptContainer {
         theme: &Theme,
         card: &Rc<RefCell<ToolExecutionComponent>>,
     ) -> Rc<RefCell<ExplorationGroup>> {
-        if let Some((_, group)) = groups.iter().find(|(existing, _)| Rc::ptr_eq(existing, card)) {
+        if let Some((_, group)) = groups
+            .iter()
+            .find(|(existing, _)| Rc::ptr_eq(existing, card))
+        {
             return Rc::clone(group);
         }
         let group = Rc::new(RefCell::new(ExplorationGroup::new(theme.clone())));
@@ -279,10 +287,22 @@ impl Component for ExplorationTranscriptContainer {
                 members_at_set = members.len();
                 continue;
             }
-            flush_group(&mut group, &mut members, &mut calls, &mut rules, members_at_set);
+            flush_group(
+                &mut group,
+                &mut members,
+                &mut calls,
+                &mut rules,
+                members_at_set,
+            );
             projected.push(child.component());
         }
-        flush_group(&mut group, &mut members, &mut calls, &mut rules, members_at_set);
+        flush_group(
+            &mut group,
+            &mut members,
+            &mut calls,
+            &mut rules,
+            members_at_set,
+        );
 
         self.remember_projection();
         *self.display.children_mut() = projected;
@@ -310,7 +330,7 @@ mod tests {
 
     use maho_tui::tui::Component;
 
-    use super::{ExplorationTranscriptContainer, TranscriptChild, PAINT_PATH_WARM_CAP};
+    use super::{ExplorationTranscriptContainer, PAINT_PATH_WARM_CAP, TranscriptChild};
     use crate::components::progressive_transcript_container::ProgressiveTranscriptOptions;
     use crate::theme::{ColorMode, Theme};
 
@@ -357,14 +377,28 @@ mod tests {
             }))));
         }
         let first = transcript.render(48);
-        assert_eq!(transcript.projection_walks, 1, "the first paint builds the projection");
+        assert_eq!(
+            transcript.projection_walks, 1,
+            "the first paint builds the projection"
+        );
         assert_eq!(transcript.groups.len(), 0);
         assert!(first.iter().all(|line| line == "before"));
         text.set("after");
         let second = transcript.render(48);
-        assert_eq!(second, vec!["after".to_owned(); 40], "in-place text must reach the second paint");
-        assert_eq!(transcript.projection_walks, 1, "second paint regrouped; group_for ran again");
-        assert_eq!(transcript.groups.len(), 0, "groups changed without a child-set change");
+        assert_eq!(
+            second,
+            vec!["after".to_owned(); 40],
+            "in-place text must reach the second paint"
+        );
+        assert_eq!(
+            transcript.projection_walks, 1,
+            "second paint regrouped; group_for ran again"
+        );
+        assert_eq!(
+            transcript.groups.len(),
+            0,
+            "groups changed without a child-set change"
+        );
         assert!(hits.get() > 40, "second paint did not render the children");
     }
 
@@ -393,7 +427,13 @@ mod tests {
         );
         assert_eq!(transcript.projection_walks, walks, "warm must not regroup");
         let second = transcript.render(48);
-        assert!(second.len() > first.len(), "the capped warm must still reveal older lines");
-        assert!(second.ends_with(first.as_slice()), "warming must extend the previous tail");
+        assert!(
+            second.len() > first.len(),
+            "the capped warm must still reveal older lines"
+        );
+        assert!(
+            second.ends_with(first.as_slice()),
+            "warming must extend the previous tail"
+        );
     }
 }

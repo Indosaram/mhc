@@ -7,7 +7,10 @@
 use maho_ext_api::{ExtensionFailure, ProjectTrustEventResult, TrustDecision};
 
 use crate::config::{app_name, config_dir_name};
-use crate::trust_manager::{ProjectTrustOption, ProjectTrustStore, get_project_trust_options, has_trust_requiring_project_resources};
+use crate::trust_manager::{
+    ProjectTrustOption, ProjectTrustStore, get_project_trust_options,
+    has_trust_requiring_project_resources,
+};
 
 /// senpi declares DefaultProjectTrust in settings-manager.ts; the data-only shape is declared here
 /// because that module is owned by todo 16.
@@ -68,15 +71,21 @@ pub fn format_project_trust_prompt(cwd: &str) -> String {
 /// flag (CLI, or `open_session.permissionPreset` through the launch profile), else the user's global
 /// setting. Project settings never count: they are what trust gates. The implicit default never
 /// counts either, so a plain launch keeps asking.
-pub fn preset_trusts_project(preset_flag: Option<&maho_ext_api::FlagValue>, global_preset: Option<&serde_json::Value>) -> bool {
+pub fn preset_trusts_project(
+    preset_flag: Option<&maho_ext_api::FlagValue>,
+    global_preset: Option<&serde_json::Value>,
+) -> bool {
     match preset_flag {
         Some(maho_ext_api::FlagValue::String(preset)) => preset == "full-access",
-        Some(maho_ext_api::FlagValue::Boolean(_)) | None => global_preset.and_then(serde_json::Value::as_str) == Some("full-access"),
+        Some(maho_ext_api::FlagValue::Boolean(_)) | None => {
+            global_preset.and_then(serde_json::Value::as_str) == Some("full-access")
+        }
     }
 }
 
 /// Result of asking the extension runner for a trust decision.
-pub type EmitProjectTrust = dyn Fn(&str) -> Result<Option<ProjectTrustEventResult>, ExtensionFailure> + Send + Sync;
+pub type EmitProjectTrust =
+    dyn Fn(&str) -> Result<Option<ProjectTrustEventResult>, ExtensionFailure> + Send + Sync;
 
 pub struct ResolveProjectTrustedOptions<'a> {
     pub cwd: &'a str,
@@ -90,7 +99,10 @@ pub struct ResolveProjectTrustedOptions<'a> {
     pub on_trust_store_error: Option<&'a (dyn Fn(&str) + Send + Sync)>,
 }
 
-fn select_project_trust_option(cwd: &str, ctx: &dyn ProjectTrustContext) -> Option<ProjectTrustOption> {
+fn select_project_trust_option(
+    cwd: &str,
+    ctx: &dyn ProjectTrustContext,
+) -> Option<ProjectTrustOption> {
     let options = get_project_trust_options(cwd, true);
     let labels: Vec<String> = options.iter().map(|option| option.label.clone()).collect();
     let selected = ctx.select(&format_project_trust_prompt(cwd), &labels)?;
@@ -135,11 +147,15 @@ pub async fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) 
         Ok(Some(decision)) => return decision,
         Ok(None) => {}
         Err(error) => {
-            let message = format!("Project trust store unreadable; not trusting {}: {error}", options.cwd);
+            let message = format!(
+                "Project trust store unreadable; not trusting {}: {error}",
+                options.cwd
+            );
             match options.on_trust_store_error {
                 Some(report) => report(&message),
                 None => {
-                    let _ = crate::output_guard::maho_write_stderr(&format!("Warning: {message}\n"));
+                    let _ =
+                        crate::output_guard::maho_write_stderr(&format!("Warning: {message}\n"));
                 }
             }
             return false;
@@ -207,12 +223,18 @@ mod tests {
         assert!(preset_trusts_project(Some(&flag("full-access")), None));
         // The session's own flag wins over the global setting, both ways.
         assert!(!preset_trusts_project(Some(&flag("ask")), Some(&full)));
-        assert!(preset_trusts_project(Some(&flag("full-access")), Some(&ask)));
+        assert!(preset_trusts_project(
+            Some(&flag("full-access")),
+            Some(&ask)
+        ));
         assert!(preset_trusts_project(None, Some(&full)));
         assert!(!preset_trusts_project(None, Some(&ask)));
         // The implicit default never counts.
         assert!(!preset_trusts_project(None, None));
-        assert!(!preset_trusts_project(Some(&maho_ext_api::FlagValue::Boolean(true)), None));
+        assert!(!preset_trusts_project(
+            Some(&maho_ext_api::FlagValue::Boolean(true)),
+            None
+        ));
     }
 
     #[test]
@@ -226,33 +248,37 @@ mod tests {
     #[tokio::test]
     async fn an_override_wins() {
         let trust_store = store();
-        assert!(resolve_project_trusted(ResolveProjectTrustedOptions {
-            cwd: "/definitely/not/a/project",
-            trust_store: &trust_store,
-            trust_override: Some(true),
-            default_project_trust: None,
-            emit_project_trust: None,
-            project_trust_context: &NoUi,
-            on_extension_error: None,
-            on_trust_store_error: None,
-        })
-        .await);
+        assert!(
+            resolve_project_trusted(ResolveProjectTrustedOptions {
+                cwd: "/definitely/not/a/project",
+                trust_store: &trust_store,
+                trust_override: Some(true),
+                default_project_trust: None,
+                emit_project_trust: None,
+                project_trust_context: &NoUi,
+                on_extension_error: None,
+                on_trust_store_error: None,
+            })
+            .await
+        );
     }
 
     #[tokio::test]
     async fn a_project_without_trust_requiring_resources_is_trusted() {
         let trust_store = store();
-        assert!(resolve_project_trusted(ResolveProjectTrustedOptions {
-            cwd: "/definitely/not/a/project",
-            trust_store: &trust_store,
-            trust_override: None,
-            default_project_trust: None,
-            emit_project_trust: None,
-            project_trust_context: &NoUi,
-            on_extension_error: None,
-            on_trust_store_error: None,
-        })
-        .await);
+        assert!(
+            resolve_project_trusted(ResolveProjectTrustedOptions {
+                cwd: "/definitely/not/a/project",
+                trust_store: &trust_store,
+                trust_override: None,
+                default_project_trust: None,
+                emit_project_trust: None,
+                project_trust_context: &NoUi,
+                on_extension_error: None,
+                on_trust_store_error: None,
+            })
+            .await
+        );
     }
 
     #[tokio::test]
@@ -262,18 +288,25 @@ mod tests {
         std::fs::write(tmp.path().join(".omo/settings.json"), "{}").expect("write");
         let cwd = tmp.path().to_string_lossy().into_owned();
         let trust_store = store();
-        let emit = |_cwd: &str| Ok(Some(ProjectTrustEventResult { trusted: TrustDecision::Yes, remember: Some(true) }));
-        assert!(resolve_project_trusted(ResolveProjectTrustedOptions {
-            cwd: &cwd,
-            trust_store: &trust_store,
-            trust_override: None,
-            default_project_trust: None,
-            emit_project_trust: Some(&emit),
-            project_trust_context: &NoUi,
-            on_extension_error: None,
-            on_trust_store_error: None,
-        })
-        .await);
+        let emit = |_cwd: &str| {
+            Ok(Some(ProjectTrustEventResult {
+                trusted: TrustDecision::Yes,
+                remember: Some(true),
+            }))
+        };
+        assert!(
+            resolve_project_trusted(ResolveProjectTrustedOptions {
+                cwd: &cwd,
+                trust_store: &trust_store,
+                trust_override: None,
+                default_project_trust: None,
+                emit_project_trust: Some(&emit),
+                project_trust_context: &NoUi,
+                on_extension_error: None,
+                on_trust_store_error: None,
+            })
+            .await
+        );
         assert_eq!(trust_store.get(&cwd).expect("get"), Some(true));
     }
 
@@ -294,17 +327,19 @@ mod tests {
                 .push(message.to_owned())
         };
         // "always" would trust, and the UI would answer "Trust": neither is reached.
-        assert!(!resolve_project_trusted(ResolveProjectTrustedOptions {
-            cwd: &cwd,
-            trust_store: &trust_store,
-            trust_override: None,
-            default_project_trust: Some(DefaultProjectTrust::Always),
-            emit_project_trust: None,
-            project_trust_context: &YesUi,
-            on_extension_error: None,
-            on_trust_store_error: Some(&report),
-        })
-        .await);
+        assert!(
+            !resolve_project_trusted(ResolveProjectTrustedOptions {
+                cwd: &cwd,
+                trust_store: &trust_store,
+                trust_override: None,
+                default_project_trust: Some(DefaultProjectTrust::Always),
+                emit_project_trust: None,
+                project_trust_context: &YesUi,
+                on_extension_error: None,
+                on_trust_store_error: Some(&report),
+            })
+            .await
+        );
         let reported = reported
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -319,16 +354,18 @@ mod tests {
         std::fs::write(tmp.path().join(".omo/settings.json"), "{}").expect("write");
         let cwd = tmp.path().to_string_lossy().into_owned();
         let trust_store = store();
-        assert!(!resolve_project_trusted(ResolveProjectTrustedOptions {
-            cwd: &cwd,
-            trust_store: &trust_store,
-            trust_override: None,
-            default_project_trust: Some(DefaultProjectTrust::Never),
-            emit_project_trust: None,
-            project_trust_context: &YesUi,
-            on_extension_error: None,
-            on_trust_store_error: None,
-        })
-        .await);
+        assert!(
+            !resolve_project_trusted(ResolveProjectTrustedOptions {
+                cwd: &cwd,
+                trust_store: &trust_store,
+                trust_override: None,
+                default_project_trust: Some(DefaultProjectTrust::Never),
+                emit_project_trust: None,
+                project_trust_context: &YesUi,
+                on_extension_error: None,
+                on_trust_store_error: None,
+            })
+            .await
+        );
     }
 }

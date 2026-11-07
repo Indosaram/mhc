@@ -25,8 +25,9 @@ pub fn ascii_upper(s: &str) -> String {
     s.to_ascii_uppercase()
 }
 
-static CONTROLS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("[\u{0}-\u{8}\u{b}\u{c}\u{e}-\u{1f}\u{7f}-\u{9f}]").expect("controls"));
+static CONTROLS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("[\u{0}-\u{8}\u{b}\u{c}\u{e}-\u{1f}\u{7f}-\u{9f}]").expect("controls")
+});
 
 pub fn strip_controls(src: &str) -> String {
     CONTROLS.replace_all(src, "").into_owned()
@@ -160,9 +161,8 @@ pub fn strip_markdown(s: &str) -> String {
 }
 
 const HTML_FORMAT_TAGS: &[&str] = &[
-    "abbr", "b", "big", "cite", "code", "del", "em", "font", "i", "ins", "kbd", "mark",
-    "pre", "q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "tt",
-    "u", "var",
+    "abbr", "b", "big", "cite", "code", "del", "em", "font", "i", "ins", "kbd", "mark", "pre", "q",
+    "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "tt", "u", "var",
 ];
 
 fn html_tag_at(chars: &[char], start: usize) -> Option<(String, usize)> {
@@ -353,12 +353,18 @@ mod tests {
 
     #[test]
     fn test_ascii_lower() {
-        assert_eq!(ascii_lower("Hello World 123! \u{0130}"), "hello world 123! \u{0130}");
+        assert_eq!(
+            ascii_lower("Hello World 123! \u{0130}"),
+            "hello world 123! \u{0130}"
+        );
     }
 
     #[test]
     fn test_ascii_upper() {
-        assert_eq!(ascii_upper("Hello World 123! \u{0131}"), "HELLO WORLD 123! \u{0131}");
+        assert_eq!(
+            ascii_upper("Hello World 123! \u{0131}"),
+            "HELLO WORLD 123! \u{0131}"
+        );
     }
 
     #[test]
@@ -388,7 +394,10 @@ mod tests {
 
     #[test]
     fn test_decode_html_entities() {
-        assert_eq!(decode_html_entities("&lt;hello &amp; world&gt;"), "<hello & world>");
+        assert_eq!(
+            decode_html_entities("&lt;hello &amp; world&gt;"),
+            "<hello & world>"
+        );
         assert_eq!(decode_html_entities("&quot;foo&apos;"), "\"foo'");
         assert_eq!(decode_html_entities("&#65; &#x42;"), "A B");
         assert_eq!(decode_html_entities("&amp;lt;"), "&lt;");
@@ -411,7 +420,10 @@ mod tests {
             strip_html_tags("<b>bold</b> <br> line2 <br/> line3 <i>italic</i>"),
             "bold   line2   line3 italic"
         );
-        assert_eq!(strip_html_tags("Vec<String> and <id>"), "Vec<String> and <id>");
+        assert_eq!(
+            strip_html_tags("Vec<String> and <id>"),
+            "Vec<String> and <id>"
+        );
     }
 
     #[test]

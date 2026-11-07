@@ -44,6 +44,72 @@ fn mutation_observer_is_shared_by_clones_and_runs_after_unlock() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
+#[test]
+fn a_task_commit_wakes_only_its_own_waiter() {
+    let root = project();
+    let store = store_for(root.path());
+    let first = base_record("st_00000001");
+    let second = base_record("st_00000002");
+    store.save(&first).expect("first");
+    store.save(&second).expect("second");
+    let first_seq = store.task_change_seq("st_00000001");
+    let second_seq = store.task_change_seq("st_00000002");
+    store
+        .mutate("st_00000002", |record| TaskRecord {
+            name: Some("renamed".into()),
+            ..record.clone()
+        })
+        .expect("second mutation");
+    assert_eq!(store.task_change_seq("st_00000002"), second_seq + 1);
+    assert_eq!(store.task_change_seq("st_00000001"), first_seq);
+}
+
+/// The exit confirmation parks on the task's own commit instead of sleeping out its window, so a
+/// committed record ends the wait at once. The deadline here is far longer than the test may take.
+#[test]
+fn a_task_commit_ends_the_exit_confirmation_wait() {
+    let root = project();
+    let store = store_for(root.path());
+    let record = base_record("st_00000001");
+    store.save(&record).expect("save");
+    let since = store.task_change_seq(&record.task_id);
+    let waiter = store.clone();
+    let (observed, observed_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        observed
+            .send(waiter.wait_task_change("st_00000001", since, std::time::Duration::from_secs(30)))
+            .expect("report wake");
+    });
+    // An unchanged record is not a commit: the store skips the write and `since` must not move.
+    store.mutate("st_00000001", Clone::clone).expect("no-op");
+    assert_eq!(store.task_change_seq("st_00000001"), since);
+    store
+        .mutate("st_00000001", |record| TaskRecord {
+            name: Some("renamed".into()),
+            ..record.clone()
+        })
+        .expect("committed change");
+    assert!(
+        observed_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a commit must end the wait")
+    );
+}
+
+/// The per-task signal exists only for parked waiters. A removed task can never commit again, so its
+/// entry must be dropped instead of living as long as the daemon.
+#[test]
+fn removing_a_task_drops_its_commit_signal() {
+    let root = project();
+    let store = store_for(root.path());
+    let record = base_record("st_00000001");
+    store.save(&record).expect("save");
+    assert_eq!(store.task_change_seq(&record.task_id), 0);
+    assert!(store.waits_on(&record.task_id));
+    store.remove(&record.task_id).expect("remove");
+    assert!(!store.waits_on(&record.task_id));
+}
+
 fn config(project: &Path) -> StateDirConfig {
     StateDirConfig {
         project_dir: project.to_path_buf(),

@@ -15,7 +15,11 @@ pub struct GatewaySchemaVersionError {
 
 impl GatewaySchemaVersionError {
     pub fn new(found: i64, supported: i64, scope: impl Into<String>) -> Self {
-        Self { found, supported, scope: scope.into() }
+        Self {
+            found,
+            supported,
+            scope: scope.into(),
+        }
     }
 
     pub fn code(&self) -> &'static str {
@@ -25,7 +29,11 @@ impl GatewaySchemaVersionError {
 
 impl std::fmt::Display for GatewaySchemaVersionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} schema {} is newer than this binary's supported version {}.", self.scope, self.found, self.supported)
+        write!(
+            formatter,
+            "{} schema {} is newer than this binary's supported version {}.",
+            self.scope, self.found, self.supported
+        )
     }
 }
 
@@ -300,6 +308,9 @@ mod tests {
     fn a_newer_store_is_refused_with_its_code() {
         let error = GatewaySchemaVersionError::new(11, 10, "Gateway");
         assert_eq!(error.code(), "gateway_schema_too_new");
-        assert_eq!(error.to_string(), "Gateway schema 11 is newer than this binary's supported version 10.");
+        assert_eq!(
+            error.to_string(),
+            "Gateway schema 11 is newer than this binary's supported version 10."
+        );
     }
 }

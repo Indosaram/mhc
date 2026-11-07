@@ -12,7 +12,8 @@ use serde_json::json;
 use super::TransactionError;
 use crate::request::Op;
 use crate::test_support::{
-    click_window, delivery, foreground_click, foreground_click_mutation, harness, op_names, two_windows,
+    click_window, delivery, foreground_click, foreground_click_mutation, harness, op_names,
+    two_windows,
 };
 
 fn chord(mode: &str) -> Op {
@@ -27,7 +28,10 @@ fn chord(mode: &str) -> Op {
 fn keypress_backend_failure_releases_before_restore_and_keeps_primary_error() {
     let cases = [
         ("background", vec!["front", "release", "restore-key-focus"]),
-        ("foreground", vec!["front", "release", "restore-front", "warp"]),
+        (
+            "foreground",
+            vec!["front", "release", "restore-front", "warp"],
+        ),
     ];
     for (mode, expected) in cases {
         // Given
@@ -53,7 +57,11 @@ fn keypress_backend_failure_releases_before_restore_and_keeps_primary_error() {
 fn keypress_persistent_release_failure_retains_ownership_until_recovery() {
     // Given: the chord fails twice; the first release and restore fail too.
     let mut harness = harness(&json!({}));
-    for method in [FakeMethod::KeyChord, FakeMethod::KeyChord, FakeMethod::ReleaseAll] {
+    for method in [
+        FakeMethod::KeyChord,
+        FakeMethod::KeyChord,
+        FakeMethod::ReleaseAll,
+    ] {
         harness.faults.fail_next(method, ErrorCode::InputFailed);
     }
     harness
@@ -68,7 +76,10 @@ fn keypress_persistent_release_failure_retains_ownership_until_recovery() {
     let second = harness.process(chord("background"));
     // Then: that transaction released the held input (the first release
     // failed, so it recorded nothing).
-    assert_eq!(second.map_err(|error| error.code), Err(ErrorCode::InputFailed));
+    assert_eq!(
+        second.map_err(|error| error.code),
+        Err(ErrorCode::InputFailed)
+    );
     let releases = op_names(&harness)
         .into_iter()
         .filter(|op| *op == "release")
@@ -162,7 +173,10 @@ fn release_panic_still_restores_cursor_once() {
     // When
     let reply = harness.process(click_window(&frame_id, delivery("foreground")));
     // Then: the primary survives and front + cursor are restored once each.
-    assert_eq!(reply.map_err(|error| error.code), Err(ErrorCode::InputFailed));
+    assert_eq!(
+        reply.map_err(|error| error.code),
+        Err(ErrorCode::InputFailed)
+    );
     assert_eq!(op_names(&harness), ["front", "restore-front", "warp"]);
 }
 

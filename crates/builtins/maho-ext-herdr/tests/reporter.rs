@@ -453,7 +453,11 @@ async fn lifecycle_transcript_reports_live_bus_and_shutdown_releases_once() {
     );
     assert_eq!(
         first[2]["params"]["resume_argv"],
-        json!([maho_core::config::app_command(), "--session", "/sessions/root.jsonl"])
+        json!([
+            maho_core::config::app_command(),
+            "--session",
+            "/sessions/root.jsonl"
+        ])
     );
     for request in &first {
         assert_eq!(request["params"]["source"], "custom:senpi");

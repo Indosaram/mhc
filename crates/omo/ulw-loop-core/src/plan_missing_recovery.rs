@@ -1,10 +1,11 @@
 //! Missing plan error messages and recovery instructions.
 
-use std::collections::BTreeMap;
 use crate::runtime::UlwLoopError;
 use crate::surface::UlwLoopToolkitSurface;
+use std::collections::BTreeMap;
 
-pub const ULW_LOOP_CREATE_GOALS_COMMAND: &str = "mhc ulw-loop create-goals --brief \"<brief>\" --json";
+pub const ULW_LOOP_CREATE_GOALS_COMMAND: &str =
+    "mhc ulw-loop create-goals --brief \"<brief>\" --json";
 
 /// Native divergence: upstream's omo-senpi surface names the JS `agentToolkit` SDK, which the Rust
 /// product does not ship; both surfaces point at the native `mhc ulw-loop` CLI instead.
@@ -21,7 +22,10 @@ pub fn plan_missing_recovery(
     existing_session_ids: &[String],
     surface: UlwLoopToolkitSurface,
 ) -> PlanMissingRecovery {
-    let mut lines = vec![format!("Recovery: bootstrap the plan with `{}`.", create_goals_action(&surface))];
+    let mut lines = vec![format!(
+        "Recovery: bootstrap the plan with `{}`.",
+        create_goals_action(&surface)
+    )];
     if !existing_session_ids.is_empty() {
         let joined = existing_session_ids.join(", ");
         if surface == UlwLoopToolkitSurface::OmoSenpi {
@@ -55,7 +59,10 @@ pub fn plan_missing_error(
         );
     }
     UlwLoopError::with_details(
-        format!("No ulw-loop plan found at {plan_path}.\n{}", recovery.message),
+        format!(
+            "No ulw-loop plan found at {plan_path}.\n{}",
+            recovery.message
+        ),
         "ULW_LOOP_PLAN_MISSING",
         details,
     )

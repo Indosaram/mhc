@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::backend::{platform_name, IsolationError, Result};
+use crate::backend::{IsolationError, Result, platform_name};
 use crate::git::command::exists;
-use crate::util::{device_of, dirname};
 #[cfg(not(unix))]
 use crate::util::is_denied;
+use crate::util::{device_of, dirname};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
@@ -96,9 +96,9 @@ impl BackendRuntime for SystemRuntime {
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(IsolationError::unavailable(format!("{program} not on PATH")))
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(
+                IsolationError::unavailable(format!("{program} not on PATH")),
+            ),
             Err(error) => Err(error.into()),
         }
     }

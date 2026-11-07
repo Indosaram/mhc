@@ -1,7 +1,11 @@
-use std::sync::Arc;
-use serde_json::{Value, json};
+use super::{
+    call_capture::EvalToolCallMetric,
+    image::{EvalOutputCollector, EvalOutputOptions, EvalOutputResult},
+    types::{EvalRuntimeInfo, EvalToolInput},
+};
 use maho_ext_api::{AgentToolResult, ContentBlock, ImageContent};
-use super::{types::{EvalToolInput, EvalRuntimeInfo}, call_capture::EvalToolCallMetric, image::{EvalOutputCollector, EvalOutputOptions, EvalOutputResult}};
+use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub struct CellState {
     pub input: EvalToolInput,
@@ -23,22 +27,56 @@ pub struct CellState {
 
 // `state.output` holds the finished output only; while running, `details` reads the collector's
 // aggregate directly instead of copying it into `state.output` on every frame.
-pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector, finished: bool, coalesce_updates: bool, update_pending: bool, memory: Option<Value>, kernel_state: Option<Value>, restart_notice: Option<String> }
+pub struct CellResultBuilder {
+    pub state: CellState,
+    output: EvalOutputCollector,
+    finished: bool,
+    coalesce_updates: bool,
+    update_pending: bool,
+    memory: Option<Value>,
+    kernel_state: Option<Value>,
+    restart_notice: Option<String>,
+}
 
 impl CellResultBuilder {
     pub fn new(mut state: CellState, options: EvalOutputOptions) -> Self {
-        if state.status != "queued" { state.status = "running".into(); }
-        let mut builder = Self {state,output:EvalOutputCollector::new(options),finished:false,coalesce_updates:false,update_pending:false,memory:None,kernel_state:None,restart_notice:None};
+        if state.status != "queued" {
+            state.status = "running".into();
+        }
+        let mut builder = Self {
+            state,
+            output: EvalOutputCollector::new(options),
+            finished: false,
+            coalesce_updates: false,
+            update_pending: false,
+            memory: None,
+            kernel_state: None,
+            restart_notice: None,
+        };
         builder.emit_update(false);
         builder
     }
 
     /// Frame-driven updates (output, phase, status) only mark an update pending; the run loop
     /// publishes it through [`Self::flush_update`] once a burst of kernel frames drains.
-    pub fn coalesce_updates(&mut self) {self.coalesce_updates=true;}
-    pub fn request_update(&mut self) {if self.coalesce_updates {self.update_pending=true;} else {self.emit_update(false);}}
-    pub fn flush_update(&mut self) {if self.update_pending {self.emit_update(false);}}
-    pub fn update_pending(&self) -> bool {self.update_pending}
+    pub fn coalesce_updates(&mut self) {
+        self.coalesce_updates = true;
+    }
+    pub fn request_update(&mut self) {
+        if self.coalesce_updates {
+            self.update_pending = true;
+        } else {
+            self.emit_update(false);
+        }
+    }
+    pub fn flush_update(&mut self) {
+        if self.update_pending {
+            self.emit_update(false);
+        }
+    }
+    pub fn update_pending(&self) -> bool {
+        self.update_pending
+    }
 
     pub async fn push(&mut self, text: &str) -> Result<(), String> {
         self.output.push(text).await?;
@@ -46,137 +84,338 @@ impl CellResultBuilder {
         Ok(())
     }
     pub async fn display(&mut self, mime_type: &str, data_base64: &str) -> Result<(), String> {
-        self.output.display(mime_type,data_base64).await?;
+        self.output.display(mime_type, data_base64).await?;
         self.request_update();
         Ok(())
     }
-    pub fn set_phase(&mut self, title: String) {self.state.phase=Some(title);self.request_update();}
-    pub async fn flush_output(&mut self) -> Result<(), String> {self.output.flush().await}
+    pub fn set_phase(&mut self, title: String) {
+        self.state.phase = Some(title);
+        self.request_update();
+    }
+    pub async fn flush_output(&mut self) -> Result<(), String> {
+        self.output.flush().await
+    }
 
     pub async fn finalize(&mut self, result: &Value) -> Result<AgentToolResult, String> {
-        self.state.duration_ms=result["durationMs"].as_f64().unwrap_or(0.0);
-        self.memory=result.get("memory").cloned();
-        self.kernel_state=result.get("kernelState").cloned();
-        self.restart_notice=result["notice"].as_str().map(str::to_owned);
-        let ok=result["ok"]==true;
+        self.state.duration_ms = result["durationMs"].as_f64().unwrap_or(0.0);
+        self.memory = result.get("memory").cloned();
+        self.kernel_state = result.get("kernelState").cloned();
+        self.restart_notice = result["notice"].as_str().map(str::to_owned);
+        let ok = result["ok"] == true;
         if ok {
-            if let Some(value)=result["valueRepr"].as_str().filter(|value|!value.is_empty()) {self.output.push_value(&format!("{value}\n")).await.map_err(|error|error.to_string())?; self.request_update();}
-            self.state.status="complete".into();
+            if let Some(value) = result["valueRepr"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+            {
+                self.output
+                    .push_value(&format!("{value}\n"))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.request_update();
+            }
+            self.state.status = "complete".into();
         } else {
-            let error=result["error"]["message"].as_str().unwrap_or("").to_owned();
-            self.state.error=Some(error.clone());
+            let error = result["error"]["message"].as_str().unwrap_or("").to_owned();
+            self.state.error = Some(error.clone());
             self.push(&format!("{error}\n")).await?;
-            self.state.status="error".into();
+            self.state.status = "error".into();
         }
         self.finish(!ok).await
     }
 
     pub async fn finalize_cancellation(&mut self, error: &str) -> Result<AgentToolResult, String> {
-        self.state.error=Some(error.into());
+        self.state.error = Some(error.into());
         self.push(&format!("{error}\n")).await?;
-        self.state.status="error".into();
+        self.state.status = "error".into();
         self.finish(true).await
     }
 
     async fn finish(&mut self, is_error: bool) -> Result<AgentToolResult, String> {
-        let output=self.output.finish().await?;
-        self.state.output=output.output.clone();
-        self.finished=true;
-        let details=self.details(Some(&output),is_error);
+        let output = self.output.finish().await?;
+        self.state.output = output.output.clone();
+        self.finished = true;
+        let details = self.details(Some(&output), is_error);
         self.emit_update(is_error);
-        let shown=if !output.output.is_empty() {output.output.clone()} else if !output.images.is_empty() {format!("(displayed {} image{}; no text output)",output.images.len(),if output.images.len()==1 {""} else {"s"})} else {"(no output)".into()};
+        let shown = if !output.output.is_empty() {
+            output.output.clone()
+        } else if !output.images.is_empty() {
+            format!(
+                "(displayed {} image{}; no text output)",
+                output.images.len(),
+                if output.images.len() == 1 { "" } else { "s" }
+            )
+        } else {
+            "(no output)".into()
+        };
         // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the meta object directly; this port deserializes TruncationMeta from a borrowed Value instead of cloning it. Result is identical.
-        let text=output.meta.as_ref().and_then(|meta|<crate::output::output_meta::TruncationMeta as serde::Deserialize>::deserialize(meta).ok()).map_or(shown.clone(),|meta|format!("{shown}\n{}",crate::output::output_meta::format_model_truncation_notice(&meta)));
-        let mut result=AgentToolResult::text(text);
-        for notice in [self.restart_notice.clone(),self.memory.as_ref().and_then(|memory|memory.get("notice").and_then(Value::as_str).map(str::to_owned))].into_iter().flatten() { result.content.push(ContentBlock::Text(maho_ai::types::TextContent {text:notice,audience:None,text_signature:None})); }
-        result.content.extend(output.images.into_iter().map(|image|ContentBlock::Image(ImageContent {data:image.data,mime_type:image.mime_type})));
-        result.details=details;
+        let text = output
+            .meta
+            .as_ref()
+            .and_then(|meta| {
+                <crate::output::output_meta::TruncationMeta as serde::Deserialize>::deserialize(
+                    meta,
+                )
+                .ok()
+            })
+            .map_or(shown.clone(), |meta| {
+                format!(
+                    "{shown}\n{}",
+                    crate::output::output_meta::format_model_truncation_notice(&meta)
+                )
+            });
+        let mut result = AgentToolResult::text(text);
+        for notice in [
+            self.restart_notice.clone(),
+            self.memory.as_ref().and_then(|memory| {
+                memory
+                    .get("notice")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            result
+                .content
+                .push(ContentBlock::Text(maho_ai::types::TextContent {
+                    text: notice,
+                    audience: None,
+                    text_signature: None,
+                }));
+        }
+        result
+            .content
+            .extend(output.images.into_iter().map(|image| {
+                ContentBlock::Image(ImageContent {
+                    data: image.data,
+                    mime_type: image.mime_type,
+                })
+            }));
+        result.details = details;
         Ok(result)
     }
 
     pub fn live_result(&self) -> AgentToolResult {
-        let mut result=AgentToolResult::text(self.live_update_text());
-        result.details=self.details(None,self.state.status=="error");
+        let mut result = AgentToolResult::text(self.live_update_text());
+        result.details = self.details(None, self.state.status == "error");
         result
     }
 
     pub fn emit_update(&mut self, is_error: bool) {
-        self.update_pending=false;
-        if self.state.active && let Some(update)=&self.state.on_update {
-            let mut result=AgentToolResult::text(self.live_update_text());
-            result.details=self.details(None,is_error);
+        self.update_pending = false;
+        if self.state.active
+            && let Some(update) = &self.state.on_update
+        {
+            let mut result = AgentToolResult::text(self.live_update_text());
+            result.details = self.details(None, is_error);
             update(result);
         }
     }
 
     fn details(&self, output: Option<&EvalOutputResult>, is_error: bool) -> Value {
-        let state=&self.state;
-        let cell_output=if self.finished {state.output.as_str()} else {self.output.aggregate_text()};
-        let mut cell=json!({"index":0,"summary":state.input.summary,"code":state.input.code,"language":state.input.language,"output":cell_output,"status":state.status,"durationMs":state.duration_ms});
-        if state.status!="queued" {cell["startedAt"]=json!(state.run_started_at.unwrap_or(state.started_at));}
-        if let Some(runtime)=&state.runtime {cell["runtime"]=json!(runtime);}
-        if let Some(queued)=&state.queued_behind {cell["queuedBehind"]=json!(queued);}
-        if !state.status_events.is_empty() {cell["statusEvents"]=json!(state.status_events);}
-        if output.is_some_and(|output|output.has_markdown) {cell["hasMarkdown"]=json!(true);}
-        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0;
-        let mut details=json!({"language":state.input.language,"languages":[state.input.language],"summary":state.input.summary,"durationMs":state.duration_ms,"wallDurationMs":(now-state.started_at).max(0.0),"toolCallCount":state.tool_call_metrics.len(),"toolCalls":state.tool_calls,"truncated":output.is_some_and(|output|output.truncated),"cells":[cell]});
-        if let Some(memory)=output.and(self.memory.as_ref()) {details["memory"]=memory.clone();}
-        if let Some(kernel_state)=self.kernel_state.as_ref() {details["kernelState"]=kernel_state.clone();}
-        if let Some(runtime)=&state.runtime {details["runtime"]=json!(runtime);}
-        if is_error {details["isError"]=json!(true);}
-        if let Some(phase)=&state.phase {details["phase"]=json!(phase);}
-        if !state.status_events.is_empty() {details["statusEvents"]=json!(state.status_events);}
-        if let Some(output)=output {
-            if !output.json_outputs.is_empty() {details["jsonOutputs"]=json!(output.json_outputs);}
-            if let Some(notice)=&output.notice {details["notice"]=json!(notice);}
-            if let Some(meta)=&output.meta {details["meta"]=meta.clone();}
+        let state = &self.state;
+        let cell_output = if self.finished {
+            state.output.as_str()
+        } else {
+            self.output.aggregate_text()
+        };
+        let mut cell = json!({"index":0,"summary":state.input.summary,"code":state.input.code,"language":state.input.language,"output":cell_output,"status":state.status,"durationMs":state.duration_ms});
+        if state.status != "queued" {
+            cell["startedAt"] = json!(state.run_started_at.unwrap_or(state.started_at));
+        }
+        if let Some(runtime) = &state.runtime {
+            cell["runtime"] = json!(runtime);
+        }
+        if let Some(queued) = &state.queued_behind {
+            cell["queuedBehind"] = json!(queued);
+        }
+        if !state.status_events.is_empty() {
+            cell["statusEvents"] = json!(state.status_events);
+        }
+        if output.is_some_and(|output| output.has_markdown) {
+            cell["hasMarkdown"] = json!(true);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs_f64()
+            * 1000.0;
+        let mut details = json!({"language":state.input.language,"languages":[state.input.language],"summary":state.input.summary,"durationMs":state.duration_ms,"wallDurationMs":(now-state.started_at).max(0.0),"toolCallCount":state.tool_call_metrics.len(),"toolCalls":state.tool_calls,"truncated":output.is_some_and(|output|output.truncated),"cells":[cell]});
+        if let Some(memory) = output.and(self.memory.as_ref()) {
+            details["memory"] = memory.clone();
+        }
+        if let Some(kernel_state) = self.kernel_state.as_ref() {
+            details["kernelState"] = kernel_state.clone();
+        }
+        if let Some(runtime) = &state.runtime {
+            details["runtime"] = json!(runtime);
+        }
+        if is_error {
+            details["isError"] = json!(true);
+        }
+        if let Some(phase) = &state.phase {
+            details["phase"] = json!(phase);
+        }
+        if !state.status_events.is_empty() {
+            details["statusEvents"] = json!(state.status_events);
+        }
+        if let Some(output) = output {
+            if !output.json_outputs.is_empty() {
+                details["jsonOutputs"] = json!(output.json_outputs);
+            }
+            if let Some(notice) = &output.notice {
+                details["notice"] = json!(notice);
+            }
+            if let Some(meta) = &output.meta {
+                details["meta"] = meta.clone();
+            }
         }
         details
     }
 
     fn live_update_text(&self) -> String {
-        let state=&self.state;
-        if state.status=="queued" && let Some(queued)=state.queued_behind.as_ref().filter(|queued|!queued.is_empty()) {
+        let state = &self.state;
+        if state.status == "queued"
+            && let Some(queued) = state
+                .queued_behind
+                .as_ref()
+                .filter(|queued| !queued.is_empty())
+        {
             // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the language string directly; this port matches the enum (serde rename "js") instead of round-tripping through serde_json::to_value per update. Output is identical.
-            let language=match state.input.language {super::types::EvalLanguage::Js=>"js"};
-            return format!("queued behind {} in the {} kernel",queued.join(", "),language);
+            let language = match state.input.language {
+                super::types::EvalLanguage::Js => "js",
+            };
+            return format!(
+                "queued behind {} in the {} kernel",
+                queued.join(", "),
+                language
+            );
         }
-        let aggregate=self.output.aggregate_text();
-        let trailing=aggregate.ends_with('\n');
-        let body=if trailing {&aggregate[..aggregate.len()-1]} else {aggregate};
+        let aggregate = self.output.aggregate_text();
+        let trailing = aggregate.ends_with('\n');
+        let body = if trailing {
+            &aggregate[..aggregate.len() - 1]
+        } else {
+            aggregate
+        };
         // Only the last 8 lines are shown; find them from the end instead of splitting it all.
-        let start=body.rmatch_indices('\n').nth(7).map_or(0,|(index,_)|index+1);
-        let output=format!("{}{}",&body[start..],if trailing {"\n"} else {""});
+        let start = body
+            .rmatch_indices('\n')
+            .nth(7)
+            .map_or(0, |(index, _)| index + 1);
+        let output = format!("{}{}", &body[start..], if trailing { "\n" } else { "" });
         // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the language string directly; this port matches the enum (serde rename "js") instead of round-tripping through serde_json::to_value per update. Output is identical.
-        let language=match state.input.language {super::types::EvalLanguage::Js=>"js"};
-        format!("1/1 cells {}\n[1] {} {} {}{}",state.status,language,state.input.summary,state.status,if output.is_empty() {String::new()} else {format!("\n{output}")})
+        let language = match state.input.language {
+            super::types::EvalLanguage::Js => "js",
+        };
+        format!(
+            "1/1 cells {}\n[1] {} {} {}{}",
+            state.status,
+            language,
+            state.input.summary,
+            state.status,
+            if output.is_empty() {
+                String::new()
+            } else {
+                format!("\n{output}")
+            }
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        image_resize::*,
+        types::{EvalLanguage, EvalToolInput},
+    };
     use super::*;
-    use super::super::{image_resize::*, types::{EvalLanguage, EvalToolInput}};
     struct Sdk;
     impl EvalImageSdk for Sdk {
-        fn resize_image<'a>(&'a self, _:Vec<u8>, _: &'a str, _:Option<usize>) -> ImageFuture<'a, Option<ResizedImage>> {Box::pin(async {Err("unexpected image resize".into())})}
-        fn convert_to_png<'a>(&'a self, _: &'a str, _: &'a str) -> ImageFuture<'a, Option<EvalImageContent>> {Box::pin(async {Err("unexpected conversion".into())})}
+        fn resize_image<'a>(
+            &'a self,
+            _: Vec<u8>,
+            _: &'a str,
+            _: Option<usize>,
+        ) -> ImageFuture<'a, Option<ResizedImage>> {
+            Box::pin(async { Err("unexpected image resize".into()) })
+        }
+        fn convert_to_png<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> ImageFuture<'a, Option<EvalImageContent>> {
+            Box::pin(async { Err("unexpected conversion".into()) })
+        }
     }
     #[tokio::test]
     async fn coalesced_frames_publish_on_flush_and_finish_always_emits() {
-        let updates=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let sink=updates.clone();
-        let state=CellState {input:EvalToolInput {language:EvalLanguage::Js,code:"print(1)".into(),summary:"burst".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None},runtime:None,started_at:0.0,run_started_at:Some(0.0),queued_behind:None,on_update:Some(Arc::new(move |result:AgentToolResult|sink.lock().unwrap().push(result.details["cells"][0]["output"].as_str().unwrap_or("").to_owned()))),tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
-        let mut builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
+        let updates = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = updates.clone();
+        let state = CellState {
+            input: EvalToolInput {
+                language: EvalLanguage::Js,
+                code: "print(1)".into(),
+                summary: "burst".into(),
+                action: None,
+                timeout: None,
+                on_timeout: None,
+                reset: None,
+                isolate: None,
+            },
+            runtime: None,
+            started_at: 0.0,
+            run_started_at: Some(0.0),
+            queued_behind: None,
+            on_update: Some(Arc::new(move |result: AgentToolResult| {
+                sink.lock().unwrap().push(
+                    result.details["cells"][0]["output"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })),
+            tool_calls: vec![],
+            tool_call_metrics: vec![],
+            status_events: vec![],
+            active: true,
+            output: String::new(),
+            phase: None,
+            error: None,
+            duration_ms: 0.0,
+            status: "running".into(),
+        };
+        let mut builder = CellResultBuilder::new(
+            state,
+            EvalOutputOptions {
+                artifact_path: None,
+                head_bytes: 20480,
+                max_columns: 768,
+                provider: None,
+                api: None,
+                image_sdk: Arc::new(Sdk),
+            },
+        );
         builder.coalesce_updates();
-        builder.push("a\n").await.unwrap();builder.push("b\n").await.unwrap();builder.set_phase("p".into());
-        assert_eq!(updates.lock().unwrap().len(),1);
+        builder.push("a\n").await.unwrap();
+        builder.push("b\n").await.unwrap();
+        builder.set_phase("p".into());
+        assert_eq!(updates.lock().unwrap().len(), 1);
         assert!(builder.update_pending());
-        builder.flush_update();assert!(!builder.update_pending());builder.flush_update();
-        assert_eq!(updates.lock().unwrap().as_slice(),["","a\nb\n"]);
+        builder.flush_update();
+        assert!(!builder.update_pending());
+        builder.flush_update();
+        assert_eq!(updates.lock().unwrap().as_slice(), ["", "a\nb\n"]);
         builder.push("c\n").await.unwrap();
-        builder.finalize(&serde_json::json!({"type":"result","ok":true,"durationMs":1})).await.unwrap();
-        assert_eq!(updates.lock().unwrap().last().map(String::as_str),Some("a\nb\nc"));
-        assert_eq!(updates.lock().unwrap().len(),3);
+        builder
+            .finalize(&serde_json::json!({"type":"result","ok":true,"durationMs":1}))
+            .await
+            .unwrap();
+        assert_eq!(
+            updates.lock().unwrap().last().map(String::as_str),
+            Some("a\nb\nc")
+        );
+        assert_eq!(updates.lock().unwrap().len(), 3);
     }
 }

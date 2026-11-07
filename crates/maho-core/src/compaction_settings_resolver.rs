@@ -1,7 +1,8 @@
 //! Port of senpi packages/coding-agent/src/core/compaction-settings-resolver.ts.
 
 use crate::compaction_settings_access::{
-    CompactionModelSelector, CompactionSettings, compaction_keep_recent_tokens, compaction_reserve_tokens,
+    CompactionModelSelector, CompactionSettings, compaction_keep_recent_tokens,
+    compaction_reserve_tokens,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +38,9 @@ pub fn resolve_compaction_settings(
     settings: Option<&CompactionSettings>,
     for_model: Option<CompactionModelSelector<'_>>,
 ) -> Result<ResolvedCompactionSettings, String> {
-    let enabled = settings.and_then(|settings| settings.enabled).unwrap_or(true);
+    let enabled = settings
+        .and_then(|settings| settings.enabled)
+        .unwrap_or(true);
     let speculative_lead_tokens = settings
         .and_then(|settings| settings.speculative_lead_tokens)
         .filter(|value| value.is_finite())
@@ -49,19 +52,51 @@ pub fn resolve_compaction_settings(
         enabled,
         reserve_tokens: compaction_reserve_tokens(settings, for_model)?,
         keep_recent_tokens: compaction_keep_recent_tokens(settings, for_model)?,
-        speculative_enabled: settings.and_then(|settings| settings.speculative_enabled).unwrap_or(true),
-        speculative_fraction: finite_number(settings.and_then(|settings| settings.speculative_fraction), 0.75),
-        speculative_cooldown_ms: finite_number(settings.and_then(|settings| settings.speculative_cooldown_ms), 30000.0),
-        restoration_enabled: settings.and_then(|settings| settings.restoration_enabled).unwrap_or(true),
-        restoration_max_items: finite_number(settings.and_then(|settings| settings.restoration_max_items), 10.0),
-        restoration_max_tokens_per_item: finite_number(settings.and_then(|settings| settings.restoration_max_tokens_per_item), 5000.0),
-        restoration_max_total_tokens: finite_number(settings.and_then(|settings| settings.restoration_max_total_tokens), 50000.0),
-        restoration_context_ratio: finite_number(settings.and_then(|settings| settings.restoration_context_ratio), 0.15),
-        idle_compaction_enabled: settings.and_then(|settings| settings.idle_compaction_enabled).unwrap_or(true),
-        grace_band_enabled: settings.and_then(|settings| settings.grace_band_enabled).unwrap_or(true),
-        tool_admission_enabled: settings.and_then(|settings| settings.tool_admission_enabled).unwrap_or(true),
-        reminder_enabled: settings.and_then(|settings| settings.reminder_enabled).unwrap_or(true),
-        reserve_scaling_enabled: settings.and_then(|settings| settings.reserve_scaling_enabled).unwrap_or(true),
+        speculative_enabled: settings
+            .and_then(|settings| settings.speculative_enabled)
+            .unwrap_or(true),
+        speculative_fraction: finite_number(
+            settings.and_then(|settings| settings.speculative_fraction),
+            0.75,
+        ),
+        speculative_cooldown_ms: finite_number(
+            settings.and_then(|settings| settings.speculative_cooldown_ms),
+            30000.0,
+        ),
+        restoration_enabled: settings
+            .and_then(|settings| settings.restoration_enabled)
+            .unwrap_or(true),
+        restoration_max_items: finite_number(
+            settings.and_then(|settings| settings.restoration_max_items),
+            10.0,
+        ),
+        restoration_max_tokens_per_item: finite_number(
+            settings.and_then(|settings| settings.restoration_max_tokens_per_item),
+            5000.0,
+        ),
+        restoration_max_total_tokens: finite_number(
+            settings.and_then(|settings| settings.restoration_max_total_tokens),
+            50000.0,
+        ),
+        restoration_context_ratio: finite_number(
+            settings.and_then(|settings| settings.restoration_context_ratio),
+            0.15,
+        ),
+        idle_compaction_enabled: settings
+            .and_then(|settings| settings.idle_compaction_enabled)
+            .unwrap_or(true),
+        grace_band_enabled: settings
+            .and_then(|settings| settings.grace_band_enabled)
+            .unwrap_or(true),
+        tool_admission_enabled: settings
+            .and_then(|settings| settings.tool_admission_enabled)
+            .unwrap_or(true),
+        reminder_enabled: settings
+            .and_then(|settings| settings.reminder_enabled)
+            .unwrap_or(true),
+        reserve_scaling_enabled: settings
+            .and_then(|settings| settings.reserve_scaling_enabled)
+            .unwrap_or(true),
         speculative_lead_tokens,
         summarization_max_duration_ms,
     })
@@ -104,7 +139,10 @@ mod tests {
 
     #[test]
     fn an_invalid_token_budget_surfaces_as_an_error() {
-        let settings = CompactionSettings { reserve_tokens: Some(-1), ..Default::default() };
+        let settings = CompactionSettings {
+            reserve_tokens: Some(-1),
+            ..Default::default()
+        };
         assert!(resolve_compaction_settings(Some(&settings), None).is_err());
     }
 
@@ -116,7 +154,8 @@ mod tests {
             "restorationMaxTokensPerItem": 11.5,
             "restorationMaxTotalTokens": 22.5,
             "speculativeLeadTokens": 12000.5
-        })).expect("valid fractional compaction policy");
+        }))
+        .expect("valid fractional compaction policy");
         let resolved = resolve_compaction_settings(Some(&settings), None).expect("resolved policy");
         assert_eq!(resolved.speculative_cooldown_ms, 321.5);
         assert_eq!(resolved.restoration_max_items, 2.5);

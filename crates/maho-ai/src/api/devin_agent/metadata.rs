@@ -88,13 +88,19 @@ fn metadata_of(identity: &DevinIdentity, api_key: Option<&str>) -> Metadata {
 
 /// `devinCliMetadata`: the released chat identity, with the session token and the optional JWT.
 pub fn devin_cli_metadata(api_key: Option<&str>, user_jwt: &str) -> Metadata {
-    Metadata { user_jwt: user_jwt.to_owned(), ..metadata_of(&DEVIN_CLI_IDENTITY, api_key) }
+    Metadata {
+        user_jwt: user_jwt.to_owned(),
+        ..metadata_of(&DEVIN_CLI_IDENTITY, api_key)
+    }
 }
 
 /// `devinDiscoveryMetadata`: the dev-channel `chisel` identity plus the native display slots.
 pub fn devin_discovery_metadata(api_key: Option<&str>) -> Metadata {
     Metadata {
-        supported_model_displays: DEVIN_SUPPORTED_MODEL_DISPLAYS.iter().map(|display| *display as i32).collect(),
+        supported_model_displays: DEVIN_SUPPORTED_MODEL_DISPLAYS
+            .iter()
+            .map(|display| *display as i32)
+            .collect(),
         ..metadata_of(&DEVIN_DISCOVERY_IDENTITY, api_key)
     }
 }

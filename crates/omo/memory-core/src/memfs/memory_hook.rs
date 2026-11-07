@@ -13,17 +13,15 @@ use crate::tools::claim_frontmatter::{PROVENANCE_FRONTMATTER_KEY, stamp_receipt}
 
 pub use crate::memfs::memory_hook_git::parse_raw_z;
 
-const RECEIPT_REFUSAL: &str =
-    "the provenance header is a claim receipt only the memory tool writes; remove that line (or save the note with the memory tool)";
+const RECEIPT_REFUSAL: &str = "the provenance header is a claim receipt only the memory tool writes; remove that line (or save the note with the memory tool)";
 
 fn is_regular_file_mode(mode: &str) -> bool {
     mode == "100644" || mode == "100755"
 }
 
 fn git_quoted_path(path: &str) -> bool {
-    path.chars().any(|c| {
-        c == '"' || c == '\\' || (c as u32) <= 0x1f || (c as u32) == 0x7f
-    })
+    path.chars()
+        .any(|c| c == '"' || c == '\\' || (c as u32) <= 0x1f || (c as u32) == 0x7f)
 }
 
 fn has_memory_writer_trailer(message: &str) -> bool {
@@ -48,7 +46,8 @@ pub fn provenance_of(content: Option<&str>) -> Option<String> {
     let content = content?;
     let entries = content_frontmatter_entries(content)?;
     entries
-        .into_iter().rfind(|entry| entry.key == PROVENANCE_FRONTMATTER_KEY)
+        .into_iter()
+        .rfind(|entry| entry.key == PROVENANCE_FRONTMATTER_KEY)
         .map(|entry| entry.value)
 }
 
@@ -88,7 +87,10 @@ pub fn pre_commit_failures(cwd: &Path, entries: Option<&[StagedEntry]>) -> Vec<S
         let staged = match read_blob(cwd, Some(&entry.dst_blob)) {
             Some(s) => s,
             None => {
-                failures.push(format!("  {}: the staged file could not be read", entry.path));
+                failures.push(format!(
+                    "  {}: the staged file could not be read",
+                    entry.path
+                ));
                 continue;
             }
         };
@@ -135,7 +137,10 @@ pub fn commit_message_failures(
                     failures.extend(look_alike_failures(&entry.path, &staged));
                 }
                 None => {
-                    failures.push(format!("  {}: the staged file could not be read", entry.path));
+                    failures.push(format!(
+                        "  {}: the staged file could not be read",
+                        entry.path
+                    ));
                 }
             }
         }
@@ -158,16 +163,20 @@ pub fn commit_message_failures(
         let staged = match read_blob(cwd, Some(&entry.dst_blob)) {
             Some(s) => s,
             None => {
-                failures.push(format!("  {}: the staged file could not be read", entry.path));
+                failures.push(format!(
+                    "  {}: the staged file could not be read",
+                    entry.path
+                ));
                 continue;
             }
         };
         failures.extend(look_alike_failures(&entry.path, &staged));
         let header = provenance_of(Some(&staged));
         if let Some(h) = header
-            && !hand_commit_keeps(cwd, entry, &staged, &h, &heads) {
-                failures.push(format!("  {}: {RECEIPT_REFUSAL}", entry.path));
-            }
+            && !hand_commit_keeps(cwd, entry, &staged, &h, &heads)
+        {
+            failures.push(format!("  {}: {RECEIPT_REFUSAL}", entry.path));
+        }
     }
     failures
 }
@@ -201,9 +210,9 @@ fn hand_commit_keeps(
         parents.push(t);
     }
 
-    parents.iter().any(|parent| {
-        parent == staged || lowered(parent, staged).as_deref() == Some(header)
-    })
+    parents
+        .iter()
+        .any(|parent| parent == staged || lowered(parent, staged).as_deref() == Some(header))
 }
 
 fn lowered(parent: &str, staged: &str) -> Option<String> {
@@ -226,7 +235,9 @@ pub fn run_memory_hook(args: &[String], cwd: &Path) -> i32 {
         let msg_file = message_file.unwrap();
         match std::fs::read_to_string(msg_file) {
             Ok(content) => commit_message_failures(cwd, &content, None),
-            Err(e) => vec![format!("  could not read commit message file {msg_file}: {e}")],
+            Err(e) => vec![format!(
+                "  could not read commit message file {msg_file}: {e}"
+            )],
         }
     } else {
         vec![format!("  memory hook: unknown stage {stage:?}")]

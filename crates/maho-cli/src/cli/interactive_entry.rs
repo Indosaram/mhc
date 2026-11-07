@@ -254,7 +254,8 @@ pub async fn run(
     screen.do_render(&mut terminal);
     // An installed fd is found with a local PATH/bin stat, so `@` mentions work from the first
     // keystroke; the background check below only re-installs the provider when it changes the path.
-    let local_fd_path = crate::utils::tools_manager::get_tool_path(crate::utils::tools_manager::Tool::Fd);
+    let local_fd_path =
+        crate::utils::tools_manager::get_tool_path(crate::utils::tools_manager::Tool::Fd);
     if local_fd_path.is_some() {
         mode.set_fd_path(local_fd_path.clone());
     }
@@ -280,8 +281,14 @@ pub async fn run(
             let chunks = std::mem::take(&mut *input.borrow_mut());
             let had_input = !chunks.is_empty();
             for chunk in chunks {
-                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &mut mode, &component, &chunk, now)
-                    && let Err(error) = mode.handle_filtered_runtime_input(&data, now).await
+                if let Some(data) = route_terminal_input(
+                    &mut screen,
+                    &mut terminal,
+                    &mut mode,
+                    &component,
+                    &chunk,
+                    now,
+                ) && let Err(error) = mode.handle_filtered_runtime_input(&data, now).await
                 {
                     binding_error = Some(error);
                 }
@@ -293,8 +300,12 @@ pub async fn run(
             } else {
                 rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
             }
-            if had_input { screen.base_mut().request_render_from(false, "input", now); }
-            if screen.base_mut().take_due_render(now) { screen.do_render(&mut terminal); }
+            if had_input {
+                screen.base_mut().request_render_from(false, "input", now);
+            }
+            if screen.base_mut().take_due_render(now) {
+                screen.do_render(&mut terminal);
+            }
             match terminal.pump(screen.base().min_render_interval_ms()) {
                 Ok(()) => {}
                 Err(error) if error.is_hangup() => {

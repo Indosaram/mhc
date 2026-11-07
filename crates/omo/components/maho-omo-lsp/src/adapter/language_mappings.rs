@@ -164,4 +164,9 @@ pub const EXT_TO_LANG: &[(&str, &str)] = &[
     (".graphql", "graphql"),
     (".gql", "graphql"),
 ];
-pub fn get_language_id(ext: &str) -> &'static str { EXT_TO_LANG.iter().find(|(key,_)| *key == ext).map_or("plaintext", |(_,value)| *value) }
+pub fn get_language_id(ext: &str) -> &'static str {
+    EXT_TO_LANG
+        .iter()
+        .find(|(key, _)| *key == ext)
+        .map_or("plaintext", |(_, value)| *value)
+}

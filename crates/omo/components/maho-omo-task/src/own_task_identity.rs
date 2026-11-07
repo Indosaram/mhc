@@ -33,7 +33,9 @@ fn is_single_path_segment(value: &str) -> bool {
     !value.is_empty()
         && value != "."
         && value != ".."
-        && Path::new(value).file_name().is_some_and(|name| name == value)
+        && Path::new(value)
+            .file_name()
+            .is_some_and(|name| name == value)
         && Path::new(value)
             .components()
             .all(|component| matches!(component, Component::Normal(_)))

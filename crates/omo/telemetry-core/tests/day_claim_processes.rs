@@ -9,12 +9,17 @@ const CHILD_ROOT: &str = "MAHO_TELEMETRY_TEST_CLAIM_ROOT";
 fn one_process_claims_a_shared_fresh_day() {
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         let mut gate = [0];
-        std::io::stdin().read_exact(&mut gate).expect("start signal");
+        std::io::stdin()
+            .read_exact(&mut gate)
+            .expect("start signal");
         let result = telemetry_core::get_daily_active_capture_state(
             &telemetry_core::DailyActiveCaptureStateInput {
                 state_dir: std::path::Path::new(&root),
-                now: Some(chrono::DateTime::parse_from_rfc3339("2026-05-25T00:00:00Z")
-                    .expect("fixed clock").with_timezone(&chrono::Utc)),
+                now: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-25T00:00:00Z")
+                        .expect("fixed clock")
+                        .with_timezone(&chrono::Utc),
+                ),
                 diagnostics: None,
             },
         );
@@ -28,10 +33,17 @@ fn one_process_claims_a_shared_fresh_day() {
     let (settled, outcomes) = mpsc::channel();
     for _ in 0..16 {
         let mut child = Command::new(&executable)
-            .args(["--exact", "one_process_claims_a_shared_fresh_day", "--nocapture"])
+            .args([
+                "--exact",
+                "one_process_claims_a_shared_fresh_day",
+                "--nocapture",
+            ])
             .env(CHILD_ROOT, root.path())
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().expect("probe process");
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("probe process");
         let mut stdout = child.stdout.take().expect("probe output");
         let sender = settled.clone();
         std::thread::spawn(move || {
@@ -42,7 +54,12 @@ fn one_process_claims_a_shared_fresh_day() {
         children.push(child);
     }
     for child in &mut children {
-        child.stdin.take().expect("probe gate").write_all(&[1]).expect("start probe");
+        child
+            .stdin
+            .take()
+            .expect("probe gate")
+            .write_all(&[1])
+            .expect("start probe");
     }
     let mut captures = 0;
     let mut failures = Vec::new();

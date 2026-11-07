@@ -2,11 +2,11 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::*;
 use crate::engine_schema;
-use crate::methods::{Effect, Exposure, METHODS, Method, Notification};
+use crate::methods::{Effect, Exposure, Method, Notification, METHODS};
 
 const SCHEMA_PATH: &str = "schema/engine.schema.json";
 const DOC_PATH: &str = "docs/engine-protocol.md";
@@ -169,11 +169,19 @@ fn notification_names_are_their_wire_form() {
 
 /// The unit result `()` is JSON `null` on the wire.
 fn wire_type(rust_type: &str) -> &str {
-    if rust_type == "()" { "null" } else { rust_type }
+    if rust_type == "()" {
+        "null"
+    } else {
+        rust_type
+    }
 }
 
 fn yes_no(flag: bool) -> &'static str {
-    if flag { "yes" } else { "no" }
+    if flag {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 /// Renders `docs/engine-protocol.md` from the method table.

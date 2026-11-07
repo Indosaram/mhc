@@ -10,9 +10,7 @@ use comment_checker_core::{
     is_cached_comment_checker_current, record_cached_comment_checker_release,
     resolve_comment_checker_release_asset,
 };
-use utils::archive_entry_validator::{
-    ArchiveEntry, ArchiveEntryType, validate_archive_entries,
-};
+use utils::archive_entry_validator::{ArchiveEntry, ArchiveEntryType, validate_archive_entries};
 
 use crate::resolver::default_comment_checker_cache_dir;
 use crate::types::SenpiCommentCheckerDownloadOptions;
@@ -27,11 +25,14 @@ pub async fn download_senpi_comment_checker_binary(
     } else {
         "linux"
     });
-    let arch = options.arch.as_deref().unwrap_or(if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "x64"
-    });
+    let arch = options
+        .arch
+        .as_deref()
+        .unwrap_or(if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        });
 
     let asset = resolve_comment_checker_release_asset(platform, arch, None);
     let Some(asset) = asset else {
@@ -77,21 +78,30 @@ pub async fn download_senpi_comment_checker_binary(
     let download_and_extract = async {
         fs::create_dir_all(&cache_dir)?;
         download_archive(&url, &archive_path).await?;
-        match asset.ext {
-            CommentCheckerArchiveExtension::TarGz => {
-                extract_tar_gz(&archive_path, &cache_dir)?;
+        let extension = asset.ext;
+        let extract_archive = archive_path.clone();
+        let extract_dir = cache_dir.clone();
+        let extract_binary = binary_path.clone();
+        tokio::task::spawn_blocking(move || {
+            match extension {
+                CommentCheckerArchiveExtension::TarGz => {
+                    extract_tar_gz(&extract_archive, &extract_dir)?;
+                }
+                CommentCheckerArchiveExtension::Zip => {
+                    extract_zip_archive(&extract_archive, &extract_dir)?;
+                }
             }
-            CommentCheckerArchiveExtension::Zip => {
-                extract_zip_archive(&archive_path, &cache_dir)?;
+            ensure_executable(&extract_binary)?;
+            if !extract_binary.exists() {
+                return Err(io::Error::other(
+                    "omo-senpi comment-checker archive did not contain the expected binary",
+                ));
             }
-        }
-        ensure_executable(&binary_path)?;
-        if !binary_path.exists() {
-            return Err(io::Error::other(
-                "omo-senpi comment-checker archive did not contain the expected binary",
-            ));
-        }
-        record_cached_comment_checker_release(&cache_dir)?;
+            record_cached_comment_checker_release(&extract_dir)?;
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)??;
         Ok::<(), io::Error>(())
     };
 
@@ -106,10 +116,7 @@ pub async fn download_senpi_comment_checker_binary(
                     "url": &url,
                     "error": err.to_string(),
                 });
-                logger.warn(
-                    "omo-senpi comment-checker download failed",
-                    Some(&details),
-                );
+                logger.warn("omo-senpi comment-checker download failed", Some(&details));
             }
             None
         }

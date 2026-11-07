@@ -1,20 +1,22 @@
 //! Tests matching upstream `test/tool-definition.test.ts`.
 
-use std::sync::Arc;
 use maho_tools::definition::{ToolDefinition, ToolExposure};
 use senpi_desktop_service::service::DesktopService;
 use senpi_desktop_tool::activation::ComputerHandle;
 use senpi_desktop_tool::params::parse_computer_params;
 use senpi_desktop_tool::settings::resolve_computer_settings;
-use senpi_desktop_tool::tool::{create_computer_tool, ComputerToolDeps};
+use senpi_desktop_tool::tool::{ComputerToolDeps, create_computer_tool};
 use senpi_desktop_tool::tool_definition::{
     computer_tool_definition, kernel_prelude_for_computer, safety_guidelines,
 };
 use serde_json::json;
+use std::sync::Arc;
 
 fn dummy_tool() -> ToolDefinition {
     let service = Arc::new(DesktopService::new(Default::default()));
-    let handle = Arc::new(ComputerHandle::new(service, || resolve_computer_settings(None, "linux").expect("default Linux settings")));
+    let handle = Arc::new(ComputerHandle::new(service, || {
+        resolve_computer_settings(None, "linux").expect("default Linux settings")
+    }));
     create_computer_tool(ComputerToolDeps {
         handle,
         execute_tool: None,
@@ -43,7 +45,9 @@ fn keeps_registration_shells_search_surface_and_prompt_guidelines() {
     assert_eq!(def.prompt_guidelines, Some(bullets));
     assert_eq!(
         def.search_text.as_deref(),
-        Some("Operate the real desktop (experimental): screenshots, clicks, typing, key chords, window list, accessibility tree, clipboard; macOS/Linux/Windows")
+        Some(
+            "Operate the real desktop (experimental): screenshots, clicks, typing, key chords, window list, accessibility tree, clipboard; macOS/Linux/Windows"
+        )
     );
     let kp = kernel_prelude_for_computer();
     assert_eq!(kp.exports, vec!["computer"]);
@@ -62,7 +66,9 @@ fn publishes_one_root_object_schema_with_action_enum() {
     assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
     assert!(schema.get("anyOf").is_none());
     assert!(schema.get("oneOf").is_none());
-    let act_enum = schema["properties"]["action"]["enum"].as_array().expect("enum");
+    let act_enum = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("enum");
     let names: Vec<_> = act_enum.iter().filter_map(|v| v.as_str()).collect();
     assert_eq!(names, vec!["call", "run", "capabilities", "close"]);
 }
@@ -106,7 +112,10 @@ fn rejects_capabilities_with_extra_token() {
     let params = json!({ "action": "capabilities", "token": "stolen" });
     let err = parse_computer_params(&params).unwrap_err();
     assert_eq!(err.code, "COMPUTER_INVALID_ARGUMENTS");
-    assert!(err.reason.contains(r#"action "capabilities" does not take token"#));
+    assert!(
+        err.reason
+            .contains(r#"action "capabilities" does not take token"#)
+    );
 }
 
 #[test]

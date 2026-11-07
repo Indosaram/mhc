@@ -88,8 +88,9 @@ impl Shared {
     /// Parks until a restart (`true`) or shutdown (`false`) request.
     fn wait_restart(&self) -> bool {
         let mut control = self.control.lock();
-        self.changed
-            .wait_while(&mut control, |control| !control.restart && !control.shutdown);
+        self.changed.wait_while(&mut control, |control| {
+            !control.restart && !control.shutdown
+        });
         control.restart = false;
         !control.shutdown
     }

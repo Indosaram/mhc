@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::tui::{dispatch_mouse_event, Component, TuiMouseEvent, TuiMouseEventResult};
+use crate::tui::{Component, TuiMouseEvent, TuiMouseEventResult, dispatch_mouse_event};
 
 pub type MouseRegionHandler = Box<dyn FnMut(&TuiMouseEvent) -> Option<TuiMouseEventResult>>;
 

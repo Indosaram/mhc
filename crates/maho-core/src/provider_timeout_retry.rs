@@ -20,9 +20,14 @@ pub struct ProviderTimeoutRetryPlanInput {
 /// Raises the retry-continuation liveness cap to the stream-start budget granted to the same retry,
 /// so the watchdog can never cancel an attempt on a deadline the attempt was never given. An
 /// explicitly disabled cap stays disabled; a cap that already outlasts the guard is unchanged.
-pub fn reconcile_watchdog_timeout_ms(stream_retry_timeout_ms: Option<u64>, stream_start_timeout_ms: Option<u64>) -> Option<u64> {
+pub fn reconcile_watchdog_timeout_ms(
+    stream_retry_timeout_ms: Option<u64>,
+    stream_start_timeout_ms: Option<u64>,
+) -> Option<u64> {
     let stream_retry = stream_retry_timeout_ms.filter(|value| *value > 0)?;
-    let Some(stream_start) = stream_start_timeout_ms else { return Some(stream_retry) };
+    let Some(stream_start) = stream_start_timeout_ms else {
+        return Some(stream_retry);
+    };
     Some(stream_retry.max((stream_start as f64 * 1.1).ceil() as u64))
 }
 
@@ -39,7 +44,10 @@ pub fn create_provider_timeout_retry_plan(
             timeout_ms: input.timeout_ms,
             stream_start_timeout_ms: input.stream_start_timeout_ms,
         },
-        watchdog_timeout_ms: reconcile_watchdog_timeout_ms(input.stream_retry_timeout_ms, input.stream_start_timeout_ms),
+        watchdog_timeout_ms: reconcile_watchdog_timeout_ms(
+            input.stream_retry_timeout_ms,
+            input.stream_start_timeout_ms,
+        ),
     }
 }
 
@@ -98,20 +106,33 @@ mod tests {
 
     #[test]
     fn a_missing_stream_start_guard_keeps_the_cap() {
-        assert_eq!(reconcile_watchdog_timeout_ms(Some(30000), None), Some(30000));
+        assert_eq!(
+            reconcile_watchdog_timeout_ms(Some(30000), None),
+            Some(30000)
+        );
     }
 
     #[test]
     fn the_cap_absorbs_the_stream_start_guard_with_grace() {
-        assert_eq!(reconcile_watchdog_timeout_ms(Some(30000), Some(90000)), Some(99001));
-        assert_eq!(reconcile_watchdog_timeout_ms(Some(120000), Some(1000)), Some(120000));
+        assert_eq!(
+            reconcile_watchdog_timeout_ms(Some(30000), Some(90000)),
+            Some(99001)
+        );
+        assert_eq!(
+            reconcile_watchdog_timeout_ms(Some(120000), Some(1000)),
+            Some(120000)
+        );
     }
 
     #[test]
     fn a_non_timeout_message_produces_an_empty_plan() {
         let plan = create_provider_timeout_retry_plan(
             &assistant("stop", None),
-            ProviderTimeoutRetryPlanInput { stream_retry_timeout_ms: Some(1), timeout_ms: Some(2), stream_start_timeout_ms: Some(3) },
+            ProviderTimeoutRetryPlanInput {
+                stream_retry_timeout_ms: Some(1),
+                timeout_ms: Some(2),
+                stream_start_timeout_ms: Some(3),
+            },
         );
         assert_eq!(plan.watchdog_timeout_ms, None);
         assert_eq!(plan.options.defer_queued_messages, None);
@@ -123,7 +144,10 @@ mod tests {
         let flag = std::sync::Arc::clone(&aborted);
         run_bounded_retry_continuation(
             Some(1),
-            || Box::pin(std::future::pending::<()>()) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+            || {
+                Box::pin(std::future::pending::<()>())
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            },
             || Some(1u64),
             move || flag.store(true, std::sync::atomic::Ordering::SeqCst),
         )

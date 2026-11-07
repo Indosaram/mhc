@@ -1,5 +1,5 @@
 //! Port of `chord/src/types.ts`. Rust traits replace structural TS contracts.
-use crate::delta::{tracker::Change, Op};
+use crate::delta::{Op, tracker::Change};
 pub use crate::js_string::JsString;
 use serde::{Deserialize, Serialize};
 use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::Arc};
@@ -17,21 +17,33 @@ impl ServiceSequence {
         }
         Ok(Self(if value == 0.0 { 0.0 } else { value }))
     }
-    pub fn number(self) -> f64 { self.0 }
-    pub fn next(self) -> Self { Self(self.0 + 1.0) }
+    pub fn number(self) -> f64 {
+        self.0
+    }
+    pub fn next(self) -> Self {
+        Self(self.0 + 1.0)
+    }
 }
 impl PartialEq for ServiceSequence {
-    fn eq(&self, other: &Self) -> bool { self.0.to_bits() == other.0.to_bits() }
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
 }
 impl Eq for ServiceSequence {}
 impl PartialOrd for ServiceSequence {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl Ord for ServiceSequence {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.total_cmp(&other.0) }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 impl std::hash::Hash for ServiceSequence {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { std::hash::Hash::hash(&self.0.to_bits(), state); }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0.to_bits(), state);
+    }
 }
 impl Serialize for ServiceSequence {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -72,13 +84,21 @@ mod object_serde {
             use std::fmt::Write;
             let mut json = String::from("{");
             for (index, (key, value)) in value.iter().enumerate() {
-                if index != 0 { json.push(','); }
-                write!(json, "{}:{}", serde_json::to_string(key).map_err(serde::ser::Error::custom)?, serde_json::to_string(value).map_err(serde::ser::Error::custom)?)
-                    .map_err(serde::ser::Error::custom)?;
+                if index != 0 {
+                    json.push(',');
+                }
+                write!(
+                    json,
+                    "{}:{}",
+                    serde_json::to_string(key).map_err(serde::ser::Error::custom)?,
+                    serde_json::to_string(value).map_err(serde::ser::Error::custom)?
+                )
+                .map_err(serde::ser::Error::custom)?;
             }
             json.push('}');
             return serde_json::value::RawValue::from_string(json)
-                .map_err(serde::ser::Error::custom)?.serialize(serializer);
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer);
         }
         let mut map = serializer.serialize_map(Some(value.len()))?;
         for (key, value) in value.iter() {

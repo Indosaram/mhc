@@ -5,13 +5,22 @@ use crate::goal_status::{has_all_criteria_pass, is_final_run_completion_candidat
 use crate::plan_missing_recovery::create_goals_action;
 use crate::surface::UlwLoopToolkitSurface;
 
-pub fn status_next_actions(plan: &UlwLoopPlan, surface: Option<UlwLoopToolkitSurface>) -> Vec<String> {
+pub fn status_next_actions(
+    plan: &UlwLoopPlan,
+    surface: Option<UlwLoopToolkitSurface>,
+) -> Vec<String> {
     let s = surface.unwrap_or(UlwLoopToolkitSurface::LazyCodex);
     let mut actions = Vec::new();
-    let active = plan.active_goal_id.as_deref().and_then(|id| plan.goals.iter().find(|g| g.id == id));
+    let active = plan
+        .active_goal_id
+        .as_deref()
+        .and_then(|id| plan.goals.iter().find(|g| g.id == id));
 
     if plan.goals.is_empty() {
-        actions.push(format!("No goals yet: bootstrap with `{}`.", create_goals_action(&s)));
+        actions.push(format!(
+            "No goals yet: bootstrap with `{}`.",
+            create_goals_action(&s)
+        ));
     } else if let Some(active_goal) = active {
         actions.extend(active_goal_actions(plan, active_goal, s));
     }
@@ -38,19 +47,33 @@ pub fn status_next_actions(plan: &UlwLoopPlan, surface: Option<UlwLoopToolkitSur
     actions
 }
 
-fn active_goal_actions(plan: &UlwLoopPlan, active: &UlwLoopItem, surface: UlwLoopToolkitSurface) -> Vec<String> {
-    let unresolved: Vec<_> = active.success_criteria.iter().filter(|c| c.status != "pass").collect();
+fn active_goal_actions(
+    plan: &UlwLoopPlan,
+    active: &UlwLoopItem,
+    surface: UlwLoopToolkitSurface,
+) -> Vec<String> {
+    let unresolved: Vec<_> = active
+        .success_criteria
+        .iter()
+        .filter(|c| c.status != "pass")
+        .collect();
     if !unresolved.is_empty() {
         let unresolved_ids: Vec<_> = unresolved.iter().map(|c| c.id.as_str()).collect();
         let msg = if surface == UlwLoopToolkitSurface::OmoSenpi {
             format!(
                 "{} has {} unresolved criterion(s) ({}): record proof with `mhc ulw-loop record-evidence --goal-id {} --criterion-id <id> --status pass --evidence \"<observable proof>\"`.",
-                active.id, unresolved.len(), unresolved_ids.join(", "), active.id
+                active.id,
+                unresolved.len(),
+                unresolved_ids.join(", "),
+                active.id
             )
         } else {
             format!(
                 "{} has {} unresolved criterion(s) ({}): record proof with `ulw-loop record-evidence --goal-id {} --criterion-id <id> --status pass --evidence \"<observable proof>\"`.",
-                active.id, unresolved.len(), unresolved_ids.join(", "), active.id
+                active.id,
+                unresolved.len(),
+                unresolved_ids.join(", "),
+                active.id
             )
         };
         return vec![msg];

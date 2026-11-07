@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::constants::{ULW_LOOP_BRIEF, ULW_LOOP_DIR, ULW_LOOP_GOALS, ULW_LOOP_LEDGER, ULW_LOOP_STATE_LOCK};
+use crate::constants::{
+    ULW_LOOP_BRIEF, ULW_LOOP_DIR, ULW_LOOP_GOALS, ULW_LOOP_LEDGER, ULW_LOOP_STATE_LOCK,
+};
 use crate::runtime::UlwLoopError;
 
 #[derive(Clone, Debug, Default)]
@@ -13,7 +15,9 @@ pub struct UlwLoopScope {
 
 impl UlwLoopScope {
     pub fn new(session_id: impl Into<String>) -> Self {
-        Self { session_id: Some(session_id.into()) }
+        Self {
+            session_id: Some(session_id.into()),
+        }
     }
 }
 
@@ -62,7 +66,12 @@ pub fn normalize_ulw_loop_session_id(session_id: Option<&str>) -> Option<String>
 }
 
 pub fn resolve_ulw_loop_session_id_from_env(env: &BTreeMap<String, String>) -> Option<String> {
-    for key in &["OMO_ULW_LOOP_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"] {
+    for key in &[
+        "OMO_ULW_LOOP_SESSION_ID",
+        "CODEX_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "PI_SESSION_ID",
+    ] {
         if let Some(val) = env.get(*key) {
             if let Some(norm) = normalize_ulw_loop_session_id(Some(val)) {
                 return Some(norm);
@@ -108,7 +117,10 @@ pub fn ulw_loop_ledger_path(repo_root: impl AsRef<Path>, scope: Option<&UlwLoopS
     ulw_loop_dir(repo_root, scope).join(ULW_LOOP_LEDGER)
 }
 
-pub fn ulw_loop_state_lock_path(repo_root: impl AsRef<Path>, scope: Option<&UlwLoopScope>) -> PathBuf {
+pub fn ulw_loop_state_lock_path(
+    repo_root: impl AsRef<Path>,
+    scope: Option<&UlwLoopScope>,
+) -> PathBuf {
     ulw_loop_dir(repo_root, scope).join(ULW_LOOP_STATE_LOCK)
 }
 
@@ -145,7 +157,9 @@ pub fn ulw_loop_attempt_evidence_dir(
             details.insert("goalId".into(), serde_json::json!(goal_id));
             details.insert("attempt".into(), serde_json::json!(attempt));
             Err(UlwLoopError::with_details(
-                format!("Evidence for {goal_id} attempt {attempt} needs a session scope; pass --session-id <id> so the attempt directory lives under .omo/evidence/ulw/<id>/."),
+                format!(
+                    "Evidence for {goal_id} attempt {attempt} needs a session scope; pass --session-id <id> so the attempt directory lives under .omo/evidence/ulw/<id>/."
+                ),
                 "ULW_LOOP_SESSION_SCOPE_REQUIRED",
                 details,
             ))
@@ -154,7 +168,11 @@ pub fn ulw_loop_attempt_evidence_dir(
 }
 
 pub fn is_within_attempt_dir(absolute_path: &str, attempt_root: &str) -> bool {
-    let sep = if attempt_root.contains('\\') { '\\' } else { '/' };
+    let sep = if attempt_root.contains('\\') {
+        '\\'
+    } else {
+        '/'
+    };
     let norm_path = if sep == '/' {
         absolute_path.replace('\\', "/")
     } else {

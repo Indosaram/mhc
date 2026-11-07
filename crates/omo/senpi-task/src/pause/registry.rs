@@ -167,9 +167,10 @@ impl PauseRegistry {
     ) -> Result<PauseRegistryRecord, PauseError> {
         self.barrier.close(id, seq);
         if let Some(prior) = self.load(id)?
-            && prior.pause_seq >= seq {
-                return Ok(prior);
-            }
+            && prior.pause_seq >= seq
+        {
+            return Ok(prior);
+        }
         let record = PauseRegistryRecord {
             parent_session_id: id.into(),
             pause_seq: seq,
@@ -274,9 +275,10 @@ impl PauseRegistry {
             return Err(PauseError::message("stale resume sequence"));
         }
         if let Some(resume) = &record.resume
-            && resume.resume_id == resume_id {
-                return Ok(resume.clone());
-            }
+            && resume.resume_id == resume_id
+        {
+            return Ok(resume.clone());
+        }
         let resume = ResumeIntent {
             resume_id: resume_id.into(),
             child_seq_cutoffs: record

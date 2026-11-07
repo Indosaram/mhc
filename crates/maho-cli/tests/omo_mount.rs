@@ -15,7 +15,15 @@ async fn for_parent_composes_retained_task_and_memory_components() {
     let mount = OmoMount::for_parent(parent, dir.path(), dir.path(), isolated_env(dir.path()))
         .expect("mount builds without packaged resources");
 
-    let names: Vec<&str> = mount.extension().components().iter().map(|component| component.name).collect();
+    let names: Vec<&str> = mount
+        .extension()
+        .components()
+        .iter()
+        .map(|component| component.name)
+        .collect();
     assert!(names.contains(&"task"), "task component present: {names:?}");
-    assert!(names.contains(&"memory"), "memory component present: {names:?}");
+    assert!(
+        names.contains(&"memory"),
+        "memory component present: {names:?}"
+    );
 }

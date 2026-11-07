@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 use isolation_core::backends::git_fixture::{git, repo};
-use isolation_core::test_support::Fixture;
 use isolation_core::merge::CommitMessage;
+use isolation_core::test_support::Fixture;
 use isolation_core::{
-    capture_baseline, capture_delta_patch, commit_to_branch, merge_isolated_changes,
-    merge_task_branch, IsolationError, IsolationMergeOptions, LockEvent, MergeKind, MergeMode,
-    ISOLATION_BASELINE_MAX_CONTENT_BYTES,
+    ISOLATION_BASELINE_MAX_CONTENT_BYTES, IsolationError, IsolationMergeOptions, LockEvent,
+    MergeKind, MergeMode, capture_baseline, capture_delta_patch, commit_to_branch,
+    merge_isolated_changes, merge_task_branch,
 };
 
 fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -37,7 +37,8 @@ fn setup(nested: bool) -> Setup {
         let inner = repo();
         copy_dir_all(&inner.repo_root, &f.repo_root.join("inner")).expect("nested");
     }
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolation_dir = f.root.join("child");
     copy_dir_all(&f.repo_root, &isolation_dir).expect("isolation copy");
     let artifacts_dir = f.root.join("artifacts");
@@ -89,10 +90,16 @@ fn patch_applies_child_changes_and_writes_readable_artifacts_and_summary() {
         "M tracked"
     );
     let patch = result.patch_path.clone().expect("patch path");
-    assert!(std::fs::read_to_string(&patch).expect("patch").contains("+child"));
-    assert!(std::fs::read_to_string(&result.summary_path)
-        .expect("summary")
-        .contains("applied"));
+    assert!(
+        std::fs::read_to_string(&patch)
+            .expect("patch")
+            .contains("+child")
+    );
+    assert!(
+        std::fs::read_to_string(&result.summary_path)
+            .expect("summary")
+            .contains("applied")
+    );
 }
 
 #[test]
@@ -105,24 +112,38 @@ fn moved_context_fails_closed_atomically_retaining_patch_and_git_conflict() {
     let result = merge_isolated_changes(options(&s, MergeMode::Patch)).expect("merge");
     assert_eq!(result.state.kind, MergeKind::NotApplied);
     assert!(!result.state.changes_applied);
-    assert!(result
-        .state
-        .conflict
-        .clone()
-        .unwrap_or_default()
-        .contains("patch does not apply"));
+    assert!(
+        result
+            .state
+            .conflict
+            .clone()
+            .unwrap_or_default()
+            .contains("patch does not apply")
+    );
     assert_eq!(
         result.state.manual_command,
-        Some(format!("git apply --3way {}", result.patch_path.clone().unwrap_or_default()))
+        Some(format!(
+            "git apply --3way {}",
+            result.patch_path.clone().unwrap_or_default()
+        ))
     );
-    assert_eq!(git(&s.f.repo_root, &["diff", "--binary"]).expect("diff"), before);
     assert_eq!(
-        git(&s.f.repo_root, &["ls-files", "--others", "--exclude-standard"]).expect("untracked"),
+        git(&s.f.repo_root, &["diff", "--binary"]).expect("diff"),
+        before
+    );
+    assert_eq!(
+        git(
+            &s.f.repo_root,
+            &["ls-files", "--others", "--exclude-standard"]
+        )
+        .expect("untracked"),
         ""
     );
-    assert!(std::fs::read_to_string(result.patch_path.expect("patch"))
-        .expect("patch")
-        .contains("must not land"));
+    assert!(
+        std::fs::read_to_string(result.patch_path.expect("patch"))
+            .expect("patch")
+            .contains("must not land")
+    );
 }
 
 #[test]
@@ -162,11 +183,16 @@ fn apply_false_retains_artifacts_without_parent_changes_or_task_branch() {
         .expect("merge");
         assert_eq!(result.state.kind, MergeKind::Retained);
         assert!(!result.state.changes_applied);
-        assert!(std::fs::read_to_string(result.patch_path.expect("patch"))
-            .expect("patch")
-            .contains("+new"));
+        assert!(
+            std::fs::read_to_string(result.patch_path.expect("patch"))
+                .expect("patch")
+                .contains("+new")
+        );
     }
-    assert_eq!(git(&s.f.repo_root, &["status", "--porcelain"]).expect("status"), "");
+    assert_eq!(
+        git(&s.f.repo_root, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
     assert_eq!(
         git(&s.f.repo_root, &["branch", "--list", "omo/task/*"]).expect("branches"),
         ""
@@ -179,9 +205,11 @@ fn empty_delta_writes_no_changes_summary() {
     let result = merge_isolated_changes(options(&s, MergeMode::Patch)).expect("merge");
     assert_eq!(result.state.kind, MergeKind::NoChanges);
     assert_eq!(result.files_changed, 0);
-    assert!(std::fs::read_to_string(&result.summary_path)
-        .expect("summary")
-        .contains("no-changes"));
+    assert!(
+        std::fs::read_to_string(&result.summary_path)
+            .expect("summary")
+            .contains("no-changes")
+    );
 }
 
 #[test]
@@ -189,7 +217,8 @@ fn clean_branch_preserves_two_child_commits_merges_onto_parent_head_and_deletes_
     let s = setup(false);
     commit(&s.isolation_dir, "first", "first\n");
     commit(&s.isolation_dir, "second", "second\n");
-    let baseline = capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let branch = commit_to_branch(
         &s.isolation_dir,
         &s.f.repo_root,
@@ -205,7 +234,11 @@ fn clean_branch_preserves_two_child_commits_merges_onto_parent_head_and_deletes_
             &[
                 "rev-list",
                 "--count",
-                &format!("{}..{}", branch.base_sha, branch.branch_name.clone().unwrap_or_default())
+                &format!(
+                    "{}..{}",
+                    branch.base_sha,
+                    branch.branch_name.clone().unwrap_or_default()
+                )
             ]
         )
         .expect("count"),
@@ -221,7 +254,11 @@ fn clean_branch_preserves_two_child_commits_merges_onto_parent_head_and_deletes_
     assert_eq!(
         git(
             &s.f.repo_root,
-            &["branch", "--list", branch.branch_name.as_deref().unwrap_or_default()]
+            &[
+                "branch",
+                "--list",
+                branch.branch_name.as_deref().unwrap_or_default()
+            ]
         )
         .expect("branches"),
         ""
@@ -262,8 +299,14 @@ fn branch_stashes_parent_wip_and_restores_byte_identically() {
     let unstaged = git(&s.f.repo_root, &["diff", "--binary"]).expect("unstaged");
     let result = merge_isolated_changes(options(&s, MergeMode::Branch)).expect("merge");
     assert_eq!(result.state.kind, MergeKind::BranchMerged);
-    assert_eq!(git(&s.f.repo_root, &["diff", "--cached", "--binary"]).expect("staged"), staged);
-    assert_eq!(git(&s.f.repo_root, &["diff", "--binary"]).expect("unstaged"), unstaged);
+    assert_eq!(
+        git(&s.f.repo_root, &["diff", "--cached", "--binary"]).expect("staged"),
+        staged
+    );
+    assert_eq!(
+        git(&s.f.repo_root, &["diff", "--binary"]).expect("unstaged"),
+        unstaged
+    );
     assert_eq!(
         std::fs::read(s.f.repo_root.join("untracked")).expect("untracked"),
         vec![0u8, 255, 2]
@@ -283,14 +326,26 @@ fn branch_conflict_aborts_entire_range_and_keeps_recoverable_branch() {
     assert!(!result.state.changes_applied);
     assert!(result.state.conflict.is_some());
     assert_eq!(result.state.branch_name.as_deref(), Some("omo/task/test"));
-    assert_eq!(git(&s.f.repo_root, &["rev-parse", "HEAD"]).expect("head"), head);
-    assert_eq!(git(&s.f.repo_root, &["status", "--porcelain"]).expect("status"), "");
-    assert!(git(
-        &s.f.repo_root,
-        &["branch", "--list", result.state.branch_name.as_deref().unwrap_or_default()]
-    )
-    .expect("branches")
-    .contains("omo/task/test"));
+    assert_eq!(
+        git(&s.f.repo_root, &["rev-parse", "HEAD"]).expect("head"),
+        head
+    );
+    assert_eq!(
+        git(&s.f.repo_root, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
+    assert!(
+        git(
+            &s.f.repo_root,
+            &[
+                "branch",
+                "--list",
+                result.state.branch_name.as_deref().unwrap_or_default()
+            ]
+        )
+        .expect("branches")
+        .contains("omo/task/test")
+    );
 }
 
 #[test]
@@ -301,15 +356,19 @@ fn stash_restore_collision_reports_warning_and_never_drops_users_stash() {
     let result = merge_isolated_changes(options(&s, MergeMode::Branch)).expect("merge");
     assert_eq!(result.state.kind, MergeKind::BranchMerged);
     assert!(result.state.changes_applied);
-    assert!(result
-        .state
-        .warning
-        .clone()
-        .unwrap_or_default()
-        .contains("stash"));
-    assert!(git(&s.f.repo_root, &["stash", "list"])
-        .expect("stash list")
-        .contains("omo-task-merge"));
+    assert!(
+        result
+            .state
+            .warning
+            .clone()
+            .unwrap_or_default()
+            .contains("stash")
+    );
+    assert!(
+        git(&s.f.repo_root, &["stash", "list"])
+            .expect("stash list")
+            .contains("omo-task-merge")
+    );
     assert_eq!(
         git(&s.f.repo_root, &["show", "stash@{0}:tracked"]).expect("stash show"),
         "parent WIP"
@@ -370,7 +429,10 @@ fn nested_failure_keeps_successful_root_and_identifies_partial_result() {
     assert_eq!(failed[0].path, "inner");
     assert!(failed[0].error.contains("patch does not apply"));
     assert_eq!(text(&s.f.repo_root, "tracked"), "root\n");
-    assert_eq!(text(&s.f.repo_root.join("inner"), "tracked"), "conflicting\n");
+    assert_eq!(
+        text(&s.f.repo_root.join("inner"), "tracked"),
+        "conflicting\n"
+    );
 }
 
 #[test]
@@ -397,10 +459,15 @@ fn linked_parent_uses_common_git_directory_lock() {
     })
     .expect("merge");
     assert_eq!(result.state.kind, MergeKind::BranchMerged);
-    let common = git(&linked, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .expect("common");
+    let common = git(
+        &linked,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .expect("common");
     assert_eq!(
-        *lock_path.lock().unwrap_or_else(|poison| poison.into_inner()),
+        *lock_path
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()),
         PathBuf::from(common).join("omo-isolation-merge.lock")
     );
     assert_eq!(text(&linked, "new"), "new\n");
@@ -520,7 +587,8 @@ fn dirty_baseline_filters_user_wip_out_of_each_child_commit() {
     let s = setup(false);
     std::fs::write(s.f.repo_root.join("tracked"), "user WIP\n").expect("wip");
     std::fs::write(s.f.repo_root.join("user-file"), "user untracked\n").expect("untracked");
-    let baseline = capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolation_dir = s.f.root.join("dirty-child");
     copy_dir_all(&s.f.repo_root, &isolation_dir).expect("copy");
     git(&isolation_dir, &["add", "."]).expect("add");
@@ -541,9 +609,11 @@ fn dirty_baseline_filters_user_wip_out_of_each_child_commit() {
         git(&s.f.repo_root, &["show", "HEAD:tracked"]).expect("show"),
         "base"
     );
-    assert!(!git(&s.f.repo_root, &["ls-tree", "--name-only", "HEAD"])
-        .expect("tree")
-        .contains("user-file"));
+    assert!(
+        !git(&s.f.repo_root, &["ls-tree", "--name-only", "HEAD"])
+            .expect("tree")
+            .contains("user-file")
+    );
     assert_eq!(text(&s.f.repo_root, "tracked"), "user WIP\n");
     assert_eq!(text(&s.f.repo_root, "user-file"), "user untracked\n");
 }
@@ -552,7 +622,8 @@ fn dirty_baseline_filters_user_wip_out_of_each_child_commit() {
 fn dirty_baseline_overlapping_commit_fails_with_typed_commit_identity_and_retained_branch() {
     let s = setup(false);
     std::fs::write(s.f.repo_root.join("tracked"), "user WIP\n").expect("wip");
-    let baseline = capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolation_dir = s.f.root.join("dirty-child");
     copy_dir_all(&s.f.repo_root, &isolation_dir).expect("copy");
     commit(&isolation_dir, "tracked", "overlapping child\n");
@@ -570,9 +641,11 @@ fn dirty_baseline_overlapping_commit_fails_with_typed_commit_identity_and_retain
         other => panic!("unexpected error: {other:?}"),
     }
     assert_eq!(text(&s.f.repo_root, "tracked"), "user WIP\n");
-    assert!(git(&s.f.repo_root, &["branch", "--list", "omo/task/test"])
-        .expect("branches")
-        .contains("omo/task/test"));
+    assert!(
+        git(&s.f.repo_root, &["branch", "--list", "omo/task/test"])
+            .expect("branches")
+            .contains("omo/task/test")
+    );
 }
 
 #[test]
@@ -589,7 +662,10 @@ fn malformed_patch_reports_not_applied_without_touching_parent() {
     assert_eq!(result.state.kind, MergeKind::NotApplied);
     assert!(!result.state.changes_applied);
     assert!(result.state.conflict.is_some());
-    assert_eq!(git(&s.f.repo_root, &["status", "--porcelain"]).expect("status"), "");
+    assert_eq!(
+        git(&s.f.repo_root, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
 }
 
 #[test]
@@ -597,7 +673,8 @@ fn same_root_and_nested_delta_twice_does_not_create_spurious_nested_failure() {
     let s = setup(true);
     std::fs::write(s.isolation_dir.join("tracked"), "root\n").expect("root");
     std::fs::write(s.isolation_dir.join("inner/tracked"), "nested\n").expect("nested");
-    let baseline = capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&s.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let delta = capture_delta_patch(&s.isolation_dir, &baseline).expect("delta");
     let first = merge_isolated_changes(IsolationMergeOptions {
         delta: Some(delta.clone()),

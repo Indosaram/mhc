@@ -1,7 +1,10 @@
-use std::{panic::{AssertUnwindSafe, catch_unwind}, sync::{Arc, Mutex, PoisonError, RwLock}};
+use crate::dag_status_ui::DagStatusUiManager;
 use maho_ext_api::{BusSubscription, EventBus};
 use serde_json::{Value, json};
-use crate::dag_status_ui::DagStatusUiManager;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{Arc, Mutex, PoisonError, RwLock},
+};
 
 pub const DAG_WAKE_SOURCE_STATE_EVENT: &str = "wake_source_state";
 pub const DAG_WAKE_SOURCE_STATE_REQUEST_EVENT: &str = "wake_source_state_request";
@@ -54,21 +57,37 @@ pub fn create_dag_wake_source(deps: DagWakeSourceDeps) -> DagWakeSource {
     }
 }
 
-fn collect_channels(manager: &dyn DagStatusUiManager, session_id: &(dyn Fn() -> Option<String> + Send + Sync)) -> Vec<Value> {
+fn collect_channels(
+    manager: &dyn DagStatusUiManager,
+    session_id: &(dyn Fn() -> Option<String> + Send + Sync),
+) -> Vec<Value> {
     (session_id)().map_or_else(Vec::new, |session| {
-        manager.list(&session).into_iter().filter(|run| !run.status.is_terminal()).filter_map(|run| {
-            catch_unwind(AssertUnwindSafe(|| manager.snapshot(&run.run_id, &session))).ok().flatten()
-        }).map(|run| {
-            let date = run.started_at.as_deref().unwrap_or(&run.created_at);
-            let started = chrono::DateTime::parse_from_rfc3339(date).map_or(Value::Null, |date| json!(date.timestamp_millis()));
-            json!({"id":run.run_id,"description":run.name,"startedAtMs":started})
-        }).collect()
+        manager
+            .list(&session)
+            .into_iter()
+            .filter(|run| !run.status.is_terminal())
+            .filter_map(|run| {
+                catch_unwind(AssertUnwindSafe(|| manager.snapshot(&run.run_id, &session)))
+                    .ok()
+                    .flatten()
+            })
+            .map(|run| {
+                let date = run.started_at.as_deref().unwrap_or(&run.created_at);
+                let started = chrono::DateTime::parse_from_rfc3339(date)
+                    .map_or(Value::Null, |date| json!(date.timestamp_millis()));
+                json!({"id":run.run_id,"description":run.name,"startedAtMs":started})
+            })
+            .collect()
     })
 }
 
 impl DagWakeSource {
-    pub fn on_run_start(&self, _run_id: &str) { self.publish_live(); }
-    pub fn on_run_terminal(&self, _run_id: &str) { self.publish_live(); }
+    pub fn on_run_start(&self, _run_id: &str) {
+        self.publish_live();
+    }
+    pub fn on_run_terminal(&self, _run_id: &str) {
+        self.publish_live();
+    }
     pub fn publish_live(&self) {
         {
             let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
@@ -79,7 +98,12 @@ impl DagWakeSource {
         self.publish(channels);
     }
     pub fn emit_shutdown(&self) {
-        drop(self.subscription.lock().unwrap_or_else(PoisonError::into_inner).take());
+        drop(
+            self.subscription
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
         self.publish(vec![]);
     }
     /// senpi#3864: a live workflow run is children's work, not a background job, so the published

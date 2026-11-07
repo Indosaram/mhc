@@ -37,7 +37,11 @@ mod tests {
 
     #[test]
     fn clears_only_partial_json() {
-        let mut state = StreamingBlockState { partial_json: Some("{\"a\":1".into()), block_index: Some(2), ..StreamingBlockState::default() };
+        let mut state = StreamingBlockState {
+            partial_json: Some("{\"a\":1".into()),
+            block_index: Some(2),
+            ..StreamingBlockState::default()
+        };
         clear_streaming_partial_json(&mut state);
         assert_eq!(state.partial_json, None);
         assert_eq!(state.block_index, Some(2));
@@ -49,7 +53,10 @@ mod tests {
         let unresolved = StreamingBlockState::default();
         assert!(!is_cursor_exec_resolved(Some(&unresolved)));
 
-        let resolved = StreamingBlockState { cursor_exec_resolved: true, ..StreamingBlockState::default() };
+        let resolved = StreamingBlockState {
+            cursor_exec_resolved: true,
+            ..StreamingBlockState::default()
+        };
         assert!(is_cursor_exec_resolved(Some(&resolved)));
 
         let mut target = StreamingBlockState::default();

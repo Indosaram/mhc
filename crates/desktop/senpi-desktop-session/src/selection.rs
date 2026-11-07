@@ -146,7 +146,10 @@ mod tests {
 
     #[test]
     fn unset_or_blank_selects_the_platform_backend() {
-        assert_eq!(BackendSelection::parse(None), Ok(BackendSelection::Platform));
+        assert_eq!(
+            BackendSelection::parse(None),
+            Ok(BackendSelection::Platform)
+        );
         assert_eq!(
             BackendSelection::parse(Some("  ")),
             Ok(BackendSelection::Platform)
@@ -176,7 +179,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_prefers_wayland_then_x11_and_needs_one_of_them() {
-        let with = |set: &'static [&'static str]| linux_display_server(move |name| set.contains(&name));
+        let with =
+            |set: &'static [&'static str]| linux_display_server(move |name| set.contains(&name));
 
         let picks = [
             with(&["WAYLAND_DISPLAY", "DISPLAY"]),
@@ -203,6 +207,9 @@ mod tests {
             .create(&DesktopSessionOptions::default())
             .err()
             .map(|error| error.code);
-        assert_eq!(error, Some(senpi_desktop_core::error::ErrorCode::CaptureFailed));
+        assert_eq!(
+            error,
+            Some(senpi_desktop_core::error::ErrorCode::CaptureFailed)
+        );
     }
 }

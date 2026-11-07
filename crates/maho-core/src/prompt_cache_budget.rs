@@ -10,7 +10,9 @@ pub const DEFAULT_PROMPT_CACHE_SAFETY_BUFFER_SECONDS: i64 = 30;
 pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS";
 
 fn to_provider_env(env: &HashMap<String, String>) -> ProviderEnv {
-    env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()
+    env.iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn resolve_buffer_seconds(configured: Option<f64>) -> i64 {
@@ -34,7 +36,11 @@ pub fn resolve_prompt_cache_safe_wait_seconds(
     let model = model?;
     let ttl_seconds = resolve_prompt_cache_ttl_seconds(model, Some(&to_provider_env(env)))?;
     let safe_wait = ttl_seconds as i64 - resolve_buffer_seconds(safety_buffer_seconds);
-    if safe_wait >= 1 { Some(safe_wait) } else { None }
+    if safe_wait >= 1 {
+        Some(safe_wait)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -53,18 +59,29 @@ mod tests {
 
     #[test]
     fn disabled_cache_aware_timeouts_yield_no_budget() {
-        assert!(resolve_prompt_cache_safe_wait_seconds(Some(&model()), false, None, &HashMap::new()).is_none());
+        assert!(
+            resolve_prompt_cache_safe_wait_seconds(Some(&model()), false, None, &HashMap::new())
+                .is_none()
+        );
     }
 
     #[test]
     fn a_missing_model_yields_no_budget() {
-        assert!(resolve_prompt_cache_safe_wait_seconds(None, true, None, &HashMap::new()).is_none());
+        assert!(
+            resolve_prompt_cache_safe_wait_seconds(None, true, None, &HashMap::new()).is_none()
+        );
     }
 
     #[test]
     fn a_negative_buffer_falls_back_to_the_default() {
-        assert_eq!(resolve_buffer_seconds(Some(-5.0)), DEFAULT_PROMPT_CACHE_SAFETY_BUFFER_SECONDS);
+        assert_eq!(
+            resolve_buffer_seconds(Some(-5.0)),
+            DEFAULT_PROMPT_CACHE_SAFETY_BUFFER_SECONDS
+        );
         assert_eq!(resolve_buffer_seconds(Some(10.5)), 10);
-        assert_eq!(resolve_buffer_seconds(None), DEFAULT_PROMPT_CACHE_SAFETY_BUFFER_SECONDS);
+        assert_eq!(
+            resolve_buffer_seconds(None),
+            DEFAULT_PROMPT_CACHE_SAFETY_BUFFER_SECONDS
+        );
     }
 }

@@ -6,8 +6,8 @@ use crate::manager::execution_mode::ExecutionMode;
 use crate::state::ResolvedModelRecord;
 use crate::team::member_projection::{RuntimeMemberStatus, project_member_status};
 use crate::team::runtime_types::{
-    SenpiTeamRuntimeError, SenpiTeamRuntimeErrorCode, SpawnMemberExtensionConfig, TeamMemberReadPort,
-    TeamMemberStartSpec, TeamRuntimeManagerPort, TeamStartResult,
+    SenpiTeamRuntimeError, SenpiTeamRuntimeErrorCode, SpawnMemberExtensionConfig,
+    TeamMemberReadPort, TeamMemberStartSpec, TeamRuntimeManagerPort, TeamStartResult,
 };
 
 #[derive(Debug, Clone)]
@@ -65,7 +65,10 @@ pub fn spawn_team_members(input: &SpawnMembersInput<'_>) -> SpawnMembersResult {
     loop {
         if (input.now)() > input.deadline_at {
             result.failure = Some(SenpiTeamRuntimeError::new(
-                format!("team '{}' creation exceeded max_wall_clock_minutes", input.spec.name),
+                format!(
+                    "team '{}' creation exceeded max_wall_clock_minutes",
+                    input.spec.name
+                ),
                 SenpiTeamRuntimeErrorCode::CreateDeadlineExceeded,
                 input.team_run_id,
             ));
@@ -93,7 +96,10 @@ fn start_failure(team_run_id: &str, member_name: &str, detail: &str) -> SenpiTea
     )
 }
 
-fn spawn_one_member(input: &SpawnMembersInput<'_>, member: &Member) -> Result<SpawnedMember, SenpiTeamRuntimeError> {
+fn spawn_one_member(
+    input: &SpawnMembersInput<'_>,
+    member: &Member,
+) -> Result<SpawnedMember, SenpiTeamRuntimeError> {
     if let Some(worktree_path) = &member.worktree_path {
         std::fs::create_dir_all(worktree_path)
             .map_err(|error| start_failure(input.team_run_id, &member.name, &error.to_string()))?;
@@ -113,7 +119,11 @@ fn spawn_one_member(input: &SpawnMembersInput<'_>, member: &Member) -> Result<Sp
     let record = TeamMemberReadPort::get(input.manager, &started.task_id);
     let session_id = TeamRuntimeManagerPort::get_resident_handle(input.manager, &started.task_id)
         .and_then(|handle| handle.session_id)
-        .or_else(|| record.as_ref().and_then(|record| record.child_session_id.clone()));
+        .or_else(|| {
+            record
+                .as_ref()
+                .and_then(|record| record.child_session_id.clone())
+        });
     let status = match &record {
         Some(record) => project_member_status(record.status),
         None if started.status.as_str() == "pending" => MemberStatus::Pending,
@@ -146,17 +156,34 @@ fn build_member_start_spec(input: &SpawnMembersInput<'_>, member: &Member) -> Te
         depth: input.spawn_depth,
         execution_mode: ExecutionMode::parse("process"),
         model: None,
-        category: if is_category { member.category.clone() } else { None },
-        subagent_type: if is_category { None } else { member.subagent_type.clone() },
+        category: if is_category {
+            member.category.clone()
+        } else {
+            None
+        },
+        subagent_type: if is_category {
+            None
+        } else {
+            member.subagent_type.clone()
+        },
         task_summary: member.task_summary.clone(),
         cwd: member.worktree_path.clone(),
-        extensions: input.member_extension.as_ref().map(|launch| crate::team::member_extensions::assemble_member_extensions(
-            &launch.entry_path, launch.inherited_extensions.as_deref().unwrap_or(&[]),
-        )),
-        member_env: input.member_extension.as_ref().map(|launch| [
-            ("SENPI_TASK_MEMBER".into(), format!("{}::{}", input.team_run_id, member.name)),
-            ("SENPI_TASK_TEAM_CONFIG".into(), launch.team_config.clone()),
-        ].into()),
+        extensions: input.member_extension.as_ref().map(|launch| {
+            crate::team::member_extensions::assemble_member_extensions(
+                &launch.entry_path,
+                launch.inherited_extensions.as_deref().unwrap_or(&[]),
+            )
+        }),
+        member_env: input.member_extension.as_ref().map(|launch| {
+            [
+                (
+                    "SENPI_TASK_MEMBER".into(),
+                    format!("{}::{}", input.team_run_id, member.name),
+                ),
+                ("SENPI_TASK_TEAM_CONFIG".into(), launch.team_config.clone()),
+            ]
+            .into()
+        }),
         run_in_background: true,
     }
 }
@@ -164,10 +191,12 @@ fn build_member_start_spec(input: &SpawnMembersInput<'_>, member: &Member) -> Te
 // Every member bootstrap frames the injection protocol FIRST so members end their initial turn while
 // remaining resident; later lead mail steers into that same session's running turn.
 pub fn build_member_prompt(spec: &TeamSpec, member: &Member) -> String {
-    let role = member
-        .prompt
-        .clone()
-        .unwrap_or_else(|| format!("You are team member '{}' in team '{}'.", member.name, spec.name));
+    let role = member.prompt.clone().unwrap_or_else(|| {
+        format!(
+            "You are team member '{}' in team '{}'.",
+            member.name, spec.name
+        )
+    });
     [
         format!(
             "You are '{}', a member of team '{}' running under the senpi-task team runtime.",

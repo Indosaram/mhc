@@ -28,7 +28,9 @@ fn cache() -> &'static Mutex<SessionSummaryLru> {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, SessionSummaryLru> {
-    cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn stamps_match(left: FileStamp, right: FileStamp) -> bool {
@@ -36,7 +38,10 @@ fn stamps_match(left: FileStamp, right: FileStamp) -> bool {
 }
 
 fn mtime_of(metadata: &std::fs::Metadata) -> DateTime<Utc> {
-    metadata.modified().map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now())
+    metadata
+        .modified()
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(|_| Utc::now())
 }
 
 /// Exact summary of one session file, reusing the cached summary when the file's size and mtime are
@@ -60,17 +65,30 @@ pub fn read_cached_session_summary(file_path: &str) -> Option<CachedSessionSumma
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
-    let stamp = FileStamp { size: metadata.len(), mtime_ms };
+    let stamp = FileStamp {
+        size: metadata.len(),
+        mtime_ms,
+    };
     let mtime = mtime_of(&metadata);
 
     if let Some(cached) = lock().get(&key)
         && stamps_match(cached.stamp, stamp)
     {
-        return Some(CachedSessionSummary { summary: cached.summary, mtime: cached.mtime });
+        return Some(CachedSessionSummary {
+            summary: cached.summary,
+            mtime: cached.mtime,
+        });
     }
 
     let summary = Arc::new(read_session_summary(file_path)?);
-    lock().retain(&key, SummaryEntry { stamp, summary: Arc::clone(&summary), mtime });
+    lock().retain(
+        &key,
+        SummaryEntry {
+            stamp,
+            summary: Arc::clone(&summary),
+            mtime,
+        },
+    );
     Some(CachedSessionSummary { summary, mtime })
 }
 

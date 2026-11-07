@@ -16,17 +16,19 @@ async fn test_daemon_format_success_emits_notice_block() {
             ..Default::default()
         }),
         markers: Some(Box::new(|_| vec!["biome.json".to_string()])),
-        daemon_format: Some(Box::new(|_| Box::pin(async {
-            Ok(DaemonFormatResult {
-                content: None,
-                details: Some(json!({
-                    "status": "formatted",
-                    "linesAdded": 2,
-                    "linesRemoved": 1
-                })),
-                is_error: false,
+        daemon_format: Some(Box::new(|_| {
+            Box::pin(async {
+                Ok(DaemonFormatResult {
+                    content: None,
+                    details: Some(json!({
+                        "status": "formatted",
+                        "linesAdded": 2,
+                        "linesRemoved": 1
+                    })),
+                    is_error: false,
+                })
             })
-        }))),
+        })),
         ..Default::default()
     });
 
@@ -40,7 +42,9 @@ async fn test_daemon_format_success_emits_notice_block() {
         usage: None,
     };
 
-    let outcome = step.format_tool_result(&event, dir.path(), Some("test-session")).await;
+    let outcome = step
+        .format_tool_result(&event, dir.path(), Some("test-session"))
+        .await;
     assert!(outcome.error.is_none());
     assert!(outcome.content.is_some());
 

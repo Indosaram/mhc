@@ -54,7 +54,11 @@ const RESULT_OPTIONS: ToolRenderResultOptions = ToolRenderResultOptions {
 };
 
 fn first_line(component: &dyn LinesComponent, width: usize) -> String {
-    component.render(width).into_iter().next().unwrap_or_default()
+    component
+        .render(width)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 fn expect_no_terminal_controls(value: &str) {
@@ -65,7 +69,8 @@ fn expect_no_terminal_controls(value: &str) {
 }
 
 fn assert_send_case(details: SendResultDetails, expected: &str) {
-    let component = render_task_send_result(&tool_result("ok", details), &RESULT_OPTIONS, &TestTheme);
+    let component =
+        render_task_send_result(&tool_result("ok", details), &RESULT_OPTIONS, &TestTheme);
     let line = first_line(&component, 120);
     assert_eq!(line, expected);
 }
@@ -105,7 +110,8 @@ fn given_the_queued_task_send_result_mapping_when_rendering_then_the_exact_theme
 }
 
 #[test]
-fn given_the_not_continuable_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_not_continuable_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::NotContinuable {
             task_id: "st_1".to_string(),
@@ -117,7 +123,8 @@ fn given_the_not_continuable_task_send_result_mapping_when_rendering_then_the_ex
 }
 
 #[test]
-fn given_the_scope_denied_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_scope_denied_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::ScopeDenied {
             task_id: "st_1".to_string(),
@@ -129,7 +136,8 @@ fn given_the_scope_denied_task_send_result_mapping_when_rendering_then_the_exact
 }
 
 #[test]
-fn given_the_one_shot_agent_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_one_shot_agent_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::OneShotAgent {
             task_id: "st_1".to_string(),
@@ -141,7 +149,8 @@ fn given_the_one_shot_agent_task_send_result_mapping_when_rendering_then_the_exa
 }
 
 #[test]
-fn given_the_not_found_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_not_found_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+{
     assert_send_case(
         SendResultDetails::NotFound {
             reason: "No task.".to_string(),
@@ -152,7 +161,8 @@ fn given_the_not_found_task_send_result_mapping_when_rendering_then_the_exact_th
 }
 
 #[test]
-fn given_the_invalid_arguments_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_invalid_arguments_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::InvalidArguments {
             reason: "message is required".to_string(),
@@ -162,7 +172,8 @@ fn given_the_invalid_arguments_task_send_result_mapping_when_rendering_then_the_
 }
 
 #[test]
-fn given_the_team_message_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_team_message_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::TeamMessage {
             team: TeamSendDetails::ToLead {
@@ -174,7 +185,8 @@ fn given_the_team_message_task_send_result_mapping_when_rendering_then_the_exact
 }
 
 #[test]
-fn given_the_shutdown_requested_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_shutdown_requested_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::ShutdownRequested {
             team_run_id: "team-1".to_string(),
@@ -185,7 +197,8 @@ fn given_the_shutdown_requested_task_send_result_mapping_when_rendering_then_the
 }
 
 #[test]
-fn given_the_shutdown_responded_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_shutdown_responded_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::ShutdownResponded {
             team_run_id: "team-1".to_string(),
@@ -197,7 +210,8 @@ fn given_the_shutdown_responded_task_send_result_mapping_when_rendering_then_the
 }
 
 #[test]
-fn given_the_shutdown_failed_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable() {
+fn given_the_shutdown_failed_task_send_result_mapping_when_rendering_then_the_exact_themed_row_is_stable()
+ {
     assert_send_case(
         SendResultDetails::ShutdownFailed {
             operation: ShutdownOperation::Reject,
@@ -212,7 +226,7 @@ fn given_the_shutdown_failed_task_send_result_mapping_when_rendering_then_the_ex
 
 #[test]
 fn given_a_structured_shutdown_failure_when_rendering_the_result_then_it_shows_concise_safe_context_with_the_error_theme()
-{
+ {
     let details = SendResultDetails::ShutdownFailed {
         operation: ShutdownOperation::Approve,
         team_run_id: "team-9".to_string(),
@@ -220,7 +234,8 @@ fn given_a_structured_shutdown_failure_when_rendering_the_result_then_it_shows_c
         code: ShutdownFailedCode::TeamStateMissing,
         reason: "Team state is unavailable.".to_string(),
     };
-    let component = render_task_send_result(&tool_result("safe", details), &RESULT_OPTIONS, &TestTheme);
+    let component =
+        render_task_send_result(&tool_result("safe", details), &RESULT_OPTIONS, &TestTheme);
     let line = first_line(&component, 120);
 
     assert_eq!(
@@ -240,7 +255,8 @@ fn given_injected_controls_in_task_send_and_task_cancel_results_when_rendered_th
         reason: "잘못됨 \u{1b}[31m빨강\u{1b}[0m\u{7}".to_string(),
     };
     let cancel_details = CancelResultDetails::NotFound {
-        reason: "없음 \u{1b}]8;;https://example.com\u{1b}\\링크\u{1b}]8;;\u{1b}\\\u{7f}".to_string(),
+        reason: "없음 \u{1b}]8;;https://example.com\u{1b}\\링크\u{1b}]8;;\u{1b}\\\u{7f}"
+            .to_string(),
     };
 
     // when
@@ -261,11 +277,19 @@ fn given_injected_controls_in_task_send_and_task_cancel_results_when_rendered_th
         120,
     );
     let plain_send = first_line(
-        &render_task_send_result(&tool_result("ignored", send_details), &RESULT_OPTIONS, &TestTheme),
+        &render_task_send_result(
+            &tool_result("ignored", send_details),
+            &RESULT_OPTIONS,
+            &TestTheme,
+        ),
         120,
     );
     let plain_cancel = first_line(
-        &render_task_cancel_result(&tool_result("ignored", cancel_details), &RESULT_OPTIONS, &TestTheme),
+        &render_task_cancel_result(
+            &tool_result("ignored", cancel_details),
+            &RESULT_OPTIONS,
+            &TestTheme,
+        ),
         120,
     );
 

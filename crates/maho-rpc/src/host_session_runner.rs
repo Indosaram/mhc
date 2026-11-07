@@ -124,15 +124,16 @@ pub struct HostSessionRequest {
 /// generation. Sized from the same `SENPI_RPC_CHILD_STALLED_STOP_MAX_MS` the supervisor bounds itself by.
 fn stop_wait_budget_ms() -> u64 {
     use crate::host_stop_intent::{CHILD_KILL_EXIT_TIMEOUT_MS, CHILD_STOP_TIMEOUT_MS};
-    const DEFAULT_CHILD_STALLED_STOP_MAX_MS: u64 = 60_000;
-    const SIGKILL_GRACE_MS: u64 = 2_000;
-    let stalled = std::env::var("SENPI_RPC_CHILD_STALLED_STOP_MAX_MS")
+    let stalled = std::env::var(crate::host_stalled_evidence::CHILD_STALLED_STOP_MAX_MS_ENV)
         .ok()
         .and_then(|value| crate::host_lifecycle::parse_idle_exit_ms(Some(value.as_str())))
-        .map_or(DEFAULT_CHILD_STALLED_STOP_MAX_MS, |ms| ms as u64);
+        .map_or(
+            crate::host_stalled_evidence::DEFAULT_CHILD_STALLED_STOP_MAX_MS,
+            |ms| ms as u64,
+        );
     let default_stop = CHILD_STOP_TIMEOUT_MS.max(stalled) + CHILD_KILL_EXIT_TIMEOUT_MS + 5_000;
     let after_stall = CHILD_KILL_EXIT_TIMEOUT_MS + 5_000;
-    default_stop.max(stalled + after_stall) + SIGKILL_GRACE_MS
+    default_stop.max(stalled + after_stall) + crate::deadline::SIGKILL_GRACE_MS
 }
 
 /// Perform one `host session` request. Never fails: every error becomes an outcome.
@@ -829,7 +830,9 @@ mod tests {
                     }
                     vec![ok(json!({}))]
                 }
-                "get_state" => vec![ok(Self::state(&self.sessions[session.expect("session index")]))],
+                "get_state" => vec![ok(Self::state(
+                    &self.sessions[session.expect("session index")],
+                ))],
                 "get_messages" => vec![ok(json!({"messages": self.messages}))],
                 "get_entries" => {
                     let start = match command["since"].as_str() {
@@ -909,8 +912,12 @@ mod tests {
                         let mut lines = BufReader::new(read).lines();
                         let mut attached = Vec::new();
                         while let Ok(Some(line)) = lines.next_line().await {
-                            let command: Value = serde_json::from_str(&line).expect("parse command JSON");
-                            let frames = fake.lock().expect("lock fake").handle(&command, &mut attached);
+                            let command: Value =
+                                serde_json::from_str(&line).expect("parse command JSON");
+                            let frames = fake
+                                .lock()
+                                .expect("lock fake")
+                                .handle(&command, &mut attached);
                             for frame in frames {
                                 if write
                                     .write_all(format!("{frame}\n").as_bytes())

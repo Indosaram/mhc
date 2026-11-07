@@ -41,7 +41,10 @@ pub struct AbortSignal {
 
 impl std::fmt::Debug for AbortSignal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("AbortSignal").field("aborted", &self.aborted()).finish()
+        formatter
+            .debug_struct("AbortSignal")
+            .field("aborted", &self.aborted())
+            .finish()
     }
 }
 
@@ -55,7 +58,9 @@ impl Eq for AbortSignal {}
 
 impl AbortSignal {
     fn lock(&self) -> MutexGuard<'_, AbortState> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn aborted(&self) -> bool {
@@ -74,11 +79,16 @@ impl AbortSignal {
         let id = state.next_id;
         state.next_id += 1;
         state.listeners.push((id, Box::new(listener)));
-        Some(AbortRegistration { signal: self.clone(), id })
+        Some(AbortRegistration {
+            signal: self.clone(),
+            id,
+        })
     }
 
     fn remove_abort_listener(&self, id: u64) {
-        self.lock().listeners.retain(|(listener_id, _)| *listener_id != id);
+        self.lock()
+            .listeners
+            .retain(|(listener_id, _)| *listener_id != id);
     }
 
     pub fn abort(&self) {
@@ -159,7 +169,9 @@ mod pidfd {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: the successful syscall returned a descriptor with no other Rust owner.
-        Ok(Arc::new(unsafe { OwnedFd::from_raw_fd(descriptor as RawFd) }))
+        Ok(Arc::new(unsafe {
+            OwnedFd::from_raw_fd(descriptor as RawFd)
+        }))
     }
 
     pub fn terminate(pidfd: &OwnedFd) -> io::Result<()> {
@@ -220,7 +232,10 @@ mod unix_child {
         }
 
         fn send_signal(&self, signal: i32) -> io::Result<()> {
-            let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if inner.reaped {
                 return Ok(());
             }
@@ -241,7 +256,10 @@ mod unix_child {
 
         pub(crate) fn wait_without_reap(&self) -> io::Result<()> {
             let pid = {
-                let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let inner = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if inner.reaped {
                     return Ok(());
                 }
@@ -270,7 +288,10 @@ mod unix_child {
         }
 
         pub(crate) fn mark_reaped(&self) {
-            let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             inner.reaped = true;
         }
     }
@@ -312,9 +333,7 @@ mod windows_child {
 
         pub fn kill(&self) -> io::Result<()> {
             // SAFETY: self.handle holds an owned duplicate of the process HANDLE.
-            let ret = unsafe {
-                TerminateProcess(self.handle.as_raw_handle(), 1)
-            };
+            let ret = unsafe { TerminateProcess(self.handle.as_raw_handle(), 1) };
             if ret == 0 {
                 let err = io::Error::last_os_error();
                 if err.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
@@ -348,10 +367,16 @@ pub struct ProcessHandle;
 #[cfg(not(any(unix, windows)))]
 impl ProcessHandle {
     pub fn terminate(&self) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported platform",
+        ))
     }
     pub fn kill(&self) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported platform",
+        ))
     }
 }
 
@@ -446,7 +471,10 @@ impl SpawnedProcess {
             Some(pidfd) => Arc::clone(pidfd),
             None => {
                 if self.exit_code.is_some() {
-                    return Err(io::Error::new(io::ErrorKind::NotFound, "child has already been reaped"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "child has already been reaped",
+                    ));
                 }
                 let pidfd = pidfd::open(self.pid)?;
                 self.pidfd = Some(Arc::clone(&pidfd));
@@ -462,7 +490,10 @@ impl SpawnedProcess {
             Some(handle) => handle.clone(),
             None => {
                 if self.exit_code.is_some() {
-                    return Err(io::Error::new(io::ErrorKind::NotFound, "child has already been reaped"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "child has already been reaped",
+                    ));
                 }
                 let handle = unix_child::ProcessHandle::new(self.pid);
                 self.unix_handle = Some(handle.clone());
@@ -478,7 +509,10 @@ impl SpawnedProcess {
             Some(handle) => handle.clone(),
             None => {
                 if self.exit_code.is_some() {
-                    return Err(io::Error::new(io::ErrorKind::NotFound, "child has already been reaped"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "child has already been reaped",
+                    ));
                 }
                 use std::os::windows::io::AsHandle;
                 let owned = self.child.as_handle().try_clone_to_owned()?;
@@ -492,7 +526,10 @@ impl SpawnedProcess {
 
     #[cfg(not(any(unix, windows)))]
     pub fn handle(&mut self) -> io::Result<ProcessHandle> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported platform",
+        ))
     }
 
     /// Wait for exit; the exit code is cached for [`Self::exit_code`].

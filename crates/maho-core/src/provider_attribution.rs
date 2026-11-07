@@ -16,10 +16,17 @@ const OPENCODE_HOST: &str = "opencode.ai";
 
 fn host_of(base_url: &str) -> Option<String> {
     let without_scheme = base_url.split("://").nth(1).unwrap_or(base_url);
-    let host = without_scheme.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
     let host = host.rsplit('@').next().unwrap_or(host);
     let host = host.split(':').next().unwrap_or(host);
-    if host.is_empty() { None } else { Some(host.to_owned()) }
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_owned())
+    }
 }
 
 fn matches_host(base_url: &str, expected_host: &str) -> bool {
@@ -41,7 +48,10 @@ fn is_cloudflare_model(model: &Model) -> bool {
         || matches_host(&model.base_url, CLOUDFLARE_AI_GATEWAY_HOST)
 }
 
-fn default_attribution_headers(model: &Model, settings_manager: &SettingsManager) -> Option<BTreeMap<String, String>> {
+fn default_attribution_headers(
+    model: &Model,
+    settings_manager: &SettingsManager,
+) -> Option<BTreeMap<String, String>> {
     // SAFETY-DIVERGENCE(senpi packages/coding-agent/src/core/provider-attribution.ts): third-party attribution headers default on via install telemetry; mhc defaults off (opt-in). Functional session affinity headers (x-opencode-session/client) are kept.
     if !is_install_telemetry_enabled(settings_manager, None) {
         return None;
@@ -58,7 +68,10 @@ fn default_attribution_headers(model: &Model, settings_manager: &SettingsManager
         return Some(headers);
     }
     if is_cloudflare_model(model) {
-        headers.insert("User-Agent".to_owned(), format!("{}-coding-agent", app_name()));
+        headers.insert(
+            "User-Agent".to_owned(),
+            format!("{}-coding-agent", app_name()),
+        );
         return Some(headers);
     }
     None
@@ -66,7 +79,10 @@ fn default_attribution_headers(model: &Model, settings_manager: &SettingsManager
 
 fn session_headers(model: &Model, session_id: Option<&str>) -> Option<BTreeMap<String, String>> {
     let session_id = session_id?;
-    if model.provider != "opencode" && model.provider != "opencode-go" && !matches_host(&model.base_url, OPENCODE_HOST) {
+    if model.provider != "opencode"
+        && model.provider != "opencode-go"
+        && !matches_host(&model.base_url, OPENCODE_HOST)
+    {
         return None;
     }
     let mut headers = BTreeMap::new();
@@ -91,7 +107,11 @@ pub fn merge_provider_attribution_headers(
     for headers in header_sources.iter().flatten() {
         merged.extend(headers.clone());
     }
-    if merged.is_empty() { None } else { Some(merged) }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    }
 }
 
 #[cfg(test)]
@@ -116,13 +136,24 @@ mod tests {
 
     #[test]
     fn the_host_parser_reads_the_hostname() {
-        assert_eq!(host_of("https://openrouter.ai/api/v1").as_deref(), Some("openrouter.ai"));
+        assert_eq!(
+            host_of("https://openrouter.ai/api/v1").as_deref(),
+            Some("openrouter.ai")
+        );
         assert_eq!(host_of("https://user@host:8443/x").as_deref(), Some("host"));
     }
 
     #[test]
     fn an_openrouter_model_has_no_attribution_headers_by_default() {
-        assert!(merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings(), None, &[]).is_none());
+        assert!(
+            merge_provider_attribution_headers(
+                &model("openrouter", "https://x"),
+                &settings(),
+                None,
+                &[]
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -137,19 +168,45 @@ mod tests {
                 )]),
             )
             .expect("enable telemetry");
-        let headers = merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings, None, &[]).expect("headers");
-        assert_eq!(headers.get("X-OpenRouter-Title").map(String::as_str), Some("maho"));
+        let headers = merge_provider_attribution_headers(
+            &model("openrouter", "https://x"),
+            &settings,
+            None,
+            &[],
+        )
+        .expect("headers");
+        assert_eq!(
+            headers.get("X-OpenRouter-Title").map(String::as_str),
+            Some("maho")
+        );
     }
 
     #[test]
     fn an_opencode_session_adds_session_headers() {
-        let headers = merge_provider_attribution_headers(&model("opencode", "https://x"), &settings(), Some("s1"), &[]).expect("headers");
-        assert_eq!(headers.get("x-opencode-session").map(String::as_str), Some("s1"));
+        let headers = merge_provider_attribution_headers(
+            &model("opencode", "https://x"),
+            &settings(),
+            Some("s1"),
+            &[],
+        )
+        .expect("headers");
+        assert_eq!(
+            headers.get("x-opencode-session").map(String::as_str),
+            Some("s1")
+        );
     }
 
     #[test]
     fn an_unattributed_model_has_no_headers() {
-        assert!(merge_provider_attribution_headers(&model("anthropic", "https://x"), &settings(), None, &[]).is_none());
+        assert!(
+            merge_provider_attribution_headers(
+                &model("anthropic", "https://x"),
+                &settings(),
+                None,
+                &[]
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -167,8 +224,17 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("X-Extra".to_owned(), "1".to_owned());
         extra.insert("X-OpenRouter-Title".to_owned(), "custom".to_owned());
-        let headers = merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings, None, &[Some(extra)]).expect("headers");
+        let headers = merge_provider_attribution_headers(
+            &model("openrouter", "https://x"),
+            &settings,
+            None,
+            &[Some(extra)],
+        )
+        .expect("headers");
         assert_eq!(headers.get("X-Extra").map(String::as_str), Some("1"));
-        assert_eq!(headers.get("X-OpenRouter-Title").map(String::as_str), Some("custom"));
+        assert_eq!(
+            headers.get("X-OpenRouter-Title").map(String::as_str),
+            Some("custom")
+        );
     }
 }

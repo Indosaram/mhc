@@ -120,7 +120,10 @@ impl FavoriteModelsSelectorComponent {
     }
 
     pub fn filtered_ids(&self) -> Vec<String> {
-        self.filtered_items.iter().map(|item| item.full_id.clone()).collect()
+        self.filtered_items
+            .iter()
+            .map(|item| item.full_id.clone())
+            .collect()
     }
 
     pub fn footer_text(&self) -> String {
@@ -147,7 +150,10 @@ impl FavoriteModelsSelectorComponent {
     }
 
     fn get_footer_text(&self) -> String {
-        let favorite_count = self.favorite_ids.as_ref().map_or(self.all_ids.len(), Vec::len);
+        let favorite_count = self
+            .favorite_ids
+            .as_ref()
+            .map_or(self.all_ids.len(), Vec::len);
         let all_favorite = self.favorite_ids.is_none();
         let count_text = if all_favorite {
             "all favorites".to_owned()
@@ -183,14 +189,17 @@ impl FavoriteModelsSelectorComponent {
                 key_text("app.models.reorderDown")
             ),
         ];
-        self.theme.fg(ThemeColor::Dim, &format!("  {}", parts.join(" · ")))
+        self.theme
+            .fg(ThemeColor::Dim, &format!("  {}", parts.join(" · ")))
     }
 
     fn refresh(&mut self, preferred_selected_id: Option<&str>) {
         let query = self.search_input.get_value().to_owned();
-        let selected_id = preferred_selected_id
-            .map(str::to_owned)
-            .or_else(|| self.filtered_items.get(self.selected_index).map(|item| item.full_id.clone()));
+        let selected_id = preferred_selected_id.map(str::to_owned).or_else(|| {
+            self.filtered_items
+                .get(self.selected_index)
+                .map(|item| item.full_id.clone())
+        });
         let items = self.build_items();
         let search_items: Vec<ModelSearchItem> = items
             .iter()
@@ -214,8 +223,15 @@ impl FavoriteModelsSelectorComponent {
             })
             .collect();
         self.selected_index = selected_id
-            .and_then(|id| self.filtered_items.iter().position(|item| item.full_id == id))
-            .unwrap_or_else(|| self.selected_index.min(self.filtered_items.len().saturating_sub(1)));
+            .and_then(|id| {
+                self.filtered_items
+                    .iter()
+                    .position(|item| item.full_id == id)
+            })
+            .unwrap_or_else(|| {
+                self.selected_index
+                    .min(self.filtered_items.len().saturating_sub(1))
+            });
         self.update_list();
     }
 
@@ -234,7 +250,9 @@ impl FavoriteModelsSelectorComponent {
     }
 
     fn update_list(&mut self) {
-        self.selected_index = self.selected_index.min(self.filtered_items.len().saturating_sub(1));
+        self.selected_index = self
+            .selected_index
+            .min(self.filtered_items.len().saturating_sub(1));
     }
 
     fn visible_range(&self) -> (usize, usize) {
@@ -261,7 +279,10 @@ impl FavoriteModelsSelectorComponent {
             clear_favorite_models(&self.favorite_ids, &self.all_ids, targets)
         };
         self.is_dirty = true;
-        let preferred = self.filtered_items.get(self.selected_index).map(|item| item.full_id.clone());
+        let preferred = self
+            .filtered_items
+            .get(self.selected_index)
+            .map(|item| item.full_id.clone());
         self.refresh(preferred.as_deref());
         self.notify_change();
     }
@@ -295,10 +316,14 @@ impl FavoriteModelsSelectorComponent {
 
 impl Component for FavoriteModelsSelectorComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![dynamic_border(&self.theme, ThemeColor::Border, width), String::new()];
+        let mut lines = vec![
+            dynamic_border(&self.theme, ThemeColor::Border, width),
+            String::new(),
+        ];
         lines.extend(
             Text::with_padding(
-                self.theme.fg(ThemeColor::Accent, &self.theme.bold("Favorite Models")),
+                self.theme
+                    .fg(ThemeColor::Accent, &self.theme.bold("Favorite Models")),
                 0,
                 0,
             )
@@ -310,14 +335,21 @@ impl Component for FavoriteModelsSelectorComponent {
             key_text("app.models.toggleFavorite"),
             key_text("app.models.save")
         );
-        lines.extend(Text::with_padding(self.theme.fg(ThemeColor::Muted, &hint), 0, 0).render(width));
+        lines.extend(
+            Text::with_padding(self.theme.fg(ThemeColor::Muted, &hint), 0, 0).render(width),
+        );
         lines.push(String::new());
         lines.extend(self.search_input.render(width));
         lines.push(String::new());
 
         if self.filtered_items.is_empty() {
             lines.extend(
-                Text::with_padding(self.theme.fg(ThemeColor::Muted, "  No matching models"), 0, 0).render(width),
+                Text::with_padding(
+                    self.theme.fg(ThemeColor::Muted, "  No matching models"),
+                    0,
+                    0,
+                )
+                .render(width),
             );
         } else {
             let (start_index, end_index) = self.visible_range();
@@ -339,15 +371,20 @@ impl Component for FavoriteModelsSelectorComponent {
                 } else {
                     item.model.id.clone()
                 };
-                let provider_badge = self.theme.fg(ThemeColor::Muted, &format!(" [{}]", item.model.provider));
-                let current_marker = if models_are_equal(self.current_model.as_ref(), Some(&item.model)) {
-                    self.theme.fg(ThemeColor::Success, " ✓")
-                } else {
-                    String::new()
-                };
+                let provider_badge = self
+                    .theme
+                    .fg(ThemeColor::Muted, &format!(" [{}]", item.model.provider));
+                let current_marker =
+                    if models_are_equal(self.current_model.as_ref(), Some(&item.model)) {
+                        self.theme.fg(ThemeColor::Success, " ✓")
+                    } else {
+                        String::new()
+                    };
                 lines.extend(
-                    TruncatedText::new(format!("{prefix}{favorite_marker} {model_text}{provider_badge}{current_marker}"))
-                        .render(width),
+                    TruncatedText::new(format!(
+                        "{prefix}{favorite_marker} {model_text}{provider_badge}{current_marker}"
+                    ))
+                    .render(width),
                 );
             }
 
@@ -356,7 +393,11 @@ impl Component for FavoriteModelsSelectorComponent {
                     Text::with_padding(
                         self.theme.fg(
                             ThemeColor::Muted,
-                            &format!("  ({}/{})", self.selected_index + 1, self.filtered_items.len()),
+                            &format!(
+                                "  ({}/{})",
+                                self.selected_index + 1,
+                                self.filtered_items.len()
+                            ),
                         ),
                         0,
                         0,
@@ -368,8 +409,13 @@ impl Component for FavoriteModelsSelectorComponent {
             lines.push(String::new());
             let name = self.filtered_items[self.selected_index].model.name.clone();
             lines.extend(
-                Text::with_padding(self.theme.fg(ThemeColor::Muted, &format!("  Model Name: {name}")), 0, 0)
-                    .render(width),
+                Text::with_padding(
+                    self.theme
+                        .fg(ThemeColor::Muted, &format!("  Model Name: {name}")),
+                    0,
+                    0,
+                )
+                .render(width),
             );
         }
 
@@ -435,7 +481,12 @@ impl Component for FavoriteModelsSelectorComponent {
             let targets = if self.search_input.get_value().is_empty() {
                 None
             } else {
-                Some(self.filtered_items.iter().map(|item| item.full_id.clone()).collect())
+                Some(
+                    self.filtered_items
+                        .iter()
+                        .map(|item| item.full_id.clone())
+                        .collect(),
+                )
             };
             self.apply_targets(targets, true);
             return;
@@ -445,7 +496,12 @@ impl Component for FavoriteModelsSelectorComponent {
             let targets = if self.search_input.get_value().is_empty() {
                 None
             } else {
-                Some(self.filtered_items.iter().map(|item| item.full_id.clone()).collect())
+                Some(
+                    self.filtered_items
+                        .iter()
+                        .map(|item| item.full_id.clone())
+                        .collect(),
+                )
             };
             self.apply_targets(targets, false);
             return;

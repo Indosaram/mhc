@@ -18,7 +18,11 @@ pub struct LazyLiveThreadSurface {
 
 impl LazyLiveThreadSurface {
     pub fn new(socket: impl Into<String>, load: Loader) -> Self {
-        Self { socket: socket.into(), load, loaded: Mutex::new(None) }
+        Self {
+            socket: socket.into(),
+            load,
+            loaded: Mutex::new(None),
+        }
     }
 
     pub fn socket(&self) -> &str {
@@ -56,7 +60,15 @@ impl LazyLiveThreadSurface {
             wake: Arc::new(move |endpoint, ids| {
                 let handle = wake.clone();
                 Box::pin(async move {
-                    let surface = match handle.surface() { Ok(surface) => surface, Err(error) => return super::adapter::GatewayWakeReply { admitted: Vec::new(), unroutable: Some(error) } };
+                    let surface = match handle.surface() {
+                        Ok(surface) => surface,
+                        Err(error) => {
+                            return super::adapter::GatewayWakeReply {
+                                admitted: Vec::new(),
+                                unroutable: Some(error),
+                            };
+                        }
+                    };
                     (surface.gateway().wake)(endpoint, ids).await
                 })
             }),
@@ -64,11 +76,17 @@ impl LazyLiveThreadSurface {
                 let handle = release.clone();
                 Box::pin(async move {
                     let Ok(surface) = handle.surface() else {
-                        return ReleaseSessionReply::Failure { error: "host_unavailable".to_owned(), error_data: None };
+                        return ReleaseSessionReply::Failure {
+                            error: "host_unavailable".to_owned(),
+                            error_data: None,
+                        };
                     };
                     match surface.gateway().release_session {
                         Some(release) => release(endpoint, request).await,
-                        None => ReleaseSessionReply::Failure { error: "unsupported:release_session".to_owned(), error_data: None },
+                        None => ReleaseSessionReply::Failure {
+                            error: "unsupported:release_session".to_owned(),
+                            error_data: None,
+                        },
                     }
                 })
             })),
@@ -88,11 +106,15 @@ impl LazyLiveThreadSurface {
                 let handle = respond.clone();
                 Box::pin(async move {
                     let Ok(surface) = handle.surface() else {
-                        return UiAnswerReply::Refused { error: "host_unavailable".to_owned() };
+                        return UiAnswerReply::Refused {
+                            error: "host_unavailable".to_owned(),
+                        };
                     };
                     match surface.gateway().respond_ui {
                         Some(respond) => respond(endpoint, answer).await,
-                        None => UiAnswerReply::Refused { error: "unsupported:respondUi".to_owned() },
+                        None => UiAnswerReply::Refused {
+                            error: "unsupported:respondUi".to_owned(),
+                        },
                     }
                 })
             })),
@@ -100,7 +122,11 @@ impl LazyLiveThreadSurface {
     }
 
     fn clone_handle(&self) -> Arc<LazyHandle> {
-        Arc::new(LazyHandle { socket: self.socket.clone(), load: self.load.clone(), loaded: self.loaded.lock().ok().and_then(|loaded| loaded.clone()) })
+        Arc::new(LazyHandle {
+            socket: self.socket.clone(),
+            load: self.load.clone(),
+            loaded: self.loaded.lock().ok().and_then(|loaded| loaded.clone()),
+        })
     }
 }
 
@@ -136,7 +162,10 @@ mod tests {
                 }
             }),
         );
-        assert_eq!(lazy.surface().err().expect("failed"), "host_unavailable:/run/host.sock");
+        assert_eq!(
+            lazy.surface().err().expect("failed"),
+            "host_unavailable:/run/host.sock"
+        );
         assert!(lazy.surface().is_err());
         assert_eq!(*attempts.lock().expect("attempts"), 2);
     }

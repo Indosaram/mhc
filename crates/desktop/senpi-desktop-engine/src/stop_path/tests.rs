@@ -1,7 +1,7 @@
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_safety::{
-    FakeClock, FrameContext, FrameId, LockState, MutatingAction, PermissionGate, StopPathError,
-    gate,
+    gate, FakeClock, FrameContext, FrameId, LockState, MutatingAction, PermissionGate,
+    StopPathError,
 };
 
 use super::*;

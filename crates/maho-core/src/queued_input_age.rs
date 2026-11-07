@@ -39,12 +39,14 @@ impl QueuedInputAges {
         let mut outlived = Vec::new();
         for id in still_queued {
             if let Some(&(run, at)) = self.queued_at.get(id)
-                && run < self.runs_started && self.reported.insert(id.clone()) {
-                    outlived.push(OutlivedQueuedInput {
-                        queued_id: id.clone(),
-                        age_ms: now_ms - at,
-                    });
-                }
+                && run < self.runs_started
+                && self.reported.insert(id.clone())
+            {
+                outlived.push(OutlivedQueuedInput {
+                    queued_id: id.clone(),
+                    age_ms: now_ms - at,
+                });
+            }
         }
         outlived
     }

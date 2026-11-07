@@ -1,4 +1,6 @@
-use maho_ext_config_reload::extension_watch_scope::{is_loadable_extension_entry as loadable, is_scannable_extension_directory as scannable};
+use maho_ext_config_reload::extension_watch_scope::{
+    is_loadable_extension_entry as loadable, is_scannable_extension_directory as scannable,
+};
 use std::{fs, path::Path};
 
 #[test]
@@ -16,17 +18,24 @@ fn direct_non_sources_are_not_loadable() {
 #[test]
 fn package_discovery_entries_are_loadable() {
     // Given / When / Then
-    for path in ["my-ext/index.ts", "my-ext/index.js", "my-ext/package.json"] { assert!(loadable(Path::new("/missing"), path)); }
+    for path in ["my-ext/index.ts", "my-ext/index.js", "my-ext/package.json"] {
+        assert!(loadable(Path::new("/missing"), path));
+    }
 }
 #[test]
 fn undiscovered_helpers_are_not_loadable() {
     // Given / When / Then
-    for path in ["my-ext/helper.ts", "my-ext/src/index.ts"] { assert!(!loadable(Path::new("/missing"), path)); }
+    for path in ["my-ext/helper.ts", "my-ext/src/index.ts"] {
+        assert!(!loadable(Path::new("/missing"), path));
+    }
 }
 #[test]
 fn runtime_state_is_not_watched() {
     // Given / When / Then
-    assert!(!loadable(Path::new("/missing"), "goal/no-session/hash/id.json"));
+    assert!(!loadable(
+        Path::new("/missing"),
+        "goal/no-session/hash/id.json"
+    ));
     assert!(!scannable(Path::new("/missing"), "goal/no-session"));
 }
 #[test]
@@ -38,8 +47,10 @@ fn scan_descends_into_root_and_immediate_children() {
 }
 fn manifest(content: &str) -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap_or_else(|error| panic!("create fixture root: {error}"));
-    fs::create_dir(root.path().join("my-ext")).unwrap_or_else(|error| panic!("create fixture package: {error}"));
-    fs::write(root.path().join("my-ext/package.json"), content).unwrap_or_else(|error| panic!("write fixture manifest: {error}"));
+    fs::create_dir(root.path().join("my-ext"))
+        .unwrap_or_else(|error| panic!("create fixture package: {error}"));
+    fs::write(root.path().join("my-ext/package.json"), content)
+        .unwrap_or_else(|error| panic!("write fixture manifest: {error}"));
     root
 }
 #[test]
@@ -55,7 +66,11 @@ fn declared_nested_entry_and_ancestors_stay_watched() {
 fn normalized_root_accepts_absolute_manifest_entries() {
     let root = manifest("{}");
     let entry = root.path().join("my-ext/dist/index.js");
-    fs::write(root.path().join("my-ext/package.json"), serde_json::json!({"pi":{"extensions":[entry]}}).to_string()).unwrap();
+    fs::write(
+        root.path().join("my-ext/package.json"),
+        serde_json::json!({"pi":{"extensions":[entry]}}).to_string(),
+    )
+    .unwrap();
     let dotted = root.path().join("my-ext/..");
     assert!(loadable(&dotted, "my-ext/dist/index.js"));
     assert!(scannable(&dotted, "my-ext/dist"));

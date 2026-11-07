@@ -11,5 +11,9 @@
 //! `McpService::native_tool_search_gate()` (see src/service.rs): the host binds that gate
 //! into the deps' `enabled()` closure and routes the adapter's `on_fallback` to
 //! `ToolSearchService::note_native_injection_failure`.
-pub use maho_ext_tool_search::native_search::{add_anthropic_native_tool_search,build_tool_reference_blocks,AnthropicNativeAdapterDeps,AnthropicNativeInjectionConfig,AnthropicNativeToolSearchAdapter,ANTHROPIC_MAX_TOOLS,ANTHROPIC_TOOL_SEARCH_NAME,ANTHROPIC_TOOL_SEARCH_TYPE,NativeToolDefinition};
+pub use maho_ext_tool_search::native_search::{
+    ANTHROPIC_MAX_TOOLS, ANTHROPIC_TOOL_SEARCH_NAME, ANTHROPIC_TOOL_SEARCH_TYPE,
+    AnthropicNativeAdapterDeps, AnthropicNativeInjectionConfig, AnthropicNativeToolSearchAdapter,
+    NativeToolDefinition, add_anthropic_native_tool_search, build_tool_reference_blocks,
+};
 pub use maho_ext_tool_search::native_support::supports_anthropic_native_tool_search;

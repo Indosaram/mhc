@@ -21,11 +21,11 @@ mod stream;
 mod tests;
 mod window;
 
-use image::{RgbaImage, imageops};
+use image::{imageops, RgbaImage};
 use senpi_desktop_core::types::DesktopDisplay;
 use tokio::runtime::Runtime;
 
-use super::layout::{EisRegion, monitor_size};
+use super::layout::{monitor_size, EisRegion};
 use screencast::Cast;
 pub(super) use selection::select_capture;
 pub use window::crop_window;

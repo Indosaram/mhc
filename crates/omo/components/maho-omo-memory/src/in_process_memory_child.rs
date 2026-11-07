@@ -368,7 +368,8 @@ mod tests {
         // setup is released only after `cancel()` ran: cancel lands strictly during setup.
         let mut state = InProcessMemoryChildState::default();
         let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
-        let setup: SetupFuture = Box::pin(async move { setup_rx.await.map_err(|error| error.to_string()) });
+        let setup: SetupFuture =
+            Box::pin(async move { setup_rx.await.map_err(|error| error.to_string()) });
         let mut run = input(&mut state, None, setup);
         run.on_state = Some(Box::new(move |state| {
             let cancel = state.cancel.clone().unwrap();

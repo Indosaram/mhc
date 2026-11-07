@@ -7,8 +7,8 @@ use maho_ext_api::ExtensionApi;
 use serde_json::Value;
 
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel, command_context_from, finish,
+    require_identity, respond,
 };
 
 pub const SLEEPTIME_OVERRIDE_MARK: &str = " [agent override]";
@@ -90,8 +90,13 @@ fn str_of(value: &Value) -> Option<String> {
     value.as_str().map(str::to_owned)
 }
 
-pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<ResolvedSleeptimeSettings, String> {
-    let agent_override = settings.get("agents").and_then(|agents| agents.get(agent_id));
+pub fn resolve_sleeptime_settings(
+    settings: &Value,
+    agent_id: &str,
+) -> Result<ResolvedSleeptimeSettings, String> {
+    let agent_override = settings
+        .get("agents")
+        .and_then(|agents| agents.get(agent_id));
     let reflection_override = agent_override.and_then(|agent| agent.get("reflection"));
     let nudge_override = agent_override.and_then(|agent| agent.get("nudge"));
     let facts_override = agent_override.and_then(|agent| agent.get("facts"));
@@ -99,16 +104,21 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
     let people_override = agent_override.and_then(|agent| agent.get("people"));
     let soul_override = agent_override.and_then(|agent| agent.get("soul"));
 
-    let effective = crate::reflection_settings::resolve_agent_reflection_settings(Some(settings), agent_id)?;
+    let effective =
+        crate::reflection_settings::resolve_agent_reflection_settings(Some(settings), agent_id)?;
     let effective_trigger = effective.get("trigger");
 
     let reflection = ResolvedReflection {
         enabled: resolved(
             bool_of(&effective["enabled"]).unwrap_or(false),
-            reflection_override.and_then(|value| value.get("enabled")).is_some(),
+            reflection_override
+                .and_then(|value| value.get("enabled"))
+                .is_some(),
         ),
         step_count: resolved(
-            effective_trigger.and_then(|trigger| int_of(&trigger["step_count"])).unwrap_or(0),
+            effective_trigger
+                .and_then(|trigger| int_of(&trigger["step_count"]))
+                .unwrap_or(0),
             reflection_override
                 .and_then(|value| value.get("trigger"))
                 .and_then(|trigger| trigger.get("step_count"))
@@ -125,19 +135,27 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
         ),
         merge: resolved(
             str_of(&effective["merge"]).unwrap_or_default(),
-            reflection_override.and_then(|value| value.get("merge")).is_some(),
+            reflection_override
+                .and_then(|value| value.get("merge"))
+                .is_some(),
         ),
         category: resolved(
             str_of(&effective["category"]).unwrap_or_default(),
-            reflection_override.and_then(|value| value.get("category")).is_some(),
+            reflection_override
+                .and_then(|value| value.get("category"))
+                .is_some(),
         ),
         timeout_minutes: resolved(
             int_of(&effective["timeout_minutes"]).unwrap_or(0),
-            reflection_override.and_then(|value| value.get("timeout_minutes")).is_some(),
+            reflection_override
+                .and_then(|value| value.get("timeout_minutes"))
+                .is_some(),
         ),
         sandbox: resolved(
             str_of(&effective["sandbox"]).unwrap_or_default(),
-            reflection_override.and_then(|value| value.get("sandbox")).is_some(),
+            reflection_override
+                .and_then(|value| value.get("sandbox"))
+                .is_some(),
         ),
     };
 
@@ -148,14 +166,18 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
                 .and_then(|value| bool_of(&value["enabled"]))
                 .or_else(|| base_nudge.and_then(|value| bool_of(&value["enabled"])))
                 .unwrap_or(false),
-            nudge_override.and_then(|value| value.get("enabled")).is_some(),
+            nudge_override
+                .and_then(|value| value.get("enabled"))
+                .is_some(),
         ),
         every_user_turns: resolved(
             nudge_override
                 .and_then(|value| int_of(&value["every_user_turns"]))
                 .or_else(|| base_nudge.and_then(|value| int_of(&value["every_user_turns"])))
                 .unwrap_or(0),
-            nudge_override.and_then(|value| value.get("every_user_turns")).is_some(),
+            nudge_override
+                .and_then(|value| value.get("every_user_turns"))
+                .is_some(),
         ),
     };
 
@@ -166,14 +188,18 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
                 .and_then(|value| bool_of(&value["enabled"]))
                 .or_else(|| base_facts.and_then(|value| bool_of(&value["enabled"])))
                 .unwrap_or(false),
-            facts_override.and_then(|value| value.get("enabled")).is_some(),
+            facts_override
+                .and_then(|value| value.get("enabled"))
+                .is_some(),
         ),
         debounce_settles: resolved(
             facts_override
                 .and_then(|value| int_of(&value["debounce_settles"]))
                 .or_else(|| base_facts.and_then(|value| int_of(&value["debounce_settles"])))
                 .unwrap_or(0),
-            facts_override.and_then(|value| value.get("debounce_settles")).is_some(),
+            facts_override
+                .and_then(|value| value.get("debounce_settles"))
+                .is_some(),
         ),
     };
 
@@ -189,12 +215,38 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
             .or_else(|| base_dream.and_then(|value| bool_of(&value[key])))
     };
     let dream = ResolvedDream {
-        enabled: resolved(dream_flag("enabled").unwrap_or(false), dream_override.and_then(|v| v.get("enabled")).is_some()),
-        idle_minutes: resolved(dream_value("idle_minutes").unwrap_or(0), dream_override.and_then(|v| v.get("idle_minutes")).is_some()),
-        min_hours_between: resolved(dream_value("min_hours_between").unwrap_or(0), dream_override.and_then(|v| v.get("min_hours_between")).is_some()),
-        shutdown_launch: resolved(dream_flag("shutdown_launch").unwrap_or(false), dream_override.and_then(|v| v.get("shutdown_launch")).is_some()),
-        auto_select_max: resolved(dream_value("auto_select_max").unwrap_or(0), dream_override.and_then(|v| v.get("auto_select_max")).is_some()),
-        auto_select_max_chars: resolved(dream_value("auto_select_max_chars").unwrap_or(0), dream_override.and_then(|v| v.get("auto_select_max_chars")).is_some()),
+        enabled: resolved(
+            dream_flag("enabled").unwrap_or(false),
+            dream_override.and_then(|v| v.get("enabled")).is_some(),
+        ),
+        idle_minutes: resolved(
+            dream_value("idle_minutes").unwrap_or(0),
+            dream_override.and_then(|v| v.get("idle_minutes")).is_some(),
+        ),
+        min_hours_between: resolved(
+            dream_value("min_hours_between").unwrap_or(0),
+            dream_override
+                .and_then(|v| v.get("min_hours_between"))
+                .is_some(),
+        ),
+        shutdown_launch: resolved(
+            dream_flag("shutdown_launch").unwrap_or(false),
+            dream_override
+                .and_then(|v| v.get("shutdown_launch"))
+                .is_some(),
+        ),
+        auto_select_max: resolved(
+            dream_value("auto_select_max").unwrap_or(0),
+            dream_override
+                .and_then(|v| v.get("auto_select_max"))
+                .is_some(),
+        ),
+        auto_select_max_chars: resolved(
+            dream_value("auto_select_max_chars").unwrap_or(0),
+            dream_override
+                .and_then(|v| v.get("auto_select_max_chars"))
+                .is_some(),
+        ),
     };
 
     let base_people = settings.get("people");
@@ -209,10 +261,20 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
                 .and_then(|value| bool_of(&value["enabled"]))
                 .or_else(|| base_people.and_then(|value| bool_of(&value["enabled"])))
                 .unwrap_or(false),
-            people_override.and_then(|value| value.get("enabled")).is_some(),
+            people_override
+                .and_then(|value| value.get("enabled"))
+                .is_some(),
         ),
-        max_entries: resolved(people_value("max_entries").unwrap_or(0), people_override.and_then(|v| v.get("max_entries")).is_some()),
-        max_entry_chars: resolved(people_value("max_entry_chars").unwrap_or(0), people_override.and_then(|v| v.get("max_entry_chars")).is_some()),
+        max_entries: resolved(
+            people_value("max_entries").unwrap_or(0),
+            people_override.and_then(|v| v.get("max_entries")).is_some(),
+        ),
+        max_entry_chars: resolved(
+            people_value("max_entry_chars").unwrap_or(0),
+            people_override
+                .and_then(|v| v.get("max_entry_chars"))
+                .is_some(),
+        ),
     };
 
     let base_soul = settings.get("soul");
@@ -222,11 +284,20 @@ pub fn resolve_sleeptime_settings(settings: &Value, agent_id: &str) -> Result<Re
                 .and_then(|value| bool_of(&value["edit_notice"]))
                 .or_else(|| base_soul.and_then(|value| bool_of(&value["edit_notice"])))
                 .unwrap_or(false),
-            soul_override.and_then(|value| value.get("edit_notice")).is_some(),
+            soul_override
+                .and_then(|value| value.get("edit_notice"))
+                .is_some(),
         ),
     };
 
-    Ok(ResolvedSleeptimeSettings { reflection, nudge, facts, dream, people, soul })
+    Ok(ResolvedSleeptimeSettings {
+        reflection,
+        nudge,
+        facts,
+        dream,
+        people,
+        soul,
+    })
 }
 
 fn mark(setting: &ResolvedSleeptimeValue<impl Sized>) -> &'static str {
@@ -272,7 +343,11 @@ pub async fn handle_sleeptime(
         String::new(),
         format!(
             "Reflection: {}{}",
-            if reflection.enabled.value { "on" } else { "off" },
+            if reflection.enabled.value {
+                "on"
+            } else {
+                "off"
+            },
             mark(&reflection.enabled)
         ),
         format!(
@@ -286,34 +361,66 @@ pub async fn handle_sleeptime(
         ),
         format!(
             "On compaction: {}{}",
-            if reflection.on_compaction.value { "on" } else { "off" },
+            if reflection.on_compaction.value {
+                "on"
+            } else {
+                "off"
+            },
             mark(&reflection.on_compaction)
         ),
-        format!("Merge policy: {}{}", reflection.merge.value, mark(&reflection.merge)),
-        format!("Category: {}{}", reflection.category.value, mark(&reflection.category)),
+        format!(
+            "Merge policy: {}{}",
+            reflection.merge.value,
+            mark(&reflection.merge)
+        ),
+        format!(
+            "Category: {}{}",
+            reflection.category.value,
+            mark(&reflection.category)
+        ),
         format!(
             "Timeout: {} minutes{}",
             reflection.timeout_minutes.value,
             mark(&reflection.timeout_minutes)
         ),
-        format!("Sandbox: {}{}", reflection.sandbox.value, mark(&reflection.sandbox)),
+        format!(
+            "Sandbox: {}{}",
+            reflection.sandbox.value,
+            mark(&reflection.sandbox)
+        ),
         String::new(),
-        format!("Nudge: {}{}", if nudge.enabled.value { "on" } else { "off" }, mark(&nudge.enabled)),
+        format!(
+            "Nudge: {}{}",
+            if nudge.enabled.value { "on" } else { "off" },
+            mark(&nudge.enabled)
+        ),
         format!(
             "Nudge every: every {} turns{}",
             nudge.every_user_turns.value,
             mark(&nudge.every_user_turns)
         ),
         String::new(),
-        format!("Facts: {}{}", if facts.enabled.value { "on" } else { "off" }, mark(&facts.enabled)),
+        format!(
+            "Facts: {}{}",
+            if facts.enabled.value { "on" } else { "off" },
+            mark(&facts.enabled)
+        ),
         format!(
             "Facts debounce: debounce {} settles{}",
             facts.debounce_settles.value,
             mark(&facts.debounce_settles)
         ),
         String::new(),
-        format!("Dream: {}{}", if dream.enabled.value { "on" } else { "off" }, mark(&dream.enabled)),
-        format!("Dream idle: idle {} minutes{}", dream.idle_minutes.value, mark(&dream.idle_minutes)),
+        format!(
+            "Dream: {}{}",
+            if dream.enabled.value { "on" } else { "off" },
+            mark(&dream.enabled)
+        ),
+        format!(
+            "Dream idle: idle {} minutes{}",
+            dream.idle_minutes.value,
+            mark(&dream.idle_minutes)
+        ),
         format!(
             "Dream spacing: min {}h between{}",
             dream.min_hours_between.value,
@@ -321,25 +428,45 @@ pub async fn handle_sleeptime(
         ),
         format!(
             "Dream shutdown: shutdown launch {}{}",
-            if dream.shutdown_launch.value { "on" } else { "off" },
+            if dream.shutdown_launch.value {
+                "on"
+            } else {
+                "off"
+            },
             mark(&dream.shutdown_launch)
         ),
-        format!("Dream select: select max {}{}", dream.auto_select_max.value, mark(&dream.auto_select_max)),
+        format!(
+            "Dream select: select max {}{}",
+            dream.auto_select_max.value,
+            mark(&dream.auto_select_max)
+        ),
         format!(
             "Dream select chars: max {} chars{}",
             dream.auto_select_max_chars.value,
             mark(&dream.auto_select_max_chars)
         ),
         String::new(),
-        format!("People: {}{}", if people.enabled.value { "on" } else { "off" }, mark(&people.enabled)),
-        format!("People entries: max {} entries{}", people.max_entries.value, mark(&people.max_entries)),
+        format!(
+            "People: {}{}",
+            if people.enabled.value { "on" } else { "off" },
+            mark(&people.enabled)
+        ),
+        format!(
+            "People entries: max {} entries{}",
+            people.max_entries.value,
+            mark(&people.max_entries)
+        ),
         format!(
             "People chars: max {} chars{}",
             people.max_entry_chars.value,
             mark(&people.max_entry_chars)
         ),
         String::new(),
-        format!("Soul: edit notice {}{}", if soul.edit_notice.value { "on" } else { "off" }, mark(&soul.edit_notice)),
+        format!(
+            "Soul: edit notice {}{}",
+            if soul.edit_notice.value { "on" } else { "off" },
+            mark(&soul.edit_notice)
+        ),
         String::new(),
         format!(
             "Edit {config_path} under memory.reflection, or memory.agents.{agent_id} for this identity only."
@@ -401,22 +528,30 @@ mod tests {
                 max_entries: resolved(40, false),
                 max_entry_chars: resolved(200, false),
             },
-            soul: ResolvedSoul { edit_notice: resolved(true, false) },
+            soul: ResolvedSoul {
+                edit_notice: resolved(true, false),
+            },
         }
     }
 
     #[tokio::test]
-    async fn given_default_settings_when_resolved_and_invoked_then_machine_values_use_defaults_without_override_flags() {
+    async fn given_default_settings_when_resolved_and_invoked_then_machine_values_use_defaults_without_override_flags()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 
-        let resolved = resolve_sleeptime_settings(&memory_settings(), TEST_IDENTITY).expect("resolved");
+        let resolved =
+            resolve_sleeptime_settings(&memory_settings(), TEST_IDENTITY).expect("resolved");
         let response = handle_sleeptime(&fake.deps, &context.ctx, "").await;
 
         assert_eq!(resolved, expected_default());
         assert!(response.text.contains("Reflection: on"));
-        assert!(response.text.contains("Dream select chars: max 150000 chars"));
+        assert!(
+            response
+                .text
+                .contains("Dream select chars: max 150000 chars")
+        );
         assert_eq!(
             context.ui.notifications(),
             vec![(response.text.clone(), NotifyLevel::Info)]
@@ -424,7 +559,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_per_agent_overrides_when_resolved_and_invoked_then_override_values_and_flags_win_field_by_field() {
+    async fn given_per_agent_overrides_when_resolved_and_invoked_then_override_values_and_flags_win_field_by_field()
+     {
         let (_root, identity) = temp_identity();
         let mut settings = memory_settings();
         settings["agents"] = serde_json::json!({
@@ -449,7 +585,10 @@ mod tests {
         });
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { settings: Some(settings.clone()), ..Default::default() },
+            FakeDepsOverrides {
+                settings: Some(settings.clone()),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -466,8 +605,14 @@ mod tests {
                 timeout_minutes: resolved(30, true),
                 sandbox: resolved("required".to_owned(), true),
             },
-            nudge: ResolvedNudge { enabled: resolved(false, true), every_user_turns: resolved(20, true) },
-            facts: ResolvedFacts { enabled: resolved(false, true), debounce_settles: resolved(8, true) },
+            nudge: ResolvedNudge {
+                enabled: resolved(false, true),
+                every_user_turns: resolved(20, true),
+            },
+            facts: ResolvedFacts {
+                enabled: resolved(false, true),
+                debounce_settles: resolved(8, true),
+            },
             dream: ResolvedDream {
                 enabled: resolved(false, true),
                 idle_minutes: resolved(60, true),
@@ -481,7 +626,9 @@ mod tests {
                 max_entries: resolved(20, true),
                 max_entry_chars: resolved(100, true),
             },
-            soul: ResolvedSoul { edit_notice: resolved(false, true) },
+            soul: ResolvedSoul {
+                edit_notice: resolved(false, true),
+            },
         };
         assert_eq!(actual, expected);
         for line in [
@@ -498,7 +645,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_unbound_session_when_invoked_then_the_command_surfaces_a_structured_error_notification() {
+    async fn given_an_unbound_session_when_invoked_then_the_command_surfaces_a_structured_error_notification()
+     {
         let fake = fake_deps(None, FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 

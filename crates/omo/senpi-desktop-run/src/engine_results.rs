@@ -175,10 +175,7 @@ pub fn expect_ax_node(method: &str, value: Value) -> Result<AxNode, DesktopError
         })
 }
 
-pub fn expect_optional_ax_node(
-    method: &str,
-    value: Value,
-) -> Result<Option<AxNode>, DesktopError> {
+pub fn expect_optional_ax_node(method: &str, value: Value) -> Result<Option<AxNode>, DesktopError> {
     if value.is_null() {
         return Ok(None);
     }
@@ -201,7 +198,9 @@ pub(crate) fn check_result<T: for<'de> Deserialize<'de>>(
     method: &str,
     value: &Value,
 ) -> Result<(), DesktopError> {
-    T::deserialize(value).map(|_| ()).map_err(|e| malformed(method, &e))
+    T::deserialize(value)
+        .map(|_| ())
+        .map_err(|e| malformed(method, &e))
 }
 
 /// Shape check of [`expect_ax_node`] that borrows `value`.

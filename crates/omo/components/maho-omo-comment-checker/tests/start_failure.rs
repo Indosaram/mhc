@@ -3,7 +3,9 @@
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-use comment_checker_core::{CheckFailure, CheckResult, HookInput, HookToolInput, RunCommentCheckerInput};
+use comment_checker_core::{
+    CheckFailure, CheckResult, HookInput, HookToolInput, RunCommentCheckerInput,
+};
 use maho_ext_api::*;
 use maho_omo_comment_checker::component::CommentCheckerComponent;
 use maho_omo_comment_checker::failure_notice::COMMENT_CHECKER_COULD_NOT_RUN;
@@ -18,22 +20,25 @@ struct TestLogger {
 
 impl ComponentLogger for TestLogger {
     fn info(&self, message: &str, details: Option<&serde_json::Value>) {
-        self.entries
-            .lock()
-            .expect("test assertion")
-            .push(("info".to_string(), message.to_string(), details.cloned()));
+        self.entries.lock().expect("test assertion").push((
+            "info".to_string(),
+            message.to_string(),
+            details.cloned(),
+        ));
     }
     fn warn(&self, message: &str, details: Option<&serde_json::Value>) {
-        self.entries
-            .lock()
-            .expect("test assertion")
-            .push(("warn".to_string(), message.to_string(), details.cloned()));
+        self.entries.lock().expect("test assertion").push((
+            "warn".to_string(),
+            message.to_string(),
+            details.cloned(),
+        ));
     }
     fn error(&self, message: &str, details: Option<&serde_json::Value>) {
-        self.entries
-            .lock()
-            .expect("test assertion")
-            .push(("error".to_string(), message.to_string(), details.cloned()));
+        self.entries.lock().expect("test assertion").push((
+            "error".to_string(),
+            message.to_string(),
+            details.cloned(),
+        ));
     }
 }
 
@@ -51,7 +56,12 @@ impl ExtensionUi for TestUi {
     ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
     fn input<'a>(
@@ -289,7 +299,7 @@ async fn given_checker_that_never_started_when_two_edits_finish_then_reported_on
 
 #[tokio::test]
 async fn given_checker_following_protocol_when_two_edits_finish_then_keeps_running_without_warnings()
-{
+ {
     let (calls, logger, ui, _first, _second) = two_edits(CheckResult {
         has_comments: false,
         message: String::new(),
@@ -305,13 +315,17 @@ async fn given_checker_following_protocol_when_two_edits_finish_then_keeps_runni
 #[tokio::test]
 #[cfg(unix)]
 async fn given_checker_without_execute_permission_when_real_runner_spawns_it_then_start_failure_exposed()
-{
+ {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempdir().expect("test assertion");
     let binary_path = temp.path().join("comment-checker");
-    fs::write(&binary_path, "#!/bin/sh
+    fs::write(
+        &binary_path,
+        "#!/bin/sh
 exit 0
-").expect("test assertion");
+",
+    )
+    .expect("test assertion");
     fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o644)).expect("test assertion");
 
     let result = default_run_comment_checker(&RunCommentCheckerInput {

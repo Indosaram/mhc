@@ -45,7 +45,8 @@ fn query_finds_the_button_by_role_and_title() {
         title: Some("save".into()),
         ..AxQuery::default()
     };
-    let nodes = ax::query(&mut backend, &mut AxRegistry::default(), &window, &query).expect("query");
+    let nodes =
+        ax::query(&mut backend, &mut AxRegistry::default(), &window, &query).expect("query");
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].title.as_deref(), Some("Save"));
 }
@@ -55,7 +56,10 @@ fn element_at_returns_the_deepest_node_and_parent_walks_up() {
     let mut backend = common::fixture_backend();
     let button = save_button(&mut backend);
     assert_eq!(backend.props(&button).expect("props").role, "button");
-    let parent = backend.parent(&button).expect("parent").expect("window root");
+    let parent = backend
+        .parent(&button)
+        .expect("parent")
+        .expect("window root");
     assert_eq!(backend.props(&parent).expect("props").role, "window");
     assert!(backend.element_at(5.0, 5.0).expect("hit test").is_none());
 }
@@ -68,7 +72,9 @@ fn perform_records_supported_actions_and_rejects_others() {
         panic!("fake handles are ids")
     };
     ax::ax_press(&mut backend, &button).expect("press");
-    let err = backend.perform(&button, "showMenu").expect_err("unsupported");
+    let err = backend
+        .perform(&button, "showMenu")
+        .expect_err("unsupported");
     assert_eq!(err.code, ErrorCode::AxFailed);
     assert_eq!(
         backend.sink().ops(),
@@ -82,7 +88,10 @@ fn perform_records_supported_actions_and_rejects_others() {
 #[test]
 fn set_value_and_focus_update_the_tree() {
     let mut backend = common::fixture_backend();
-    let text = backend.focused_element().expect("focused").expect("textarea");
+    let text = backend
+        .focused_element()
+        .expect("focused")
+        .expect("textarea");
     backend.set_value(&text, "hello").expect("set value");
     assert_eq!(
         backend.props(&text).expect("props").value.as_deref(),

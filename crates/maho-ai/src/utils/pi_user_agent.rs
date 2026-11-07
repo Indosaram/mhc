@@ -25,8 +25,14 @@ fn os_release() -> String {
 
 #[cfg(unix)]
 fn sysinfo_release() -> Option<String> {
-    let output = std::process::Command::new("uname").arg("-r").output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let output = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 #[cfg(not(unix))]
@@ -36,8 +42,9 @@ fn sysinfo_release() -> Option<String> {
 
 /// `pi (<platform> <release>; <arch>)` with Node's platform and arch names.
 pub fn get_pi_user_agent() -> String {
-    static AGENT: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| format!("pi ({} {}; {})", node_platform(), os_release(), node_arch()));
+    static AGENT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!("pi ({} {}; {})", node_platform(), os_release(), node_arch())
+    });
     AGENT.clone()
 }
 
@@ -52,11 +59,18 @@ mod tests {
 
     #[test]
     fn forces_a_single_pi_user_agent_header() {
-        let mut headers: ProviderHeaders =
-            [("user-agent".to_owned(), Some("x".to_owned())), ("Accept".to_owned(), None)].into_iter().collect();
+        let mut headers: ProviderHeaders = [
+            ("user-agent".to_owned(), Some("x".to_owned())),
+            ("Accept".to_owned(), None),
+        ]
+        .into_iter()
+        .collect();
         force_pi_user_agent(&mut headers);
         assert_eq!(headers.len(), 2);
         let agent = headers["User-Agent"].clone().expect("agent");
-        assert!(agent.starts_with(&format!("pi ({} ", node_platform())) && agent.ends_with(&format!("; {})", node_arch())));
+        assert!(
+            agent.starts_with(&format!("pi ({} ", node_platform()))
+                && agent.ends_with(&format!("; {})", node_arch()))
+        );
     }
 }

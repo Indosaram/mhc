@@ -14,8 +14,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
         .output()
     {
         Ok(output) => {
-            output.status.success()
-                || String::from_utf8_lossy(&output.stderr).contains("permitted")
+            output.status.success() || String::from_utf8_lossy(&output.stderr).contains("permitted")
         }
         Err(_) => true,
     }

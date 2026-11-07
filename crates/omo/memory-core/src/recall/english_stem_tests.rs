@@ -34,7 +34,10 @@ fn derivational_suffixes_fold() {
     assert_eq!(stem_english_token("deployment"), "deploy");
     assert_eq!(stem_english_token("quickly"), "quick");
     assert_eq!(stem_english_token("rotation"), "rotat");
-    assert_eq!(stem_english_token("deployment"), stem_english_token("deploys"));
+    assert_eq!(
+        stem_english_token("deployment"),
+        stem_english_token("deploys")
+    );
 }
 
 #[test]

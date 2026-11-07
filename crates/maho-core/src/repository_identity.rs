@@ -29,17 +29,18 @@ pub fn normalize_remote_url(url: &str) -> String {
         value = tail.into();
     }
     if let Some((host, path)) = value.split_once(':')
-        && !path.starts_with('/') {
-            if let Some((port, rest)) = path.split_once('/') {
-                if port.chars().all(|ch| ch.is_ascii_digit()) {
-                    value = format!("{host}/{rest}");
-                } else {
-                    value = format!("{host}/{path}");
-                }
+        && !path.starts_with('/')
+    {
+        if let Some((port, rest)) = path.split_once('/') {
+            if port.chars().all(|ch| ch.is_ascii_digit()) {
+                value = format!("{host}/{rest}");
             } else {
                 value = format!("{host}/{path}");
             }
+        } else {
+            value = format!("{host}/{path}");
         }
+    }
     let mut value = value.trim_end_matches('/').to_lowercase();
     if value.ends_with(".git") {
         value.truncate(value.len() - 4);

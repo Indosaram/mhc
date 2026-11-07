@@ -73,18 +73,25 @@ impl MacInput {
     /// Runs (or re-runs) the receipt canary on demand; `Off` is a no-op.
     pub(crate) fn canary(&mut self) -> CoreResult<CanaryResult> {
         if matches!(self.canary, canary::CanaryState::Off) {
-            return Ok(CanaryResult { focus_restored: true });
+            return Ok(CanaryResult {
+                focus_restored: true,
+            });
         }
         canary::run(self)
     }
 
     /// Current global cursor position.
-    pub(crate) fn cursor_position(&mut self) -> CoreResult<Option<senpi_desktop_core::types::DesktopPoint>> {
+    pub(crate) fn cursor_position(
+        &mut self,
+    ) -> CoreResult<Option<senpi_desktop_core::types::DesktopPoint>> {
         crate::cursor::position(&self.source)
     }
 
     /// Moves the cursor without clicking.
-    pub(crate) fn warp_cursor(&mut self, point: senpi_desktop_core::types::DesktopPoint) -> CoreResult<()> {
+    pub(crate) fn warp_cursor(
+        &mut self,
+        point: senpi_desktop_core::types::DesktopPoint,
+    ) -> CoreResult<()> {
         crate::cursor::warp(&self.source, point)
     }
 
@@ -161,7 +168,12 @@ impl MacInput {
         let _request = self.held.request();
         match target {
             Target::Desktop => keys::type_text_interruptible(
-                &self.source, &mut self.held, text, KeyRoute::Global, check_stop, delivered,
+                &self.source,
+                &mut self.held,
+                text,
+                KeyRoute::Global,
+                check_stop,
+                delivered,
             ),
             Target::Window(id) => {
                 let window = resolve_window(capture, id)?;
@@ -173,13 +185,23 @@ impl MacInput {
                         guard::prepare_keys(&window, pid, wid, capture)?;
                         self.last_activated = Some((pid, wid));
                         keys::type_text_interruptible(
-                            &self.source, &mut self.held, text, KeyRoute::Process(pid), check_stop, delivered,
+                            &self.source,
+                            &mut self.held,
+                            text,
+                            KeyRoute::Process(pid),
+                            check_stop,
+                            delivered,
                         )
                     }
                     DeliveryMode::Foreground => skylight::with_foreground(pid, || {
                         crate::ax::prepare_foreground_input(&window)?;
                         keys::type_text_interruptible(
-                            &self.source, &mut self.held, text, KeyRoute::Global, check_stop, delivered,
+                            &self.source,
+                            &mut self.held,
+                            text,
+                            KeyRoute::Global,
+                            check_stop,
+                            delivered,
                         )
                     }),
                 }
@@ -226,7 +248,9 @@ impl MacInput {
     /// while the SkyLight SPI is missing or the canary has failed.
     fn ensure_background_ready(&mut self) -> CoreResult<()> {
         match self.canary {
-            canary::CanaryState::Off | canary::CanaryState::Passed => crate::skylight::require_spi(),
+            canary::CanaryState::Off | canary::CanaryState::Passed => {
+                crate::skylight::require_spi()
+            }
             canary::CanaryState::Failed => Err(DesktopError::background_unavailable(format!(
                 "{CANARY_STOP_REASON}: the SkyLight receipt canary failed, so background window \
                  input is disabled until the session resumes it",
@@ -281,11 +305,11 @@ fn window_identity(window: &DesktopWindow) -> CoreResult<(libc::pid_t, u32)> {
     let pid = window.pid.ok_or_else(|| {
         DesktopError::input_failed(format!("window {} has no owning process id", window.id))
     })?;
-    let pid = i32::try_from(pid)
-        .map_err(|_| DesktopError::input_failed(format!("window {} has an invalid process id", window.id)))?;
-    let wid = window
-        .id
-        .parse::<u32>()
-        .map_err(|_| DesktopError::invalid_target(format!("invalid macOS window id '{}'", window.id)))?;
+    let pid = i32::try_from(pid).map_err(|_| {
+        DesktopError::input_failed(format!("window {} has an invalid process id", window.id))
+    })?;
+    let wid = window.id.parse::<u32>().map_err(|_| {
+        DesktopError::invalid_target(format!("invalid macOS window id '{}'", window.id))
+    })?;
     Ok((pid, wid))
 }

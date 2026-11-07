@@ -56,7 +56,9 @@ fn js_number(number: f64) -> Value {
     if number.is_finite() && number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0 {
         return Value::Number(serde_json::Number::from(number as i64));
     }
-    serde_json::Number::from_f64(number).map(Value::Number).unwrap_or(Value::Null)
+    serde_json::Number::from_f64(number)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 /// `fromJson(ValueSchema, value)`.
@@ -86,7 +88,9 @@ pub fn value_to_json(value: &PbValue) -> Value {
         Some(pb_value::Kind::NumberValue(number)) => js_number(*number),
         Some(pb_value::Kind::StringValue(text)) => Value::String(text.clone()),
         Some(pb_value::Kind::BoolValue(flag)) => Value::Bool(*flag),
-        Some(pb_value::Kind::ListValue(list)) => Value::Array(list.values.iter().map(value_to_json).collect()),
+        Some(pb_value::Kind::ListValue(list)) => {
+            Value::Array(list.values.iter().map(value_to_json).collect())
+        }
         Some(pb_value::Kind::StructValue(structure)) => {
             let mut entries = Map::new();
             for (key, item) in &structure.fields {
@@ -123,7 +127,11 @@ mod tests {
             json!({ "a": 1, "b": { "c": [null] }, "d": "" }),
         ] {
             let bytes = value_to_bytes(&value);
-            assert_eq!(value_from_bytes(&bytes).expect("decodes"), value, "value {value}");
+            assert_eq!(
+                value_from_bytes(&bytes).expect("decodes"),
+                value,
+                "value {value}"
+            );
         }
     }
 

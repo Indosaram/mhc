@@ -4,34 +4,107 @@ use maho_ext_api::*;
 use maho_ext_builtin_loose::oauth_login_interaction::ExtensionLoginInteraction;
 use std::sync::Arc;
 
-struct DialogUi { answer: Option<String> }
+struct DialogUi {
+    answer: Option<String>,
+}
 impl ExtensionUi for DialogUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { self.answer.clone() }) }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { panic!("unexpected confirm") }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { self.answer.clone() }) }
-    fn notify(&self, _: &str, _: NotificationType) { panic!("unexpected notification") }
-    fn set_status(&self, _: &str, _: Option<&str>) { panic!("unexpected status") }
-    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) { panic!("unexpected widget") }
-    fn set_header(&self, _: Option<ComponentFactory>) { panic!("unexpected header") }
-    fn set_footer(&self, _: Option<ComponentFactory>) { panic!("unexpected footer") }
-    fn set_title(&self, _: &str) { panic!("unexpected title") }
-    fn paste_to_editor(&self, _: &str) { panic!("unexpected editor") }
-    fn set_editor_text(&self, _: &str) { panic!("unexpected editor") }
-    fn get_editor_text(&self) -> String { panic!("unexpected editor") }
-    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, serde_json::Value> { panic!("unexpected custom UI") }
-    fn theme(&self) -> Theme { panic!("unexpected theme") }
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { self.answer.clone() })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        panic!("unexpected confirm")
+    }
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { self.answer.clone() })
+    }
+    fn notify(&self, _: &str, _: NotificationType) {
+        panic!("unexpected notification")
+    }
+    fn set_status(&self, _: &str, _: Option<&str>) {
+        panic!("unexpected status")
+    }
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {
+        panic!("unexpected widget")
+    }
+    fn set_header(&self, _: Option<ComponentFactory>) {
+        panic!("unexpected header")
+    }
+    fn set_footer(&self, _: Option<ComponentFactory>) {
+        panic!("unexpected footer")
+    }
+    fn set_title(&self, _: &str) {
+        panic!("unexpected title")
+    }
+    fn paste_to_editor(&self, _: &str) {
+        panic!("unexpected editor")
+    }
+    fn set_editor_text(&self, _: &str) {
+        panic!("unexpected editor")
+    }
+    fn get_editor_text(&self) -> String {
+        panic!("unexpected editor")
+    }
+    fn custom(
+        &self,
+        _: ComponentFactory,
+        _: CustomUiOptions,
+    ) -> ExtensionFuture<'_, serde_json::Value> {
+        panic!("unexpected custom UI")
+    }
+    fn theme(&self) -> Theme {
+        panic!("unexpected theme")
+    }
 }
 fn interaction(answer: Option<&str>, provider: Option<&str>) -> ExtensionLoginInteraction {
-    ExtensionLoginInteraction::new(Arc::new(DialogUi { answer: answer.map(str::to_owned) }), ExtensionMode::Rpc, "Test".into(), provider, Arc::new(|_| panic!("unexpected browser")))
+    ExtensionLoginInteraction::new(
+        Arc::new(DialogUi {
+            answer: answer.map(str::to_owned),
+        }),
+        ExtensionMode::Rpc,
+        "Test".into(),
+        provider,
+        Arc::new(|_| panic!("unexpected browser")),
+    )
 }
 fn text_prompt() -> AuthPrompt {
-    AuthPrompt { kind: AuthPromptKind::Text { message: "Code".into(), placeholder: None }, signal: None }
+    AuthPrompt {
+        kind: AuthPromptKind::Text {
+            message: "Code".into(),
+            placeholder: None,
+        },
+        signal: None,
+    }
 }
 
 #[tokio::test]
 async fn select_maps_label_to_provider_option_id() {
     let login = interaction(Some("Visible label"), None);
-    let prompt = AuthPrompt { kind: AuthPromptKind::Select { message: "Choose".into(), options: vec![AuthPromptOption { id: "machine-id".into(), label: "Visible label".into(), description: None }] }, signal: None };
+    let prompt = AuthPrompt {
+        kind: AuthPromptKind::Select {
+            message: "Choose".into(),
+            options: vec![AuthPromptOption {
+                id: "machine-id".into(),
+                label: "Visible label".into(),
+                description: None,
+            }],
+        },
+        signal: None,
+    };
     let answer = login.prompt(prompt).await.expect("answer");
     assert_eq!(answer, "machine-id");
 }

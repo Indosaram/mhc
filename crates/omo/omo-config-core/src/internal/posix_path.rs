@@ -201,7 +201,10 @@ pub fn posix_resolve(segments: &[&str]) -> String {
             break;
         }
     }
-    if !parts.last().is_some_and(|p| parse_posix_root(p).is_absolute) {
+    if !parts
+        .last()
+        .is_some_and(|p| parse_posix_root(p).is_absolute)
+    {
         let cwd = std::env::current_dir()
             .ok()
             .and_then(|path| path.to_str().map(to_posix_path))
@@ -289,7 +292,10 @@ fn account_home_dir_unix() -> Option<String> {
                 let dir_opt = if pw.pw_dir.is_null() {
                     None
                 } else {
-                    std::ffi::CStr::from_ptr(pw.pw_dir).to_str().ok().map(str::to_string)
+                    std::ffi::CStr::from_ptr(pw.pw_dir)
+                        .to_str()
+                        .ok()
+                        .map(str::to_string)
                 };
                 (ret, dir_opt)
             } else {
@@ -350,7 +356,10 @@ mod tests {
         assert_eq!(to_posix_path(r"a\b\c"), "a/b/c");
         assert_eq!(to_posix_path(r"\\?\C:\foo\bar"), "C:/foo/bar");
         assert_eq!(to_posix_path("//?/C:/foo/bar"), "C:/foo/bar");
-        assert_eq!(to_posix_path(r"\\?\UNC\server\share\file"), "//server/share/file");
+        assert_eq!(
+            to_posix_path(r"\\?\UNC\server\share\file"),
+            "//server/share/file"
+        );
 
         assert_eq!(normalize("/home/alice/../bob"), "/home/bob");
         assert_eq!(normalize("/.."), "/");
@@ -359,7 +368,10 @@ mod tests {
 
         assert_eq!(posix_join(&["/home/alice", ".omo"]), "/home/alice/.omo");
 
-        assert_eq!(posix_dirname("/home/user/.omo/omo.jsonc"), "/home/user/.omo");
+        assert_eq!(
+            posix_dirname("/home/user/.omo/omo.jsonc"),
+            "/home/user/.omo"
+        );
         assert_eq!(posix_dirname("/home"), "/");
         assert_eq!(posix_dirname("/"), "/");
         assert_eq!(posix_dirname("file.txt"), ".");
@@ -380,8 +392,14 @@ mod tests {
     fn drive_letters_and_unc_shares_are_roots_on_windows() {
         assert_eq!(normalize("C:/Users/alice/../bob"), "C:/Users/bob");
         assert_eq!(normalize("C:/.."), "C:/");
-        assert_eq!(posix_join(&["C:/Users/alice", ".omo", "omo.jsonc"]), "C:/Users/alice/.omo/omo.jsonc");
-        assert_eq!(posix_dirname("C:/Users/me/.omo/omo.jsonc"), "C:/Users/me/.omo");
+        assert_eq!(
+            posix_join(&["C:/Users/alice", ".omo", "omo.jsonc"]),
+            "C:/Users/alice/.omo/omo.jsonc"
+        );
+        assert_eq!(
+            posix_dirname("C:/Users/me/.omo/omo.jsonc"),
+            "C:/Users/me/.omo"
+        );
         assert_eq!(posix_dirname("C:/Users/me"), "C:/Users");
         assert_eq!(posix_dirname("C:/Users"), "C:/");
         assert_eq!(posix_dirname("C:/"), "C:/");

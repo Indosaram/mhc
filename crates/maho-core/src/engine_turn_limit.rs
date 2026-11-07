@@ -76,14 +76,18 @@ pub fn engine_turn_limit_notice(stop: &EngineTurnStop) -> String {
 
 /// A `.` manual continue or a continue-from-leaf is the user's own request, not an automatic turn.
 pub fn is_user_directed_turn(custom_type: &str) -> bool {
-    custom_type == MANUAL_CONTINUE_CUSTOM_TYPE || custom_type == CONTINUE_FROM_LEAF_CUSTOM_TYPE || custom_type == "session-resumed"
+    custom_type == MANUAL_CONTINUE_CUSTOM_TYPE
+        || custom_type == CONTINUE_FROM_LEAF_CUSTOM_TYPE
+        || custom_type == "session-resumed"
 }
 
 /// Recovering an interrupted run is not a new message that resets the unattended turn budget (senpi#4204).
 pub fn resets_engine_turn_history(custom_type: &str, details: Option<&Value>) -> bool {
     is_user_directed_turn(custom_type)
         && !(custom_type == crate::stop_resume_directive::STOP_RESUME_CUSTOM_TYPE
-            && details.and_then(|details| details.get("resumeCause")).and_then(Value::as_str)
+            && details
+                .and_then(|details| details.get("resumeCause"))
+                .and_then(Value::as_str)
                 == Some("interrupted"))
 }
 
@@ -93,10 +97,14 @@ fn entry_type(entry: &Value) -> Option<&str> {
 
 fn is_user_message(entry: &Value) -> bool {
     match entry_type(entry) {
-        Some("custom_message") => entry
-            .get("customType")
-            .and_then(Value::as_str)
-            .is_some_and(|custom_type| resets_engine_turn_history(custom_type, entry.get("details"))),
+        Some("custom_message") => {
+            entry
+                .get("customType")
+                .and_then(Value::as_str)
+                .is_some_and(|custom_type| {
+                    resets_engine_turn_history(custom_type, entry.get("details"))
+                })
+        }
         Some("message") => entry.pointer("/message/role").and_then(Value::as_str) == Some("user"),
         _ => false,
     }
@@ -312,11 +320,17 @@ mod tests {
     fn per_user_input_cap_is_off_by_default() {
         let history = EngineTurnHistory {
             starts: (0..500)
-                .map(|i| EngineTurnStartRecord { at: i, tool_used: true })
+                .map(|i| EngineTurnStartRecord {
+                    at: i,
+                    tool_used: true,
+                })
                 .collect(),
         };
         assert_eq!(MAX_ENGINE_TURNS_PER_USER_INPUT, 0);
-        assert_eq!(engine_turn_stop(&history, 1_000_000, &limits(None), &[]), None);
+        assert_eq!(
+            engine_turn_stop(&history, 1_000_000, &limits(None), &[]),
+            None
+        );
     }
 
     /// senpi test/suite/regressions/4204-interrupted-resume.test.ts: an interrupted-run resume directive does not
@@ -328,7 +342,10 @@ mod tests {
         assert_eq!(history.starts.len(), 1);
         history.add(&json!({"type": "custom_message", "customType": "session-resumed"}));
         assert!(history.starts.is_empty());
-        assert!(!resets_engine_turn_history("session-resumed", Some(&json!({"resumeCause": "interrupted"}))));
+        assert!(!resets_engine_turn_history(
+            "session-resumed",
+            Some(&json!({"resumeCause": "interrupted"}))
+        ));
         assert!(resets_engine_turn_history("session-resumed", None));
     }
 

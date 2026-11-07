@@ -54,7 +54,10 @@ pub fn clusters(text: &str) -> Vec<&str> {
 }
 
 pub fn measured(text: &str) -> Vec<(&str, usize)> {
-    clusters(text).into_iter().map(|cluster| (cluster, cluster_width(cluster))).collect()
+    clusters(text)
+        .into_iter()
+        .map(|cluster| (cluster, cluster_width(cluster)))
+        .collect()
 }
 
 pub fn string_width(text: &str) -> usize {

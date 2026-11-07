@@ -37,7 +37,11 @@ pub struct SessionInfo {
     pub moved: bool,
 }
 
-fn resolve_modified(activity_time: Option<i64>, header: &Value, mtime: DateTime<Utc>) -> DateTime<Utc> {
+fn resolve_modified(
+    activity_time: Option<i64>,
+    header: &Value,
+    mtime: DateTime<Utc>,
+) -> DateTime<Utc> {
     if let Some(activity) = activity_time.filter(|activity| *activity > 0) {
         return DateTime::<Utc>::from_timestamp_millis(activity).unwrap_or(mtime);
     }
@@ -66,10 +70,21 @@ fn build_session_info_with_text(file_path: &str, include_text: bool) -> Option<S
         .unwrap_or(cached.mtime);
     Some(SessionInfo {
         path: file_path.to_owned(),
-        id: header.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        cwd: header.get("cwd").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        id: header
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        cwd: header
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         name: cached.summary.name.clone(),
-        parent_session_path: header.get("parentSession").and_then(Value::as_str).map(str::to_owned),
+        parent_session_path: header
+            .get("parentSession")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         created,
         modified: resolve_modified(cached.summary.last_activity_time, header, cached.mtime),
         message_count: cached.summary.message_count,
@@ -78,7 +93,11 @@ fn build_session_info_with_text(file_path: &str, include_text: bool) -> Option<S
         } else {
             cached.summary.first_user_message.clone()
         },
-        all_messages_text: if include_text { cached.summary.all_messages_text.clone() } else { String::new() },
+        all_messages_text: if include_text {
+            cached.summary.all_messages_text.clone()
+        } else {
+            String::new()
+        },
         repository_identity: cached
             .summary
             .repository_identity
@@ -90,7 +109,10 @@ fn build_session_info_with_text(file_path: &str, include_text: bool) -> Option<S
 
 /// Builds picker rows for an explicit file list, dropping files that are not sessions. `on_loaded`
 /// runs once per file, in completion order.
-pub fn list_session_infos(files: &[String], on_loaded: impl FnMut(Option<&SessionInfo>)) -> Vec<SessionInfo> {
+pub fn list_session_infos(
+    files: &[String],
+    on_loaded: impl FnMut(Option<&SessionInfo>),
+) -> Vec<SessionInfo> {
     list_session_infos_with_text(files, true, on_loaded)
 }
 
@@ -111,7 +133,10 @@ fn list_session_infos_with_text(
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(file) = files.get(index) else { break };
-                    if sender.send((index, build_session_info_with_text(file, include_text))).is_err() {
+                    if sender
+                        .send((index, build_session_info_with_text(file, include_text)))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -140,7 +165,9 @@ pub fn list_session_files(
     let mut pending = Vec::new();
     list_session_infos(files, |info| {
         loaded += 1;
-        let Some(progress) = on_progress.as_deref_mut() else { return };
+        let Some(progress) = on_progress.as_deref_mut() else {
+            return;
+        };
         pending.extend(info.cloned());
         let done = progress_offset + loaded;
         let publish = done == 1 || done.is_multiple_of(interval.max(1)) || done == total;
@@ -157,13 +184,23 @@ pub fn list_sessions_from_dir(
 ) -> Vec<SessionInfo> {
     let files = session_files_newest_first(&[PathBuf::from(dir)]);
     let total = progress_total.unwrap_or(files.len());
-    list_session_files(&files, on_progress, progress_offset, total, CURRENT_SESSION_LIST_PUBLISH_INTERVAL)
+    list_session_files(
+        &files,
+        on_progress,
+        progress_offset,
+        total,
+        CURRENT_SESSION_LIST_PUBLISH_INTERVAL,
+    )
 }
 
 /// Same rows as [`list_sessions_from_dir`] with `all_messages_text` left empty, for callers that
 /// never search transcript text and should not copy it out of the summary cache.
 pub fn list_sessions_from_dir_without_text(dir: &str) -> Vec<SessionInfo> {
-    list_session_infos_with_text(&session_files_newest_first(&[PathBuf::from(dir)]), false, |_| {})
+    list_session_infos_with_text(
+        &session_files_newest_first(&[PathBuf::from(dir)]),
+        false,
+        |_| {},
+    )
 }
 
 /// Every .jsonl file directly inside `dirs`, newest modification time first.
@@ -249,7 +286,13 @@ mod tests {
         let lean = list_sessions_from_dir_without_text(&dir);
         assert_eq!(full[0].all_messages_text, "hi");
         assert_eq!(lean[0].all_messages_text, "");
-        assert_eq!(SessionInfo { all_messages_text: String::new(), ..full[0].clone() }, lean[0]);
+        assert_eq!(
+            SessionInfo {
+                all_messages_text: String::new(),
+                ..full[0].clone()
+            },
+            lean[0]
+        );
     }
 
     #[test]
@@ -258,10 +301,18 @@ mod tests {
         let nested = tmp.path().join("nested");
         std::fs::create_dir(&nested).expect("nested dir");
         let base = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        for (dir, name, age) in [(tmp.path(), "old.jsonl", 30), (nested.as_path(), "newest.jsonl", 0), (tmp.path(), "mid.jsonl", 10)] {
+        for (dir, name, age) in [
+            (tmp.path(), "old.jsonl", 30),
+            (nested.as_path(), "newest.jsonl", 0),
+            (tmp.path(), "mid.jsonl", 10),
+        ] {
             let path = write(dir, name, &session_content());
-            let file = std::fs::File::options().write(true).open(&path).expect("open");
-            file.set_modified(base - std::time::Duration::from_secs(age)).expect("set mtime");
+            let file = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open");
+            file.set_modified(base - std::time::Duration::from_secs(age))
+                .expect("set mtime");
         }
         write(tmp.path(), "ignored.txt", "x");
         let files = session_files_newest_first(&[tmp.path().to_path_buf(), nested]);

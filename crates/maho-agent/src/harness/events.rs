@@ -1651,15 +1651,28 @@ mod wire_tests {
     #[test]
     fn failed_compaction_serializes_the_operation_error() {
         // Given the original failure, including provider-specific details.
-        let event = HarnessEvent::new(HarnessEventPayload::CompactionEnd {
-            run_id: "op".into(), reason: "overflow".into(), ended_at: 9,
-            status: "failed".into(), entry_id: None,
-            error: Some(OperationError { code: "provider_failure".into(), message: "summary failed".into(), details: Some(json!({"requestId": "req"})) }),
-        }, Some("main".into()));
+        let event = HarnessEvent::new(
+            HarnessEventPayload::CompactionEnd {
+                run_id: "op".into(),
+                reason: "overflow".into(),
+                ended_at: 9,
+                status: "failed".into(),
+                entry_id: None,
+                error: Some(OperationError {
+                    code: "provider_failure".into(),
+                    message: "summary failed".into(),
+                    details: Some(json!({"requestId": "req"})),
+                }),
+            },
+            Some("main".into()),
+        );
         // When the event crosses the public JSON boundary.
         let value = event_to_value(&event);
         // Then the complete failure survives, without a success-only entry ID.
-        assert_eq!(value["error"], json!({"code": "provider_failure", "message": "summary failed", "details": {"requestId": "req"}}));
+        assert_eq!(
+            value["error"],
+            json!({"code": "provider_failure", "message": "summary failed", "details": {"requestId": "req"}})
+        );
         assert!(value.get("entryId").is_none());
     }
 
@@ -1667,10 +1680,17 @@ mod wire_tests {
     fn nonfailed_compaction_omits_error() {
         for status in ["completed", "declined", "aborted"] {
             // Given a nonfailed terminal event.
-            let event = HarnessEvent::new(HarnessEventPayload::CompactionEnd {
-                run_id: "op".into(), reason: "manual".into(), ended_at: 9,
-                status: status.into(), entry_id: (status == "completed").then(|| "entry".into()), error: None,
-            }, None);
+            let event = HarnessEvent::new(
+                HarnessEventPayload::CompactionEnd {
+                    run_id: "op".into(),
+                    reason: "manual".into(),
+                    ended_at: 9,
+                    status: status.into(),
+                    entry_id: (status == "completed").then(|| "entry".into()),
+                    error: None,
+                },
+                None,
+            );
             // When serialized, then no failure property is emitted.
             assert!(event_to_value(&event).get("error").is_none());
         }

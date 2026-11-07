@@ -12,19 +12,19 @@ use windows_sys::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MAPVK_VK_TO_VSC, MapVirtualKeyW, VkKeyScanW,
+    MapVirtualKeyW, VkKeyScanW, MAPVK_VK_TO_VSC,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, ChildWindowFromPointEx,
-    EnumChildWindows, GA_ROOT, GA_ROOTOWNER, GCL_STYLE, GUITHREADINFO, GetAncestor, GetClassLongW,
-    GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
-    IsChild, IsWindow, SetCursorPos, SetForegroundWindow,
+    ChildWindowFromPointEx, EnumChildWindows, GetAncestor, GetClassLongW, GetClassNameW,
+    GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, IsChild,
+    IsWindow, SetCursorPos, SetForegroundWindow, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE,
+    CWP_SKIPTRANSPARENT, GA_ROOT, GA_ROOTOWNER, GCL_STYLE, GUITHREADINFO,
 };
 
 use super::char_sink;
 use super::keys::Stroke;
 use crate::delivery;
-use crate::integrity::{IntegrityRid, process_elevated};
+use crate::integrity::{process_elevated, IntegrityRid};
 
 /// A validated top-level window. The HWND is an opaque value, never
 /// dereferenced; it is kept as an address so the input state stays `Send`.

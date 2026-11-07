@@ -52,7 +52,9 @@ impl ManualClock {
         let (sender, receiver) = oneshot::channel();
         self.state.lock().unwrap().schedules.push((ms, sender));
         async move {
-            receiver.await.expect("clock dropped before the timer was scheduled");
+            receiver
+                .await
+                .expect("clock dropped before the timer was scheduled");
         }
     }
     /// Upstream `advance(ms)`: fires every due timer in deadline order, then lands on `now + ms`.

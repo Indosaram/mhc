@@ -5,9 +5,10 @@ use serde_json::json;
 
 use crate::team::shutdown::{SenpiShutdownError, SenpiShutdownErrorCode};
 use crate::tools::team::shutdown::{
-    TeamApproveShutdownDetails, TeamApproveShutdownInput, TeamRejectShutdownDetails, TeamRejectShutdownInput,
-    TeamShutdownRequestDetails, TeamShutdownRequestInput, run_team_approve_shutdown, run_team_reject_shutdown,
-    run_team_shutdown_request, shutdown_error_to_service_error,
+    TeamApproveShutdownDetails, TeamApproveShutdownInput, TeamRejectShutdownDetails,
+    TeamRejectShutdownInput, TeamShutdownRequestDetails, TeamShutdownRequestInput,
+    run_team_approve_shutdown, run_team_reject_shutdown, run_team_shutdown_request,
+    shutdown_error_to_service_error,
 };
 use crate::tools::team::team_tool_fakes::{
     FakeTeamServiceOverrides, create_fake_team_service, fake_runtime_state, fake_runtime_state_with,
@@ -37,7 +38,9 @@ fn no_pending_error(member: &str) -> SenpiShutdownError {
 fn given_a_member_when_request_runs_then_it_reports_requested() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
         request_shutdown: Some(Box::new(|_, _| {
-            Ok(fake_runtime_state_with(json!({ "status": "shutdown_requested" })))
+            Ok(fake_runtime_state_with(
+                json!({ "status": "shutdown_requested" }),
+            ))
         })),
         ..Default::default()
     });
@@ -68,7 +71,9 @@ fn given_a_member_when_request_runs_then_it_reports_requested() {
 fn given_an_unknown_member_when_request_runs_then_it_reports_unknown_member() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
         request_shutdown: Some(Box::new(|_, _| {
-            Err(shutdown_error_to_service_error(&unknown_member_error("ghost")))
+            Err(shutdown_error_to_service_error(&unknown_member_error(
+                "ghost",
+            )))
         })),
         ..Default::default()
     });
@@ -161,7 +166,10 @@ fn given_a_pending_request_when_reject_runs_then_it_reports_rejected_with_the_re
     );
     let calls = service.calls();
     assert_eq!(calls[0].method, "rejectShutdown");
-    assert_eq!(calls[0].args, vec![json!("run-1"), json!("alpha"), json!("keep going")]);
+    assert_eq!(
+        calls[0].args,
+        vec![json!("run-1"), json!("alpha"), json!("keep going")]
+    );
     let text = format!("{:?}", result.content);
     assert!(text.contains("'alpha'"), "{text}");
     assert!(text.contains("run-1"), "{text}");

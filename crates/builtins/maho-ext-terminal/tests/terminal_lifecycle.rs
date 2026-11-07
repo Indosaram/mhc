@@ -310,7 +310,10 @@ async fn an_invalid_monitor_create_writes_no_terminal_state() {
         })
         .await
         .expect_err("refused before persistence");
-        assert!(!state_dir(dir.path()).exists(), "a refused create binds no persistence");
+        assert!(
+            !state_dir(dir.path()).exists(),
+            "a refused create binds no persistence"
+        );
     }
     shutdown(&api, &ctx, SessionReason::Quit).await;
     assert!(!state_dir(dir.path()).exists());
@@ -343,7 +346,11 @@ async fn the_first_persistent_monitor_creates_the_lease_and_the_manifest_togethe
         .filter(|name| !name.starts_with('.'))
         .collect::<Vec<_>>();
     files.sort();
-    let mut expected = vec![format!("{encoded}.json"), format!("{encoded}.lease"), "state".to_owned()];
+    let mut expected = vec![
+        format!("{encoded}.json"),
+        format!("{encoded}.lease"),
+        "state".to_owned(),
+    ];
     expected.sort();
     assert_eq!(files, expected);
     let saved: serde_json::Value = serde_json::from_slice(
@@ -697,7 +704,9 @@ async fn shutdown_publishes_an_empty_monitor_wake_source_after_a_live_monitor() 
         "wake_source_state",
         Arc::new(move |state| {
             if state["source"] == "terminal-monitors" {
-                sender.send(state["activeCount"].clone()).expect("monitor state");
+                sender
+                    .send(state["activeCount"].clone())
+                    .expect("monitor state");
             }
         }),
     );
@@ -725,7 +734,10 @@ async fn shutdown_publishes_an_empty_monitor_wake_source_after_a_live_monitor() 
         }
     })
     .await;
-    assert!(live.is_ok(), "the live monitor is published as one wake source");
+    assert!(
+        live.is_ok(),
+        "the live monitor is published as one wake source"
+    );
     shutdown(&api, &ctx, SessionReason::Quit).await;
     let mut last = None;
     while let Ok(count) = states.try_recv() {

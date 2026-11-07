@@ -27,12 +27,17 @@ fn find_named(ax: &mut dyn AxBackend, node: AxHandle, name: &str, depth: u8) -> 
 
 fn contains(window: &DesktopWindow, (x, y): (f64, f64)) -> bool {
     let (left, top) = (f64::from(window.x), f64::from(window.y));
-    (left..left + f64::from(window.width)).contains(&x) && (top..top + f64::from(window.height)).contains(&y)
+    (left..left + f64::from(window.width)).contains(&x)
+        && (top..top + f64::from(window.height)).contains(&y)
 }
 
 /// The owner and centre of the button named `button` in the window titled
 /// `title`, with the first listed window containing that centre.
-fn resolve(backend: &mut X11Backend, title: &str, button: &str) -> (AxOwner, (f64, f64), Option<String>) {
+fn resolve(
+    backend: &mut X11Backend,
+    title: &str,
+    button: &str,
+) -> (AxOwner, (f64, f64), Option<String>) {
     let windows = backend.windows().unwrap();
     let window = windows
         .iter()
@@ -40,9 +45,13 @@ fn resolve(backend: &mut X11Backend, title: &str, button: &str) -> (AxOwner, (f6
         .unwrap_or_else(|| panic!("precondition: '{title}' is listed in {windows:?}"));
     let ax = backend.ax().expect("precondition: AT-SPI bus");
     let root = ax.window_root(window).unwrap();
-    let element = find_named(ax, root, button, 0).unwrap_or_else(|| panic!("'{button}' under '{title}'"));
+    let element =
+        find_named(ax, root, button, 0).unwrap_or_else(|| panic!("'{button}' under '{title}'"));
     let bounds = ax.props(&element).unwrap().bounds.expect("button bounds");
-    let centre = (bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0);
+    let centre = (
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
     let owner = ax.owner(&element, &windows).unwrap();
     let geometric = windows
         .iter()
@@ -62,7 +71,10 @@ fn resolve(backend: &mut X11Backend, title: &str, button: &str) -> (AxOwner, (f6
 #[test]
 #[ignore = "live: needs Xvfb + xfwm4 + AT-SPI + the GTK owner fixture"]
 fn ax_click_on_an_overlapped_windows_element_lands_in_that_window() {
-    let (title, button) = (fixture_env("SENPI_AX_OWNER_TITLE"), fixture_env("SENPI_AX_OWNER_BUTTON"));
+    let (title, button) = (
+        fixture_env("SENPI_AX_OWNER_TITLE"),
+        fixture_env("SENPI_AX_OWNER_BUTTON"),
+    );
     let mut backend = X11Backend::new(DisplaySelector::All).unwrap();
     let (owner, centre, _) = resolve(&mut backend, &title, &button);
     let expected = backend
@@ -93,7 +105,10 @@ fn ax_click_on_an_overlapped_windows_element_lands_in_that_window() {
 #[test]
 #[ignore = "live: needs Xvfb + xfwm4 + AT-SPI + the GTK same-title fixture"]
 fn ax_owner_of_indistinguishable_same_process_windows_is_unknown() {
-    let (title, button) = (fixture_env("SENPI_AX_OWNER_TITLE"), fixture_env("SENPI_AX_OWNER_BUTTON"));
+    let (title, button) = (
+        fixture_env("SENPI_AX_OWNER_TITLE"),
+        fixture_env("SENPI_AX_OWNER_BUTTON"),
+    );
     let mut backend = X11Backend::new(DisplaySelector::All).unwrap();
     let (owner, _, _) = resolve(&mut backend, &title, &button);
     assert_eq!(owner, AxOwner::Unknown);

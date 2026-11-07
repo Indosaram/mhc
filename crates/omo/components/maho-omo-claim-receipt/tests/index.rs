@@ -1,12 +1,10 @@
 //! Port of `claim-receipt/index.test.ts` (the JS sidecar loader cases are out of scope: the native
 //! component links the evaluator directly, so there is no import that can fail).
 
-use crate::support::{
-    answer, draft_types, edit_result, passing_test, user_input, Harness,
-};
+use crate::support::{Harness, answer, draft_types, edit_result, passing_test, user_input};
 use maho_ext_api::InputSource;
 use maho_omo_claim_receipt::verdict::{GATE_FLAGS_TAG, NUDGE_MESSAGE_TYPE, VERDICT_ENTRY_TYPE};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn unsupported() -> Vec<Value> {
     let mut entries = vec![user_input("fix")];
@@ -42,22 +40,46 @@ async fn a_final_answer_with_an_unsupported_claim_appends_a_verdict_record_and_o
         entries[1]["data"]["verdicts"][0]["status"],
         json!("unsupported")
     );
-    assert_eq!(entries[1]["data"]["verdicts"][0]["reason"], json!("no-check"));
+    assert_eq!(
+        entries[1]["data"]["verdicts"][0]["reason"],
+        json!("no-check")
+    );
 }
 
 #[tokio::test]
 async fn repeated_answers_in_one_human_input_epoch_nudge_once_and_rearm_only_on_user_input() {
     let harness = Harness::new(&[], true);
     harness.input(InputSource::Interactive).await;
-    assert_eq!(harness.finish(unsupported()).await.map(|entries| entries.len()), Some(3));
     assert_eq!(
-        harness.finish(unsupported()).await.map(|entries| draft_types(&entries)),
+        harness
+            .finish(unsupported())
+            .await
+            .map(|entries| entries.len()),
+        Some(3)
+    );
+    assert_eq!(
+        harness
+            .finish(unsupported())
+            .await
+            .map(|entries| draft_types(&entries)),
         Some(vec!["other".to_owned(), VERDICT_ENTRY_TYPE.to_owned()])
     );
     harness.input(InputSource::Extension).await;
-    assert_eq!(harness.finish(unsupported()).await.map(|entries| entries.len()), Some(2));
+    assert_eq!(
+        harness
+            .finish(unsupported())
+            .await
+            .map(|entries| entries.len()),
+        Some(2)
+    );
     harness.input(InputSource::Rpc).await;
-    assert_eq!(harness.finish(unsupported()).await.map(|entries| entries.len()), Some(3));
+    assert_eq!(
+        harness
+            .finish(unsupported())
+            .await
+            .map(|entries| entries.len()),
+        Some(3)
+    );
 }
 
 #[tokio::test]
@@ -65,10 +87,7 @@ async fn a_supported_answer_records_a_supported_verdict_without_a_nudge() {
     let harness = Harness::new(&[], true);
     harness.input(InputSource::Interactive).await;
     let entries = harness.finish(supported()).await.expect("drafts");
-    assert_eq!(
-        draft_types(&entries),
-        vec!["other", VERDICT_ENTRY_TYPE]
-    );
+    assert_eq!(draft_types(&entries), vec!["other", VERDICT_ENTRY_TYPE]);
     assert_eq!(entries[1]["data"]["flagged"], json!(false));
     assert_eq!(entries[1]["data"]["nudged"], json!(false));
 }
@@ -77,7 +96,10 @@ async fn a_supported_answer_records_a_supported_verdict_without_a_nudge() {
 async fn a_claim_free_answer_adds_nothing() {
     let harness = Harness::new(&[], true);
     harness.input(InputSource::Interactive).await;
-    let entries = vec![user_input("hi"), answer("Here is the summary you asked for.")];
+    let entries = vec![
+        user_input("hi"),
+        answer("Here is the summary you asked for."),
+    ];
     assert!(harness.finish(entries).await.is_none());
 }
 
@@ -96,14 +118,27 @@ async fn each_answer_records_the_epoch_it_ended_in() {
 #[tokio::test]
 async fn aborted_retried_and_non_completed_runs_and_memory_worker_children_stay_out() {
     let harness = Harness::new(&[], true);
-    assert!(harness.finish_run(unsupported(), Some(true), None).await.entries.is_none());
-    assert!(harness.finish_run(unsupported(), None, Some(true)).await.entries.is_none());
+    assert!(
+        harness
+            .finish_run(unsupported(), Some(true), None)
+            .await
+            .entries
+            .is_none()
+    );
+    assert!(
+        harness
+            .finish_run(unsupported(), None, Some(true))
+            .await
+            .entries
+            .is_none()
+    );
     let child = Harness::new(&[("SENPI_MEMORY_FACTS", "1")], true);
     assert!(child.finish(unsupported()).await.is_none());
 }
 
 #[tokio::test]
-async fn the_default_shadow_mode_records_the_flag_but_shows_no_nudge_and_leaves_gate_prompts_alone() {
+async fn the_default_shadow_mode_records_the_flag_but_shows_no_nudge_and_leaves_gate_prompts_alone()
+{
     let harness = Harness::new(&[], false);
     harness.input(InputSource::Interactive).await;
     let entries = harness.finish(unsupported()).await.expect("drafts");
@@ -167,11 +202,17 @@ async fn a_gate_reviewer_spawn_carries_the_flags_once_and_other_spawns_are_untou
 async fn no_claims_skips_branch_snapshot() {
     let harness = Harness::new(&[], true);
     harness.input(InputSource::Interactive).await;
-    let entries = vec![user_input("hi"), answer("Here is the plain summary you asked for.")];
+    let entries = vec![
+        user_input("hi"),
+        answer("Here is the plain summary you asked for."),
+    ];
     let result = harness.finish(entries).await;
     assert!(result.is_none());
     assert_eq!(
-        harness.branch.branch_calls.load(std::sync::atomic::Ordering::SeqCst),
+        harness
+            .branch
+            .branch_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
         0
     );
 }

@@ -83,8 +83,20 @@ struct HandleRoot {
 }
 
 const HANDLE_ROOTS: &[(&str, HandleRoot)] = &[
-    ("window", HandleRoot { label: "window", methods: WINDOW_METHODS }),
-    ("ref", HandleRoot { label: "element", methods: ELEMENT_METHODS }),
+    (
+        "window",
+        HandleRoot {
+            label: "window",
+            methods: WINDOW_METHODS,
+        },
+    ),
+    (
+        "ref",
+        HandleRoot {
+            label: "element",
+            methods: ELEMENT_METHODS,
+        },
+    ),
 ];
 
 /// Why a call chain was refused before classification.
@@ -126,14 +138,23 @@ impl ComputerCallError {
 }
 
 fn policy_of(methods: &[(&str, ComputerCallPolicy)], method: &str) -> Option<ComputerCallPolicy> {
-    methods.iter().find(|(name, _)| *name == method).map(|(_, policy)| *policy)
+    methods
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map(|(_, policy)| *policy)
 }
 
 fn describe(methods: &[(&str, ComputerCallPolicy)]) -> String {
-    methods.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+    methods
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-pub fn classify_computer_call(chain: &[ComputerCallStep]) -> Result<ComputerCallPolicy, ComputerCallError> {
+pub fn classify_computer_call(
+    chain: &[ComputerCallStep],
+) -> Result<ComputerCallPolicy, ComputerCallError> {
     if chain.is_empty() {
         return Err(ComputerCallError::new(
             ComputerCallErrorReason::Empty,
@@ -167,7 +188,10 @@ pub fn classify_computer_call(chain: &[ComputerCallStep]) -> Result<ComputerCall
         None => return Ok(root_policy),
     };
 
-    let handle = HANDLE_ROOTS.iter().find(|(name, _)| *name == root.method.as_str()).map(|(_, h)| h);
+    let handle = HANDLE_ROOTS
+        .iter()
+        .find(|(name, _)| *name == root.method.as_str())
+        .map(|(_, h)| h);
     let handle = match handle {
         Some(h) => h,
         None => {

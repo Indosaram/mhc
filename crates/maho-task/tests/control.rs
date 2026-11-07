@@ -134,7 +134,10 @@ impl Fixture {
 
     async fn settle(&self, id: &str) -> TaskRecord {
         let record = self.manager.wait(id, Some(LIMIT)).await.expect("record");
-        assert!(!record.status.is_active(), "{id} did not settle: {record:?}");
+        assert!(
+            !record.status.is_active(),
+            "{id} did not settle: {record:?}"
+        );
         record
     }
 
@@ -191,17 +194,27 @@ async fn send_to_a_queued_task_queues_in_order_for_the_first_run() {
     let blocker = fx.start("Blocker", "hold the slot", "s1");
     assert_eq!(fx.next_start().await, "hold the slot");
     let queued = fx.start("Second", "second task", "s1");
-    assert_eq!(fx.manager.get(&queued.id).expect("record").status, TaskStatus::Queued);
+    assert_eq!(
+        fx.manager.get(&queued.id).expect("record").status,
+        TaskStatus::Queued
+    );
 
     let first = control::send(&fx.manager, &caller("s1"), &queued.id, "message one", false);
     let second = control::send(&fx.manager, &caller("s1"), "Second", "message two", false);
-    assert_eq!((first.kind, second.kind), ("queued", "queued"), "{first:?} {second:?}");
+    assert_eq!(
+        (first.kind, second.kind),
+        ("queued", "queued"),
+        "{first:?} {second:?}"
+    );
     assert_eq!(first.details["position"], json!(1));
     assert_eq!(second.details["position"], json!(2));
 
     fx.runner.release();
     fx.settle(&blocker.id).await;
-    assert_eq!(fx.next_start().await, "second task\n\nmessage one\n\nmessage two");
+    assert_eq!(
+        fx.next_start().await,
+        "second task\n\nmessage one\n\nmessage two"
+    );
     let record = fx.settle(&queued.id).await;
     assert_eq!(record.status, TaskStatus::Completed);
     assert_eq!(record.runs, 1, "the messages ride the first run");
@@ -215,9 +228,17 @@ async fn send_to_a_running_child_steers_through_a_live_endpoint() {
     let store = fx.gateway(true);
     let record = fx.start("Worker", "hold on", "parent-1");
     fx.next_start().await;
-    store.register(&endpoint(&record.session_id)).expect("endpoint");
+    store
+        .register(&endpoint(&record.session_id))
+        .expect("endpoint");
 
-    let outcome = control::send(&fx.manager, &caller("parent-1"), &record.id, "look at b.rs", false);
+    let outcome = control::send(
+        &fx.manager,
+        &caller("parent-1"),
+        &record.id,
+        "look at b.rs",
+        false,
+    );
     assert_eq!(outcome.kind, "steered", "{outcome:?}");
     let pending = store.pending(&record.session_id);
     assert_eq!(pending.len(), 1);
@@ -235,14 +256,22 @@ async fn send_to_a_running_child_steers_through_a_live_endpoint() {
     assert_eq!(fx.next_start().await, "look at b.rs");
     let settled = fx.settle(&record.id).await;
     assert_eq!(settled.runs, 2);
-    assert!(store.pending(&record.session_id).is_empty(), "the undrained steer file is removed");
+    assert!(
+        store.pending(&record.session_id).is_empty(),
+        "the undrained steer file is removed"
+    );
     let deliveries = fx
         .runner
         .prompts()
         .iter()
         .filter(|prompt| prompt.contains("look at b.rs"))
         .count();
-    assert_eq!(deliveries, 1, "delivered exactly once: {:?}", fx.runner.prompts());
+    assert_eq!(
+        deliveries,
+        1,
+        "delivered exactly once: {:?}",
+        fx.runner.prompts()
+    );
 }
 
 /// Acceptance test 2: no endpoint, or the gateway disabled, queues a follow-up run.
@@ -255,9 +284,17 @@ async fn send_without_a_live_channel_runs_as_a_follow_up() {
         fx.next_start().await;
         if !enabled {
             // Even a live endpoint is not used while the gateway is off.
-            store.register(&endpoint(&record.session_id)).expect("endpoint");
+            store
+                .register(&endpoint(&record.session_id))
+                .expect("endpoint");
         }
-        let outcome = control::send(&fx.manager, &caller("s1"), &record.id, "then add docs", false);
+        let outcome = control::send(
+            &fx.manager,
+            &caller("s1"),
+            &record.id,
+            "then add docs",
+            false,
+        );
         assert_eq!(outcome.kind, "queued", "enabled={enabled}: {outcome:?}");
         assert_eq!(outcome.details["position"], json!(1));
         assert!(store.pending(&record.session_id).is_empty());
@@ -265,7 +302,10 @@ async fn send_without_a_live_channel_runs_as_a_follow_up() {
         assert_eq!(fx.next_start().await, "then add docs");
         let settled = fx.settle(&record.id).await;
         assert_eq!((settled.status, settled.runs), (TaskStatus::Completed, 2));
-        assert_eq!(fx.manager.state().read_output(&record.id), "echo:then add docs");
+        assert_eq!(
+            fx.manager.state().read_output(&record.id),
+            "echo:then add docs"
+        );
     }
 }
 
@@ -273,17 +313,27 @@ async fn send_without_a_live_channel_runs_as_a_follow_up() {
 /// drains its inbox; a plain `-p` run does not receive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delegated_runs_register_an_endpoint_and_plain_print_runs_do_not() {
-    assert!(control::delegated_receiver(ExtensionMode::Print, Some("Worker")));
-    assert!(control::delegated_receiver(ExtensionMode::Json, Some("Worker")));
+    assert!(control::delegated_receiver(
+        ExtensionMode::Print,
+        Some("Worker")
+    ));
+    assert!(control::delegated_receiver(
+        ExtensionMode::Json,
+        Some("Worker")
+    ));
     assert!(!control::delegated_receiver(ExtensionMode::Print, None));
-    assert!(!control::delegated_receiver(ExtensionMode::Print, Some("  ")));
+    assert!(!control::delegated_receiver(
+        ExtensionMode::Print,
+        Some("  ")
+    ));
     assert!(!maho_gateway::receives_in(ExtensionMode::Print));
 
     let dir = tempfile::tempdir().expect("tmp");
     let store = Store::new(dir.path().join("gateway"));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let deliver: control::DeliverFn = Arc::new(move |message, options| {
-        tx.send((message, options)).map_err(|error| error.to_string())
+        tx.send((message, options))
+            .map_err(|error| error.to_string())
     });
     let inbox = DelegatedInbox::start(
         store.clone(),
@@ -382,7 +432,13 @@ async fn other_sessions_need_all_sessions() {
     let nested = fx.manager.start(child_owned).expect("start");
     fx.next_start().await;
     fx.settle(&nested.id).await;
-    let from_root = control::send(&fx.manager, &caller("root-session"), &nested.id, "more", false);
+    let from_root = control::send(
+        &fx.manager,
+        &caller("root-session"),
+        &nested.id,
+        "more",
+        false,
+    );
     assert_eq!(from_root.kind, "revived", "{from_root:?}");
     fx.next_start().await;
     fx.settle(&nested.id).await;
@@ -428,7 +484,8 @@ async fn cancel_running_then_noop_cases() {
         assert_eq!(outcome.kind, "queued");
     }
 
-    let outcome = control::cancel(&fx.manager, &caller("s1"), "Long", Some("no longer needed")).await;
+    let outcome =
+        control::cancel(&fx.manager, &caller("s1"), "Long", Some("no longer needed")).await;
     assert_eq!(outcome.kind, "cancelled", "{outcome:?}");
     assert_eq!(outcome.details["dropped_messages"], json!(2));
     assert_eq!(outcome.details["previous"], json!("running"));
@@ -450,7 +507,10 @@ async fn cancel_running_then_noop_cases() {
     let noop = control::cancel(&fx.manager, &caller("s1"), &done.id, None).await;
     assert_eq!(noop.kind, "noop");
     assert!(noop.text.contains("completed"));
-    assert_eq!(fx.manager.get(&done.id).expect("record").status, TaskStatus::Completed);
+    assert_eq!(
+        fx.manager.get(&done.id).expect("record").status,
+        TaskStatus::Completed
+    );
 
     let missing = control::cancel(&fx.manager, &caller("s1"), "Nope", None).await;
     assert_eq!(missing.kind, "not_found");
@@ -466,7 +526,10 @@ async fn cancel_queued_task_never_starts() {
     let outcome = control::cancel(&fx.manager, &caller("s1"), &queued.id, None).await;
     assert_eq!(outcome.kind, "cancelled");
     assert_eq!(outcome.details["previous"], json!("queued"));
-    assert_eq!(fx.manager.get(&queued.id).expect("record").status, TaskStatus::Cancelled);
+    assert_eq!(
+        fx.manager.get(&queued.id).expect("record").status,
+        TaskStatus::Cancelled
+    );
     fx.runner.release();
     fx.settle(&blocker.id).await;
     assert!(!fx.runner.prompts().iter().any(|p| p == "never runs"));
@@ -510,7 +573,10 @@ async fn cancel_interrupted_signals_nothing() {
     assert!(stored.pending_messages.is_empty());
     #[cfg(unix)]
     {
-        assert!(bystander.try_wait().expect("status").is_none(), "nothing was signalled");
+        assert!(
+            bystander.try_wait().expect("status").is_none(),
+            "nothing was signalled"
+        );
         bystander.kill().expect("kill");
         let _ = bystander.wait();
     }
@@ -523,7 +589,12 @@ async fn cancel_foreign_running_task_signals_its_owner() {
     let fx = Fixture::new(0);
     // The child's command line carries `--session-id <session>` (task.md Delta D8).
     let mut child = tokio::process::Command::new("sh")
-        .args(["-c", "while :; do sleep 1; done", "--session-id", "Foreign-session"])
+        .args([
+            "-c",
+            "while :; do sleep 1; done",
+            "--session-id",
+            "Foreign-session",
+        ])
         .spawn()
         .expect("sh");
     let pid = child.id().expect("pid");
@@ -559,7 +630,11 @@ impl KillUi for ScriptUi {
     fn has_ui(&self) -> bool {
         self.interactive
     }
-    fn select<'a>(&'a self, _title: &'a str, options: &'a [String]) -> BoxFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _title: &'a str,
+        options: &'a [String],
+    ) -> BoxFuture<'a, Option<String>> {
         lock(&self.offered).push(options.to_vec());
         let chosen = self.choose.and_then(|index| options.get(index).cloned());
         Box::pin(async move { chosen })
@@ -658,7 +733,9 @@ async fn task_kill_dialogs() {
         ..ScriptUi::default()
     };
     assert_eq!(
-        control::task_kill(&fx.manager, &me, &accept).await.as_deref(),
+        control::task_kill(&fx.manager, &me, &accept)
+            .await
+            .as_deref(),
         Some("Orphan")
     );
     assert!(lock(&accept.confirms)[0].contains("Orphan"));
@@ -679,7 +756,10 @@ async fn task_kill_dialogs() {
     assert_eq!(control::task_kill(&fx.manager, &me, &headless).await, None);
     assert!(lock(&headless.offered).is_empty());
     let text = lock(&headless.notices)[0].0.clone();
-    assert!(text.contains("task_cancel") && text.contains("Job-2"), "{text}");
+    assert!(
+        text.contains("task_cancel") && text.contains("Job-2"),
+        "{text}"
+    );
 
     control::cancel(&fx.manager, &me, &running.id, None).await;
     control::cancel(&fx.manager, &me, &queued.id, None).await;

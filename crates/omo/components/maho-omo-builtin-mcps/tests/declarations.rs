@@ -2,21 +2,27 @@ use std::collections::BTreeMap;
 
 use maho_ext_api::{McpAuth, McpExposure, McpLifecycle, McpTransport};
 use maho_omo_builtin_mcps::{
-    CONTEXT7_API_KEY_ENV, CONTEXT7_SERVER_NAME, CONTEXT7_URL, DEFERRED_EXPOSURE, GREP_APP_SERVER_NAME,
-    GREP_APP_URL, builtin_mcp_declarations, create_context7_declaration, grep_app_declaration,
-    has_context7_api_key,
+    CONTEXT7_API_KEY_ENV, CONTEXT7_SERVER_NAME, CONTEXT7_URL, DEFERRED_EXPOSURE,
+    GREP_APP_SERVER_NAME, GREP_APP_URL, builtin_mcp_declarations, create_context7_declaration,
+    grep_app_declaration, has_context7_api_key,
 };
 
 fn env(api_key: Option<&str>) -> BTreeMap<String, String> {
-    api_key.map(|value| BTreeMap::from([(CONTEXT7_API_KEY_ENV.to_owned(), value.to_owned())])).unwrap_or_default()
+    api_key
+        .map(|value| BTreeMap::from([(CONTEXT7_API_KEY_ENV.to_owned(), value.to_owned())]))
+        .unwrap_or_default()
 }
 
 fn wire_json(declaration: &maho_ext_api::McpServerDeclaration) -> String {
-    serde_json::to_string(&maho_ext_mcp::config_schema::ServerConfigWire::from(declaration)).expect("wire json")
+    serde_json::to_string(&maho_ext_mcp::config_schema::ServerConfigWire::from(
+        declaration,
+    ))
+    .expect("wire json")
 }
 
 #[test]
-fn given_no_context7_api_key_when_registered_then_declares_the_anonymous_lazy_search_context7_and_grep_app_http_servers() {
+fn given_no_context7_api_key_when_registered_then_declares_the_anonymous_lazy_search_context7_and_grep_app_http_servers()
+ {
     let declarations = builtin_mcp_declarations(&env(None));
 
     assert_eq!(declarations.len(), 2);
@@ -45,20 +51,38 @@ fn given_no_context7_api_key_when_registered_then_declares_the_anonymous_lazy_se
 }
 
 #[test]
-fn given_a_real_context7_api_key_when_registered_then_context7_authenticates_through_bearer_token_env_without_inlining_the_token() {
+fn given_a_real_context7_api_key_when_registered_then_context7_authenticates_through_bearer_token_env_without_inlining_the_token()
+ {
     let key = "ctx7sk-live-secret";
     let declaration = create_context7_declaration(&env(Some(key)));
 
     assert_eq!(declaration.auth, Some(McpAuth::Bearer));
-    assert_eq!(declaration.bearer_token_env.as_deref(), Some(CONTEXT7_API_KEY_ENV));
+    assert_eq!(
+        declaration.bearer_token_env.as_deref(),
+        Some(CONTEXT7_API_KEY_ENV)
+    );
     assert_eq!(declaration.headers, None);
-    assert!(!wire_json(&declaration).contains(key), "the declaration never carries the literal token");
-    assert!(!format!("{declaration:?}").contains(key), "nor does its debug form");
+    assert!(
+        !wire_json(&declaration).contains(key),
+        "the declaration never carries the literal token"
+    );
+    assert!(
+        !format!("{declaration:?}").contains(key),
+        "nor does its debug form"
+    );
 }
 
 #[test]
 fn given_a_placeholder_context7_api_key_when_registered_then_context7_stays_anonymous() {
-    for placeholder in ["", "   ", "<YOUR_API_KEY>", "your-api-key", "\"Your API Key\"", "your_api_key", "YOUR-API-KEY"] {
+    for placeholder in [
+        "",
+        "   ",
+        "<YOUR_API_KEY>",
+        "your-api-key",
+        "\"Your API Key\"",
+        "your_api_key",
+        "YOUR-API-KEY",
+    ] {
         assert!(!has_context7_api_key(Some(placeholder)), "{placeholder:?}");
         let declaration = create_context7_declaration(&env(Some(placeholder)));
         assert_eq!(declaration.auth, Some(McpAuth::Disabled), "{placeholder:?}");
@@ -80,7 +104,11 @@ fn given_an_absent_or_real_context7_api_key_when_classified_then_only_a_real_val
 #[test]
 fn given_a_context7_declaration_when_serialized_for_a_config_dump_then_no_secret_value_appears() {
     let declarations = builtin_mcp_declarations(&env(Some("ctx7sk-live-secret")));
-    let dumped = declarations.iter().map(|(_, declaration)| wire_json(declaration)).collect::<Vec<_>>().join("\n");
+    let dumped = declarations
+        .iter()
+        .map(|(_, declaration)| wire_json(declaration))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     assert!(dumped.contains("bearerTokenEnv"));
     assert!(dumped.contains(CONTEXT7_API_KEY_ENV));

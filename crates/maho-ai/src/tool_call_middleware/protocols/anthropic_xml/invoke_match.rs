@@ -1,6 +1,8 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/protocols/anthropic-xml/invoke-match.ts.
 
-use super::invoke_tag_scanner::{find_invoke_open_tag, scan_invoke_block, InvokeBlockMatch, InvokeOpenTagMatch};
+use super::invoke_tag_scanner::{
+    InvokeBlockMatch, InvokeOpenTagMatch, find_invoke_open_tag, scan_invoke_block,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvokeMatch {
@@ -8,7 +10,11 @@ pub struct InvokeMatch {
     pub block: Option<InvokeBlockMatch>,
 }
 
-pub fn find_next_invoke_match(text: &str, from_index: usize, matches_tool_name: impl Fn(&str) -> bool) -> Option<InvokeMatch> {
+pub fn find_next_invoke_match(
+    text: &str,
+    from_index: usize,
+    matches_tool_name: impl Fn(&str) -> bool,
+) -> Option<InvokeMatch> {
     let mut cursor = from_index;
     while cursor < text.len() {
         let opening_tag = find_invoke_open_tag(text, cursor)?;

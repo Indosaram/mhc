@@ -1,246 +1,797 @@
 use crate::*;
-use maho_ext_api::*;
 use maho_agent::types::AgentMessage;
+use maho_ext_api::*;
 use serde_json::json;
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc, Mutex};
 
-pub type WarmFuture = std::pin::Pin<Box<dyn std::future::Future<Output=Result<maho_ai::api::warm_prompt_cache::WarmPromptCacheResult,ExtensionFailure>>+Send>>;
-pub type WarmRequest = Arc<dyn Fn(Model,Vec<AgentMessage>,ExtensionContext,Arc<ExtensionApi>)->WarmFuture+Send+Sync>;
+pub type WarmFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    maho_ai::api::warm_prompt_cache::WarmPromptCacheResult,
+                    ExtensionFailure,
+                >,
+            > + Send,
+    >,
+>;
+pub type WarmRequest = Arc<
+    dyn Fn(Model, Vec<AgentMessage>, ExtensionContext, Arc<ExtensionApi>) -> WarmFuture
+        + Send
+        + Sync,
+>;
 /// `warm` is the idle keep-alive ping; `prewarm` is the session prewarm's `warmPromptCache` (senpi
 /// passes the same function to both, here the ping also reads the session's messages and tools).
-pub struct CacheKeepalive { pub warm: WarmRequest, pub prewarm: crate::session_prewarm::WarmPromptCacheFn }
-fn warm_prompt_cache_default(model:Model,context:maho_ai::types::Context,options:maho_ai::types::SimpleStreamOptions)->maho_ai::types::BoxFuture<'static,Result<maho_ai::api::warm_prompt_cache::WarmPromptCacheResult,String>>{
-    Box::pin(async move{maho_ai::api::warm_prompt_cache::warm_prompt_cache_simple(&model,&context,options,&|model,context,options|Ok(serde_json::Value::Object(maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(model,context,Some(options))))).await})
+pub struct CacheKeepalive {
+    pub warm: WarmRequest,
+    pub prewarm: crate::session_prewarm::WarmPromptCacheFn,
 }
-impl Default for CacheKeepalive{
-    fn default()->Self{Self{prewarm:Arc::new(warm_prompt_cache_default),warm:Arc::new(|model,messages,ctx,sender|Box::pin(async move{
-        let prepared=ctx.prepare_provider_request(messages).await?;
-        let active=sender.runtime.session_actions()?.get_active_tools()?;
-        // senpi: the ping declares the next turn's prefix tools when the host can build that prefix.
-        // sizes_only: the ping resolves its own auth below; only the prefix tools are read here.
-        let prefix=ctx.get_prompt_cache_prefix_request(PromptCachePrefixRequestOptions{sizes_only:true,signal:None}).await?;
-        let tools=match prefix{
-            PromptCachePrefixResult::Ready(request)=>request.context.tools.unwrap_or_default(),
-            PromptCachePrefixResult::Skipped(_)=>sender.get_all_tools()?.into_iter().filter(|tool|active.contains(&tool.name)).map(|tool|maho_ai::types::Tool{name:tool.name,description:tool.description,parameters:tool.parameters,output_schema: None, freeform:None,constrained_sampling:None}).collect::<Vec<_>>(),
-        };
-        let raw=prepared.messages.iter().map(|message|serde_json::to_value(message).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>()?;
-        let messages=maho_core::messages::convert_to_llm(&maho_core::messages::filter_context_excluded_messages(raw)).into_iter().map(|message|serde_json::from_value(message).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>()?;
-        let context=maho_ai::types::Context{system_prompt:Some(ctx.get_system_prompt()),messages,tools:(!tools.is_empty()).then_some(tools),active_tool_names:Some(active)};
-        let auth=ctx.model_registry.get_api_key_and_headers(&model).await?;
-        let mut options=maho_ai::types::StreamOptions::default();
-        options.request.api_key=auth.auth.api_key;options.request.headers=Some((prepared.transform_headers)(auth.auth.headers.unwrap_or_default()).await?);options.request.env=auth.env;options.request.affinity_session_id=Some(ctx.session_manager.session_id().into());options.cache_retention=model.cache_retention;
-        options.session_id=Some(ctx.session_manager.session_id().into());
-        let transform=prepared.transform_payload;
-        options.request.async_on_payload=Some(Arc::new(move|payload,_,_|{let transform=transform.clone();Box::pin(async move{transform(payload).await.map(Some).map_err(|error|error.to_string())})}));
-        let options=maho_ai::types::SimpleStreamOptions{
-            stream:options,
-            reasoning:ctx.current_thinking_level()?,
-            service_tier:ctx.current_effective_service_tier()?.map(|tier|match tier{
-                ServiceTier::Auto=>maho_ai::types::ServiceTierPreference::Auto,
-                ServiceTier::Flex=>maho_ai::types::ServiceTierPreference::Flex,
-                ServiceTier::Priority=>maho_ai::types::ServiceTierPreference::Priority,
-                ServiceTier::Ultrafast=>maho_ai::types::ServiceTierPreference::Ultrafast,
+fn warm_prompt_cache_default(
+    model: Model,
+    context: maho_ai::types::Context,
+    options: maho_ai::types::SimpleStreamOptions,
+) -> maho_ai::types::BoxFuture<
+    'static,
+    Result<maho_ai::api::warm_prompt_cache::WarmPromptCacheResult, String>,
+> {
+    Box::pin(async move {
+        maho_ai::api::warm_prompt_cache::warm_prompt_cache_simple(
+            &model,
+            &context,
+            options,
+            &|model, context, options| {
+                Ok(serde_json::Value::Object(
+                    maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(
+                        model,
+                        context,
+                        Some(options),
+                    ),
+                ))
+            },
+        )
+        .await
+    })
+}
+impl Default for CacheKeepalive {
+    fn default() -> Self {
+        Self {
+            prewarm: Arc::new(warm_prompt_cache_default),
+            warm: Arc::new(|model, messages, ctx, sender| {
+                Box::pin(async move {
+                    let prepared = ctx.prepare_provider_request(messages).await?;
+                    let active = sender.runtime.session_actions()?.get_active_tools()?;
+                    // senpi: the ping declares the next turn's prefix tools when the host can build that prefix.
+                    // sizes_only: the ping resolves its own auth below; only the prefix tools are read here.
+                    let prefix = ctx
+                        .get_prompt_cache_prefix_request(PromptCachePrefixRequestOptions {
+                            sizes_only: true,
+                            signal: None,
+                        })
+                        .await?;
+                    let tools = match prefix {
+                        PromptCachePrefixResult::Ready(request) => {
+                            request.context.tools.unwrap_or_default()
+                        }
+                        PromptCachePrefixResult::Skipped(_) => sender
+                            .get_all_tools()?
+                            .into_iter()
+                            .filter(|tool| active.contains(&tool.name))
+                            .map(|tool| maho_ai::types::Tool {
+                                name: tool.name,
+                                description: tool.description,
+                                parameters: tool.parameters,
+                                output_schema: None,
+                                freeform: None,
+                                constrained_sampling: None,
+                            })
+                            .collect::<Vec<_>>(),
+                    };
+                    let raw = prepared
+                        .messages
+                        .iter()
+                        .map(|message| {
+                            serde_json::to_value(message)
+                                .map_err(|error| ExtensionFailure::new(error.to_string()))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let messages = maho_core::messages::convert_to_llm(
+                        &maho_core::messages::filter_context_excluded_messages(raw),
+                    )
+                    .into_iter()
+                    .map(|message| {
+                        serde_json::from_value(message)
+                            .map_err(|error| ExtensionFailure::new(error.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                    let context = maho_ai::types::Context {
+                        system_prompt: Some(ctx.get_system_prompt()),
+                        messages,
+                        tools: (!tools.is_empty()).then_some(tools),
+                        active_tool_names: Some(active),
+                    };
+                    let auth = ctx.model_registry.get_api_key_and_headers(&model).await?;
+                    let mut options = maho_ai::types::StreamOptions::default();
+                    options.request.api_key = auth.auth.api_key;
+                    options.request.headers = Some(
+                        (prepared.transform_headers)(auth.auth.headers.unwrap_or_default()).await?,
+                    );
+                    options.request.env = auth.env;
+                    options.request.affinity_session_id =
+                        Some(ctx.session_manager.session_id().into());
+                    options.cache_retention = model.cache_retention;
+                    options.session_id = Some(ctx.session_manager.session_id().into());
+                    let transform = prepared.transform_payload;
+                    options.request.async_on_payload = Some(Arc::new(move |payload, _, _| {
+                        let transform = transform.clone();
+                        Box::pin(async move {
+                            transform(payload)
+                                .await
+                                .map(Some)
+                                .map_err(|error| error.to_string())
+                        })
+                    }));
+                    let options = maho_ai::types::SimpleStreamOptions {
+                        stream: options,
+                        reasoning: ctx.current_thinking_level()?,
+                        service_tier: ctx.current_effective_service_tier()?.map(
+                            |tier| match tier {
+                                ServiceTier::Auto => maho_ai::types::ServiceTierPreference::Auto,
+                                ServiceTier::Flex => maho_ai::types::ServiceTierPreference::Flex,
+                                ServiceTier::Priority => {
+                                    maho_ai::types::ServiceTierPreference::Priority
+                                }
+                                ServiceTier::Ultrafast => {
+                                    maho_ai::types::ServiceTierPreference::Ultrafast
+                                }
+                            },
+                        ),
+                        ..Default::default()
+                    };
+                    maho_ai::api::warm_prompt_cache::warm_prompt_cache_simple(&model,&context,options,&|model,context,options|Ok(serde_json::Value::Object(maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(model,context,Some(options))))).await.map_err(ExtensionFailure::new)
+                })
             }),
-            ..Default::default()
-        };
-        maho_ai::api::warm_prompt_cache::warm_prompt_cache_simple(&model,&context,options,&|model,context,options|Ok(serde_json::Value::Object(maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(model,context,Some(options))))).await.map_err(ExtensionFailure::new)
-    }))}}
+        }
+    }
 }
-struct State {ctx:Option<ExtensionContext>,startup:crate::startup_activity_gate::StartupActivityGate,parked:bool,arm_on_settle:bool,active:bool,generation:u64,attempts:u64,cost:f64,last:Option<i64>,messages:Vec<AgentMessage>,usage:Option<Usage>,work:Option<tokio::task::JoinHandle<()>>,retired:Vec<tokio::task::JoinHandle<()>>,entries:Vec<serde_json::Value>}
-async fn retire(tasks:Vec<tokio::task::JoinHandle<()>>){for task in tasks{let _result=task.await;}}
-fn append_entries(state:&Mutex<State>,sender:&ExtensionApi)->Result<(),ExtensionFailure>{
-    let entries=std::mem::take(&mut state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entries);
-    for entry in entries{sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE,Some(entry))?;}
+struct State {
+    ctx: Option<ExtensionContext>,
+    startup: crate::startup_activity_gate::StartupActivityGate,
+    parked: bool,
+    arm_on_settle: bool,
+    active: bool,
+    generation: u64,
+    attempts: u64,
+    cost: f64,
+    last: Option<i64>,
+    messages: Vec<AgentMessage>,
+    usage: Option<Usage>,
+    work: Option<tokio::task::JoinHandle<()>>,
+    retired: Vec<tokio::task::JoinHandle<()>>,
+    entries: Vec<serde_json::Value>,
+}
+async fn retire(tasks: Vec<tokio::task::JoinHandle<()>>) {
+    for task in tasks {
+        let _result = task.await;
+    }
+}
+fn append_entries(state: &Mutex<State>, sender: &ExtensionApi) -> Result<(), ExtensionFailure> {
+    let entries = std::mem::take(
+        &mut state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries,
+    );
+    for entry in entries {
+        sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE, Some(entry))?;
+    }
     Ok(())
 }
-fn stop(state:&mut State,reason:&str,force:bool){
-    let append=state.active||state.work.is_some()||force;
-    state.generation+=1;state.active=false;
-    if let Some(work)=state.work.take(){work.abort();state.retired.push(work);}
-    if append{state.entries.push(json!({"phase":"stopped","iterations":state.attempts,"stopReason":reason,"cumulativeEstimatedUsd":state.cost}));}
+fn stop(state: &mut State, reason: &str, force: bool) {
+    let append = state.active || state.work.is_some() || force;
+    state.generation += 1;
+    state.active = false;
+    if let Some(work) = state.work.take() {
+        work.abort();
+        state.retired.push(work);
+    }
+    if append {
+        state.entries.push(json!({"phase":"stopped","iterations":state.attempts,"stopReason":reason,"cumulativeEstimatedUsd":state.cost}));
+    }
 }
-fn arm(state:Arc<Mutex<State>>,sender:Arc<ExtensionApi>,warm:WarmRequest)->Result<(),ExtensionFailure>{
-    let (ctx,generation)={
-        let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if current.startup.waiting()||current.parked||current.work.is_some(){return Ok(());}
-        let Some(ctx)=current.ctx.clone()else{return Ok(())};(ctx,current.generation)
-    };
-    let Some(model)=ctx.model.clone()else{return Ok(())};
-    let settings=ctx.get_prompt_cache_keep_alive_settings()?;
-    if !settings.enabled||!is_warm_supported_model(&model){return Ok(());}
-    let idle=ctx.is_idle();let pending=ctx.has_pending_messages()?;
-    let Some(wait)=ctx.get_prompt_cache_safe_wait_seconds()?.filter(|wait|wait.is_finite())else{return Ok(())};
-    let mut current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if current.generation!=generation||current.parked||current.work.is_some(){return Ok(());}
-    let Some(last)=current.last else{return Ok(())};
-    let stopped=if !idle{Some(("agent-busy",false))}else if pending{Some(("pending-messages",false))}else if current.attempts>=settings.max_requests_per_session{Some(("max-requests",true))}else if current.cost+projected_ping_cost(&model,current.usage.as_ref())>settings.max_cost_usd_per_session.max(0.0){Some(("cost-cap",true))}else{None};
-    if let Some((reason,force))=stopped{stop(&mut current,reason,force);drop(current);return append_entries(&state,&sender);}
-    if !current.active{current.entries.push(json!({"phase":"started"}));current.active=true;}
-    let delay=next_delay_ms(last as f64,wait,settings.margin_seconds,maho_ai::utils::diagnostics::now_ms() as f64);
-    let task_state=state.clone();let task_sender=sender.clone();let next_warm=warm.clone();
-    let (start,started)=tokio::sync::oneshot::channel();
-    current.work=Some(tokio::spawn(async move{
-        if started.await.is_err(){return;}
-        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-        let current_ctx={let state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}state.ctx.clone()};
-        let Some(ctx)=current_ctx else{return;};let Some(model)=ctx.model.clone()else{return;};
-        let readiness=(||->Result<_,ExtensionFailure>{Ok((ctx.get_prompt_cache_keep_alive_settings()?,ctx.is_idle(),ctx.has_pending_messages()?))})();
-        let (settings,idle,pending)=match readiness{Ok(readiness)=>readiness,Err(error)=>{
-            {let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}state.work=None;stop(&mut state,"provider-error",false);}
-            if let Err(error)=append_entries(&task_state,&task_sender){ctx.ui.notify(&error.message,NotificationType::Error);}
-            ctx.ui.notify(&error.message,NotificationType::Error);return;
-        }};
-        let request={
-            let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.generation!=generation{return;}
-            if !settings.enabled||!is_warm_supported_model(&model)||!idle||pending||state.attempts>=settings.max_requests_per_session||state.cost+projected_ping_cost(&model,state.usage.as_ref())>settings.max_cost_usd_per_session.max(0.0){state.work=None;drop(state);if let Err(error)=arm(task_state.clone(),task_sender.clone(),next_warm){ctx.ui.notify(&error.message,NotificationType::Error);}return;}
-            state.attempts+=1;(model,state.messages.clone(),ctx,state.attempts)
+fn arm(
+    state: Arc<Mutex<State>>,
+    sender: Arc<ExtensionApi>,
+    warm: WarmRequest,
+) -> Result<(), ExtensionFailure> {
+    let (ctx, generation) = {
+        let current = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.startup.waiting() || current.parked || current.work.is_some() {
+            return Ok(());
+        }
+        let Some(ctx) = current.ctx.clone() else {
+            return Ok(());
         };
-        let result=warm(request.0.clone(),request.1,request.2.clone(),task_sender.clone()).await;
-        let receipt={
-            let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.generation!=generation{return;}
-            match result{
-                Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Supported{usage,..})=>{
-                    let usage=Usage{input:usage.input,output:usage.output,cache_read:usage.cache_read,cache_write:usage.cache_write,..Default::default()};
-                    let cost=actual_ping_cost(&request.0,&usage);state.cost+=cost;state.last=Some(maho_ai::utils::diagnostics::now_ms());
-                    Some((json!({"iteration":request.3,"cachedTokens":usage.cache_read+usage.cache_write,"ttlSeconds":maho_ai::utils::prompt_cache_ttl::resolve_prompt_cache_ttl_seconds(&request.0,None).unwrap_or(0),"estimatedCostUsd":cost}),json!({"phase":"ping","iteration":request.3,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write,"estimatedCostUsd":cost,"cumulativeEstimatedUsd":state.cost})))
+        (ctx, current.generation)
+    };
+    let Some(model) = ctx.model.clone() else {
+        return Ok(());
+    };
+    let settings = ctx.get_prompt_cache_keep_alive_settings()?;
+    if !settings.enabled || !is_warm_supported_model(&model) {
+        return Ok(());
+    }
+    let idle = ctx.is_idle();
+    let pending = ctx.has_pending_messages()?;
+    let Some(wait) = ctx
+        .get_prompt_cache_safe_wait_seconds()?
+        .filter(|wait| wait.is_finite())
+    else {
+        return Ok(());
+    };
+    let mut current = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if current.generation != generation || current.parked || current.work.is_some() {
+        return Ok(());
+    }
+    let Some(last) = current.last else {
+        return Ok(());
+    };
+    let stopped = if !idle {
+        Some(("agent-busy", false))
+    } else if pending {
+        Some(("pending-messages", false))
+    } else if current.attempts >= settings.max_requests_per_session {
+        Some(("max-requests", true))
+    } else if current.cost + projected_ping_cost(&model, current.usage.as_ref())
+        > settings.max_cost_usd_per_session.max(0.0)
+    {
+        Some(("cost-cap", true))
+    } else {
+        None
+    };
+    if let Some((reason, force)) = stopped {
+        stop(&mut current, reason, force);
+        drop(current);
+        return append_entries(&state, &sender);
+    }
+    if !current.active {
+        current.entries.push(json!({"phase":"started"}));
+        current.active = true;
+    }
+    let delay = next_delay_ms(
+        last as f64,
+        wait,
+        settings.margin_seconds,
+        maho_ai::utils::diagnostics::now_ms() as f64,
+    );
+    let task_state = state.clone();
+    let task_sender = sender.clone();
+    let next_warm = warm.clone();
+    let (start, started) = tokio::sync::oneshot::channel();
+    current.work = Some(tokio::spawn(async move {
+        if started.await.is_err() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+        let current_ctx = {
+            let state = task_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.generation != generation {
+                return;
+            }
+            state.ctx.clone()
+        };
+        let Some(ctx) = current_ctx else {
+            return;
+        };
+        let Some(model) = ctx.model.clone() else {
+            return;
+        };
+        let readiness = (|| -> Result<_, ExtensionFailure> {
+            Ok((
+                ctx.get_prompt_cache_keep_alive_settings()?,
+                ctx.is_idle(),
+                ctx.has_pending_messages()?,
+            ))
+        })();
+        let (settings, idle, pending) = match readiness {
+            Ok(readiness) => readiness,
+            Err(error) => {
+                {
+                    let mut state = task_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if state.generation != generation {
+                        return;
+                    }
+                    state.work = None;
+                    stop(&mut state, "provider-error", false);
                 }
-                Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Unsupported)=>{state.work=None;stop(&mut state,"unsupported-model",false);None}
-                Err(_)=>{state.work=None;stop(&mut state,"provider-error",false);None}
+                if let Err(error) = append_entries(&task_state, &task_sender) {
+                    ctx.ui.notify(&error.message, NotificationType::Error);
+                }
+                ctx.ui.notify(&error.message, NotificationType::Error);
+                return;
             }
         };
-        if let Err(error)=append_entries(&task_state,&task_sender){request.2.ui.notify(&error.message,NotificationType::Error);return;}
-        let Some(receipt)=receipt else{return;};
-        task_sender.events.emit(CACHE_WARM_PING_EVENT,&receipt.0);
-        {let state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}}
-        if let Err(error)=task_sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE,Some(receipt.1)){
-            {let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation==generation{state.work=None;stop(&mut state,"persistence-error",false);}}
-            request.2.ui.notify(&error.message,NotificationType::Error);return;
+        let request = {
+            let mut state = task_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.generation != generation {
+                return;
+            }
+            if !settings.enabled
+                || !is_warm_supported_model(&model)
+                || !idle
+                || pending
+                || state.attempts >= settings.max_requests_per_session
+                || state.cost + projected_ping_cost(&model, state.usage.as_ref())
+                    > settings.max_cost_usd_per_session.max(0.0)
+            {
+                state.work = None;
+                drop(state);
+                if let Err(error) = arm(task_state.clone(), task_sender.clone(), next_warm) {
+                    ctx.ui.notify(&error.message, NotificationType::Error);
+                }
+                return;
+            }
+            state.attempts += 1;
+            (model, state.messages.clone(), ctx, state.attempts)
+        };
+        let result = warm(
+            request.0.clone(),
+            request.1,
+            request.2.clone(),
+            task_sender.clone(),
+        )
+        .await;
+        let receipt = {
+            let mut state = task_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.generation != generation {
+                return;
+            }
+            match result {
+                Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Supported {
+                    usage,
+                    ..
+                }) => {
+                    let usage = Usage {
+                        input: usage.input,
+                        output: usage.output,
+                        cache_read: usage.cache_read,
+                        cache_write: usage.cache_write,
+                        ..Default::default()
+                    };
+                    let cost = actual_ping_cost(&request.0, &usage);
+                    state.cost += cost;
+                    state.last = Some(maho_ai::utils::diagnostics::now_ms());
+                    Some((
+                        json!({"iteration":request.3,"cachedTokens":usage.cache_read+usage.cache_write,"ttlSeconds":maho_ai::utils::prompt_cache_ttl::resolve_prompt_cache_ttl_seconds(&request.0,None).unwrap_or(0),"estimatedCostUsd":cost}),
+                        json!({"phase":"ping","iteration":request.3,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write,"estimatedCostUsd":cost,"cumulativeEstimatedUsd":state.cost}),
+                    ))
+                }
+                Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Unsupported) => {
+                    state.work = None;
+                    stop(&mut state, "unsupported-model", false);
+                    None
+                }
+                Err(_) => {
+                    state.work = None;
+                    stop(&mut state, "provider-error", false);
+                    None
+                }
+            }
+        };
+        if let Err(error) = append_entries(&task_state, &task_sender) {
+            request.2.ui.notify(&error.message, NotificationType::Error);
+            return;
         }
-        {let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}state.work=None;}
-        if let Err(error)=arm(task_state,task_sender,next_warm){request.2.ui.notify(&error.message,NotificationType::Error);}
+        let Some(receipt) = receipt else {
+            return;
+        };
+        task_sender.events.emit(CACHE_WARM_PING_EVENT, &receipt.0);
+        {
+            let state = task_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.generation != generation {
+                return;
+            }
+        }
+        if let Err(error) = task_sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE, Some(receipt.1)) {
+            {
+                let mut state = task_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.generation == generation {
+                    state.work = None;
+                    stop(&mut state, "persistence-error", false);
+                }
+            }
+            request.2.ui.notify(&error.message, NotificationType::Error);
+            return;
+        }
+        {
+            let mut state = task_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.generation != generation {
+                return;
+            }
+            state.work = None;
+        }
+        if let Err(error) = arm(task_state, task_sender, next_warm) {
+            request.2.ui.notify(&error.message, NotificationType::Error);
+        }
     }));
     drop(current);
-    if let Err(error)=append_entries(&state,&sender){
-        let mut current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if current.generation==generation{stop(&mut current,"persistence-error",false);}
+    if let Err(error) = append_entries(&state, &sender) {
+        let mut current = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.generation == generation {
+            stop(&mut current, "persistence-error", false);
+        }
         return Err(error);
     }
-    let _result=start.send(());
+    let _result = start.send(());
     Ok(())
 }
-impl Extension for CacheKeepalive{
-    fn register(&self,api:&mut ExtensionApi){
-        let startup=crate::startup_activity_gate::create_startup_activity_gate();
-        let state=Arc::new(Mutex::new(State{ctx:None,startup:startup.clone(),parked:false,arm_on_settle:false,active:false,generation:0,attempts:0,cost:0.0,last:None,messages:vec![],usage:None,work:None,retired:vec![],entries:vec![]}));
-        let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
-        let entry_sender=sender.clone();
-        let prewarm=crate::session_prewarm::create_session_prewarm(Arc::new(move|kind:&str,data:serde_json::Value|{
-            // Fails only once the runtime retired; the session it would record into is gone.
-            let _retired=entry_sender.append_entry(kind,Some(data));
-        }),crate::session_prewarm::SessionPrewarmDependencies{warm:self.prewarm.clone(),is_prewarm_model:None});
-        api.register_entry_renderer(CACHE_KEEPALIVE_ENTRY_TYPE,maho_ext_host::notice::notice_entry_renderer(|entry|{
-            let data=&entry.data["data"];if data["phase"]!="ping"{return None;}
-            let tokens=data["cacheRead"].as_u64().unwrap_or(0)+data["cacheWrite"].as_u64().unwrap_or(0);
-            let refreshed=if tokens>=1_000_000{format!("{}M",format!("{:.1}",tokens as f64/1_000_000.0).trim_end_matches(".0"))}else if tokens>=1000{format!("{}K",format!("{:.1}",tokens as f64/1000.0).trim_end_matches(".0"))}else{tokens.to_string()};
-            Some(maho_ext_host::notice::NoticeSpec{title:format!("⚡ Warm ping #{} · ~{refreshed} tokens refreshed · ${:.3}",data["iteration"],data["estimatedCostUsd"].as_f64().unwrap_or(0.0)),tone:None,why:"Refreshed the active Anthropic prompt cache while the session was idle.".into(),extra:vec![],expanded_line:Some(format!("cache read {} · cache write {} · session total ${:.3}",data["cacheRead"],data["cacheWrite"],data["cumulativeEstimatedUsd"].as_f64().unwrap_or(0.0)))})
-        }),Default::default());
-        for kind in [EventKind::SessionStart,EventKind::AgentEnd,EventKind::AgentSettled,EventKind::ModelSelect,EventKind::SessionParked,EventKind::SessionResumed,EventKind::AgentStart,EventKind::Input,EventKind::SessionShutdown]{
-            let state=state.clone();let sender=sender.clone();let warm=self.warm.clone();let prewarm=prewarm.clone();let startup=startup.clone();
-            api.on(kind,Arc::new(move|event,ctx|{let state=state.clone();let sender=sender.clone();let warm=warm.clone();let prewarm=prewarm.clone();let startup=startup.clone();Box::pin(async move{
-                // index.ts: `if (event.sizesOnly) return;` -- a sizes-only startup neither prewarms, restores nor arms.
-                if matches!(event,ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent{sizes_only:true,..})){return Ok(EventResult::None);}
-                let prewarm_ctx=||->Arc<dyn crate::session_prewarm::PrewarmContext>{Arc::new(crate::session_prewarm::ExtensionPrewarmContext(ctx.clone()))};
-                match kind{
-                    EventKind::SessionStart=>prewarm.start(prewarm_ctx()),
-                    EventKind::ModelSelect=>prewarm.on_model_select(prewarm_ctx()),
-                    EventKind::SessionParked=>prewarm.on_session_parked(),
-                    EventKind::SessionResumed=>prewarm.on_session_resumed(prewarm_ctx()),
-                    EventKind::SessionShutdown=>{startup.release();prewarm.on_session_shutdown();}
-                    _=>{}
+impl Extension for CacheKeepalive {
+    fn register(&self, api: &mut ExtensionApi) {
+        let startup = crate::startup_activity_gate::create_startup_activity_gate();
+        let state = Arc::new(Mutex::new(State {
+            ctx: None,
+            startup: startup.clone(),
+            parked: false,
+            arm_on_settle: false,
+            active: false,
+            generation: 0,
+            attempts: 0,
+            cost: 0.0,
+            last: None,
+            messages: vec![],
+            usage: None,
+            work: None,
+            retired: vec![],
+            entries: vec![],
+        }));
+        let sender = Arc::new(ExtensionApi::new(
+            api.registered.clone(),
+            api.profile.clone(),
+            api.events.clone(),
+            api.runtime.clone(),
+        ));
+        let entry_sender = sender.clone();
+        let prewarm = crate::session_prewarm::create_session_prewarm(
+            Arc::new(move |kind: &str, data: serde_json::Value| {
+                // Fails only once the runtime retired; the session it would record into is gone.
+                let _retired = entry_sender.append_entry(kind, Some(data));
+            }),
+            crate::session_prewarm::SessionPrewarmDependencies {
+                warm: self.prewarm.clone(),
+                is_prewarm_model: None,
+            },
+        );
+        api.register_entry_renderer(
+            CACHE_KEEPALIVE_ENTRY_TYPE,
+            maho_ext_host::notice::notice_entry_renderer(|entry| {
+                let data = &entry.data["data"];
+                if data["phase"] != "ping" {
+                    return None;
                 }
-                let restored=if kind==EventKind::SessionStart{
-                    // PERF-DIVERGENCE(senpi cache-keepalive): same `buildSessionContext().messages`, but built by the host from its own view instead of from a copy of every session entry.
-                    let messages=ctx.session_manager.build_context_messages().unwrap_or_else(||{
-                        let entries=ctx.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
-                        maho_core::session_manager::build_session_context(&entries,ctx.session_manager.get_leaf_id().as_deref()).messages
-                    });
-                    Some(messages.into_iter().map(|value|serde_json::from_value::<AgentMessage>(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>())
-                }else{None};
-                let retirement;
-                let mut rearm=matches!(kind,EventKind::AgentEnd|EventKind::AgentSettled|EventKind::ModelSelect|EventKind::SessionResumed);
-                let transition;
-                {
-                    let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    transition=(||->Result<(),ExtensionFailure>{
-                    match event{
-                        ExtensionEvent::SessionStart(_)=>{
-                            stop(&mut state,"session-restart",false);state.ctx=Some(ctx.clone());state.attempts=0;state.cost=0.0;
-                            state.messages=restored.expect("session-start restoration")?;
-                            state.usage=last_assistant_usage(&state.messages).map(|(usage,_)|*usage);state.last=last_assistant_timestamp(&state.messages);
+                let tokens = data["cacheRead"].as_u64().unwrap_or(0)
+                    + data["cacheWrite"].as_u64().unwrap_or(0);
+                let refreshed = if tokens >= 1_000_000 {
+                    format!(
+                        "{}M",
+                        format!("{:.1}", tokens as f64 / 1_000_000.0).trim_end_matches(".0")
+                    )
+                } else if tokens >= 1000 {
+                    format!(
+                        "{}K",
+                        format!("{:.1}", tokens as f64 / 1000.0).trim_end_matches(".0")
+                    )
+                } else {
+                    tokens.to_string()
+                };
+                Some(maho_ext_host::notice::NoticeSpec {
+                    title: format!(
+                        "⚡ Warm ping #{} · ~{refreshed} tokens refreshed · ${:.3}",
+                        data["iteration"],
+                        data["estimatedCostUsd"].as_f64().unwrap_or(0.0)
+                    ),
+                    tone: None,
+                    why: "Refreshed the active Anthropic prompt cache while the session was idle."
+                        .into(),
+                    extra: vec![],
+                    expanded_line: Some(format!(
+                        "cache read {} · cache write {} · session total ${:.3}",
+                        data["cacheRead"],
+                        data["cacheWrite"],
+                        data["cumulativeEstimatedUsd"].as_f64().unwrap_or(0.0)
+                    )),
+                })
+            }),
+            Default::default(),
+        );
+        for kind in [
+            EventKind::SessionStart,
+            EventKind::AgentEnd,
+            EventKind::AgentSettled,
+            EventKind::ModelSelect,
+            EventKind::SessionParked,
+            EventKind::SessionResumed,
+            EventKind::AgentStart,
+            EventKind::Input,
+            EventKind::SessionShutdown,
+        ] {
+            let state = state.clone();
+            let sender = sender.clone();
+            let warm = self.warm.clone();
+            let prewarm = prewarm.clone();
+            let startup = startup.clone();
+            api.on(
+                kind,
+                Arc::new(move |event, ctx| {
+                    let state = state.clone();
+                    let sender = sender.clone();
+                    let warm = warm.clone();
+                    let prewarm = prewarm.clone();
+                    let startup = startup.clone();
+                    Box::pin(async move {
+                        // index.ts: `if (event.sizesOnly) return;` -- a sizes-only startup neither prewarms, restores nor arms.
+                        if matches!(
+                            event,
+                            ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                                sizes_only: true,
+                                ..
+                            })
+                        ) {
+                            return Ok(EventResult::None);
                         }
-                        ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){rearm=false;state.arm_on_settle=false;stop(&mut state,"provider-error",false);}else{state.startup.release();state.arm_on_settle=true;state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|*usage);state.last=Some(maho_ai::utils::diagnostics::now_ms());}}
-                        ExtensionEvent::AgentSettled=>{state.ctx=Some(ctx.clone());rearm=state.arm_on_settle;state.arm_on_settle=false;}
-                        ExtensionEvent::ModelSelect(event)=>{let mut selected=ctx.clone();selected.model=Some(event.model.clone());state.ctx=Some(selected);stop(&mut state,"model-changed",false);}
-                        ExtensionEvent::SessionParked=>{state.parked=true;stop(&mut state,"session-parked",false);}
-                        ExtensionEvent::SessionResumed=>{state.parked=false;state.ctx=Some(ctx.clone());}
-                        ExtensionEvent::AgentStart=>{stop(&mut state,"agent-busy",false);}
-                        ExtensionEvent::Input(_)=>{stop(&mut state,"user-input",false);}
-                        ExtensionEvent::SessionShutdown(_)=>{stop(&mut state,"session-dispose",false);state.ctx=None;}
-                        _=>{}
-                    }
-                    Ok(())})();
-                    retirement=std::mem::take(&mut state.retired);
-                }
-                retire(retirement).await;
-                append_entries(&state,&sender)?;
-                transition?;
-                if kind==EventKind::SessionStart{
-                    // Restored history is not admission: the scheduler arms on real activity or a completed turn.
-                    let (gate_state,gate_sender,gate_warm,gate_ctx)=(state.clone(),sender.clone(),warm.clone(),ctx.clone());
-                    startup.start(|listener|ctx.on_user_activity(Arc::new(move|_:UserActivityKind|listener())).ok().flatten(),move||{
-                        if let Err(error)=arm(gate_state.clone(),gate_sender.clone(),gate_warm.clone()){gate_ctx.ui.notify(&error.message,NotificationType::Error);}
-                    });
-                }
-                if rearm{arm(state,sender,warm)?;}
-                Ok(EventResult::None)
-            })}));
+                        let prewarm_ctx = || -> Arc<dyn crate::session_prewarm::PrewarmContext> {
+                            Arc::new(crate::session_prewarm::ExtensionPrewarmContext(ctx.clone()))
+                        };
+                        match kind {
+                            EventKind::SessionStart => prewarm.start(prewarm_ctx()),
+                            EventKind::ModelSelect => prewarm.on_model_select(prewarm_ctx()),
+                            EventKind::SessionParked => prewarm.on_session_parked(),
+                            EventKind::SessionResumed => prewarm.on_session_resumed(prewarm_ctx()),
+                            EventKind::SessionShutdown => {
+                                startup.release();
+                                prewarm.on_session_shutdown();
+                            }
+                            _ => {}
+                        }
+                        let restored = if kind == EventKind::SessionStart {
+                            // PERF-DIVERGENCE(senpi cache-keepalive): same `buildSessionContext().messages`, but built by the host from its own view instead of from a copy of every session entry.
+                            let messages = ctx
+                                .session_manager
+                                .build_context_messages()
+                                .unwrap_or_else(|| {
+                                    let entries = ctx
+                                        .session_manager
+                                        .get_entries()
+                                        .into_iter()
+                                        .map(|entry| entry.data)
+                                        .collect::<Vec<_>>();
+                                    maho_core::session_manager::build_session_context(
+                                        &entries,
+                                        ctx.session_manager.get_leaf_id().as_deref(),
+                                    )
+                                    .messages
+                                });
+                            Some(
+                                messages
+                                    .into_iter()
+                                    .map(|value| {
+                                        serde_json::from_value::<AgentMessage>(value).map_err(
+                                            |error| ExtensionFailure::new(error.to_string()),
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>, _>>(),
+                            )
+                        } else {
+                            None
+                        };
+                        let retirement;
+                        let mut rearm = matches!(
+                            kind,
+                            EventKind::AgentEnd
+                                | EventKind::AgentSettled
+                                | EventKind::ModelSelect
+                                | EventKind::SessionResumed
+                        );
+                        let transition;
+                        {
+                            let mut state = state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            transition = (|| -> Result<(), ExtensionFailure> {
+                                match event {
+                                    ExtensionEvent::SessionStart(_) => {
+                                        stop(&mut state, "session-restart", false);
+                                        state.ctx = Some(ctx.clone());
+                                        state.attempts = 0;
+                                        state.cost = 0.0;
+                                        state.messages =
+                                            restored.expect("session-start restoration")?;
+                                        state.usage = last_assistant_usage(&state.messages)
+                                            .map(|(usage, _)| *usage);
+                                        state.last = last_assistant_timestamp(&state.messages);
+                                    }
+                                    ExtensionEvent::AgentEnd { messages, .. } => {
+                                        state.ctx = Some(ctx.clone());
+                                        if last_assistant_usage(messages).is_some_and(
+                                            |(_, reason)| {
+                                                reason == maho_ai::types::StopReason::Error
+                                            },
+                                        ) {
+                                            rearm = false;
+                                            state.arm_on_settle = false;
+                                            stop(&mut state, "provider-error", false);
+                                        } else {
+                                            state.startup.release();
+                                            state.arm_on_settle = true;
+                                            state.messages = messages.clone();
+                                            state.usage = last_assistant_usage(messages)
+                                                .map(|(usage, _)| *usage);
+                                            state.last =
+                                                Some(maho_ai::utils::diagnostics::now_ms());
+                                        }
+                                    }
+                                    ExtensionEvent::AgentSettled => {
+                                        state.ctx = Some(ctx.clone());
+                                        rearm = state.arm_on_settle;
+                                        state.arm_on_settle = false;
+                                    }
+                                    ExtensionEvent::ModelSelect(event) => {
+                                        let mut selected = ctx.clone();
+                                        selected.model = Some(event.model.clone());
+                                        state.ctx = Some(selected);
+                                        stop(&mut state, "model-changed", false);
+                                    }
+                                    ExtensionEvent::SessionParked => {
+                                        state.parked = true;
+                                        stop(&mut state, "session-parked", false);
+                                    }
+                                    ExtensionEvent::SessionResumed => {
+                                        state.parked = false;
+                                        state.ctx = Some(ctx.clone());
+                                    }
+                                    ExtensionEvent::AgentStart => {
+                                        stop(&mut state, "agent-busy", false);
+                                    }
+                                    ExtensionEvent::Input(_) => {
+                                        stop(&mut state, "user-input", false);
+                                    }
+                                    ExtensionEvent::SessionShutdown(_) => {
+                                        stop(&mut state, "session-dispose", false);
+                                        state.ctx = None;
+                                    }
+                                    _ => {}
+                                }
+                                Ok(())
+                            })();
+                            retirement = std::mem::take(&mut state.retired);
+                        }
+                        retire(retirement).await;
+                        append_entries(&state, &sender)?;
+                        transition?;
+                        if kind == EventKind::SessionStart {
+                            // Restored history is not admission: the scheduler arms on real activity or a completed turn.
+                            let (gate_state, gate_sender, gate_warm, gate_ctx) =
+                                (state.clone(), sender.clone(), warm.clone(), ctx.clone());
+                            startup.start(
+                                |listener| {
+                                    ctx.on_user_activity(Arc::new(move |_: UserActivityKind| {
+                                        listener()
+                                    }))
+                                    .ok()
+                                    .flatten()
+                                },
+                                move || {
+                                    if let Err(error) = arm(
+                                        gate_state.clone(),
+                                        gate_sender.clone(),
+                                        gate_warm.clone(),
+                                    ) {
+                                        gate_ctx.ui.notify(&error.message, NotificationType::Error);
+                                    }
+                                },
+                            );
+                        }
+                        if rearm {
+                            arm(state, sender, warm)?;
+                        }
+                        Ok(EventResult::None)
+                    })
+                }),
+            );
         }
     }
 }
 
 #[cfg(test)]
-mod tests{
+mod tests {
     use super::*;
     struct Dropped(tokio::sync::oneshot::Sender<()>);
-    impl Drop for Dropped{fn drop(&mut self){let (replacement,_)=tokio::sync::oneshot::channel();let sender=std::mem::replace(&mut self.0,replacement);let _result=sender.send(());}}
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            let (replacement, _) = tokio::sync::oneshot::channel();
+            let sender = std::mem::replace(&mut self.0, replacement);
+            let _result = sender.send(());
+        }
+    }
     #[tokio::test]
-    async fn retirement_waits_for_cancelled_provider_future_drop(){
-        let (entered,started)=tokio::sync::oneshot::channel();
-        let (dropped,finished)=tokio::sync::oneshot::channel();
-        let task=tokio::spawn(async move{let _owned=Dropped(dropped);let _result=entered.send(());std::future::pending::<()>().await;});
-        tokio::time::timeout(std::time::Duration::from_secs(5),started).await.expect("provider entered").expect("signal");
+    async fn retirement_waits_for_cancelled_provider_future_drop() {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (dropped, finished) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _owned = Dropped(dropped);
+            let _result = entered.send(());
+            std::future::pending::<()>().await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), started)
+            .await
+            .expect("provider entered")
+            .expect("signal");
         task.abort();
-        tokio::time::timeout(std::time::Duration::from_secs(5),retire(vec![task])).await.expect("retirement");
+        tokio::time::timeout(std::time::Duration::from_secs(5), retire(vec![task]))
+            .await
+            .expect("retirement");
         assert!(finished.await.is_ok());
     }
     #[tokio::test]
-    async fn stop_invalidates_generation_and_retirement_owns_cancelled_task(){
-        let (entered,started)=tokio::sync::oneshot::channel();
-        let (dropped,finished)=tokio::sync::oneshot::channel();
-        let task=tokio::spawn(async move{let _owned=Dropped(dropped);let _result=entered.send(());std::future::pending::<()>().await;});
-        tokio::time::timeout(std::time::Duration::from_secs(5),started).await.expect("entered").expect("signal");
-        let mut state=State{ctx:None,startup:Default::default(),parked:false,arm_on_settle:false,active:true,generation:9,attempts:2,cost:0.25,last:None,messages:vec![],usage:None,work:Some(task),retired:vec![],entries:vec![]};
-        stop(&mut state,"session-dispose",false);
-        assert_eq!(state.generation,10);
+    async fn stop_invalidates_generation_and_retirement_owns_cancelled_task() {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (dropped, finished) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _owned = Dropped(dropped);
+            let _result = entered.send(());
+            std::future::pending::<()>().await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), started)
+            .await
+            .expect("entered")
+            .expect("signal");
+        let mut state = State {
+            ctx: None,
+            startup: Default::default(),
+            parked: false,
+            arm_on_settle: false,
+            active: true,
+            generation: 9,
+            attempts: 2,
+            cost: 0.25,
+            last: None,
+            messages: vec![],
+            usage: None,
+            work: Some(task),
+            retired: vec![],
+            entries: vec![],
+        };
+        stop(&mut state, "session-dispose", false);
+        assert_eq!(state.generation, 10);
         assert!(!state.active);
         assert!(state.work.is_none());
-        assert_eq!(state.entries[0]["stopReason"],"session-dispose");
-        assert_eq!(state.entries[0]["iterations"],2);
-        tokio::time::timeout(std::time::Duration::from_secs(5),retire(std::mem::take(&mut state.retired))).await.expect("retired");
+        assert_eq!(state.entries[0]["stopReason"], "session-dispose");
+        assert_eq!(state.entries[0]["iterations"], 2);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            retire(std::mem::take(&mut state.retired)),
+        )
+        .await
+        .expect("retired");
         assert!(finished.await.is_ok());
-        stop(&mut state,"session-dispose",false);
-        assert_eq!(state.entries.len(),1);
+        stop(&mut state, "session-dispose", false);
+        assert_eq!(state.entries.len(), 1);
     }
 }

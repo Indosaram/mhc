@@ -18,7 +18,13 @@ fn entry(path: &str, hash: &str) -> RecallSurfacedEntry {
 fn names(dir: &TempDir) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir.path())
         .expect("read dir")
-        .map(|entry| entry.expect("dir entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     names.sort();
     names
@@ -86,11 +92,17 @@ fn given_marked_entries_when_the_file_is_inspected_then_the_versioned_shape_is_p
     let raw = fs::read_to_string(dir.path().join("session-1.json")).expect("read ledger");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse ledger");
     assert_eq!(parsed["version"], serde_json::json!(1));
-    assert_eq!(parsed["surfaced"]["reference/a.md"]["hash"], serde_json::json!("aaaa"));
+    assert_eq!(
+        parsed["surfaced"]["reference/a.md"]["hash"],
+        serde_json::json!("aaaa")
+    );
     let at = parsed["surfaced"]["reference/a.md"]["at"]
         .as_str()
         .expect("at string");
-    assert!(at.len() >= 20 && at.contains('T'), "unexpected timestamp {at}");
+    assert!(
+        at.len() >= 20 && at.contains('T'),
+        "unexpected timestamp {at}"
+    );
 
     #[cfg(unix)]
     {
@@ -105,7 +117,8 @@ fn given_marked_entries_when_the_file_is_inspected_then_the_versioned_shape_is_p
 }
 
 #[test]
-fn given_a_second_mark_on_the_same_session_when_read_then_earlier_entries_persist_and_repeats_update() {
+fn given_a_second_mark_on_the_same_session_when_read_then_earlier_entries_persist_and_repeats_update()
+ {
     let dir = TempDir::new().expect("temp dir");
     let ledger = RecallLedger::new(dir.path());
     ledger
@@ -114,7 +127,10 @@ fn given_a_second_mark_on_the_same_session_when_read_then_earlier_entries_persis
     ledger
         .mark_surfaced(
             "session-1",
-            &[entry("reference/a.md", "second"), entry("notes/b.md", "bbbb")],
+            &[
+                entry("reference/a.md", "second"),
+                entry("notes/b.md", "bbbb"),
+            ],
         )
         .expect("second mark");
 
@@ -125,7 +141,10 @@ fn given_a_second_mark_on_the_same_session_when_read_then_earlier_entries_persis
     );
     let raw = fs::read_to_string(dir.path().join("session-1.json")).expect("read ledger");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse ledger");
-    assert_eq!(parsed["surfaced"]["reference/a.md"]["hash"], serde_json::json!("second"));
+    assert_eq!(
+        parsed["surfaced"]["reference/a.md"]["hash"],
+        serde_json::json!("second")
+    );
 }
 
 #[test]
@@ -236,7 +255,10 @@ fn given_an_external_rewrite_of_the_session_file_when_read_then_the_new_content_
 
     assert_eq!(
         ledger.surfaced_paths("session-1"),
-        BTreeSet::from(["reference/a.md".to_string(), "notes/external.md".to_string()])
+        BTreeSet::from([
+            "reference/a.md".to_string(),
+            "notes/external.md".to_string()
+        ])
     );
 }
 
@@ -258,7 +280,7 @@ fn given_a_deleted_session_file_when_read_then_the_cached_set_is_dropped() {
 
 #[test]
 fn given_a_ledger_dir_that_does_not_exist_yet_when_entries_are_marked_then_the_directory_is_created()
-{
+ {
     let dir = TempDir::new().expect("temp dir");
     let ledger = RecallLedger::new(PathBuf::from(dir.path()).join("ledger"));
     ledger
@@ -270,7 +292,13 @@ fn given_a_ledger_dir_that_does_not_exist_yet_when_entries_are_marked_then_the_d
     );
     let mut names: Vec<String> = fs::read_dir(dir.path().join("ledger"))
         .expect("read ledger dir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     names.sort();
     assert_eq!(names, vec!["session-1.json"]);

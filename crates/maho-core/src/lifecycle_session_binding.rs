@@ -202,15 +202,22 @@ impl LifecycleSessionBinding {
         if self.restored || !self.writable() {
             return Ok(());
         }
-        let delivered: std::collections::HashSet<String> = self.session.with_session_manager(|manager| {
-            manager
-                .entries()
-                .iter()
-                .filter(|entry| entry["type"] == "custom_message")
-                .filter_map(|entry| entry.pointer("/details/ticketId").and_then(Value::as_str).map(str::to_owned))
-                .collect()
-        });
-        self.host.mark_interrupted_from_custody(&|ticket| delivered.contains(ticket));
+        let delivered: std::collections::HashSet<String> =
+            self.session.with_session_manager(|manager| {
+                manager
+                    .entries()
+                    .iter()
+                    .filter(|entry| entry["type"] == "custom_message")
+                    .filter_map(|entry| {
+                        entry
+                            .pointer("/details/ticketId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .collect()
+            });
+        self.host
+            .mark_interrupted_from_custody(&|ticket| delivered.contains(ticket));
         self.session.with_session_manager_mut(|manager| {
             let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let mut custody = std::collections::BTreeMap::new();
@@ -237,9 +244,10 @@ impl LifecycleSessionBinding {
                 if entry["customType"] == "work-custody"
                     && entry.pointer("/data/sessionId").and_then(Value::as_str)
                         == Some(self.session_id.as_str())
-                    && let Some(key) = entry.pointer("/data/key").and_then(Value::as_str) {
-                        records.insert(key.to_owned(), entry["data"].clone());
-                    }
+                    && let Some(key) = entry.pointer("/data/key").and_then(Value::as_str)
+                {
+                    records.insert(key.to_owned(), entry["data"].clone());
+                }
             }
             records
                 .into_values()
@@ -310,10 +318,11 @@ pub fn record_interrupted_tools(
         if message["role"] == "assistant" {
             for part in message["content"].as_array().into_iter().flatten() {
                 if part["type"] == "toolCall"
-                    && let (Some(id), Some(name)) = (part["id"].as_str(), part["name"].as_str()) {
-                        pending.retain(|(key, _)| key != id);
-                        pending.push((id.into(), name.into()));
-                    }
+                    && let (Some(id), Some(name)) = (part["id"].as_str(), part["name"].as_str())
+                {
+                    pending.retain(|(key, _)| key != id);
+                    pending.push((id.into(), name.into()));
+                }
             }
         } else if message["role"] == "toolResult" {
             pending.retain(|(id, _)| Some(id.as_str()) != message["toolCallId"].as_str());

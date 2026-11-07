@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use crate::harness::context::Context;
 use crate::harness::session::commit::{
-    CommittedEntryWrite, CommittedListAppendWrite, CommittedListDeleteWrite, CommittedListWrite, CommittedUsageWrite,
-    CommittedValueDeleteWrite, CommittedValueSetWrite, CommittedValueWrite, CommittedWrite,
+    CommittedEntryWrite, CommittedListAppendWrite, CommittedListDeleteWrite, CommittedListWrite,
+    CommittedUsageWrite, CommittedValueDeleteWrite, CommittedValueSetWrite, CommittedValueWrite,
+    CommittedWrite,
 };
 use crate::harness::session::session::{SessionError, SessionErrorKind};
 use crate::harness::types::{FileFuture, FileResult, FileSystem, TextLineReader};
@@ -42,21 +43,34 @@ pub async fn read_jsonl_header(
 }
 
 fn missing_header(path: &str) -> SessionError {
-    SessionError::new(SessionErrorKind::Io, format!("Invalid JSONL storage {path}: missing header"))
+    SessionError::new(
+        SessionErrorKind::Io,
+        format!("Invalid JSONL storage {path}: missing header"),
+    )
 }
 
 fn invalid_header(path: &str) -> SessionError {
-    SessionError::new(SessionErrorKind::Io, format!("Invalid JSONL storage {path}: invalid header"))
+    SessionError::new(
+        SessionErrorKind::Io,
+        format!("Invalid JSONL storage {path}: invalid header"),
+    )
 }
 
 fn invalid_write() -> SessionError {
     SessionError::new(SessionErrorKind::Io, "Invalid JSONL transaction write")
 }
 
-fn require_safe_integer(value: Option<&Value>, field: &str, minimum: i64) -> Result<i64, SessionError> {
+fn require_safe_integer(
+    value: Option<&Value>,
+    field: &str,
+    minimum: i64,
+) -> Result<i64, SessionError> {
     match value.and_then(Value::as_i64) {
         Some(number) if number >= minimum => Ok(number),
-        _ => Err(SessionError::new(SessionErrorKind::Io, format!("Invalid JSONL {field}"))),
+        _ => Err(SessionError::new(
+            SessionErrorKind::Io,
+            format!("Invalid JSONL {field}"),
+        )),
     }
 }
 
@@ -92,7 +106,10 @@ fn parse_committed_write_owned(value: Value) -> Result<CommittedWrite, SessionEr
                 .map_err(|_| invalid_write()),
             other => Err(SessionError::new(
                 SessionErrorKind::Io,
-                format!("Invalid JSONL value operation: {}", other.unwrap_or("undefined")),
+                format!(
+                    "Invalid JSONL value operation: {}",
+                    other.unwrap_or("undefined")
+                ),
             )),
         },
         Some("list") => match op.as_deref() {
@@ -104,7 +121,10 @@ fn parse_committed_write_owned(value: Value) -> Result<CommittedWrite, SessionEr
                 .map_err(|_| invalid_write()),
             other => Err(SessionError::new(
                 SessionErrorKind::Io,
-                format!("Invalid JSONL list operation: {}", other.unwrap_or("undefined")),
+                format!(
+                    "Invalid JSONL list operation: {}",
+                    other.unwrap_or("undefined")
+                ),
             )),
         },
         other => Err(SessionError::new(
@@ -125,7 +145,10 @@ pub fn parse_jsonl_transaction(line: &str) -> Result<Vec<CommittedWrite>, Sessio
         Value::Array(values) => values,
         other => vec![other],
     };
-    values.into_iter().map(parse_committed_write_owned).collect()
+    values
+        .into_iter()
+        .map(parse_committed_write_owned)
+        .collect()
 }
 
 pub fn serialize_jsonl_transaction(writes: &[CommittedWrite]) -> String {
@@ -138,7 +161,8 @@ pub fn serialize_jsonl_transaction(writes: &[CommittedWrite]) -> String {
 }
 
 /// Append capability handed to the publication callback.
-pub type AppendFn = Arc<dyn Fn(String) -> FileFuture<'static, Result<(), SessionError>> + Send + Sync>;
+pub type AppendFn =
+    Arc<dyn Fn(String) -> FileFuture<'static, Result<(), SessionError>> + Send + Sync>;
 
 /// Transaction append capability handed to the JSONL publication callback.
 pub type TxAppendFn =
@@ -159,9 +183,7 @@ pub async fn publish_file_atomically(
     let temp_path = format!("{destination_path}.tmp");
     let outcome = async {
         file_value(
-            file_system
-                .write_file(&temp_path, b"", &context)
-                .await,
+            file_system.write_file(&temp_path, b"", &context).await,
             &format!("Failed to stage JSONL storage {destination_path}"),
         )?;
         let append: AppendFn = {
@@ -187,14 +209,18 @@ pub async fn publish_file_atomically(
         };
         write_content(append).await?;
         file_value(
-            file_system.rename_file(&temp_path, &destination_path, &context).await,
+            file_system
+                .rename_file(&temp_path, &destination_path, &context)
+                .await,
             &format!("Failed to publish JSONL storage {destination_path}"),
         )?;
         Ok(())
     }
     .await;
     if outcome.is_err() {
-        let _ = file_system.remove(&temp_path, None, Some(true), &context).await;
+        let _ = file_system
+            .remove(&temp_path, None, Some(true), &context)
+            .await;
     }
     outcome
 }
@@ -205,7 +231,9 @@ pub async fn publish_jsonl(
     destination_path: String,
     header: &JsonlStorageHeader,
     context: &Context,
-    write_transactions: Arc<dyn Fn(TxAppendFn) -> FileFuture<'static, Result<(), SessionError>> + Send + Sync>,
+    write_transactions: Arc<
+        dyn Fn(TxAppendFn) -> FileFuture<'static, Result<(), SessionError>> + Send + Sync,
+    >,
 ) -> Result<(), SessionError> {
     let header_line = format!("{}\n", serde_json::to_string(header).unwrap_or_default());
     publish_file_atomically(

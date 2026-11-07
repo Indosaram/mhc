@@ -27,7 +27,11 @@ fn string_arg(args: &Value, keys: &[&str]) -> Option<String> {
         return None;
     }
     for key in keys {
-        if let Some(value) = args.get(*key).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+        if let Some(value) = args
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
             return Some(value.to_owned());
         }
     }
@@ -35,8 +39,12 @@ fn string_arg(args: &Value, keys: &[&str]) -> Option<String> {
 }
 
 fn is_semantic_read(args: &Value, cwd: &str) -> bool {
-    get_compact_read_classification(Some(args), cwd)
-        .is_some_and(|classification| matches!(classification.kind, CompactKind::Skill | CompactKind::Memory))
+    get_compact_read_classification(Some(args), cwd).is_some_and(|classification| {
+        matches!(
+            classification.kind,
+            CompactKind::Skill | CompactKind::Memory
+        )
+    })
 }
 
 pub fn exploration_call(component: &ToolExecutionComponent) -> Option<ExplorationCall> {
@@ -70,7 +78,12 @@ fn compute_exploration_call(component: &ToolExecutionComponent) -> Option<Explor
                 .and_then(|path| Path::new(path).file_name())
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            Some(ExplorationCall { action: ExplorationAction::Read, label, pending, failed })
+            Some(ExplorationCall {
+                action: ExplorationAction::Read,
+                label,
+                pending,
+                failed,
+            })
         }
         "grep" => {
             let pattern = string_arg(args, &["pattern"]).unwrap_or_default();
@@ -80,8 +93,17 @@ fn compute_exploration_call(component: &ToolExecutionComponent) -> Option<Explor
                     cwd,
                 )
             });
-            let label = if dir.is_empty() { pattern } else { format!("{pattern} in {dir}") };
-            Some(ExplorationCall { action: ExplorationAction::Search, label, pending, failed })
+            let label = if dir.is_empty() {
+                pattern
+            } else {
+                format!("{pattern} in {dir}")
+            };
+            Some(ExplorationCall {
+                action: ExplorationAction::Search,
+                label,
+                pending,
+                failed,
+            })
         }
         _ => {
             let label = match &path {
@@ -92,7 +114,12 @@ fn compute_exploration_call(component: &ToolExecutionComponent) -> Option<Explor
                     .unwrap_or_else(|| path.clone()),
                 None => String::from("."),
             };
-            Some(ExplorationCall { action: ExplorationAction::List, label, pending, failed })
+            Some(ExplorationCall {
+                action: ExplorationAction::List,
+                label,
+                pending,
+                failed,
+            })
         }
     }
 }

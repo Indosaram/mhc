@@ -122,10 +122,12 @@ pub const OTHER_ESCAPETEST: &str = r#"[&<>"']"#;
 pub const OTHER_ESCAPEREPLACE: &str = r#"[&<>"']"#;
 
 /// marked `other.escapeTestNoEncode` (flags ``).
-pub const OTHER_ESCAPETESTNOENCODE: &str = r#"[<>"']|&(?!(#[0-9]{1,7}|#[Xx][a-fA-F0-9]{1,6}|[0-9A-Za-z_]+);)"#;
+pub const OTHER_ESCAPETESTNOENCODE: &str =
+    r#"[<>"']|&(?!(#[0-9]{1,7}|#[Xx][a-fA-F0-9]{1,6}|[0-9A-Za-z_]+);)"#;
 
 /// marked `other.escapeReplaceNoEncode` (flags `g`).
-pub const OTHER_ESCAPEREPLACENOENCODE: &str = r#"[<>"']|&(?!(#[0-9]{1,7}|#[Xx][a-fA-F0-9]{1,6}|[0-9A-Za-z_]+);)"#;
+pub const OTHER_ESCAPEREPLACENOENCODE: &str =
+    r#"[<>"']|&(?!(#[0-9]{1,7}|#[Xx][a-fA-F0-9]{1,6}|[0-9A-Za-z_]+);)"#;
 
 /// marked `other.caret` (flags `g`).
 pub const OTHER_CARET: &str = r#"(^|[^\[])\^"#;
@@ -194,7 +196,8 @@ pub const BLOCK_TABLE: &str = r#"^ *([^\n ].*)\n {0,3}((?:\| *)?:?-+:? *(?:\| *:
 pub const BLOCK_TEXT: &str = r#"^[^\n]+"#;
 
 /// marked `inline._backpedal` (flags ``).
-pub const INLINE__BACKPEDAL: &str = r#"(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+"#;
+pub const INLINE__BACKPEDAL: &str =
+    r#"(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+"#;
 
 /// marked `inline.anyPunctuation` (flags `gu`).
 pub const INLINE_ANYPUNCTUATION: &str = r#"\\([\p{P}\p{S}])"#;
@@ -255,4 +258,3 @@ pub const INLINE_TEXT: &str = r#"^(`+|~+|[^`~])(?:(?=[`~])|(?= {2,}\n)|(?=[a-zA-
 
 /// marked `inline.url` (flags ``).
 pub const INLINE_URL: &str = r#"^((?:[hH][tT][tT][pP][sS]?|[fF][tT][pP]):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\t\n\x0B\x0C\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}<]*|^[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![0-9A-Za-z_-])"#;
-

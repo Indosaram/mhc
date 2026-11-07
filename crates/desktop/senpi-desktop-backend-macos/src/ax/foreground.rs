@@ -99,7 +99,7 @@ fn key_state(observed: KeyObservation) -> KeyState {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyObservation, KeyState, key_state};
+    use super::{key_state, KeyObservation, KeyState};
 
     const fn observed(
         frontmost: Option<bool>,

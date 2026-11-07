@@ -196,8 +196,10 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
     let mut absolute = PathBuf::new();
     for part in path.components() {
         match part {
-            std::path::Component::CurDir => {},
-            std::path::Component::ParentDir => { absolute.pop(); },
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                absolute.pop();
+            }
             other => absolute.push(other.as_os_str()),
         }
     }

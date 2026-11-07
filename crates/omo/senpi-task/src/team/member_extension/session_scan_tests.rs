@@ -48,12 +48,22 @@ fn given_appended_and_rewritten_sessions_when_ack_scan_refreshes_then_it_matches
     let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
     write!(file, "{tail}").unwrap();
     scan.refresh(root.path()).unwrap();
-    assert_eq!(scan.contains("m-1"), session_jsonl_contains_message(root.path(), "m-1").unwrap());
+    assert_eq!(
+        scan.contains("m-1"),
+        session_jsonl_contains_message(root.path(), "m-1").unwrap()
+    );
     assert_eq!(scan.contains("m-1"), true);
 
     writeln!(file, "\n{}", envelope("m-2")).unwrap();
     scan.refresh(root.path()).unwrap();
-    assert_eq!((scan.contains("m-1"), scan.contains("m-2"), scan.contains("m")), (true, true, false));
+    assert_eq!(
+        (
+            scan.contains("m-1"),
+            scan.contains("m-2"),
+            scan.contains("m")
+        ),
+        (true, true, false)
+    );
 
     fs::write(&path, format!("{}\n", envelope("m-3"))).unwrap();
     scan.refresh(root.path()).unwrap();

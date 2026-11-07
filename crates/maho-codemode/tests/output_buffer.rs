@@ -26,25 +26,29 @@ fn untruncated_slice_retains_all() {
 #[test]
 fn tail_accumulates_and_trims() {
     let mut tail = TailBuffer::new(4);
-    tail.append("abc"); tail.append("de");
+    tail.append("abc");
+    tail.append("de");
     assert_eq!(tail.text(), "bcde");
     assert_eq!(tail.bytes(), 4);
 }
 #[test]
 fn large_append_replaces_previous_tail() {
     let mut tail = TailBuffer::new(4);
-    tail.append("old"); tail.append("abcdef");
+    tail.append("old");
+    tail.append("abcdef");
     assert_eq!(tail.text(), "cdef");
 }
 #[test]
 fn empty_append_keeps_tail() {
     let mut tail = TailBuffer::new(4);
-    tail.append("abc"); tail.append("");
+    tail.append("abc");
+    tail.append("");
     assert_eq!(tail.text(), "abc");
 }
 #[test]
 fn unicode_tail_append() {
     let mut tail = TailBuffer::new(5);
-    tail.append("a한"); tail.append("bc");
+    tail.append("a한");
+    tail.append("bc");
     assert_eq!(tail.text(), "한bc");
 }

@@ -196,13 +196,21 @@ async fn read_line(reader: &mut (impl AsyncBufRead + Unpin)) -> std::io::Result<
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(if line.is_empty() { Line::Eof } else { Line::Bytes(line) });
+            return Ok(if line.is_empty() {
+                Line::Eof
+            } else {
+                Line::Bytes(line)
+            });
         }
         match available.iter().position(|&b| b == b'\n') {
             Some(at) => {
                 line.extend_from_slice(&available[..at]);
                 reader.consume(at + 1);
-                return Ok(if line.len() > MAX_LINE_BYTES { Line::TooLarge } else { Line::Bytes(line) });
+                return Ok(if line.len() > MAX_LINE_BYTES {
+                    Line::TooLarge
+                } else {
+                    Line::Bytes(line)
+                });
             }
             None => {
                 let n = available.len();
@@ -216,10 +224,7 @@ async fn read_line(reader: &mut (impl AsyncBufRead + Unpin)) -> std::io::Result<
     }
 }
 
-fn stop_error(
-    phase: Phase,
-    timed_out: bool,
-) -> ToolError {
+fn stop_error(phase: Phase, timed_out: bool) -> ToolError {
     if timed_out {
         ToolError::new(TIMEOUT, phase, "The ast-grep call ran out of time.")
     } else {
@@ -228,16 +233,14 @@ fn stop_error(
 }
 
 /// Run a `--json=stream` process and collect its records.
-pub async fn collect(
-    spec: &RunSpec<'_>,
-    abort: &mut AbortSignal,
-) -> Result<Collected, ToolError> {
+pub async fn collect(spec: &RunSpec<'_>, abort: &mut AbortSignal) -> Result<Collected, ToolError> {
     let mut child = spawn(spec)?;
     let stdout = child.stdout.take();
     let stderr_task = child.stderr.take().map(|s| tokio::spawn(read_stderr(s)));
-    let mut reader = tokio::io::BufReader::new(stdout.ok_or_else(|| {
-        ToolError::new(SG_FAILED, spec.phase, "The program has no stdout pipe.")
-    })?);
+    let mut reader =
+        tokio::io::BufReader::new(stdout.ok_or_else(|| {
+            ToolError::new(SG_FAILED, spec.phase, "The program has no stdout pipe.")
+        })?);
 
     enum Stop {
         Done,
@@ -259,7 +262,9 @@ pub async fn collect(
                 break Stop::Abort;
             }
         };
-        let Some(line) = next else { break Stop::Timeout };
+        let Some(line) = next else {
+            break Stop::Timeout;
+        };
         let line = match line {
             Ok(Line::Eof) => break Stop::Done,
             Ok(Line::TooLarge) => {
@@ -335,12 +340,22 @@ pub async fn collect(
             }
         };
         status
-            .map_err(|error| ToolError::new(SG_FAILED, spec.phase, format!("Waiting for the program failed: {error}")))?
+            .map_err(|error| {
+                ToolError::new(
+                    SG_FAILED,
+                    spec.phase,
+                    format!("Waiting for the program failed: {error}"),
+                )
+            })?
             .code()
             .unwrap_or(-1)
     };
     let stderr = match stderr_task {
-        Some(task) => tokio::time::timeout(KILL_GRACE, task).await.ok().and_then(Result::ok).unwrap_or_default(),
+        Some(task) => tokio::time::timeout(KILL_GRACE, task)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
         None => String::new(),
     };
 
@@ -392,14 +407,24 @@ pub async fn finish(spec: &RunSpec<'_>, abort: &mut AbortSignal) -> Result<Finis
         }
     };
     let exit_code = status
-        .map_err(|error| ToolError::new(SG_FAILED, spec.phase, format!("Waiting for the program failed: {error}")))?
+        .map_err(|error| {
+            ToolError::new(
+                SG_FAILED,
+                spec.phase,
+                format!("Waiting for the program failed: {error}"),
+            )
+        })?
         .code()
         .unwrap_or(-1);
     if let Some(task) = stdout_task {
         let _ = tokio::time::timeout(KILL_GRACE, task).await;
     }
     let stderr = match stderr_task {
-        Some(task) => tokio::time::timeout(KILL_GRACE, task).await.ok().and_then(Result::ok).unwrap_or_default(),
+        Some(task) => tokio::time::timeout(KILL_GRACE, task)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
         None => String::new(),
     };
     Ok(Finished { exit_code, stderr })

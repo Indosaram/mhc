@@ -63,7 +63,9 @@ pub fn describe_header_grammar_violation(header_text: &str) -> Option<String> {
             ));
         }
         if line.starts_with('#') {
-            return Some(format!("comment lines are not allowed in frontmatter: {line}"));
+            return Some(format!(
+                "comment lines are not allowed in frontmatter: {line}"
+            ));
         }
         let Some((key, raw)) = parse_header_line(line) else {
             return Some(format!("not a 'key: value' line: {line}"));
@@ -122,9 +124,9 @@ fn describe_value_violation(key: &str, raw: &str) -> Option<String> {
         });
     }
     if is_quoted_scalar_source(raw) {
-        return decode_quoted_scalar(raw)
-            .is_none()
-            .then(|| format!("'{key}' is not a valid quoted scalar (use JSON double quotes): {raw}"));
+        return decode_quoted_scalar(raw).is_none().then(|| {
+            format!("'{key}' is not a valid quoted scalar (use JSON double quotes): {raw}")
+        });
     }
     if raw.starts_with('[') {
         return decode_string_array(raw)
@@ -140,7 +142,9 @@ fn describe_value_violation(key: &str, raw: &str) -> Option<String> {
         is_canonical_scalar_source(raw)
     };
     (!safe).then(|| {
-        format!("'{key}' is not a safe YAML plain scalar (quote it, or remove ': ' and ' #'): {raw}")
+        format!(
+            "'{key}' is not a safe YAML plain scalar (quote it, or remove ': ' and ' #'): {raw}"
+        )
     })
 }
 
@@ -160,7 +164,9 @@ fn parse_header_line(line: &str) -> Option<(String, String)> {
         return Some((key.to_string(), String::new()));
     }
     if rest.starts_with(' ') || rest.starts_with('\t') {
-        let raw = rest.trim_start_matches([' ', '\t']).trim_end_matches([' ', '\t']);
+        let raw = rest
+            .trim_start_matches([' ', '\t'])
+            .trim_end_matches([' ', '\t']);
         return Some((key.to_string(), raw.to_string()));
     }
     rest.bytes()

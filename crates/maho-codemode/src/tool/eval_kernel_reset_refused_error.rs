@@ -10,11 +10,16 @@ pub struct EvalKernelResetRefusedError {
 
 impl EvalKernelResetRefusedError {
     pub fn new(language: EvalLanguage, live_cell_ids: &[String]) -> Self {
-        let language = match language { EvalLanguage::Js => "js" };
+        let language = match language {
+            EvalLanguage::Js => "js",
+        };
         Self {
             name: "EvalKernelResetRefusedError",
             code: "eval_kernel_busy_reset_refused",
-            message: format!("eval_kernel_busy_reset_refused: Cannot reset the {language} kernel: live cells {}. Stop them with eval({{ action: \"stop\", cell_id }}) or wait for their notifications, then reset.", live_cell_ids.join(", ")),
+            message: format!(
+                "eval_kernel_busy_reset_refused: Cannot reset the {language} kernel: live cells {}. Stop them with eval({{ action: \"stop\", cell_id }}) or wait for their notifications, then reset.",
+                live_cell_ids.join(", ")
+            ),
         }
     }
 }

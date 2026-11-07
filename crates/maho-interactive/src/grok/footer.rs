@@ -34,7 +34,10 @@ impl Component for GrokFooter {
     fn render(&mut self, width: usize) -> Vec<String> {
         let tokens = get_grok_chrome_tokens(&self.theme);
         let cwd = self.session.cwd();
-        let model = self.session.model_id().unwrap_or_else(|| "no-model".to_string());
+        let model = self
+            .session
+            .model_id()
+            .unwrap_or_else(|| "no-model".to_string());
         vec![truncate_to_width(
             &format!("{} {}", (tokens.cwd)(&cwd), (tokens.model_label)(&model)),
             width,

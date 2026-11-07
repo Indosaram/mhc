@@ -15,7 +15,9 @@ pub struct CliKibitzerCoordinator {
 }
 
 /// `omo_cell` is the SAME cell `memory_for_parent` fills at register time.
-pub fn create_kibitzer_coordinator(runtime: Arc<Mutex<Option<OmoRuntime>>>) -> Arc<dyn KibitzerIdleCoordinator> {
+pub fn create_kibitzer_coordinator(
+    runtime: Arc<Mutex<Option<OmoRuntime>>>,
+) -> Arc<dyn KibitzerIdleCoordinator> {
     Arc::new(CliKibitzerCoordinator { runtime })
 }
 
@@ -23,22 +25,37 @@ impl KibitzerIdleCoordinator for CliKibitzerCoordinator {
     /// `false` when the queue is not retained yet or refuses the entry (retired): the caller keeps
     /// ownership and must fail it durably - never a silent success.
     fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
-        let Some(runtime) = self.runtime.lock().unwrap_or_else(PoisonError::into_inner).clone() else { return false; };
+        let Some(runtime) = self
+            .runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        else {
+            return false;
+        };
         // Upstream kibitzer rank 6; `passive` rides a non-passive flush and never causes one.
-        idle_injection::IdleInjectionCoordinator::enqueue(&runtime.coordinator(), idle_injection::IdleInjection {
-            key: entry.key,
-            source: idle_injection::IdleInjectionSource::Kibitzer,
-            custom_type: Some(entry.custom_type),
-            content: entry.content,
-            display: Some(false),
-            details: Some(entry.details),
-            passive: Some(entry.passive),
-            on_flushed: Some(entry.on_flushed),
-            on_delivery_failed: None,
-        })
+        idle_injection::IdleInjectionCoordinator::enqueue(
+            &runtime.coordinator(),
+            idle_injection::IdleInjection {
+                key: entry.key,
+                source: idle_injection::IdleInjectionSource::Kibitzer,
+                custom_type: Some(entry.custom_type),
+                content: entry.content,
+                display: Some(false),
+                details: Some(entry.details),
+                passive: Some(entry.passive),
+                on_flushed: Some(entry.on_flushed),
+                on_delivery_failed: None,
+            },
+        )
     }
     fn remove(&self, key: &str) {
-        if let Some(runtime) = self.runtime.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+        if let Some(runtime) = self
+            .runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
             idle_injection::IdleInjectionCoordinator::remove(&runtime.coordinator(), key);
         }
     }

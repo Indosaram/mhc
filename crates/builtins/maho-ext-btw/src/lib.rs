@@ -1,30 +1,79 @@
-pub mod side_query;
 pub mod panel;
+pub mod side_query;
 
 use maho_ext_api::*;
-use std::sync::{Arc,Mutex};
-struct Active {id:u64,controller:maho_ai::utils::abort::AbortController,settled:bool,unsubscribe:Option<UiUnsubscribe>,panel:Option<Arc<Mutex<panel::PanelState>>>,completion:tokio::sync::watch::Receiver<bool>}
-struct State {next:u64,active:Option<Active>,retiring:Vec<tokio::sync::watch::Receiver<bool>>}
+use std::sync::{Arc, Mutex};
+struct Active {
+    id: u64,
+    controller: maho_ai::utils::abort::AbortController,
+    settled: bool,
+    unsubscribe: Option<UiUnsubscribe>,
+    panel: Option<Arc<Mutex<panel::PanelState>>>,
+    completion: tokio::sync::watch::Receiver<bool>,
+}
+struct State {
+    next: u64,
+    active: Option<Active>,
+    retiring: Vec<tokio::sync::watch::Receiver<bool>>,
+}
 struct Completion(tokio::sync::watch::Sender<bool>);
-impl Drop for Completion {fn drop(&mut self){self.0.send_replace(true);}}
-fn dismiss(state:&Mutex<State>,ctx:&ExtensionContext,abort:bool)->Vec<tokio::sync::watch::Receiver<bool>>{
-    let (active,retiring)={let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.next+=1;let active=state.active.take();state.retiring.retain(|completion| !*completion.borrow());if let Some(active)=&active{state.retiring.push(active.completion.clone());}(active,state.retiring.clone())};
-    if let Some(active)=active{if abort{active.controller.abort(None);}
-        if let Some(unsubscribe)=active.unsubscribe{unsubscribe();}ctx.ui.set_widget("btw",None,Default::default());}
+impl Drop for Completion {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+fn dismiss(
+    state: &Mutex<State>,
+    ctx: &ExtensionContext,
+    abort: bool,
+) -> Vec<tokio::sync::watch::Receiver<bool>> {
+    let (active, retiring) = {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.next += 1;
+        let active = state.active.take();
+        state.retiring.retain(|completion| !*completion.borrow());
+        if let Some(active) = &active {
+            state.retiring.push(active.completion.clone());
+        }
+        (active, state.retiring.clone())
+    };
+    if let Some(active) = active {
+        if abort {
+            active.controller.abort(None);
+        }
+        if let Some(unsubscribe) = active.unsubscribe {
+            unsubscribe();
+        }
+        ctx.ui.set_widget("btw", None, Default::default());
+    }
     retiring
 }
-#[expect(clippy::expect_used, reason = "the command completion guard publishes before dropping its sender")]
-async fn await_retirement(retiring:Vec<tokio::sync::watch::Receiver<bool>>){
-    for mut completion in retiring {completion.wait_for(|done|*done).await.expect("command completion guard owns sender");}
+#[expect(
+    clippy::expect_used,
+    reason = "the command completion guard publishes before dropping its sender"
+)]
+async fn await_retirement(retiring: Vec<tokio::sync::watch::Receiver<bool>>) {
+    for mut completion in retiring {
+        completion
+            .wait_for(|done| *done)
+            .await
+            .expect("command completion guard owns sender");
+    }
 }
 async fn collect_with_signal(
-    stream:&maho_ai::utils::event_stream::AssistantMessageEventStream,
-    signal:&maho_ai::utils::abort::AbortSignal,
-    on_text_delta:impl FnMut(&str),
-)->Result<String,ExtensionFailure>{
-    let collected=side_query::collect_reply(stream,side_query::DEFAULT_ESTABLISHMENT_TIMEOUT_MS,on_text_delta);
+    stream: &maho_ai::utils::event_stream::AssistantMessageEventStream,
+    signal: &maho_ai::utils::abort::AbortSignal,
+    on_text_delta: impl FnMut(&str),
+) -> Result<String, ExtensionFailure> {
+    let collected = side_query::collect_reply(
+        stream,
+        side_query::DEFAULT_ESTABLISHMENT_TIMEOUT_MS,
+        on_text_delta,
+    );
     tokio::pin!(collected);
-    tokio::select!{
+    tokio::select! {
         biased;
         ()=signal.cancelled()=>{
             let cleanup=stream.cancel().await;
@@ -36,18 +85,57 @@ async fn collect_with_signal(
         result=&mut collected=>result.map_err(ExtensionFailure::new),
     }
 }
-pub type ThinkingLevelReader=Arc<dyn Fn(&ExtensionContext)->Result<Option<maho_ai::types::ThinkingLevel>,ExtensionFailure>+Send+Sync>;
-pub struct Btw{pub thinking_level:ThinkingLevelReader}
-impl Default for Btw {
-    fn default() -> Self { Self { thinking_level: Arc::new(|ctx: &ExtensionContext| ctx.current_thinking_level()) } }
+pub type ThinkingLevelReader = Arc<
+    dyn Fn(&ExtensionContext) -> Result<Option<maho_ai::types::ThinkingLevel>, ExtensionFailure>
+        + Send
+        + Sync,
+>;
+pub struct Btw {
+    pub thinking_level: ThinkingLevelReader,
 }
-impl Extension for Btw{
-    fn register(&self,api:&mut ExtensionApi){
-        let state=Arc::new(Mutex::new(State{next:0,active:None,retiring:Vec::new()}));
-        for kind in [EventKind::SessionBeforeSwitch,EventKind::SessionBeforeFork,EventKind::SessionShutdown,EventKind::Input]{
-            let state=state.clone();api.on(kind,Arc::new(move|_,ctx|{let state=state.clone();Box::pin(async move{let close=kind!=EventKind::Input||state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.settled);if close{let retiring=dismiss(&state,ctx,kind!=EventKind::Input);await_retirement(retiring).await;}Ok(EventResult::None)})}));
+impl Default for Btw {
+    fn default() -> Self {
+        Self {
+            thinking_level: Arc::new(|ctx: &ExtensionContext| ctx.current_thinking_level()),
         }
-        let thinking_level=self.thinking_level.clone();
+    }
+}
+impl Extension for Btw {
+    fn register(&self, api: &mut ExtensionApi) {
+        let state = Arc::new(Mutex::new(State {
+            next: 0,
+            active: None,
+            retiring: Vec::new(),
+        }));
+        for kind in [
+            EventKind::SessionBeforeSwitch,
+            EventKind::SessionBeforeFork,
+            EventKind::SessionShutdown,
+            EventKind::Input,
+        ] {
+            let state = state.clone();
+            api.on(
+                kind,
+                Arc::new(move |_, ctx| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let close = kind != EventKind::Input
+                            || state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .active
+                                .as_ref()
+                                .is_some_and(|active| active.settled);
+                        if close {
+                            let retiring = dismiss(&state, ctx, kind != EventKind::Input);
+                            await_retirement(retiring).await;
+                        }
+                        Ok(EventResult::None)
+                    })
+                }),
+            );
+        }
+        let thinking_level = self.thinking_level.clone();
         api.register_command("btw",Some("Ask a side question in parallel without touching the main session".into()),Some("<question>".into()),Arc::new(move|args,ctx|{
             let question=args.trim();
             if question.is_empty(){let retiring=if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.is_some(){dismiss(&state,ctx,true)}else{ctx.ui.notify("Usage: /btw <question>",NotificationType::Warning);state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retiring.clone()};return Box::pin(async move {await_retirement(retiring).await;Ok(())});}
@@ -117,73 +205,110 @@ mod cancellation_tests {
     #[tokio::test]
     async fn cancelled_collection_waits_for_handler_and_relay_cleanup() {
         // Given an active stream with separately gated handler and relay cleanup.
-        let stream=maho_ai::utils::event_stream::AssistantMessageEventStream::assistant();
-        let controller=maho_ai::utils::abort::AbortController::new();
-        let signal=controller.signal();
-        let (entered_tx,entered_rx)=tokio::sync::oneshot::channel();
-        let (release_tx,release_rx)=tokio::sync::oneshot::channel();
-        let (relay_entered_tx,relay_entered_rx)=tokio::sync::oneshot::channel();
-        let (relay_tx,relay_rx)=tokio::sync::oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move||Box::pin(async move{
-            entered_tx.send(()).expect("cleanup subscriber");
-            release_rx.await.expect("cleanup release");
-            relay_entered_tx.send(()).expect("relay subscriber");
-            Ok(())
-        })));
-        stream.set_cancellation_task(tokio::spawn(async move{relay_rx.await.expect("relay release");}));
-        let task=tokio::spawn(async move{collect_with_signal(&stream,&signal,|_|{}).await});
+        let stream = maho_ai::utils::event_stream::AssistantMessageEventStream::assistant();
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let signal = controller.signal();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (relay_entered_tx, relay_entered_rx) = tokio::sync::oneshot::channel();
+        let (relay_tx, relay_rx) = tokio::sync::oneshot::channel();
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("cleanup subscriber");
+                release_rx.await.expect("cleanup release");
+                relay_entered_tx.send(()).expect("relay subscriber");
+                Ok(())
+            })
+        }));
+        stream.set_cancellation_task(tokio::spawn(async move {
+            relay_rx.await.expect("relay release");
+        }));
+        let task = tokio::spawn(async move { collect_with_signal(&stream, &signal, |_| {}).await });
         // When cancellation wins the outer collector select.
         controller.abort(None);
-        let bound=std::time::Duration::from_secs(5);
-        tokio::time::timeout(bound,entered_rx).await.expect("cleanup deadline").expect("cleanup started");
+        let bound = std::time::Duration::from_secs(5);
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("cleanup deadline")
+            .expect("cleanup started");
         // Then returning is blocked by both cleanup acknowledgements.
         assert!(!task.is_finished());
         release_tx.send(()).expect("release subscriber");
-        tokio::time::timeout(bound,relay_entered_rx).await.expect("relay deadline").expect("handler finished");
+        tokio::time::timeout(bound, relay_entered_rx)
+            .await
+            .expect("relay deadline")
+            .expect("handler finished");
         assert!(!task.is_finished());
         relay_tx.send(()).expect("relay release subscriber");
-        assert!(tokio::time::timeout(bound,task).await.expect("collector deadline").expect("task").is_err());
+        assert!(
+            tokio::time::timeout(bound, task)
+                .await
+                .expect("collector deadline")
+                .expect("task")
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn cancelled_collection_preserves_cleanup_failure() {
         // Given a stream whose cancellation handler fails with a transport error.
-        let stream=maho_ai::utils::event_stream::AssistantMessageEventStream::assistant();
-        stream.set_cancellation_handler(Box::new(||Box::pin(async{
-            Err(maho_ai::utils::event_stream::StreamError::new("cleanup transport failure"))
-        })));
-        let controller=maho_ai::utils::abort::AbortController::new();
+        let stream = maho_ai::utils::event_stream::AssistantMessageEventStream::assistant();
+        stream.set_cancellation_handler(Box::new(|| {
+            Box::pin(async {
+                Err(maho_ai::utils::event_stream::StreamError::new(
+                    "cleanup transport failure",
+                ))
+            })
+        }));
+        let controller = maho_ai::utils::abort::AbortController::new();
         // When the caller cancels collection.
         controller.abort(None);
-        let result=tokio::time::timeout(std::time::Duration::from_secs(5),collect_with_signal(&stream,&controller.signal(),|_|{})).await.expect("collector deadline");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            collect_with_signal(&stream, &controller.signal(), |_| {}),
+        )
+        .await
+        .expect("collector deadline");
         // Then the cleanup failure, not the generic cancellation, reaches the caller.
-        assert_eq!(result.expect_err("cleanup failure").message,"cleanup transport failure");
+        assert_eq!(
+            result.expect_err("cleanup failure").message,
+            "cleanup transport failure"
+        );
     }
 
     #[tokio::test]
     async fn replacement_waits_for_retired_command_completion() {
         // Given the same completion guard owned by an active command.
-        let (completed,completion)=tokio::sync::watch::channel(false);
-        let guard=Completion(completed);
-        let (entered_tx,entered_rx)=tokio::sync::oneshot::channel();
-        let replacement=tokio::spawn(async move{
-            let retirement=await_retirement(vec![completion]);
+        let (completed, completion) = tokio::sync::watch::channel(false);
+        let guard = Completion(completed);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let replacement = tokio::spawn(async move {
+            let retirement = await_retirement(vec![completion]);
             tokio::pin!(retirement);
-            std::future::poll_fn(|cx|{
-                assert!(std::future::Future::poll(retirement.as_mut(),cx).is_pending());
+            std::future::poll_fn(|cx| {
+                assert!(std::future::Future::poll(retirement.as_mut(), cx).is_pending());
                 std::task::Poll::Ready(())
-            }).await;
+            })
+            .await;
             entered_tx.send(()).expect("retirement subscriber");
             // When a replacement awaits the previous command's cleanup.
             retirement.await;
             2
         });
-        let bound=std::time::Duration::from_secs(5);
-        tokio::time::timeout(bound,entered_rx).await.expect("retirement deadline").expect("retirement started");
+        let bound = std::time::Duration::from_secs(5);
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("retirement deadline")
+            .expect("retirement started");
         // Then no replacement proceeds until that command has released its resources.
         assert!(!replacement.is_finished());
         drop(guard);
-        assert_eq!(tokio::time::timeout(bound,replacement).await.expect("replacement deadline").expect("task"),2);
+        assert_eq!(
+            tokio::time::timeout(bound, replacement)
+                .await
+                .expect("replacement deadline")
+                .expect("task"),
+            2
+        );
     }
 }
-

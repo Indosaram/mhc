@@ -1,9 +1,10 @@
 //! Port of the pinned picomatch `lib/scan.js` (picomatch 4.0.5, MIT).
 
 use super::constants::codes::{
-    CHAR_ASTERISK, CHAR_AT, CHAR_BACKWARD_SLASH, CHAR_COMMA, CHAR_DOT, CHAR_EXCLAMATION_MARK, CHAR_FORWARD_SLASH,
-    CHAR_LEFT_CURLY_BRACE, CHAR_LEFT_PARENTHESES, CHAR_LEFT_SQUARE_BRACKET, CHAR_PLUS, CHAR_QUESTION_MARK,
-    CHAR_RIGHT_CURLY_BRACE, CHAR_RIGHT_PARENTHESES, CHAR_RIGHT_SQUARE_BRACKET,
+    CHAR_ASTERISK, CHAR_AT, CHAR_BACKWARD_SLASH, CHAR_COMMA, CHAR_DOT, CHAR_EXCLAMATION_MARK,
+    CHAR_FORWARD_SLASH, CHAR_LEFT_CURLY_BRACE, CHAR_LEFT_PARENTHESES, CHAR_LEFT_SQUARE_BRACKET,
+    CHAR_PLUS, CHAR_QUESTION_MARK, CHAR_RIGHT_CURLY_BRACE, CHAR_RIGHT_PARENTHESES,
+    CHAR_RIGHT_SQUARE_BRACKET,
 };
 use super::utils::{code_at, remove_backslashes};
 
@@ -179,7 +180,13 @@ pub fn scan(input: &str, options: &ScanOptions) -> ScanState {
         if !options.noext {
             let is_extglob_char = matches!(
                 code,
-                Some(CHAR_PLUS | CHAR_AT | CHAR_ASTERISK | CHAR_QUESTION_MARK | CHAR_EXCLAMATION_MARK)
+                Some(
+                    CHAR_PLUS
+                        | CHAR_AT
+                        | CHAR_ASTERISK
+                        | CHAR_QUESTION_MARK
+                        | CHAR_EXCLAMATION_MARK
+                )
             );
             if is_extglob_char && peek(index) == Some(CHAR_LEFT_PARENTHESES) {
                 is_glob = true;
@@ -319,7 +326,9 @@ pub fn scan(input: &str, options: &ScanOptions) -> ScanState {
     if !base.is_empty() && base != "/" && base != str_slice {
         let base_units: Vec<char> = base.chars().collect();
         if is_path_separator(code_at(&base_units, base_units.len().saturating_sub(1))) {
-            base = base_units[..base_units.len().saturating_sub(1)].iter().collect();
+            base = base_units[..base_units.len().saturating_sub(1)]
+                .iter()
+                .collect();
         }
     }
 
@@ -360,7 +369,9 @@ pub fn scan(input: &str, options: &ScanOptions) -> ScanState {
         for (idx, &i) in slashes.iter().enumerate() {
             let n = prev_index.map_or(start, |value| value + 1);
             let units: Vec<char> = input.chars().collect();
-            let value: String = units[n.min(units.len())..i.min(units.len())].iter().collect();
+            let value: String = units[n.min(units.len())..i.min(units.len())]
+                .iter()
+                .collect();
             if options.tokens {
                 if idx == 0 && start != 0 {
                     if let Some(entry) = tokens.get_mut(idx) {

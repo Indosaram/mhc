@@ -1,16 +1,26 @@
 //! Native extension-entry tests: the `maho-omo` flag set and the disabled short-circuit, the
 //! native half of `omo-senpi/src/extension/index.test.ts`.
 
+use crate::support::{
+    FakeComponent, flag_names, manual_runtime_options, new_api, set_boolean_flag, tool_names,
+};
 use maho_ext_api::Extension;
-use maho_omo::{OMO_DISABLED_FLAG, OmoSenpiComponent, OmoRuntimeOptions, RecordingLogger, component_disabled_flag, compose_omo_extension_with_options};
-use crate::support::{FakeComponent, flag_names, manual_runtime_options, new_api, set_boolean_flag, tool_names};
+use maho_omo::{
+    OMO_DISABLED_FLAG, OmoRuntimeOptions, OmoSenpiComponent, RecordingLogger,
+    component_disabled_flag, compose_omo_extension_with_options,
+};
 
 fn options(logger: &RecordingLogger) -> OmoRuntimeOptions {
     manual_runtime_options(std::sync::Arc::new(logger.clone()))
 }
 
 fn component(name: &'static str, tool: &'static str) -> OmoSenpiComponent {
-    OmoSenpiComponent::new(name, Box::new(FakeComponent::new(move |api| api.register_tool(crate::support::fake_tool(tool)))))
+    OmoSenpiComponent::new(
+        name,
+        Box::new(FakeComponent::new(move |api| {
+            api.register_tool(crate::support::fake_tool(tool))
+        })),
+    )
 }
 
 #[test]
@@ -40,7 +50,11 @@ fn the_entry_registers_the_disabled_flag_and_one_flag_per_component() {
     );
     assert_eq!(
         tool_names(&api),
-        vec!["config_startup_tool".to_owned(), "config_watch_tool".to_owned(), "ulw_loop_tool".to_owned()]
+        vec![
+            "config_startup_tool".to_owned(),
+            "config_watch_tool".to_owned(),
+            "ulw_loop_tool".to_owned()
+        ]
     );
 }
 
@@ -59,5 +73,8 @@ fn a_disabled_component_emits_no_registration_and_one_info_log() {
 
     assert!(tool_names(&api).is_empty());
     assert_eq!(logger.entries().len(), 1);
-    assert_eq!(logger.entries()[0].message, "omo-senpi component disabled by flag");
+    assert_eq!(
+        logger.entries()[0].message,
+        "omo-senpi component disabled by flag"
+    );
 }

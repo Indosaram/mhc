@@ -28,7 +28,10 @@ pub const KERNEL_TOOL_ERROR_CODES: [KernelToolErrorCode; 9] = [
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum KernelToolHostDenialReason { Allow, Deny }
+pub enum KernelToolHostDenialReason {
+    Allow,
+    Deny,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelToolHostDenial {
@@ -47,6 +50,15 @@ pub struct KernelToolError {
     pub details: Option<KernelToolHostDenial>,
 }
 
-pub fn kernel_tool_error(code: KernelToolErrorCode, message: impl Into<String>, details: Option<KernelToolHostDenial>) -> KernelToolError {
-    KernelToolError { name: "KernelToolError".into(), code, message: message.into(), details }
+pub fn kernel_tool_error(
+    code: KernelToolErrorCode,
+    message: impl Into<String>,
+    details: Option<KernelToolHostDenial>,
+) -> KernelToolError {
+    KernelToolError {
+        name: "KernelToolError".into(),
+        code,
+        message: message.into(),
+        details,
+    }
 }

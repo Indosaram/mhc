@@ -24,7 +24,8 @@ mod tests {
         error_message: Option<&str>,
         output: u64,
     ) -> AssistantMessage {
-        AssistantMessage { credential_served_recently: None,
+        AssistantMessage {
+            credential_served_recently: None,
             thinking_level: None,
             provider_diagnostic: None,
             prompt_cache_breakpoint: None,
@@ -38,7 +39,8 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage { context_usage: None,
+            usage: Usage {
+                context_usage: None,
                 input: 200_000,
                 output,
                 cache_read: 0,

@@ -2,8 +2,11 @@
 
 use serde_json::{Map, Value};
 
-use super::markers::{get_partial_xtml_suffix, parse_xtml_attributes, XTML_ARGUMENT_CLOSE, XTML_ARGUMENT_OPEN, XTML_CALL_CLOSE, XTML_CALL_OPEN, XTML_SEP, XTML_TOOLS_CLOSE, XTML_TOOLS_OPEN};
-use super::parse::{coerce_xtml_argument_value, CoercedXtmlValue};
+use super::markers::{
+    XTML_ARGUMENT_CLOSE, XTML_ARGUMENT_OPEN, XTML_CALL_CLOSE, XTML_CALL_OPEN, XTML_SEP,
+    XTML_TOOLS_CLOSE, XTML_TOOLS_OPEN, get_partial_xtml_suffix, parse_xtml_attributes,
+};
+use super::parse::{CoercedXtmlValue, coerce_xtml_argument_value};
 use crate::tool_call_middleware::types::{ParserOptions, StreamParser, StreamParserEvent};
 use crate::types::Tool;
 
@@ -49,7 +52,11 @@ impl KimiXtmlStreamParser {
         self.call_index += 1;
         self.call_name = name.to_string();
         self.call_started = true;
-        events.push(StreamParserEvent::ToolcallStart { index: self.call_index as usize, name: name.to_string(), id: format!("kimi-xtml-tool-{}", self.call_index) });
+        events.push(StreamParserEvent::ToolcallStart {
+            index: self.call_index as usize,
+            name: name.to_string(),
+            id: format!("kimi-xtml-tool-{}", self.call_index),
+        });
     }
 
     fn end_call(&mut self, events: &mut Vec<StreamParserEvent>, incomplete: bool) {
@@ -63,7 +70,11 @@ impl KimiXtmlStreamParser {
             id: format!("kimi-xtml-tool-{}", self.call_index),
             arguments: self.call_args.clone(),
             incomplete,
-            error_message: if incomplete { self.call_invalid_reason.clone() } else { None },
+            error_message: if incomplete {
+                self.call_invalid_reason.clone()
+            } else {
+                None
+            },
         });
         self.reset_call();
         self.mode = ParserMode::Tools;
@@ -74,7 +85,11 @@ impl KimiXtmlStreamParser {
         if !flush_as_text {
             return;
         }
-        let flushable = if partial.is_empty() { self.buffer.clone() } else { self.buffer[..self.buffer.len() - partial.len()].to_string() };
+        let flushable = if partial.is_empty() {
+            self.buffer.clone()
+        } else {
+            self.buffer[..self.buffer.len() - partial.len()].to_string()
+        };
         if !flushable.is_empty() {
             events.push(StreamParserEvent::Text { text: flushable });
         }
@@ -90,7 +105,9 @@ impl KimiXtmlStreamParser {
                         return;
                     };
                     if start > 0 {
-                        events.push(StreamParserEvent::Text { text: self.buffer[..start].to_string() });
+                        events.push(StreamParserEvent::Text {
+                            text: self.buffer[..start].to_string(),
+                        });
                     }
                     self.buffer = self.buffer[start + XTML_TOOLS_OPEN.len()..].to_string();
                     self.mode = ParserMode::Tools;
@@ -123,7 +140,10 @@ impl KimiXtmlStreamParser {
                         let name = attributes.get("tool").cloned().unwrap_or_default();
                         if !self.tools.iter().any(|candidate| candidate.name == name) {
                             if let Some(options) = &self.options {
-                                options.report_error(&format!("kimi-xtml: call for unknown tool \"{name}\"."), Some(std::collections::HashMap::new()));
+                                options.report_error(
+                                    &format!("kimi-xtml: call for unknown tool \"{name}\"."),
+                                    Some(std::collections::HashMap::new()),
+                                );
                             }
                             self.mode = ParserMode::DiscardCall;
                             continue;
@@ -159,20 +179,36 @@ impl KimiXtmlStreamParser {
                         self.hold(events, &[XTML_ARGUMENT_CLOSE], false);
                         return;
                     };
-                    let coerced = coerce_xtml_argument_value(&self.buffer[..value_end], self.argument_type.as_deref());
+                    let coerced = coerce_xtml_argument_value(
+                        &self.buffer[..value_end],
+                        self.argument_type.as_deref(),
+                    );
                     self.buffer = self.buffer[value_end + XTML_ARGUMENT_CLOSE.len()..].to_string();
                     match coerced {
                         CoercedXtmlValue::Err => {
-                            let reason = format!("kimi-xtml: invalid value for argument \"{}\".", self.argument_key);
+                            let reason = format!(
+                                "kimi-xtml: invalid value for argument \"{}\".",
+                                self.argument_key
+                            );
                             self.call_invalid_reason = Some(reason.clone());
                             if let Some(options) = &self.options {
-                                options.report_error(&reason, Some(std::collections::HashMap::from([("toolCall".to_string(), Value::String(self.call_name.clone()))])));
+                                options.report_error(
+                                    &reason,
+                                    Some(std::collections::HashMap::from([(
+                                        "toolCall".to_string(),
+                                        Value::String(self.call_name.clone()),
+                                    )])),
+                                );
                             }
                         }
                         CoercedXtmlValue::Ok(value) => {
                             if !self.argument_key.is_empty() {
                                 self.call_args.insert(self.argument_key.clone(), value);
-                                events.push(StreamParserEvent::ToolcallDelta { index: self.call_index as usize, arguments_delta: Value::Object(self.call_args.clone()).to_string() });
+                                events.push(StreamParserEvent::ToolcallDelta {
+                                    index: self.call_index as usize,
+                                    arguments_delta: Value::Object(self.call_args.clone())
+                                        .to_string(),
+                                });
                             }
                         }
                     }
@@ -204,7 +240,9 @@ impl StreamParser for KimiXtmlStreamParser {
         let mut events = Vec::new();
         if self.mode == ParserMode::Text {
             if !self.buffer.is_empty() {
-                events.push(StreamParserEvent::Text { text: std::mem::take(&mut self.buffer) });
+                events.push(StreamParserEvent::Text {
+                    text: std::mem::take(&mut self.buffer),
+                });
             }
             self.buffer.clear();
             return events;
@@ -218,7 +256,10 @@ impl StreamParser for KimiXtmlStreamParser {
     }
 }
 
-pub fn create_kimi_xtml_stream_parser(tools: Vec<Tool>, options: Option<ParserOptions>) -> Box<dyn StreamParser + Send> {
+pub fn create_kimi_xtml_stream_parser(
+    tools: Vec<Tool>,
+    options: Option<ParserOptions>,
+) -> Box<dyn StreamParser + Send> {
     Box::new(KimiXtmlStreamParser {
         tools,
         options,
@@ -242,14 +283,26 @@ mod tests {
     use crate::tool_call_middleware::types::StreamParserEvent;
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     #[test]
     fn feeds_plain_text_when_no_tools_block_is_present() {
         let mut parser = create_kimi_xtml_stream_parser(vec![tool("t")], None);
         let events = parser.feed("hello world");
-        assert_eq!(events, vec![StreamParserEvent::Text { text: "hello world".to_string() }]);
+        assert_eq!(
+            events,
+            vec![StreamParserEvent::Text {
+                text: "hello world".to_string()
+            }]
+        );
         assert!(parser.finish().is_empty());
     }
 
@@ -261,27 +314,51 @@ mod tests {
         );
         let mut events = parser.feed(&text);
         events.extend(parser.finish());
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::Text{text} if text == "before ")));
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart{name, ..} if name == "get_weather")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::Text{text} if text == "before "))
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, StreamParserEvent::ToolcallStart{name, ..} if name == "get_weather")
+        ));
         assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallEnd{name, arguments, incomplete: false, ..} if name == "get_weather" && arguments.get("city") == Some(&json!("Seoul")))));
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::Text{text} if text == " after")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::Text{text} if text == " after"))
+        );
     }
 
     #[test]
     fn finish_marks_an_unterminated_call_incomplete() {
         let mut parser = create_kimi_xtml_stream_parser(vec![tool("get_weather")], None);
-        parser.feed(&format!("{XTML_TOOLS_OPEN}{XTML_CALL_OPEN}tool=\"get_weather\" index=\"1\"{XTML_SEP}"));
+        parser.feed(&format!(
+            "{XTML_TOOLS_OPEN}{XTML_CALL_OPEN}tool=\"get_weather\" index=\"1\"{XTML_SEP}"
+        ));
         let events = parser.finish();
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallEnd{incomplete: true, ..})));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamParserEvent::ToolcallEnd {
+                incomplete: true,
+                ..
+            }
+        )));
     }
 
     #[test]
     fn discards_calls_for_unknown_tools() {
         let mut parser = create_kimi_xtml_stream_parser(vec![tool("get_weather")], None);
-        let text = format!("{XTML_TOOLS_OPEN}{XTML_CALL_OPEN}tool=\"unknown\" index=\"1\"{XTML_SEP}{XTML_CALL_CLOSE}{XTML_TOOLS_CLOSE}");
+        let text = format!(
+            "{XTML_TOOLS_OPEN}{XTML_CALL_OPEN}tool=\"unknown\" index=\"1\"{XTML_SEP}{XTML_CALL_CLOSE}{XTML_TOOLS_CLOSE}"
+        );
         let mut events = parser.feed(&text);
         events.extend(parser.finish());
-        assert!(!events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart{..})));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. }))
+        );
     }
     fn weather_tool_with_count() -> Tool {
         Tool {
@@ -306,7 +383,16 @@ mod tests {
     }
 
     fn text_of(events: &[StreamParserEvent]) -> String {
-        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|event| {
+                if let StreamParserEvent::Text { text } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn feed_chunks(chunks: &[&str]) -> Vec<StreamParserEvent> {
@@ -320,7 +406,9 @@ mod tests {
     }
 
     fn end_of(events: &[StreamParserEvent]) -> Option<&StreamParserEvent> {
-        events.iter().find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
+        events
+            .iter()
+            .find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
     }
 
     // Deterministic chunking that mirrors the TS randomChunkSplit helper.
@@ -331,7 +419,9 @@ mod tests {
         let mut index = 0usize;
         while index < chars.len() {
             current = (current * 9301 + 49_297) % 233_280;
-            let size = ((current as f64 / 233_280.0) * (max_size - min_size + 1) as f64).floor() as usize + min_size;
+            let size = ((current as f64 / 233_280.0) * (max_size - min_size + 1) as f64).floor()
+                as usize
+                + min_size;
             let end = (index + size).min(chars.len());
             chunks.push(chars[index..end].iter().collect());
             index = end;
@@ -354,8 +444,20 @@ mod tests {
         assert!(kinds.contains(&"toolcall_start"));
         assert!(kinds.contains(&"toolcall_delta"));
         assert!(kinds.contains(&"toolcall_end"));
-        let StreamParserEvent::ToolcallEnd { index, name, id, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
-        assert_eq!((*index, name.as_str(), id.as_str()), (0, "get_weather", "kimi-xtml-tool-0"));
+        let StreamParserEvent::ToolcallEnd {
+            index,
+            name,
+            id,
+            arguments,
+            ..
+        } = end_of(&events).expect("toolcall end")
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (*index, name.as_str(), id.as_str()),
+            (0, "get_weather", "kimi-xtml-tool-0")
+        );
         assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
         assert_eq!(arguments.get("count").and_then(Value::as_f64), Some(3.0));
     }
@@ -377,10 +479,19 @@ mod tests {
             let chunks = random_chunk_split(full_block(), 1, 8, seed);
             let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
             let events = feed_chunks(&chunk_refs);
-            let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+            let StreamParserEvent::ToolcallEnd {
+                name, arguments, ..
+            } = end_of(&events).expect("toolcall end")
+            else {
+                unreachable!()
+            };
             assert_eq!(name, "get_weather", "seed {seed}");
             assert_eq!(arguments.get("city"), Some(&json!("Seoul")), "seed {seed}");
-            assert_eq!(arguments.get("count").and_then(Value::as_f64), Some(3.0), "seed {seed}");
+            assert_eq!(
+                arguments.get("count").and_then(Value::as_f64),
+                Some(3.0),
+                "seed {seed}"
+            );
             assert!(!text_of(&events).contains("<|"), "seed {seed}");
         }
     }
@@ -396,7 +507,12 @@ mod tests {
             "<|close|>call<|sep|>",
             "<|close|>tools<|sep|>",
         ]);
-        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            name, arguments, ..
+        } = end_of(&events).expect("toolcall end")
+        else {
+            unreachable!()
+        };
         assert_eq!(name, "get_weather");
         assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
     }
@@ -409,7 +525,15 @@ mod tests {
             "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>"
         );
         let events = feed_chunks(&[partial]);
-        let StreamParserEvent::ToolcallEnd { name, arguments, incomplete, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            name,
+            arguments,
+            incomplete,
+            ..
+        } = end_of(&events).expect("toolcall end")
+        else {
+            unreachable!()
+        };
         assert_eq!(name, "get_weather");
         assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
         assert!(*incomplete);
@@ -428,8 +552,13 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds.last().copied(), Some("text"));
-        let last_text = events.iter().rev().find_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None });
+        let last_text = events.iter().rev().find_map(|event| {
+            if let StreamParserEvent::Text { text } = event {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        });
         assert_eq!(last_text, Some("after the call"));
     }
-
 }

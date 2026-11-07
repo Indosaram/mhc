@@ -1,5 +1,7 @@
 use super::values::ValueError;
-use maho_agent::harness::session::{Entry, EntryStructure, EntryScan, ScanOrder, UsageRow, UsageScan};
+use maho_agent::harness::session::{
+    Entry, EntryScan, EntryStructure, ScanOrder, UsageRow, UsageScan,
+};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
@@ -15,13 +17,24 @@ pub fn insert_entry(db: &Connection, session: &str, entry: &Entry) -> Result<(),
     db.prepare_cached("INSERT INTO entries (session_id,id,parent_id,seq,type,custom_type,timestamp,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?.execute(params![session,entry.id,entry.parent_id,entry.seq,kind,custom,entry.timestamp,serde_json::to_string(&payload)?])?;
     Ok(())
 }
-pub fn read_entry_structures(db: &Connection,session: &str,ids: &[String]) -> Result<Vec<EntryStructure>,ValueError> {
+pub fn read_entry_structures(
+    db: &Connection,
+    session: &str,
+    ids: &[String],
+) -> Result<Vec<EntryStructure>, ValueError> {
     let mut statement = db.prepare_cached("SELECT id,parent_id,seq,type,custom_type,timestamp FROM entries WHERE session_id=?1 AND id=?2")?;
     let mut output = Vec::new();
     for id in ids {
-        let mut rows = statement.query(params![session,id])?;
+        let mut rows = statement.query(params![session, id])?;
         if let Some(row) = rows.next()? {
-            output.push(EntryStructure {id:row.get(0)?,parent_id:row.get(1)?,seq:row.get(2)?,entry_type:serde_json::from_value(json!(row.get::<_,String>(3)?))?,custom_type:row.get(4)?,timestamp:row.get(5)?});
+            output.push(EntryStructure {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                seq: row.get(2)?,
+                entry_type: serde_json::from_value(json!(row.get::<_, String>(3)?))?,
+                custom_type: row.get(4)?,
+                timestamp: row.get(5)?,
+            });
         }
     }
     Ok(output)
@@ -31,9 +44,14 @@ pub fn scan_entries(
     session: &str,
     query: &EntryScan,
 ) -> Result<Vec<Entry>, ValueError> {
-    scan_selected_entries(db,session,query,None)
+    scan_selected_entries(db, session, query, None)
 }
-fn scan_selected_entries(db: &Connection,session: &str,query: &EntryScan,ids: Option<&[String]>) -> Result<Vec<Entry>,ValueError> {
+fn scan_selected_entries(
+    db: &Connection,
+    session: &str,
+    query: &EntryScan,
+    ids: Option<&[String]>,
+) -> Result<Vec<Entry>, ValueError> {
     let kind = query
         .entry_type
         .map(serde_json::to_value)
@@ -88,7 +106,10 @@ fn scan_selected_entries(db: &Connection,session: &str,query: &EntryScan,ids: Op
             )))?);
         }
         // PERF-DIVERGENCE(senpi): upstream JSON.parse's once per row; we move `data`/`details` out of the parsed value and decode it by move, instead of deep-cloning the whole entry twice. The decoded Entry is identical.
-        let (data, details) = (entry.get_mut("data").map(Value::take), entry.get_mut("details").map(Value::take));
+        let (data, details) = (
+            entry.get_mut("data").map(Value::take),
+            entry.get_mut("details").map(Value::take),
+        );
         let mut decoded: Entry = serde_json::from_value(entry)?;
         match &mut decoded.kind {
             maho_agent::harness::session::EntryKind::Custom { data: slot, .. } => *slot = data,
@@ -110,7 +131,7 @@ pub fn read_entries(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    scan_selected_entries(db,session,&EntryScan::default(),Some(ids))
+    scan_selected_entries(db, session, &EntryScan::default(), Some(ids))
 }
 pub fn insert_usage(db: &Connection, session: &str, usage: &UsageRow) -> Result<(), ValueError> {
     db.prepare_cached("INSERT INTO usage_ledger (session_id,id,seq,entry_id,adjustment,usage,details) VALUES (?1,?2,?3,?4,?5,?6,?7)")?.execute(params![session,usage.id,usage.seq,usage.entry_id,usage.adjustment,serde_json::to_string(&usage.usage)?,usage.details.as_ref().map(serde_json::to_string).transpose()?])?;

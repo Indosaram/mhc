@@ -1,6 +1,9 @@
 //! Port of senpi packages/ai/src/auth/pool/failover.ts.
 
-use crate::auth::pool::classify::{PoolBlockReason, PoolFailureAction, PoolFailureClassification, PoolFailureError, classify_pool_failure};
+use crate::auth::pool::classify::{
+    PoolBlockReason, PoolFailureAction, PoolFailureClassification, PoolFailureError,
+    classify_pool_failure,
+};
 use crate::auth::pool::select::SelectableSlot;
 use crate::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX;
 use futures::stream::{Stream, StreamExt};
@@ -37,8 +40,16 @@ impl std::fmt::Display for PoolFailoverError {
 }
 
 impl PoolFailoverError {
-    pub fn new(classification: PoolFailureClassification, detail: impl Into<String>, suppress_turn_retry: bool) -> Self {
-        Self { classification, detail: detail.into(), suppress_turn_retry }
+    pub fn new(
+        classification: PoolFailureClassification,
+        detail: impl Into<String>,
+        suppress_turn_retry: bool,
+    ) -> Self {
+        Self {
+            classification,
+            detail: detail.into(),
+            suppress_turn_retry,
+        }
     }
 }
 
@@ -58,12 +69,15 @@ fn blocked_slot<TSlot: SelectableSlot>(
 }
 
 pub type SelectFn<TSlot> = Box<dyn Fn(&[TSlot]) -> TSlot + Send>;
-pub type AttemptStream<TEvent> = Pin<Box<dyn Stream<Item = Result<TEvent, PoolFailureError>> + Send>>;
+pub type AttemptStream<TEvent> =
+    Pin<Box<dyn Stream<Item = Result<TEvent, PoolFailureError>> + Send>>;
 pub type RunAttemptFn<TSlot, TEvent> = Box<dyn Fn(&TSlot) -> AttemptStream<TEvent> + Send>;
 pub type ClassifyFn = Box<dyn Fn(&PoolFailureError) -> PoolFailureClassification + Send>;
 pub type CommittedFn<TEvent> = Box<dyn Fn(&TEvent) -> bool + Send>;
-pub type PersistBlockFn<TSlot> = Box<dyn Fn(&TSlot) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
-pub type OnRotateFn<TSlot> = Box<dyn Fn(&PoolFailoverEvent<TSlot>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+pub type PersistBlockFn<TSlot> =
+    Box<dyn Fn(&TSlot) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+pub type OnRotateFn<TSlot> =
+    Box<dyn Fn(&PoolFailoverEvent<TSlot>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 pub struct PoolFailoverOptions<TSlot, TEvent> {
     pub slots: Vec<TSlot>,
@@ -82,7 +96,10 @@ pub struct PoolFailoverOptions<TSlot, TEvent> {
 /// suppression marker so the session layer never replays a partially delivered turn. Non-rotate
 /// classes throw immediately and compose with the retry/model-fallback machinery above this
 /// engine.
-pub async fn run_slot_failover<TSlot: SelectableSlot + Clone + Send + 'static, TEvent: Send + 'static>(
+pub async fn run_slot_failover<
+    TSlot: SelectableSlot + Clone + Send + 'static,
+    TEvent: Send + 'static,
+>(
     options: PoolFailoverOptions<TSlot, TEvent>,
 ) -> Result<Vec<TEvent>, PoolFailoverError> {
     let mut slots = options.slots.clone();
@@ -99,7 +116,8 @@ pub async fn run_slot_failover<TSlot: SelectableSlot + Clone + Send + 'static, T
         loop {
             match stream.next().await {
                 Some(Ok(event)) => {
-                    committed_output = committed_output || is_committed.is_none_or(|committed| committed(&event));
+                    committed_output =
+                        committed_output || is_committed.is_none_or(|committed| committed(&event));
                     collected.push(event);
                 }
                 Some(Err(error)) => {
@@ -123,7 +141,16 @@ pub async fn run_slot_failover<TSlot: SelectableSlot + Clone + Send + 'static, T
 
         let now = (options.now)();
         let blocked = blocked_slot(&slot, &classification, now, attempt, options.base_block_ms);
-        slots = slots.into_iter().map(|candidate| if candidate.name() == blocked.name() { blocked.clone() } else { candidate }).collect();
+        slots = slots
+            .into_iter()
+            .map(|candidate| {
+                if candidate.name() == blocked.name() {
+                    blocked.clone()
+                } else {
+                    candidate
+                }
+            })
+            .collect();
         if let Some(persist_block) = &options.persist_block {
             persist_block(&blocked).await;
         }
@@ -147,7 +174,11 @@ pub async fn run_slot_failover<TSlot: SelectableSlot + Clone + Send + 'static, T
     }
     Err(last_error.unwrap_or_else(|| {
         PoolFailoverError::new(
-            PoolFailureClassification { action: PoolFailureAction::Fail, block_reason: None, retry_after_ms: None },
+            PoolFailureClassification {
+                action: PoolFailureAction::Fail,
+                block_reason: None,
+                retry_after_ms: None,
+            },
             "Credential pool failover exhausted without an attempt",
             false,
         )
@@ -177,18 +208,34 @@ mod tests {
             self.block_reason.as_deref()
         }
         fn clear_block(&self) -> Self {
-            Self { blocked_until: None, block_reason: None, ..self.clone() }
+            Self {
+                blocked_until: None,
+                block_reason: None,
+                ..self.clone()
+            }
         }
         fn with_auth_block(&self) -> Self {
-            Self { blocked_until: None, block_reason: Some("auth_error".into()), ..self.clone() }
+            Self {
+                blocked_until: None,
+                block_reason: Some("auth_error".into()),
+                ..self.clone()
+            }
         }
         fn with_rate_limit_block(&self, blocked_until: f64) -> Self {
-            Self { blocked_until: Some(blocked_until), block_reason: Some("rate_limit".into()), ..self.clone() }
+            Self {
+                blocked_until: Some(blocked_until),
+                block_reason: Some("rate_limit".into()),
+                ..self.clone()
+            }
         }
     }
 
     fn make_slot(name: &str) -> TestSlot {
-        TestSlot { name: name.into(), blocked_until: None, block_reason: None }
+        TestSlot {
+            name: name.into(),
+            blocked_until: None,
+            block_reason: None,
+        }
     }
 
     fn first_unblocked(slots: &[TestSlot]) -> TestSlot {
@@ -222,7 +269,9 @@ mod tests {
     #[tokio::test]
     async fn a_pre_output_429_rotates_to_the_next_slot_and_blocks_the_failed_one() {
         let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TestSlot>::new()));
-        let rotations = std::sync::Arc::new(std::sync::Mutex::new(Vec::<PoolFailoverEvent<TestSlot>>::new()));
+        let rotations = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
+            PoolFailoverEvent<TestSlot>,
+        >::new()));
         let attempted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let persisted_clone = persisted.clone();
         let rotations_clone = rotations.clone();
@@ -261,14 +310,23 @@ mod tests {
         };
         let result = run_slot_failover(options).await.unwrap();
         assert_eq!(result, vec![1]);
-        assert_eq!(*attempted.lock().unwrap(), vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            *attempted.lock().unwrap(),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
         let persisted = persisted.lock().unwrap();
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].name, "alpha");
         assert_eq!(persisted[0].block_reason.as_deref(), Some("rate_limit"));
         assert!(persisted[0].blocked_until.unwrap() > NOW);
         let rotations = rotations.lock().unwrap();
-        assert_eq!(rotations[0].next_slot.as_ref().map(|slot| slot.name.as_str()), Some("beta"));
+        assert_eq!(
+            rotations[0]
+                .next_slot
+                .as_ref()
+                .map(|slot| slot.name.as_str()),
+            Some("beta")
+        );
     }
 
     #[tokio::test]
@@ -282,7 +340,9 @@ mod tests {
                 attempted_clone.lock().unwrap().push(slot.name.clone());
                 Box::pin(stream::iter(vec![
                     Ok(1u32),
-                    Err(PoolFailureError::from(serde_json::json!({"status": 429, "message": "rate limited"}))),
+                    Err(PoolFailureError::from(
+                        serde_json::json!({"status": 429, "message": "rate limited"}),
+                    )),
                 ]))
             }),
             classify: None,
@@ -323,7 +383,10 @@ mod tests {
             base_block_ms: DEFAULT_SLOT_BLOCK_MS,
         };
         let result = run_slot_failover(options).await.unwrap();
-        assert_eq!(*attempted.lock().unwrap(), vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            *attempted.lock().unwrap(),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
         assert_eq!(result, vec![7]);
     }
 
@@ -372,7 +435,9 @@ mod tests {
             select: Box::new(first_unblocked),
             run_attempt: Box::new(move |slot: &TestSlot| {
                 attempted_clone.lock().unwrap().push(slot.name.clone());
-                Box::pin(stream::iter(vec![Err(PoolFailureError::from("totally unknown"))]))
+                Box::pin(stream::iter(vec![Err(PoolFailureError::from(
+                    "totally unknown",
+                ))]))
             }),
             classify: None,
             is_committed_output: None,

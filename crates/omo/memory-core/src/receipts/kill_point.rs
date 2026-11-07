@@ -37,11 +37,9 @@ pub fn maybe_kill_at(point: &str, options: KillPointOptions<'_>) -> Option<&'sta
     }
 
     let pid = std::process::id();
-    let platform = options.platform.unwrap_or(if cfg!(windows) {
-        "win32"
-    } else {
-        "linux"
-    });
+    let platform = options
+        .platform
+        .unwrap_or(if cfg!(windows) { "win32" } else { "linux" });
 
     if let Some(kill) = options.kill {
         if platform == "win32" {

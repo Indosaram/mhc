@@ -6,7 +6,7 @@
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DLGC_WANTCHARS, FindWindowExW, IsWindowVisible, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
+    FindWindowExW, IsWindowVisible, SendMessageTimeoutW, DLGC_WANTCHARS, SMTO_ABORTIFHUNG,
     WM_GETDLGCODE,
 };
 

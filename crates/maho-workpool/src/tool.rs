@@ -40,7 +40,11 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     fn ok(value: Value) -> Self {
-        Self { text: value.to_string(), details: value, is_error: false }
+        Self {
+            text: value.to_string(),
+            details: value,
+            is_error: false,
+        }
     }
     fn err(error: &PoolError) -> Self {
         Self {
@@ -51,7 +55,11 @@ impl ToolOutcome {
     }
     /// The error code of a failed outcome.
     pub fn code(&self) -> Option<&str> {
-        if self.is_error { self.details.get("code").and_then(Value::as_str) } else { None }
+        if self.is_error {
+            self.details.get("code").and_then(Value::as_str)
+        } else {
+            None
+        }
     }
 }
 
@@ -94,11 +102,18 @@ pub fn worker_parameters() -> Value {
 }
 
 fn object(params: &Value) -> Result<&Map<String, Value>, PoolError> {
-    params.as_object().ok_or_else(|| invalid("parameters must be an object"))
+    params
+        .as_object()
+        .ok_or_else(|| invalid("parameters must be an object"))
 }
 
 /// Checks that `params` has exactly `required` plus any of `optional`.
-fn fields(params: &Map<String, Value>, op: &str, required: &[&str], optional: &[&str]) -> Result<(), PoolError> {
+fn fields(
+    params: &Map<String, Value>,
+    op: &str,
+    required: &[&str],
+    optional: &[&str],
+) -> Result<(), PoolError> {
     for key in params.keys() {
         if key != "op" && !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
             return Err(invalid(format!("op {op} does not accept field {key}")));
@@ -113,7 +128,10 @@ fn fields(params: &Map<String, Value>, op: &str, required: &[&str], optional: &[
 }
 
 fn string(params: &Map<String, Value>, key: &str) -> Result<String, PoolError> {
-    let value = params.get(key).and_then(Value::as_str).ok_or_else(|| invalid(format!("{key} must be a string")))?;
+    let value = params
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(format!("{key} must be a string")))?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(invalid(format!("{key} must not be blank")));
@@ -133,13 +151,21 @@ fn pool_id(params: &Map<String, Value>) -> Result<String, PoolError> {
 /// # Errors
 /// `invalid_input`.
 pub fn parse_agent(value: &Value) -> Result<AgentSpec, PoolError> {
-    let map = value.as_object().ok_or_else(|| invalid("agent must be an object"))?;
+    let map = value
+        .as_object()
+        .ok_or_else(|| invalid("agent must be an object"))?;
     let has_category = map.contains_key("category");
     let has_subagent = map.contains_key("subagent_type");
     if has_category == has_subagent {
-        return Err(invalid("agent needs exactly one of category or subagent_type"));
+        return Err(invalid(
+            "agent needs exactly one of category or subagent_type",
+        ));
     }
-    let kind = if has_category { "category" } else { "subagent_type" };
+    let kind = if has_category {
+        "category"
+    } else {
+        "subagent_type"
+    };
     for key in map.keys() {
         if key != kind && key != "prompt" && key != "model" {
             return Err(invalid(format!("agent does not accept field {key}")));
@@ -153,9 +179,17 @@ pub fn parse_agent(value: &Value) -> Result<AgentSpec, PoolError> {
         None
     };
     Ok(if has_category {
-        AgentSpec::Category { category: target, prompt, model }
+        AgentSpec::Category {
+            category: target,
+            prompt,
+            model,
+        }
     } else {
-        AgentSpec::Subagent { subagent_type: target, prompt, model }
+        AgentSpec::Subagent {
+            subagent_type: target,
+            prompt,
+            model,
+        }
     })
 }
 
@@ -172,7 +206,11 @@ pub fn parse_create(params: &Map<String, Value>) -> Result<CreateRequest, PoolEr
         Some(_) => match string(params, "mode")?.as_str() {
             "fresh" => PoolMode::Fresh,
             "keep_alive" => PoolMode::KeepAlive,
-            other => return Err(invalid(format!("mode must be fresh or keep_alive, not {other}"))),
+            other => {
+                return Err(invalid(format!(
+                    "mode must be fresh or keep_alive, not {other}"
+                )));
+            }
         },
     };
     let tools = match params.get("tools") {
@@ -186,7 +224,12 @@ pub fn parse_create(params: &Map<String, Value>) -> Result<CreateRequest, PoolEr
             .collect::<Result<_, _>>()?,
         Some(_) => return Err(invalid("tools must be a list of tool names")),
     };
-    Ok(CreateRequest { name, agent, mode, tools })
+    Ok(CreateRequest {
+        name,
+        agent,
+        mode,
+        tools,
+    })
 }
 
 /// Parses `push.items`.
@@ -194,10 +237,14 @@ pub fn parse_create(params: &Map<String, Value>) -> Result<CreateRequest, PoolEr
 /// # Errors
 /// `invalid_input`.
 pub fn parse_items(value: &Value) -> Result<Vec<(String, Value)>, PoolError> {
-    let list = value.as_array().ok_or_else(|| invalid("items must be a list"))?;
+    let list = value
+        .as_array()
+        .ok_or_else(|| invalid("items must be a list"))?;
     list.iter()
         .map(|item| {
-            let map = item.as_object().ok_or_else(|| invalid("each item must be an object {key, input}"))?;
+            let map = item
+                .as_object()
+                .ok_or_else(|| invalid("each item must be an object {key, input}"))?;
             if map.len() != 2 || !map.contains_key("key") || !map.contains_key("input") {
                 return Err(invalid("each item has exactly the fields key and input"));
             }
@@ -221,13 +268,18 @@ pub fn run(engine: &PoolEngine, caller: &Caller, params: &Value) -> ToolOutcome 
 fn dispatch(engine: &PoolEngine, caller: &Caller, params: &Value) -> Result<Value, PoolError> {
     let params = object(params)?;
     let op = op_of(params)?;
-    if !matches!(op.as_str(), "create" | "push" | "close" | "inspect" | "cancel" | "yield") {
+    if !matches!(
+        op.as_str(),
+        "create" | "push" | "close" | "inspect" | "cancel" | "yield"
+    ) {
         return Err(invalid(format!("unknown op {op}")));
     }
     let scope = |message: &str| PoolError::new(codes::SCOPE_DENIED, message);
     if op == "yield" {
         fields(params, "yield", &["results"], &[])?;
-        let results = params["results"].as_array().ok_or_else(|| invalid("results must be a list"))?;
+        let results = params["results"]
+            .as_array()
+            .ok_or_else(|| invalid("results must be a list"))?;
         return match caller {
             Caller::Worker { pool_id, task_id } => {
                 let receipts = engine.yield_results(pool_id, task_id, results)?;
@@ -258,14 +310,23 @@ fn dispatch(engine: &PoolEngine, caller: &Caller, params: &Value) -> Result<Valu
             let id = pool_id(params)?;
             let items = parse_items(&params["items"])?;
             let ids = engine.push(session, &id, items)?;
-            let ids: Vec<Value> = ids.into_iter().map(|(key, item_id)| json!({"key": key, "item_id": item_id})).collect();
+            let ids: Vec<Value> = ids
+                .into_iter()
+                .map(|(key, item_id)| json!({"key": key, "item_id": item_id}))
+                .collect();
             Ok(json!({"pool_id": id, "item_ids": ids}))
         }
         "close" | "cancel" => {
             fields(params, &op, &["pool_id"], &[])?;
             let id = pool_id(params)?;
-            let record = if op == "close" { engine.close(session, &id)? } else { engine.cancel(session, &id)? };
-            Ok(json!({"pool_id": id, "status": record.status.as_str(), "generation": record.generation}))
+            let record = if op == "close" {
+                engine.close(session, &id)?
+            } else {
+                engine.cancel(session, &id)?
+            };
+            Ok(
+                json!({"pool_id": id, "status": record.status.as_str(), "generation": record.generation}),
+            )
         }
         _ => {
             fields(params, "inspect", &["pool_id"], &[])?;

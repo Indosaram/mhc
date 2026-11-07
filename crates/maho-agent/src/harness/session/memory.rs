@@ -15,18 +15,17 @@ use super::session::{
     session_invariant_error,
 };
 use super::types::{
-    Branch, BranchScan, CommitResult, Entry, EntryQuery, EntryScan, EntryStructure, ForkOptions, IdGenerator,
-    Session, SessionCreateOptions, SessionMetadata, SessionMutation, SessionMutationCallback, SessionReader,
-    SessionRepo, SessionStats, Storage, StorageBranchScan, UsageRow, UsageScan, Write,
+    Branch, BranchScan, CommitResult, Entry, EntryQuery, EntryScan, EntryStructure, ForkOptions,
+    IdGenerator, Session, SessionCreateOptions, SessionMetadata, SessionMutation,
+    SessionMutationCallback, SessionReader, SessionRepo, SessionStats, Storage, StorageBranchScan,
+    UsageRow, UsageScan, Write,
 };
 use super::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
 
-#[derive(Clone)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MemoryStorageOptions {
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
 }
-
 
 fn default_now() -> Arc<dyn Fn() -> i64 + Send + Sync> {
     Arc::new(|| {
@@ -88,7 +87,11 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    fn commit<'a>(&'a self, writes: Vec<Write>, _context: &'a Context) -> BoxFuture<'a, Result<CommitResult, SessionError>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<CommitResult, SessionError>> {
         Box::pin(async move {
             if !self.is_open() {
                 return Err(Self::closed_error());
@@ -155,7 +158,10 @@ impl Storage for MemoryStorage {
             if !self.is_open() {
                 return Err(Self::closed_error());
             }
-            self.state.lock().expect("memory state").read_list(address, options)
+            self.state
+                .lock()
+                .expect("memory state")
+                .read_list(address, options)
         })
     }
 
@@ -181,7 +187,10 @@ impl Storage for MemoryStorage {
             if !self.is_open() {
                 return Err(Self::closed_error());
             }
-            self.state.lock().expect("memory state").scan_branch_structure(&query)
+            self.state
+                .lock()
+                .expect("memory state")
+                .scan_branch_structure(&query)
         })
     }
 
@@ -194,7 +203,11 @@ impl Storage for MemoryStorage {
             if !self.is_open() {
                 return Err(Self::closed_error());
             }
-            Ok(self.state.lock().expect("memory state").scan_entries(&query))
+            Ok(self
+                .state
+                .lock()
+                .expect("memory state")
+                .scan_entries(&query))
         })
     }
 
@@ -211,7 +224,10 @@ impl Storage for MemoryStorage {
         })
     }
 
-    fn get_stats<'a>(&'a self, _context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+    fn get_stats<'a>(
+        &'a self,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
         Box::pin(async move {
             if !self.is_open() {
                 return Err(Self::closed_error());
@@ -294,7 +310,10 @@ impl SessionReader for FacadeMutation {
         self.source.get_entries(ids, context)
     }
 
-    fn get_stats<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+    fn get_stats<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
         self.source.get_stats(context)
     }
 
@@ -367,7 +386,10 @@ impl Branch for FacadeBranch {
         self.source.name()
     }
 
-    fn get_tip_id<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
+    fn get_tip_id<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
         Box::pin(async move {
             let admission = self.facade().admit()?;
             let result = self.source.get_tip_id(context).await;
@@ -423,7 +445,10 @@ impl Branch for FacadeBranch {
     ) -> BoxFuture<'a, Result<String, SessionError>> {
         Box::pin(async move {
             let admission = self.facade.admit()?;
-            let result = self.source.append_custom_entry(custom_type, data, context).await;
+            let result = self
+                .source
+                .append_custom_entry(custom_type, data, context)
+                .await;
             admission.finish();
             result
         })
@@ -495,7 +520,10 @@ impl SessionReader for MemorySessionFacade {
         })
     }
 
-    fn get_stats<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+    fn get_stats<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
         Box::pin(async move {
             let admission = self.admit()?;
             let result = self.session.get_stats(context).await;
@@ -580,7 +608,10 @@ impl Session for MemorySessionFacade {
         })
     }
 
-    fn get_name<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
+    fn get_name<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
         Box::pin(async move {
             let admission = self.admit()?;
             let result = self.session.get_name(context).await;
@@ -731,7 +762,11 @@ impl Session for MemorySessionFacade {
         })
     }
 
-    fn delete_value<'a>(&'a self, address: &'a Value, context: &'a Context) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn delete_value<'a>(
+        &'a self,
+        address: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move {
             let admission = self.admit()?;
             let result = self.session.delete_value(address, context).await;
@@ -754,7 +789,11 @@ impl Session for MemorySessionFacade {
         })
     }
 
-    fn delete_list<'a>(&'a self, address: &'a ValueList, context: &'a Context) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn delete_list<'a>(
+        &'a self,
+        address: &'a ValueList,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move {
             let admission = self.admit()?;
             let result = self.session.delete_list(address, context).await;
@@ -763,7 +802,11 @@ impl Session for MemorySessionFacade {
         })
     }
 
-    fn set_name<'a>(&'a self, name: Option<String>, context: &'a Context) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn set_name<'a>(
+        &'a self,
+        name: Option<String>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move {
             let admission = self.admit()?;
             let result = self.session.set_name(name, context).await;
@@ -854,7 +897,9 @@ impl MemorySessionRepo {
         let mut pending = self.pending_ids.lock().expect("pending ids");
         let sessions = self.sessions.lock().expect("sessions");
         if sessions.contains_key(id) || pending.contains(id) {
-            return Err(session_invariant_error(format!("Session already exists: {id}")));
+            return Err(session_invariant_error(format!(
+                "Session already exists: {id}"
+            )));
         }
         pending.insert(id.to_owned());
         Ok(())
@@ -916,16 +961,20 @@ impl SessionRepo for MemorySessionRepo {
         Box::pin(async move {
             self.assert_open()?;
             let created_at = (self.now)();
-            let id = options
-                .id
-                .clone()
-                .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
+            let id = options.id.clone().unwrap_or_else(|| {
+                maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default()
+            });
             self.reserve_id(&id)?;
             let storage = Arc::new(MemoryStorage::new(MemoryStorageOptions {
                 now: Some(self.now.clone()),
             }));
             let result = self
-                .build_record(id.clone(), created_at, options.parent_session_id.clone(), storage)
+                .build_record(
+                    id.clone(),
+                    created_at,
+                    options.parent_session_id.clone(),
+                    storage,
+                )
                 .await;
             self.pending_ids.lock().expect("pending ids").remove(&id);
             let record = result?;
@@ -1004,7 +1053,10 @@ impl SessionRepo for MemorySessionRepo {
                 )));
             };
             if record.open.load(Ordering::SeqCst) {
-                return Err(session_invariant_error(format!("Session is open: {}", metadata.id)));
+                return Err(session_invariant_error(format!(
+                    "Session is open: {}",
+                    metadata.id
+                )));
             }
             record.session.close(context).await;
             self.sessions.lock().expect("sessions").remove(&metadata.id);
@@ -1027,13 +1079,15 @@ impl SessionRepo for MemorySessionRepo {
                 .get(&source.id)
                 .cloned();
             let Some(source_record) = source_record else {
-                return Err(session_invariant_error(format!("Unknown session: {}", source.id)));
+                return Err(session_invariant_error(format!(
+                    "Unknown session: {}",
+                    source.id
+                )));
             };
             let created_at = (self.now)();
-            let id = options
-                .id()
-                .map(str::to_owned)
-                .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
+            let id = options.id().map(str::to_owned).unwrap_or_else(|| {
+                maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default()
+            });
             self.reserve_id(&id)?;
             let storage = source_record.storage.fork(&options).await;
             let result = match storage {
@@ -1062,8 +1116,13 @@ impl SessionRepo for MemorySessionRepo {
 impl MemorySessionRepo {
     pub async fn close(&self, context: &Context) {
         self.closed.store(true, Ordering::SeqCst);
-        let sessions: Vec<Arc<MemorySessionRecord>> =
-            self.sessions.lock().expect("sessions").values().cloned().collect();
+        let sessions: Vec<Arc<MemorySessionRecord>> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .values()
+            .cloned()
+            .collect();
         for record in sessions {
             record.session.close(context).await;
         }

@@ -1,6 +1,6 @@
 use senpi_task::manager::start_failure_cause::{
-    classify_start_cause, classify_start_message, describe_start_cause, StartCauseClass,
-    StartOperation,
+    StartCauseClass, StartOperation, classify_start_cause, classify_start_message,
+    describe_start_cause,
 };
 use senpi_task::runners::rpc::errors::RpcCommandError;
 use senpi_task::runners::rpc::protocol_client::RpcClientError;
@@ -63,8 +63,13 @@ fn host_refusal_with_no_error_code() {
 
 #[test]
 fn lost_transport_names_connection_lost() {
-    for code in ["rpc_transport_gone", "session_detached", "transport_recovery_expired"] {
-        let cause = classify_start_message(Some(code), "Shared RPC host unavailable").expect("classified");
+    for code in [
+        "rpc_transport_gone",
+        "session_detached",
+        "transport_recovery_expired",
+    ] {
+        let cause =
+            classify_start_message(Some(code), "Shared RPC host unavailable").expect("classified");
         assert_eq!(cause.cause_class, StartCauseClass::TransportLost);
         assert_eq!(cause.timed_out_command, None);
     }
@@ -85,6 +90,12 @@ fn session_switch_timeout_names_switch_session() {
 
 #[test]
 fn unknown_cause_returns_none() {
-    assert_eq!(classify_start_message(None, "generic failure message"), None);
-    assert_eq!(classify_start_message(Some("unknown_error"), "something broke"), None);
+    assert_eq!(
+        classify_start_message(None, "generic failure message"),
+        None
+    );
+    assert_eq!(
+        classify_start_message(Some("unknown_error"), "something broke"),
+        None
+    );
 }

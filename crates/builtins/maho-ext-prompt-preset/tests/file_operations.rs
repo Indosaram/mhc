@@ -1,7 +1,10 @@
-use maho_ext_prompt_preset::file_operations::{FileMutationMode, resolve_file_mutation_routing, build_file_operations_tuning};
+use maho_ext_prompt_preset::file_operations::{
+    FileMutationMode, build_file_operations_tuning, resolve_file_mutation_routing,
+};
 #[test]
 fn apply_patch_takes_precedence_over_edit_and_write() {
-    let routing = resolve_file_mutation_routing(&["write".into(), "apply_patch".into(), "edit".into()]);
+    let routing =
+        resolve_file_mutation_routing(&["write".into(), "apply_patch".into(), "edit".into()]);
     assert_eq!(routing.mode, FileMutationMode::ApplyPatch);
     assert_eq!(routing.tools, ["apply_patch"]);
 }

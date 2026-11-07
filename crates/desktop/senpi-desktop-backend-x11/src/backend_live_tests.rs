@@ -41,7 +41,10 @@ fn shared_restore_preserves_newer_user_focus_and_pointer() {
     backend.raise_window(&other).unwrap();
     xdotool(&["mousemove", "--sync", "100", "100"]);
     let front = backend.front_window().unwrap().expect("other is front");
-    let cursor = backend.cursor_position().unwrap().expect("cursor is available");
+    let cursor = backend
+        .cursor_position()
+        .unwrap()
+        .expect("cursor is available");
 
     backend
         .pointer(
@@ -57,8 +60,14 @@ fn shared_restore_preserves_newer_user_focus_and_pointer() {
             DeliveryMode::Foreground,
         )
         .unwrap();
-    let action_cursor = backend.cursor_position().unwrap().expect("cursor after action");
-    assert_eq!((action_cursor.x, action_cursor.y), (f64::from(click.0), f64::from(click.1)));
+    let action_cursor = backend
+        .cursor_position()
+        .unwrap()
+        .expect("cursor after action");
+    assert_eq!(
+        (action_cursor.x, action_cursor.y),
+        (f64::from(click.0), f64::from(click.1))
+    );
     xdotool(&["windowactivate", "--sync", &newer]);
     xdotool(&["mousemove", "--sync", "900", "700"]);
 
@@ -66,7 +75,10 @@ fn shared_restore_preserves_newer_user_focus_and_pointer() {
     backend.warp_cursor(cursor).unwrap();
 
     let after_front = backend.front_window().unwrap().expect("newer is front");
-    let after_cursor = backend.cursor_position().unwrap().expect("cursor after restore");
+    let after_cursor = backend
+        .cursor_position()
+        .unwrap()
+        .expect("cursor after restore");
     println!(
         "target={target} previous={} newer={newer} action_cursor=({},{}) \
          restored_front={} restored_cursor=({},{})",

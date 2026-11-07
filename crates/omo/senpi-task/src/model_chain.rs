@@ -106,11 +106,13 @@ pub fn available_chain_candidates(
                     "{provider}/{}",
                     transform_model_for_provider(provider, model_id)
                 );
-                available_models.contains(&concrete).then(|| ModelChainCandidate {
-                    model: concrete,
-                    variant: entry.variant.clone(),
-                    reasoning_effort: None,
-                })
+                available_models
+                    .contains(&concrete)
+                    .then(|| ModelChainCandidate {
+                        model: concrete,
+                        variant: entry.variant.clone(),
+                        reasoning_effort: None,
+                    })
             })
         })
         .collect()
@@ -128,8 +130,10 @@ fn locate_selected_rung(options: &ChainRungCandidateOptions<'_>) -> Option<usize
                 .model
                 .strip_prefix(&format!("{provider}/"))
                 .unwrap_or(&entry.model);
-            format!("{provider}/{}", transform_model_for_provider(provider, model_id))
-                == options.selected_model
+            format!(
+                "{provider}/{}",
+                transform_model_for_provider(provider, model_id)
+            ) == options.selected_model
         })
     })
 }

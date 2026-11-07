@@ -36,7 +36,11 @@ impl FileModelsStore {
             path.unwrap_or(&format!("{}/models-store.json", get_agent_dir())),
             &PathInputOptions::default(),
         );
-        Self { storage: FileAuthStorageBackend::new(&path), path, read_state: Arc::new(Mutex::new(ModelsFileReadState::default())) }
+        Self {
+            storage: FileAuthStorageBackend::new(&path),
+            path,
+            read_state: Arc::new(Mutex::new(ModelsFileReadState::default())),
+        }
     }
 
     pub fn path(&self) -> &str {
@@ -45,8 +49,12 @@ impl FileModelsStore {
 
     /// ModelsStoreEntry carries no serde derive in maho-ai, so the JSON mapping is explicit here.
     fn parse(content: Option<&str>) -> StoredModels {
-        let Some(content) = content.filter(|content| !content.is_empty()) else { return StoredModels::new() };
-        let Ok(serde_json::Value::Object(entries)) = serde_json::from_str::<serde_json::Value>(strip_bom(content)) else {
+        let Some(content) = content.filter(|content| !content.is_empty()) else {
+            return StoredModels::new();
+        };
+        let Ok(serde_json::Value::Object(entries)) =
+            serde_json::from_str::<serde_json::Value>(strip_bom(content))
+        else {
             return StoredModels::new();
         };
         entries
@@ -56,10 +64,15 @@ impl FileModelsStore {
     }
 
     fn read_state(&self) -> std::sync::MutexGuard<'_, ModelsFileReadState> {
-        self.read_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.read_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    async fn read_latest(&self, options: Option<&ModelsStoreOperationOptions>) -> Result<StoredModels, AbortReason> {
+    async fn read_latest(
+        &self,
+        options: Option<&ModelsStoreOperationOptions>,
+    ) -> Result<StoredModels, AbortReason> {
         throw_if_aborted(options)?;
         let revision = get_file_revision(&self.path);
         {
@@ -85,20 +98,36 @@ impl FileModelsStore {
 
 fn entry_from_json(value: &serde_json::Value) -> Option<ModelsStoreEntry> {
     let object = value.as_object()?;
-    let models = object.get("models")?.as_array()?.iter().filter_map(|model| serde_json::from_value(model.clone()).ok()).collect();
+    let models = object
+        .get("models")?
+        .as_array()?
+        .iter()
+        .filter_map(|model| serde_json::from_value(model.clone()).ok())
+        .collect();
     Some(ModelsStoreEntry {
         models,
-        last_modified: object.get("lastModified").and_then(serde_json::Value::as_i64),
+        last_modified: object
+            .get("lastModified")
+            .and_then(serde_json::Value::as_i64),
         checked_at: object.get("checkedAt").and_then(serde_json::Value::as_i64),
-        etag: object.get("etag").and_then(serde_json::Value::as_str).map(str::to_owned),
+        etag: object
+            .get("etag")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     })
 }
 
 fn entry_to_json(entry: &ModelsStoreEntry) -> serde_json::Value {
     let mut object = serde_json::Map::new();
-    object.insert("models".into(), serde_json::to_value(&entry.models).unwrap_or(serde_json::Value::Array(Vec::new())));
+    object.insert(
+        "models".into(),
+        serde_json::to_value(&entry.models).unwrap_or(serde_json::Value::Array(Vec::new())),
+    );
     if let Some(last_modified) = entry.last_modified {
-        object.insert("lastModified".into(), serde_json::Value::from(last_modified));
+        object.insert(
+            "lastModified".into(),
+            serde_json::Value::from(last_modified),
+        );
     }
     if let Some(checked_at) = entry.checked_at {
         object.insert("checkedAt".into(), serde_json::Value::from(checked_at));
@@ -110,13 +139,17 @@ fn entry_to_json(entry: &ModelsStoreEntry) -> serde_json::Value {
 }
 
 fn models_to_json(models: &StoredModels) -> String {
-    let object: serde_json::Map<String, serde_json::Value> =
-        models.iter().map(|(provider, entry)| (provider.clone(), entry_to_json(entry))).collect();
+    let object: serde_json::Map<String, serde_json::Value> = models
+        .iter()
+        .map(|(provider, entry)| (provider.clone(), entry_to_json(entry)))
+        .collect();
     serde_json::to_string_pretty(&serde_json::Value::Object(object)).unwrap_or_default()
 }
 
 fn throw_if_aborted(options: Option<&ModelsStoreOperationOptions>) -> Result<(), AbortReason> {
-    options.and_then(|options| options.signal.as_ref()).map_or(Ok(()), maho_ai::utils::abort::AbortSignal::throw_if_aborted)
+    options
+        .and_then(|options| options.signal.as_ref())
+        .map_or(Ok(()), maho_ai::utils::abort::AbortSignal::throw_if_aborted)
 }
 
 impl ModelsStore for FileModelsStore {
@@ -190,7 +223,10 @@ mod tests {
             "contextWindow": 1000, "maxTokens": 100
         }))
         .expect("model");
-        ModelsStoreEntry { models: vec![model], ..ModelsStoreEntry::default() }
+        ModelsStoreEntry {
+            models: vec![model],
+            ..ModelsStoreEntry::default()
+        }
     }
 
     #[tokio::test]
@@ -206,18 +242,30 @@ mod tests {
     #[tokio::test]
     async fn the_file_store_persists_across_instances() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("models-store.json").to_string_lossy().into_owned();
+        let path = dir
+            .path()
+            .join("models-store.json")
+            .to_string_lossy()
+            .into_owned();
         let store = FileModelsStore::new(Some(&path));
         store.write("p", &entry("a"), None).await.expect("write");
         let reopened = FileModelsStore::new(Some(&path));
-        let read = reopened.read("p", None).await.expect("read").expect("present");
+        let read = reopened
+            .read("p", None)
+            .await
+            .expect("read")
+            .expect("present");
         assert_eq!(read.models.len(), 1);
     }
 
     #[tokio::test]
     async fn a_missing_entry_reads_as_none() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("models-store.json").to_string_lossy().into_owned();
+        let path = dir
+            .path()
+            .join("models-store.json")
+            .to_string_lossy()
+            .into_owned();
         let store = FileModelsStore::new(Some(&path));
         assert!(store.read("missing", None).await.expect("read").is_none());
     }
@@ -225,7 +273,11 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_the_entry() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("models-store.json").to_string_lossy().into_owned();
+        let path = dir
+            .path()
+            .join("models-store.json")
+            .to_string_lossy()
+            .into_owned();
         let store = FileModelsStore::new(Some(&path));
         store.write("p", &entry("a"), None).await.expect("write");
         store.delete("p", None).await.expect("delete");

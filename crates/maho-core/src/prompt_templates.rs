@@ -78,7 +78,9 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
                 };
                 return match value {
                     Some(value) if !value.is_empty() => value,
-                    _ => captures.get(2).map_or(String::new(), |group| group.as_str().to_string()),
+                    _ => captures
+                        .get(2)
+                        .map_or(String::new(), |group| group.as_str().to_string()),
                 };
             }
 
@@ -87,9 +89,20 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
                 let start = if start < 0 { 0usize } else { start as usize };
                 if let Some(slice_length) = captures.get(4) {
                     let length = slice_length.as_str().parse::<usize>().unwrap_or(0);
-                    return args.iter().skip(start).take(length).cloned().collect::<Vec<_>>().join(" ");
+                    return args
+                        .iter()
+                        .skip(start)
+                        .take(length)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
                 }
-                return args.iter().skip(start).cloned().collect::<Vec<_>>().join(" ");
+                return args
+                    .iter()
+                    .skip(start)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ");
             }
 
             let Some(simple) = captures.get(5) else {
@@ -112,10 +125,19 @@ fn first_non_empty_line(body: &str) -> Option<&str> {
 }
 
 fn warning(message: String, path: &str) -> ResourceDiagnostic {
-    ResourceDiagnostic { category: None, diagnostic_type: ResourceDiagnosticType::Warning, message, path: Some(path.into()), collision: None }
+    ResourceDiagnostic {
+        category: None,
+        diagnostic_type: ResourceDiagnosticType::Warning,
+        message,
+        path: Some(path.into()),
+        collision: None,
+    }
 }
 /// `loadTemplateFromFile`: returns diagnostics when a file cannot be read or parsed.
-pub fn load_template_from_file(file_path: &str, source_info: SourceInfo) -> (Option<PromptTemplate>, Vec<ResourceDiagnostic>) {
+pub fn load_template_from_file(
+    file_path: &str,
+    source_info: SourceInfo,
+) -> (Option<PromptTemplate>, Vec<ResourceDiagnostic>) {
     let raw_content = match std::fs::read_to_string(file_path) {
         Ok(content) => content,
         Err(error) => return (None, vec![warning(error.to_string(), file_path)]),
@@ -129,7 +151,10 @@ pub fn load_template_from_file(file_path: &str, source_info: SourceInfo) -> (Opt
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let name = file_name.strip_suffix(".md").map(str::to_string).unwrap_or(file_name);
+    let name = file_name
+        .strip_suffix(".md")
+        .map(str::to_string)
+        .unwrap_or(file_name);
 
     let mut description = parsed
         .frontmatter
@@ -142,7 +167,11 @@ pub fn load_template_from_file(file_path: &str, source_info: SourceInfo) -> (Opt
     {
         let truncated: String = first_line.chars().take(60).collect();
         let was_truncated = first_line.chars().count() > 60;
-        description = if was_truncated { format!("{truncated}...") } else { truncated };
+        description = if was_truncated {
+            format!("{truncated}...")
+        } else {
+            truncated
+        };
     }
 
     let argument_hint = parsed
@@ -151,14 +180,30 @@ pub fn load_template_from_file(file_path: &str, source_info: SourceInfo) -> (Opt
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let requires_arguments = parsed.frontmatter.get("requires-arguments")
+    let requires_arguments = parsed
+        .frontmatter
+        .get("requires-arguments")
         .and_then(|value| value.as_bool())
         .unwrap_or(argument_hint.is_some());
-    (Some(PromptTemplate { name, description, argument_hint, requires_arguments, content: parsed.body, source_info, file_path: file_path.to_string() }), Vec::new())
+    (
+        Some(PromptTemplate {
+            name,
+            description,
+            argument_hint,
+            requires_arguments,
+            content: parsed.body,
+            source_info,
+            file_path: file_path.to_string(),
+        }),
+        Vec::new(),
+    )
 }
 
 /// `loadTemplatesFromDir`: non-recursive `.md` scan; broken symlinks are skipped.
-pub fn load_templates_from_dir(dir: &str, get_source_info: &dyn Fn(&str) -> SourceInfo) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
+pub fn load_templates_from_dir(
+    dir: &str,
+    get_source_info: &dyn Fn(&str) -> SourceInfo,
+) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
     let mut templates: Vec<PromptTemplate> = Vec::new();
     let mut diagnostics = Vec::new();
     if !Path::new(dir).exists() {
@@ -184,8 +229,11 @@ pub fn load_templates_from_dir(dir: &str, get_source_info: &dyn Fn(&str) -> Sour
         };
 
         if is_file && entry.file_name().to_string_lossy().ends_with(".md") {
-            let (template, mut found) = load_template_from_file(&full_path, get_source_info(&full_path));
-            if let Some(template) = template { templates.push(template); }
+            let (template, mut found) =
+                load_template_from_file(&full_path, get_source_info(&full_path));
+            if let Some(template) = template {
+                templates.push(template);
+            }
             diagnostics.append(&mut found);
         }
     }
@@ -216,17 +264,31 @@ fn is_under_path(target: &str, root: &str) -> bool {
 }
 
 /// `loadPromptTemplates`: global, then project, then the explicit paths.
-pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
-    let process_cwd = std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
+pub fn load_prompt_templates(
+    options: &LoadPromptTemplatesOptions,
+) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
+    let process_cwd = std::env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let resolved_cwd = resolve_path(&options.cwd, &process_cwd, &PathInputOptions::default());
-    let resolved_agent_dir = resolve_path(&options.agent_dir, &process_cwd, &PathInputOptions::default());
+    let resolved_agent_dir = resolve_path(
+        &options.agent_dir,
+        &process_cwd,
+        &PathInputOptions::default(),
+    );
 
     let mut templates: Vec<PromptTemplate> = Vec::new();
     let mut diagnostics = Vec::new();
 
-    let global_prompts_dir = Path::new(&resolved_agent_dir).join("prompts").to_string_lossy().into_owned();
+    let global_prompts_dir = Path::new(&resolved_agent_dir)
+        .join("prompts")
+        .to_string_lossy()
+        .into_owned();
     let project_prompts_dir = lexical_resolve(
-        &Path::new(&resolved_cwd).join(config_dir_name()).join("prompts").to_string_lossy(),
+        &Path::new(&resolved_cwd)
+            .join(config_dir_name())
+            .join("prompts")
+            .to_string_lossy(),
     );
 
     let get_source_info = |resolved_path: &str| -> SourceInfo {
@@ -252,7 +314,9 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> (Vec<Promp
                 },
             );
         }
-        let is_directory = std::fs::metadata(resolved_path).map(|metadata| metadata.is_dir()).unwrap_or(false);
+        let is_directory = std::fs::metadata(resolved_path)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
         let base_dir = if is_directory {
             resolved_path.to_string()
         } else {
@@ -281,24 +345,35 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> (Vec<Promp
     }
 
     for raw_path in &options.prompt_paths {
-        let resolved_path = resolve_path(raw_path, &resolved_cwd, &PathInputOptions { trim: true, ..Default::default() });
+        let resolved_path = resolve_path(
+            raw_path,
+            &resolved_cwd,
+            &PathInputOptions {
+                trim: true,
+                ..Default::default()
+            },
+        );
         if !Path::new(&resolved_path).exists() {
             continue;
         }
 
         let metadata = match std::fs::metadata(&resolved_path) {
             Ok(metadata) => metadata,
-            Err(error) => { diagnostics.push(warning(error.to_string(), &resolved_path)); continue; }
+            Err(error) => {
+                diagnostics.push(warning(error.to_string(), &resolved_path));
+                continue;
+            }
         };
         if metadata.is_dir() {
             let (loaded, mut found) = load_templates_from_dir(&resolved_path, &get_source_info);
             templates.extend(loaded);
             diagnostics.append(&mut found);
-        } else if metadata.is_file()
-            && resolved_path.ends_with(".md")
-        {
-            let (template, mut found) = load_template_from_file(&resolved_path, get_source_info(&resolved_path));
-            if let Some(template) = template { templates.push(template); }
+        } else if metadata.is_file() && resolved_path.ends_with(".md") {
+            let (template, mut found) =
+                load_template_from_file(&resolved_path, get_source_info(&resolved_path));
+            if let Some(template) = template {
+                templates.push(template);
+            }
             diagnostics.append(&mut found);
         }
     }
@@ -317,24 +392,42 @@ static EXPAND_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/(\S+)(?:\s+([\s\S]*))?$").expect("expand pattern"));
 
 /// `expandPromptTemplateWithMetadata`.
-pub fn expand_prompt_template_with_metadata(text: &str, templates: &[PromptTemplate]) -> PromptTemplateExpansion {
+pub fn expand_prompt_template_with_metadata(
+    text: &str,
+    templates: &[PromptTemplate],
+) -> PromptTemplateExpansion {
     if !text.starts_with('/') {
-        return PromptTemplateExpansion { text: text.to_string(), template: None };
+        return PromptTemplateExpansion {
+            text: text.to_string(),
+            template: None,
+        };
     }
 
     let Some(captures) = EXPAND_PATTERN.captures(text) else {
-        return PromptTemplateExpansion { text: text.to_string(), template: None };
+        return PromptTemplateExpansion {
+            text: text.to_string(),
+            template: None,
+        };
     };
 
     let template_name = captures.get(1).map_or("", |group| group.as_str());
     let args_string = captures.get(2).map_or("", |group| group.as_str());
 
-    let Some(template) = templates.iter().find(|template| template.name == template_name) else {
-        return PromptTemplateExpansion { text: text.to_string(), template: None };
+    let Some(template) = templates
+        .iter()
+        .find(|template| template.name == template_name)
+    else {
+        return PromptTemplateExpansion {
+            text: text.to_string(),
+            template: None,
+        };
     };
 
     let args = parse_command_args(args_string);
-    PromptTemplateExpansion { text: substitute_args(&template.content, &args), template: Some(template.clone()) }
+    PromptTemplateExpansion {
+        text: substitute_args(&template.content, &args),
+        template: Some(template.clone()),
+    }
 }
 
 /// `expandPromptTemplate`.
@@ -348,7 +441,13 @@ mod tests {
     use crate::source_info::SourceScope;
 
     fn synthetic(path: &str) -> SourceInfo {
-        create_synthetic_source_info(path, SyntheticSourceInfoOptions { source: "local".to_string(), ..Default::default() })
+        create_synthetic_source_info(
+            path,
+            SyntheticSourceInfoOptions {
+                source: "local".to_string(),
+                ..Default::default()
+            },
+        )
     }
 
     fn template(name: &str, content: &str) -> PromptTemplate {
@@ -366,8 +465,14 @@ mod tests {
     #[test]
     fn command_args_respect_single_and_double_quotes() {
         assert_eq!(parse_command_args("a b  c"), vec!["a", "b", "c"]);
-        assert_eq!(parse_command_args("\"hello world\" second"), vec!["hello world", "second"]);
-        assert_eq!(parse_command_args("'one two' three"), vec!["one two", "three"]);
+        assert_eq!(
+            parse_command_args("\"hello world\" second"),
+            vec!["hello world", "second"]
+        );
+        assert_eq!(
+            parse_command_args("'one two' three"),
+            vec!["one two", "three"]
+        );
         assert_eq!(parse_command_args(""), Vec::<String>::new());
         assert_eq!(parse_command_args("   "), Vec::<String>::new());
     }
@@ -415,8 +520,13 @@ mod tests {
     fn a_template_file_uses_its_frontmatter_description() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("demo.md");
-        std::fs::write(&path, "---\ndescription: from frontmatter\nargument-hint: <file>\n---\nbody text\n").expect("write");
-        let (loaded, diagnostics) = load_template_from_file(&path.to_string_lossy(), synthetic("/x"));
+        std::fs::write(
+            &path,
+            "---\ndescription: from frontmatter\nargument-hint: <file>\n---\nbody text\n",
+        )
+        .expect("write");
+        let (loaded, diagnostics) =
+            load_template_from_file(&path.to_string_lossy(), synthetic("/x"));
         assert!(diagnostics.is_empty());
         let loaded = loaded.expect("template");
         assert_eq!(loaded.name, "demo");
@@ -449,11 +559,18 @@ mod tests {
 
     #[test]
     fn a_missing_file_loads_as_none() {
-        let (template, diagnostics) = load_template_from_file("/definitely/missing/template.md", synthetic("/x"));
+        let (template, diagnostics) =
+            load_template_from_file("/definitely/missing/template.md", synthetic("/x"));
         assert!(template.is_none());
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
-        assert_eq!(diagnostics[0].path.as_deref(), Some("/definitely/missing/template.md"));
+        assert_eq!(
+            diagnostics[0].diagnostic_type,
+            ResourceDiagnosticType::Warning
+        );
+        assert_eq!(
+            diagnostics[0].path.as_deref(),
+            Some("/definitely/missing/template.md")
+        );
     }
 
     #[test]
@@ -461,13 +578,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let true_path = dir.path().join("required.md");
         std::fs::write(&true_path, "---\nrequires-arguments: true\n---\nbody").expect("write");
-        let (required, diagnostics) = load_template_from_file(&true_path.to_string_lossy(), synthetic("/x"));
+        let (required, diagnostics) =
+            load_template_from_file(&true_path.to_string_lossy(), synthetic("/x"));
         assert!(diagnostics.is_empty());
         assert!(required.expect("required template").requires_arguments);
 
         let false_path = dir.path().join("optional.md");
-        std::fs::write(&false_path, "---\nargument-hint: <input>\nrequires-arguments: false\n---\nbody").expect("write");
-        let (optional, diagnostics) = load_template_from_file(&false_path.to_string_lossy(), synthetic("/x"));
+        std::fs::write(
+            &false_path,
+            "---\nargument-hint: <input>\nrequires-arguments: false\n---\nbody",
+        )
+        .expect("write");
+        let (optional, diagnostics) =
+            load_template_from_file(&false_path.to_string_lossy(), synthetic("/x"));
         assert!(diagnostics.is_empty());
         assert!(!optional.expect("optional template").requires_arguments);
     }
@@ -477,7 +600,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bare.md");
         std::fs::write(&path, "body").expect("write");
-        let (template, diagnostics) = load_template_from_file(&path.to_string_lossy(), synthetic("/x"));
+        let (template, diagnostics) =
+            load_template_from_file(&path.to_string_lossy(), synthetic("/x"));
         assert!(diagnostics.is_empty());
         assert!(!template.expect("template").requires_arguments);
     }
@@ -490,7 +614,13 @@ mod tests {
         std::fs::create_dir_all(agent_dir.join("prompts")).expect("mkdir");
         std::fs::create_dir_all(cwd.join(config_dir_name()).join("prompts")).expect("mkdir");
         std::fs::write(agent_dir.join("prompts").join("user.md"), "user body").expect("write");
-        std::fs::write(cwd.join(config_dir_name()).join("prompts").join("project.md"), "project body").expect("write");
+        std::fs::write(
+            cwd.join(config_dir_name())
+                .join("prompts")
+                .join("project.md"),
+            "project body",
+        )
+        .expect("write");
 
         let (templates, diagnostics) = load_prompt_templates(&LoadPromptTemplatesOptions {
             cwd: cwd.to_string_lossy().into_owned(),
@@ -499,7 +629,10 @@ mod tests {
             include_defaults: true,
         });
         assert!(diagnostics.is_empty());
-        let names: Vec<&str> = templates.iter().map(|template| template.name.as_str()).collect();
+        let names: Vec<&str> = templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .collect();
         assert_eq!(names, vec!["user", "project"]);
         assert_eq!(templates[0].source_info.scope, SourceScope::User);
         assert_eq!(templates[1].source_info.scope, SourceScope::Project);
@@ -526,7 +659,10 @@ mod tests {
             include_defaults: false,
         });
         assert!(diagnostics.is_empty());
-        let names: Vec<&str> = templates.iter().map(|template| template.name.as_str()).collect();
+        let names: Vec<&str> = templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .collect();
         assert_eq!(names, vec!["a", "single"]);
         assert_eq!(templates[0].source_info.source, "local");
     }
@@ -534,12 +670,18 @@ mod tests {
     #[test]
     fn expansion_returns_the_original_text_when_nothing_matches() {
         let templates = vec![template("demo", "body $1")];
-        assert_eq!(expand_prompt_template("plain text", &templates), "plain text");
+        assert_eq!(
+            expand_prompt_template("plain text", &templates),
+            "plain text"
+        );
         assert_eq!(expand_prompt_template("/missing", &templates), "/missing");
         assert_eq!(expand_prompt_template("/demo", &templates), "body ");
         assert_eq!(expand_prompt_template("/demo arg", &templates), "body arg");
         let expansion = expand_prompt_template_with_metadata("/demo arg", &templates);
-        assert_eq!(expansion.template.map(|template| template.name), Some("demo".to_string()));
+        assert_eq!(
+            expansion.template.map(|template| template.name),
+            Some("demo".to_string())
+        );
     }
 
     #[test]
@@ -548,11 +690,16 @@ mod tests {
         std::fs::write(dir.path().join("keep.md"), "body").expect("write");
         std::fs::write(dir.path().join("skip.txt"), "body").expect("write");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(dir.path().join("gone.md"), dir.path().join("broken.md")).expect("symlink");
+        std::os::unix::fs::symlink(dir.path().join("gone.md"), dir.path().join("broken.md"))
+            .expect("symlink");
 
-        let (templates, diagnostics) = load_templates_from_dir(&dir.path().to_string_lossy(), &synthetic);
+        let (templates, diagnostics) =
+            load_templates_from_dir(&dir.path().to_string_lossy(), &synthetic);
         assert!(diagnostics.is_empty());
-        let names: Vec<&str> = templates.iter().map(|template| template.name.as_str()).collect();
+        let names: Vec<&str> = templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .collect();
         assert_eq!(names, vec!["keep"]);
     }
 
@@ -568,9 +715,21 @@ mod tests {
             prompt_paths: vec![dir.path().to_string_lossy().into_owned()],
             include_defaults: false,
         });
-        assert_eq!(templates.iter().map(|template| template.name.as_str()).collect::<Vec<_>>(), ["valid"]);
+        assert_eq!(
+            templates
+                .iter()
+                .map(|template| template.name.as_str())
+                .collect::<Vec<_>>(),
+            ["valid"]
+        );
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
-        assert_eq!(diagnostics[0].path.as_deref(), Some(invalid.to_string_lossy().as_ref()));
+        assert_eq!(
+            diagnostics[0].diagnostic_type,
+            ResourceDiagnosticType::Warning
+        );
+        assert_eq!(
+            diagnostics[0].path.as_deref(),
+            Some(invalid.to_string_lossy().as_ref())
+        );
     }
 }

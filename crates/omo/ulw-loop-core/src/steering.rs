@@ -1,22 +1,25 @@
 //! Steering validation and mutation engine.
 
+use regex::Regex;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::LazyLock;
-use regex::Regex;
-use serde_json::Value;
 
 use crate::domain_types::{UlwLoopItem, UlwLoopLedgerEntry, UlwLoopPlan};
 use crate::goal_status::is_ulw_loop_done;
 use crate::paths::UlwLoopScope;
-use crate::plan_commit::{commit, CommitMutation};
-use crate::plan_io::{find_accepted_steering_ledger_entry, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
-use crate::runtime::{iso, UlwLoopError};
+use crate::plan_commit::{CommitMutation, commit};
+use crate::plan_io::{
+    find_accepted_steering_ledger_entry, read_ulw_loop_plan, with_ulw_loop_mutation_lock,
+};
+use crate::runtime::{UlwLoopError, iso};
 use crate::steering_mutations::{make_goal, revise_criterion, revise_wording, split_or_block};
 use crate::steering_snapshot::{build_steering_plan_snapshot, changed_goal_ids_between};
 use crate::steering_types::{
-    SteerUlwLoopResult, UlwLoopSteeringAudit, UlwLoopSteeringChildGoal, UlwLoopSteeringInvariantAudit,
-    UlwLoopSteeringMutationKind, UlwLoopSteeringProposal, UlwLoopSteeringSource,
+    SteerUlwLoopResult, UlwLoopSteeringAudit, UlwLoopSteeringChildGoal,
+    UlwLoopSteeringInvariantAudit, UlwLoopSteeringMutationKind, UlwLoopSteeringProposal,
+    UlwLoopSteeringSource,
 };
 use crate::surface::UlwLoopToolkitSurface;
 use crate::validation_batch::batch_update_ledger_entry;
@@ -133,7 +136,10 @@ fn pending_order(proposal: &Value) -> Vec<String> {
 fn has_protected(val: &Value) -> bool {
     if let Some(obj) = val.as_object() {
         for (k, v) in obj {
-            if PROTECTED.contains(&k.as_str()) || k.to_lowercase().contains("complete") || has_protected(v) {
+            if PROTECTED.contains(&k.as_str())
+                || k.to_lowercase().contains("complete")
+                || has_protected(v)
+            {
                 return true;
             }
         }
@@ -152,10 +158,20 @@ fn all_text(val: &Value) -> String {
         return s.to_string();
     }
     if let Some(obj) = val.as_object() {
-        return obj.values().map(all_text).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        return obj
+            .values()
+            .map(all_text)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     if let Some(arr) = val.as_array() {
-        return arr.iter().map(all_text).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        return arr
+            .iter()
+            .map(all_text)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     String::new()
 }
@@ -163,8 +179,13 @@ fn all_text(val: &Value) -> String {
 fn weakens(val: &Value) -> bool {
     let text = all_text(val).to_lowercase();
     // PERF-DIVERGENCE(omo steering): upstream builds these RegExps on every call; this port compiles them once in LazyLocks. Output is identical.
-    static RE_WEAKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(skip|bypass|weaken|remove|omit|auto[-\s]?complete|mark complete|complete faster)\b").expect("valid regex"));
-    static RE_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(test|tests|verification|review|quality gate|complete|completion)\b").expect("valid regex"));
+    static RE_WEAKEN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b(skip|bypass|weaken|remove|omit|auto[-\s]?complete|mark complete|complete faster)\b").expect("valid regex")
+    });
+    static RE_TARGET: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b(test|tests|verification|review|quality gate|complete|completion)\b")
+            .expect("valid regex")
+    });
     RE_WEAKEN.is_match(&text) && RE_TARGET.is_match(&text)
 }
 
@@ -221,7 +242,10 @@ fn audit_for(proposal: &Value, reasons: Vec<String>) -> UlwLoopSteeringAudit {
     audit
 }
 
-pub fn validate_ulw_loop_steering_proposal(plan: &UlwLoopPlan, proposal: &Value) -> UlwLoopSteeringAudit {
+pub fn validate_ulw_loop_steering_proposal(
+    plan: &UlwLoopPlan,
+    proposal: &Value,
+) -> UlwLoopSteeringAudit {
     let mut reasons = Vec::new();
     if !proposal.is_object() {
         reasons.push("proposal must be an object".to_string());
@@ -230,13 +254,19 @@ pub fn validate_ulw_loop_steering_proposal(plan: &UlwLoopPlan, proposal: &Value)
     let kind_val = get_field(proposal, "kind");
     let kind_str = kind_val.and_then(|v| v.as_str());
     if kind_str.map(is_valid_kind) != Some(true) {
-        reasons.push(format!("invalid kind: {}", kind_val.unwrap_or(&Value::Null)));
+        reasons.push(format!(
+            "invalid kind: {}",
+            kind_val.unwrap_or(&Value::Null)
+        ));
     }
 
     let src_val = get_field(proposal, "source");
     let src_str = src_val.and_then(|v| v.as_str());
     if src_str.map(is_valid_source) != Some(true) {
-        reasons.push(format!("invalid source: {}", src_val.unwrap_or(&Value::Null)));
+        reasons.push(format!(
+            "invalid source: {}",
+            src_val.unwrap_or(&Value::Null)
+        ));
     }
 
     if get_text(proposal, "evidence").is_none() {
@@ -266,17 +296,27 @@ pub fn validate_ulw_loop_steering_proposal(plan: &UlwLoopPlan, proposal: &Value)
 
 fn validate_kind(plan: &UlwLoopPlan, proposal: &Value, kind: &str, reasons: &mut Vec<String>) {
     let target_ids = extract_targets(proposal);
-    let target = target_ids.first().and_then(|id| plan.goals.iter().find(|g| g.id == *id));
+    let target = target_ids
+        .first()
+        .and_then(|id| plan.goals.iter().find(|g| g.id == *id));
 
-    if kind == "add_subgoal" && (get_text(proposal, "title").is_none() || get_text(proposal, "objective").is_none()) {
+    if kind == "add_subgoal"
+        && (get_text(proposal, "title").is_none() || get_text(proposal, "objective").is_none())
+    {
         reasons.push("add_subgoal requires title/objective".to_string());
     }
 
-    if (kind == "split_subgoal" || kind == "revise_pending_wording" || kind == "mark_blocked_superseded") && target.is_none() {
+    if (kind == "split_subgoal"
+        || kind == "revise_pending_wording"
+        || kind == "mark_blocked_superseded")
+        && target.is_none()
+    {
         reasons.push(format!("{kind} requires target"));
     }
 
-    if (kind == "split_subgoal" || kind == "revise_pending_wording") && target.is_some_and(|t| t.status != "pending") {
+    if (kind == "split_subgoal" || kind == "revise_pending_wording")
+        && target.is_some_and(|t| t.status != "pending")
+    {
         reasons.push(format!("{kind} requires pending target"));
     }
 
@@ -284,7 +324,9 @@ fn validate_kind(plan: &UlwLoopPlan, proposal: &Value, kind: &str, reasons: &mut
     if kind == "split_subgoal" && raw_children.is_empty() {
         reasons.push("split_subgoal requires children".to_string());
     }
-    if (kind == "split_subgoal" || kind == "mark_blocked_superseded") && raw_children.iter().any(|c| child_val(c).is_none()) {
+    if (kind == "split_subgoal" || kind == "mark_blocked_superseded")
+        && raw_children.iter().any(|c| child_val(c).is_none())
+    {
         reasons.push(format!("{kind} children require title/objective"));
     }
 
@@ -328,7 +370,9 @@ fn validate_order(plan: &UlwLoopPlan, proposal: &Value, reasons: &mut Vec<String
 
 fn validate_criterion(plan: &UlwLoopPlan, proposal: &Value, reasons: &mut Vec<String>) {
     let target_ids = extract_targets(proposal);
-    let target = target_ids.first().and_then(|id| plan.goals.iter().find(|g| g.id == *id));
+    let target = target_ids
+        .first()
+        .and_then(|id| plan.goals.iter().find(|g| g.id == *id));
     let criterion_id = get_text(proposal, "criterionId");
 
     match target {
@@ -337,7 +381,9 @@ fn validate_criterion(plan: &UlwLoopPlan, proposal: &Value, reasons: &mut Vec<St
         }
         Some(t) => {
             if criterion_id.is_none()
-                || t.success_criteria.iter().all(|c| Some(&c.id) != criterion_id.as_ref())
+                || t.success_criteria
+                    .iter()
+                    .all(|c| Some(&c.id) != criterion_id.as_ref())
             {
                 reasons.push("revise_criterion requires criterionId".to_string());
             }

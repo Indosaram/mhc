@@ -41,7 +41,8 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage { credential_served_recently: None,
+    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage {
+        credential_served_recently: None,
         timing: None,
         failure_source: None,
         prompt_cache_breakpoint: None,
@@ -357,7 +358,9 @@ fn serializes_a_conversation_for_summarization() {
         }),
         Message::Assistant(std::sync::Arc::new(
             match assistant_message("world", usage(1, 1, 0, 0)) {
-                AgentMessage::Llm(Message::Assistant(assistant)) => std::sync::Arc::unwrap_or_clone(assistant),
+                AgentMessage::Llm(Message::Assistant(assistant)) => {
+                    std::sync::Arc::unwrap_or_clone(assistant)
+                }
                 _ => unreachable!(),
             },
         )),

@@ -20,7 +20,10 @@ pub struct RenderedTranscript {
 
 /// Render transcript entries to text, then apply tail-line and character-cap trimming. `truncated` is
 /// true when either the tail cut lines or the char cap elided content, so task_output can flag it.
-pub fn render_transcript(entries: &[TranscriptEntry], options: &RenderOptions) -> RenderedTranscript {
+pub fn render_transcript(
+    entries: &[TranscriptEntry],
+    options: &RenderOptions,
+) -> RenderedTranscript {
     if entries.is_empty() {
         return RenderedTranscript {
             text: EMPTY_NOTICE.to_string(),

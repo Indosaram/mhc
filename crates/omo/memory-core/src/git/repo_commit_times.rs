@@ -91,9 +91,10 @@ impl PathCommitTimes {
         }
         if base.is_none()
             && let Some(stored) = &stored
-                && (stored.revision == oid || ancestor(&stored.revision)?) {
-                    base = Some((stored.revision.clone(), stored.times.clone(), true));
-                }
+            && (stored.revision == oid || ancestor(&stored.revision)?)
+        {
+            base = Some((stored.revision.clone(), stored.times.clone(), true));
+        }
         let (all, write) = if let Some((key, mut times, persisted)) = base {
             if key != oid {
                 for (path, time) in
@@ -115,26 +116,25 @@ impl PathCommitTimes {
                 },
             )
         };
-        if write
-            && let Some(path) = path {
-                let temporary = path.with_extension(format!(
-                    "{}.{}.tmp",
-                    std::process::id(),
-                    crate::support::random::random_uuid()
-                ));
-                let save = || -> std::io::Result<()> {
-                    let bytes = serde_json::to_vec(&Stored {
-                        version: 2,
-                        revision: oid.clone(),
-                        times: all.clone(),
-                    })?;
-                    std::fs::write(&temporary, bytes)?;
-                    std::fs::rename(&temporary, &path)
-                };
-                if save().is_err() {
-                    let _ = std::fs::remove_file(temporary);
-                }
+        if write && let Some(path) = path {
+            let temporary = path.with_extension(format!(
+                "{}.{}.tmp",
+                std::process::id(),
+                crate::support::random::random_uuid()
+            ));
+            let save = || -> std::io::Result<()> {
+                let bytes = serde_json::to_vec(&Stored {
+                    version: 2,
+                    revision: oid.clone(),
+                    times: all.clone(),
+                })?;
+                std::fs::write(&temporary, bytes)?;
+                std::fs::rename(&temporary, &path)
+            };
+            if save().is_err() {
+                let _ = std::fs::remove_file(temporary);
             }
+        }
         let live = live_times(present, &all);
         cache.push((oid, all));
         if cache.len() > 4 {

@@ -21,7 +21,9 @@ use url::Url;
 use crate::utils::abort::AbortSignal;
 
 use crate::auth::oauth::pkce::generate_pkce;
-use crate::auth::types::{AuthEvent, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction};
+use crate::auth::types::{
+    AuthEvent, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction,
+};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -51,7 +53,9 @@ pub struct CursorOAuthError {
 
 impl CursorOAuthError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 
     pub fn message(&self) -> &str {
@@ -80,7 +84,11 @@ pub struct CursorResponse {
 /// default implementation is the real network and the real clock.
 pub trait CursorTransport: Send + Sync {
     fn now_ms(&self) -> i64;
-    fn sleep<'a>(&'a self, ms: u64, signal: &'a AbortSignal) -> BoxFuture<'a, Result<(), CursorOAuthError>>;
+    fn sleep<'a>(
+        &'a self,
+        ms: u64,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<(), CursorOAuthError>>;
     fn fetch<'a>(
         &'a self,
         request: CursorRequest,
@@ -101,7 +109,9 @@ impl Default for HttpCursorTransport {
 
 impl HttpCursorTransport {
     pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
+        Self {
+            client: reqwest::Client::new(),
+        }
     }
 
     pub fn with_client(client: reqwest::Client) -> Self {
@@ -114,7 +124,11 @@ impl CursorTransport for HttpCursorTransport {
         crate::utils::diagnostics::now_ms()
     }
 
-    fn sleep<'a>(&'a self, ms: u64, signal: &'a AbortSignal) -> BoxFuture<'a, Result<(), CursorOAuthError>> {
+    fn sleep<'a>(
+        &'a self,
+        ms: u64,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<(), CursorOAuthError>> {
         Box::pin(async move {
             if signal.aborted() {
                 return Err(CursorOAuthError::new(CANCEL_MESSAGE));
@@ -132,7 +146,8 @@ impl CursorTransport for HttpCursorTransport {
         signal: &'a AbortSignal,
     ) -> BoxFuture<'a, Result<CursorResponse, String>> {
         Box::pin(async move {
-            let method = reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|error| error.to_string())?;
+            let method = reqwest::Method::from_bytes(request.method.as_bytes())
+                .map_err(|error| error.to_string())?;
             let mut builder = self.client.request(method, request.url.as_str());
             for (name, value) in &request.headers {
                 builder = builder.header(name.as_str(), value.as_str());
@@ -154,7 +169,9 @@ impl CursorTransport for HttpCursorTransport {
 fn required_string(body: &Map<String, Value>, field: &str) -> Result<String, CursorOAuthError> {
     match body.get(field) {
         Some(Value::String(value)) if !value.is_empty() => Ok(value.clone()),
-        _ => Err(CursorOAuthError::new(format!("Invalid Cursor OAuth response field: {field}"))),
+        _ => Err(CursorOAuthError::new(format!(
+            "Invalid Cursor OAuth response field: {field}"
+        ))),
     }
 }
 
@@ -164,11 +181,18 @@ fn required_string(body: &Map<String, Value>, field: &str) -> Result<String, Cur
 fn describe_failure(status: u16, body: Option<&Map<String, Value>>) -> String {
     let detail = ["error", "error_description", "message"]
         .iter()
-        .filter_map(|field| body.and_then(|body| body.get(*field)).and_then(Value::as_str))
+        .filter_map(|field| {
+            body.and_then(|body| body.get(*field))
+                .and_then(Value::as_str)
+        })
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join(": ");
-    if detail.is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {detail}") }
+    if detail.is_empty() {
+        format!("HTTP {status}")
+    } else {
+        format!("HTTP {status}: {detail}")
+    }
 }
 
 fn read_json_body(response: &CursorResponse) -> Option<Map<String, Value>> {
@@ -184,13 +208,19 @@ fn is_ok(status: u16) -> bool {
 
 fn decode_jwt_payload(token: &str) -> Option<Map<String, Value>> {
     let parts: Vec<&str> = token.split('.').collect();
-    let payload = if parts.len() == 3 { parts[1] } else { return None };
+    let payload = if parts.len() == 3 {
+        parts[1]
+    } else {
+        return None;
+    };
     if payload.is_empty() {
         return None;
     }
     let normalized = payload.replace('-', "+").replace('_', "/");
     let padded = format!("{normalized}{}", "=".repeat((4 - normalized.len() % 4) % 4));
-    let bytes = base64::engine::general_purpose::STANDARD.decode(padded).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(padded)
+        .ok()?;
     // `atob` decodes to a latin1 string; the JSON payload is read from those bytes.
     let latin1: String = bytes.iter().map(|byte| char::from(*byte)).collect();
     match serde_json::from_str::<Value>(&latin1) {
@@ -202,14 +232,21 @@ fn decode_jwt_payload(token: &str) -> Option<Map<String, Value>> {
 /// Cursor's poll/refresh responses carry no `expires_in`; the access token is a JWT whose `exp`
 /// claim is authoritative. Tokens without a readable `exp` get a conservative one-hour lifetime.
 fn access_token_expiry(access_token: &str, now: i64) -> f64 {
-    let exp = decode_jwt_payload(access_token).and_then(|payload| payload.get("exp").and_then(Value::as_f64));
+    let exp = decode_jwt_payload(access_token)
+        .and_then(|payload| payload.get("exp").and_then(Value::as_f64));
     match exp {
-        Some(exp) if exp.is_finite() && exp * 1000.0 > now as f64 => exp * 1000.0 - REFRESH_SKEW_MS as f64,
+        Some(exp) if exp.is_finite() && exp * 1000.0 > now as f64 => {
+            exp * 1000.0 - REFRESH_SKEW_MS as f64
+        }
         _ => (now + DEFAULT_TOKEN_LIFETIME_MS - REFRESH_SKEW_MS) as f64,
     }
 }
 
-fn credential_from_tokens(access_token: String, refresh_token: String, now: i64) -> OAuthCredential {
+fn credential_from_tokens(
+    access_token: String,
+    refresh_token: String,
+    now: i64,
+) -> OAuthCredential {
     let expires = access_token_expiry(&access_token, now);
     OAuthCredential::new(access_token, refresh_token, expires)
 }
@@ -237,9 +274,14 @@ async fn poll_for_tokens(
     signal: &AbortSignal,
 ) -> Result<OAuthCredential, CursorOAuthError> {
     let Ok(mut poll_url) = Url::parse(CURSOR_POLL_URL) else {
-        return Err(CursorOAuthError::new(format!("Invalid poll url: {CURSOR_POLL_URL}")));
+        return Err(CursorOAuthError::new(format!(
+            "Invalid poll url: {CURSOR_POLL_URL}"
+        )));
     };
-    poll_url.query_pairs_mut().append_pair("uuid", uuid).append_pair("verifier", verifier);
+    poll_url
+        .query_pairs_mut()
+        .append_pair("uuid", uuid)
+        .append_pair("verifier", verifier);
     let poll_url = poll_url.to_string();
 
     let mut interval_ms = POLL_INITIAL_INTERVAL_MS;
@@ -281,7 +323,11 @@ async fn poll_for_tokens(
             let body = read_json_body(&response).unwrap_or_default();
             let access_token = required_string(&body, "accessToken")?;
             let refresh_token = required_string(&body, "refreshToken")?;
-            return Ok(credential_from_tokens(access_token, refresh_token, transport.now_ms()));
+            return Ok(credential_from_tokens(
+                access_token,
+                refresh_token,
+                transport.now_ms(),
+            ));
         }
 
         if matches!(response.status, 400 | 401 | 403 | 410) {
@@ -307,7 +353,9 @@ async fn poll_for_tokens(
         }
     }
 
-    Err(CursorOAuthError::new("Cursor login timed out waiting for browser approval"))
+    Err(CursorOAuthError::new(
+        "Cursor login timed out waiting for browser approval",
+    ))
 }
 
 async fn login_cursor(
@@ -322,11 +370,21 @@ async fn login_cursor(
 
     interaction.notify(AuthEvent::AuthUrl {
         url: build_cursor_login_url(&pkce.challenge, &uuid),
-        instructions: Some("Approve the login request in your browser to connect your Cursor account.".to_owned()),
+        instructions: Some(
+            "Approve the login request in your browser to connect your Cursor account.".to_owned(),
+        ),
     });
-    interaction.notify(AuthEvent::Progress { message: "Waiting for browser authentication...".to_owned() });
+    interaction.notify(AuthEvent::Progress {
+        message: "Waiting for browser authentication...".to_owned(),
+    });
 
-    poll_for_tokens(flow.transport.as_ref(), &uuid, &pkce.verifier, &interaction.signal).await
+    poll_for_tokens(
+        flow.transport.as_ref(),
+        &uuid,
+        &pkce.verifier,
+        &interaction.signal,
+    )
+    .await
 }
 
 /// Exchanges the stored refresh token (Cursor also accepts a dashboard user API key here) for a
@@ -339,14 +397,19 @@ async fn refresh_cursor_credential(
 ) -> Result<OAuthCredential, CursorOAuthError> {
     let refresh_token = credential.refresh.clone();
     if refresh_token.is_empty() {
-        return Err(CursorOAuthError::new("Cursor token refresh failed: no refresh token stored; run login again"));
+        return Err(CursorOAuthError::new(
+            "Cursor token refresh failed: no refresh token stored; run login again",
+        ));
     }
 
     let request = CursorRequest {
         url: CURSOR_REFRESH_URL.to_owned(),
         method: "POST".to_owned(),
         headers: vec![
-            ("Authorization".to_owned(), format!("Bearer {refresh_token}")),
+            (
+                "Authorization".to_owned(),
+                format!("Bearer {refresh_token}"),
+            ),
             ("Content-Type".to_owned(), "application/json".to_owned()),
             ("Accept".to_owned(), "application/json".to_owned()),
         ],
@@ -379,7 +442,11 @@ async fn refresh_cursor_credential(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let expires = access_token_expiry(&access, flow.transport.now_ms());
-    Ok(OAuthCredential::new(access, rotated.unwrap_or(refresh_token), expires))
+    Ok(OAuthCredential::new(
+        access,
+        rotated.unwrap_or(refresh_token),
+        expires,
+    ))
 }
 
 /// The port of the TS `cursorOAuth` singleton.
@@ -395,7 +462,9 @@ impl Default for CursorOAuth {
 
 impl CursorOAuth {
     pub fn new() -> Self {
-        Self { transport: Arc::new(HttpCursorTransport::new()) }
+        Self {
+            transport: Arc::new(HttpCursorTransport::new()),
+        }
     }
 
     pub fn with_transport(transport: Arc<dyn CursorTransport>) -> Self {
@@ -427,25 +496,40 @@ impl OAuthAuth for CursorOAuth {
         Some("Sign in with Cursor")
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
-        login_cursor(self, interaction).await.map_err(anyhow::Error::from)
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
+        login_cursor(self, interaction)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
-        refresh_cursor_credential(self, credential, signal).await.map_err(anyhow::Error::from)
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
+        refresh_cursor_credential(self, credential, signal)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        Ok(ModelAuth {
+            api_key: Some(credential.access.clone()),
+            ..Default::default()
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::auth::types::{
-        AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction,
-    };
     use super::*;
+    use crate::auth::types::{
+        AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential,
+        ProviderAuthInteraction,
+    };
     use crate::utils::abort::AbortController;
     use async_trait::async_trait;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -470,7 +554,11 @@ mod tests {
 
     /// Unsigned JWT with the given payload - enough for expiry-claim parsing.
     fn fake_jwt(payload: Value) -> String {
-        format!("{}.{}.sig", base64url(r#"{"alg":"none","typ":"JWT"}"#), base64url(&payload.to_string()))
+        format!(
+            "{}.{}.sig",
+            base64url(r#"{"alg":"none","typ":"JWT"}"#),
+            base64url(&payload.to_string())
+        )
     }
 
     fn query_params(url: &str) -> HashMap<String, String> {
@@ -512,11 +600,17 @@ mod tests {
         }
 
         fn push_response(&self, status: u16, body: impl Into<String>) {
-            self.replies.lock().unwrap().push_back(FakeReply::Response(status, body.into()));
+            self.replies
+                .lock()
+                .unwrap()
+                .push_back(FakeReply::Response(status, body.into()));
         }
 
         fn push_failure(&self, message: impl Into<String>) {
-            self.replies.lock().unwrap().push_back(FakeReply::Failure(message.into()));
+            self.replies
+                .lock()
+                .unwrap()
+                .push_back(FakeReply::Failure(message.into()));
         }
 
         /// Every sleep completes immediately (the suite's `vi.runAllTimersAsync`).
@@ -547,7 +641,11 @@ mod tests {
             *self.now.lock().unwrap()
         }
 
-        fn sleep<'a>(&'a self, ms: u64, signal: &'a AbortSignal) -> BoxFuture<'a, Result<(), CursorOAuthError>> {
+        fn sleep<'a>(
+            &'a self,
+            ms: u64,
+            signal: &'a AbortSignal,
+        ) -> BoxFuture<'a, Result<(), CursorOAuthError>> {
             Box::pin(async move {
                 if signal.aborted() {
                     return Err(CursorOAuthError::new(CANCEL_MESSAGE));
@@ -579,7 +677,10 @@ mod tests {
                 }
                 self.requests.lock().unwrap().push(request);
                 match self.replies.lock().unwrap().pop_front() {
-                    Some(FakeReply::Response(status, body)) => Ok(CursorResponse { status, body_text: body }),
+                    Some(FakeReply::Response(status, body)) => Ok(CursorResponse {
+                        status,
+                        body_text: body,
+                    }),
                     Some(FakeReply::Failure(message)) => Err(message),
                     None => Err("Unexpected poll".to_owned()),
                 }
@@ -637,7 +738,8 @@ mod tests {
             let flow = flow.clone();
             let events = events.clone();
             async move {
-                let interaction = ProviderAuthInteraction::new(signal, Arc::new(TestInteraction { events }));
+                let interaction =
+                    ProviderAuthInteraction::new(signal, Arc::new(TestInteraction { events }));
                 flow.login(&interaction).await
             }
         });
@@ -657,13 +759,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opens_the_deep_control_url_with_a_valid_pkce_challenge_and_polls_until_the_tokens_release() {
+    async fn opens_the_deep_control_url_with_a_valid_pkce_challenge_and_polls_until_the_tokens_release()
+     {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
         let start_time = TEST_START_MS;
-        let access_jwt = fake_jwt(json!({ "sub": "auth0|user_123", "exp": start_time / 1000 + 3600 }));
+        let access_jwt =
+            fake_jwt(json!({ "sub": "auth0|user_123", "exp": start_time / 1000 + 3600 }));
         transport.push_response(404, json!({ "error": "not found" }).to_string());
         transport.push_response(404, json!({ "error": "not found" }).to_string());
-        transport.push_response(200, json!({ "accessToken": access_jwt, "refreshToken": "refresh-1" }).to_string());
+        transport.push_response(
+            200,
+            json!({ "accessToken": access_jwt, "refreshToken": "refresh-1" }).to_string(),
+        );
 
         let flow = flow(&transport);
         let login = start_login(&flow, AbortController::new().signal());
@@ -671,17 +778,32 @@ mod tests {
         wait_until("first poll scheduled", || transport.sleep_count() == 1).await;
         let login_url = Url::parse(&auth_url(&login.events)).unwrap();
         assert_eq!(
-            format!("{}://{}{}", login_url.scheme(), login_url.host_str().unwrap(), login_url.path()),
+            format!(
+                "{}://{}{}",
+                login_url.scheme(),
+                login_url.host_str().unwrap(),
+                login_url.path()
+            ),
             "https://cursor.com/loginDeepControl"
         );
         let params = query_params(login_url.as_str());
         assert_eq!(params.get("mode").map(String::as_str), Some("login"));
-        assert_eq!(params.get("redirectTarget").map(String::as_str), Some("cli"));
+        assert_eq!(
+            params.get("redirectTarget").map(String::as_str),
+            Some("cli")
+        );
         let challenge = params.get("challenge").cloned().unwrap_or_default();
         let uuid = params.get("uuid").cloned().unwrap_or_default();
         assert!(!challenge.is_empty());
         assert!(!uuid.is_empty());
-        assert!(login.events.lock().unwrap().iter().any(|event| matches!(event, AuthEvent::Progress { .. })));
+        assert!(
+            login
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, AuthEvent::Progress { .. }))
+        );
         assert!(transport.poll_times().is_empty());
 
         // Backoff: 1000ms, then 1200ms, then 1440ms.
@@ -692,17 +814,26 @@ mod tests {
         transport.advance();
         let credential = login.handle.await.unwrap().unwrap();
 
-        assert_eq!(transport.poll_times(), vec![start_time + 1000, start_time + 2200, start_time + 3640]);
+        assert_eq!(
+            transport.poll_times(),
+            vec![start_time + 1000, start_time + 2200, start_time + 3640]
+        );
         for request in transport.requests() {
             let params = query_params(&request.url);
             assert_eq!(params.get("uuid").map(String::as_str), Some(uuid.as_str()));
             // The poll verifier must be the PKCE preimage of the challenge in the login URL.
-            assert_eq!(sha256_base64url(params.get("verifier").map(String::as_str).unwrap_or("")), challenge);
+            assert_eq!(
+                sha256_base64url(params.get("verifier").map(String::as_str).unwrap_or("")),
+                challenge
+            );
         }
 
         assert_eq!(credential.access, access_jwt);
         assert_eq!(credential.refresh, "refresh-1");
-        assert_eq!(credential.expires, (start_time + 3_600_000 - 300_000) as f64);
+        assert_eq!(
+            credential.expires,
+            (start_time + 3_600_000 - 300_000) as f64
+        );
     }
 
     #[tokio::test]
@@ -710,12 +841,23 @@ mod tests {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
         transport.set_auto();
         transport.push_response(404, json!({ "error": "not found" }).to_string());
-        transport.push_response(401, json!({ "error": "invalid_request", "error_description": "challenge mismatch" }).to_string());
+        transport.push_response(
+            401,
+            json!({ "error": "invalid_request", "error_description": "challenge mismatch" })
+                .to_string(),
+        );
 
         let flow = flow(&transport);
-        let error = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap_err();
+        let error = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Cursor login was rejected (HTTP 401: invalid_request: challenge mismatch)");
+        assert_eq!(
+            error.to_string(),
+            "Cursor login was rejected (HTTP 401: invalid_request: challenge mismatch)"
+        );
         assert_eq!(transport.requests().len(), 2);
     }
 
@@ -723,16 +865,24 @@ mod tests {
     async fn tolerates_transient_network_errors_between_pending_polls() {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
         transport.set_auto();
-        let access_jwt = fake_jwt(json!({ "exp": crate::utils::diagnostics::now_ms() / 1000 + 3600 }));
+        let access_jwt =
+            fake_jwt(json!({ "exp": crate::utils::diagnostics::now_ms() / 1000 + 3600 }));
         transport.push_failure("socket hang up");
         transport.push_response(404, json!({ "error": "not found" }).to_string());
         transport.push_failure("socket hang up");
         transport.push_failure("socket hang up");
         transport.push_response(404, json!({ "error": "not found" }).to_string());
-        transport.push_response(200, json!({ "accessToken": access_jwt, "refreshToken": "refresh-1" }).to_string());
+        transport.push_response(
+            200,
+            json!({ "accessToken": access_jwt, "refreshToken": "refresh-1" }).to_string(),
+        );
 
         let flow = flow(&transport);
-        let credential = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap();
+        let credential = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(credential.refresh, "refresh-1");
     }
@@ -746,9 +896,16 @@ mod tests {
         }
 
         let flow = flow(&transport);
-        let error = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap_err();
+        let error = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Cursor login polling failed after repeated network errors: socket hang up");
+        assert_eq!(
+            error.to_string(),
+            "Cursor login polling failed after repeated network errors: socket hang up"
+        );
         assert_eq!(transport.requests().len(), 3);
     }
 
@@ -761,9 +918,16 @@ mod tests {
         }
 
         let flow = flow(&transport);
-        let error = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap_err();
+        let error = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Cursor login polling failed (HTTP 500: internal)");
+        assert_eq!(
+            error.to_string(),
+            "Cursor login polling failed (HTTP 500: internal)"
+        );
         assert_eq!(transport.requests().len(), 3);
     }
 
@@ -771,14 +935,22 @@ mod tests {
     async fn keeps_polling_through_rate_limits_without_burning_the_transient_failure_budget() {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
         transport.set_auto();
-        let access_jwt = fake_jwt(json!({ "exp": crate::utils::diagnostics::now_ms() / 1000 + 3600 }));
+        let access_jwt =
+            fake_jwt(json!({ "exp": crate::utils::diagnostics::now_ms() / 1000 + 3600 }));
         for _ in 0..4 {
             transport.push_response(429, "{}");
         }
-        transport.push_response(200, json!({ "accessToken": access_jwt, "refreshToken": "refresh-1" }).to_string());
+        transport.push_response(
+            200,
+            json!({ "accessToken": access_jwt, "refreshToken": "refresh-1" }).to_string(),
+        );
 
         let flow = flow(&transport);
-        let credential = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap();
+        let credential = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(credential.access, access_jwt);
     }
@@ -810,9 +982,16 @@ mod tests {
         }
 
         let flow = flow(&transport);
-        let error = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap_err();
+        let error = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Cursor login timed out waiting for browser approval");
+        assert_eq!(
+            error.to_string(),
+            "Cursor login timed out waiting for browser approval"
+        );
         assert_eq!(transport.requests().len(), POLL_MAX_ATTEMPTS as usize);
     }
 
@@ -823,15 +1002,25 @@ mod tests {
         transport.push_response(200, json!({ "accessToken": "only-access" }).to_string());
 
         let flow = flow(&transport);
-        let error = start_login(&flow, AbortController::new().signal()).handle.await.unwrap().unwrap_err();
+        let error = start_login(&flow, AbortController::new().signal())
+            .handle
+            .await
+            .unwrap()
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Invalid Cursor OAuth response field: refreshToken");
+        assert_eq!(
+            error.to_string(),
+            "Invalid Cursor OAuth response field: refreshToken"
+        );
     }
 
     #[tokio::test]
     async fn falls_back_to_a_one_hour_lifetime_when_the_access_token_is_not_a_readable_jwt() {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
-        transport.push_response(200, json!({ "accessToken": "opaque-token", "refreshToken": "refresh-1" }).to_string());
+        transport.push_response(
+            200,
+            json!({ "accessToken": "opaque-token", "refreshToken": "refresh-1" }).to_string(),
+        );
 
         let flow = flow(&transport);
         let login = start_login(&flow, AbortController::new().signal());
@@ -839,7 +1028,10 @@ mod tests {
         transport.advance();
         let credential = login.handle.await.unwrap().unwrap();
 
-        assert_eq!(credential.expires, (TEST_START_MS + 1000 + 3_600_000 - 300_000) as f64);
+        assert_eq!(
+            credential.expires,
+            (TEST_START_MS + 1000 + 3_600_000 - 300_000) as f64
+        );
     }
 
     #[tokio::test]
@@ -847,17 +1039,27 @@ mod tests {
         let now = crate::utils::diagnostics::now_ms();
         let access_jwt = fake_jwt(json!({ "exp": now / 1000 + 7200 }));
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
-        transport.push_response(200, json!({ "accessToken": access_jwt, "refreshToken": "rotated-refresh" }).to_string());
+        transport.push_response(
+            200,
+            json!({ "accessToken": access_jwt, "refreshToken": "rotated-refresh" }).to_string(),
+        );
 
         let flow = flow(&transport);
         let signal = AbortController::new().signal();
-        let credential = flow.refresh(&old_credential("old-refresh"), &signal).await.unwrap();
+        let credential = flow
+            .refresh(&old_credential("old-refresh"), &signal)
+            .await
+            .unwrap();
 
         let request = transport.requests().first().cloned().unwrap();
         assert_eq!(request.url, REFRESH_URL);
         assert_eq!(request.method, "POST");
         assert_eq!(request.body.as_deref(), Some("{}"));
-        assert!(request.headers.contains(&("Authorization".to_owned(), "Bearer old-refresh".to_owned())));
+        assert!(
+            request
+                .headers
+                .contains(&("Authorization".to_owned(), "Bearer old-refresh".to_owned()))
+        );
         assert_eq!(credential.access, access_jwt);
         assert_eq!(credential.refresh, "rotated-refresh");
         assert!(credential.expires > now as f64);
@@ -865,7 +1067,8 @@ mod tests {
 
     #[tokio::test]
     async fn keeps_the_previous_refresh_token_when_the_server_does_not_rotate_it() {
-        let access_jwt = fake_jwt(json!({ "exp": crate::utils::diagnostics::now_ms() / 1000 + 7200 }));
+        let access_jwt =
+            fake_jwt(json!({ "exp": crate::utils::diagnostics::now_ms() / 1000 + 7200 }));
         for refresh_field in [None, Some("")] {
             let transport = Arc::new(FakeTransport::new(TEST_START_MS));
             let mut body = json!({ "accessToken": access_jwt });
@@ -875,7 +1078,13 @@ mod tests {
             transport.push_response(200, body.to_string());
 
             let flow = flow(&transport);
-            let credential = flow.refresh(&old_credential("old-refresh"), &AbortController::new().signal()).await.unwrap();
+            let credential = flow
+                .refresh(
+                    &old_credential("old-refresh"),
+                    &AbortController::new().signal(),
+                )
+                .await
+                .unwrap();
 
             assert_eq!(credential.refresh, "old-refresh");
         }
@@ -888,9 +1097,15 @@ mod tests {
 
         let flow = flow(&transport);
         let signal = AbortController::new().signal();
-        let error = flow.refresh(&old_credential("secret-refresh-token"), &signal).await.unwrap_err();
+        let error = flow
+            .refresh(&old_credential("secret-refresh-token"), &signal)
+            .await
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Cursor token refresh failed (HTTP 401: invalid_grant)");
+        assert_eq!(
+            error.to_string(),
+            "Cursor token refresh failed (HTTP 401: invalid_grant)"
+        );
         assert!(!error.to_string().contains("secret-refresh-token"));
     }
 
@@ -900,7 +1115,13 @@ mod tests {
         transport.push_response(502, "<html>gateway error</html>");
 
         let flow = flow(&transport);
-        let error = flow.refresh(&old_credential("old-refresh"), &AbortController::new().signal()).await.unwrap_err();
+        let error = flow
+            .refresh(
+                &old_credential("old-refresh"),
+                &AbortController::new().signal(),
+            )
+            .await
+            .unwrap_err();
 
         assert_eq!(error.to_string(), "Cursor token refresh failed (HTTP 502)");
     }
@@ -910,9 +1131,15 @@ mod tests {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
 
         let flow = flow(&transport);
-        let error = flow.refresh(&old_credential(""), &AbortController::new().signal()).await.unwrap_err();
+        let error = flow
+            .refresh(&old_credential(""), &AbortController::new().signal())
+            .await
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Cursor token refresh failed: no refresh token stored; run login again");
+        assert_eq!(
+            error.to_string(),
+            "Cursor token refresh failed: no refresh token stored; run login again"
+        );
         assert!(transport.requests().is_empty());
     }
 
@@ -922,9 +1149,18 @@ mod tests {
         transport.push_response(200, json!({ "refreshToken": "rotated" }).to_string());
 
         let flow = flow(&transport);
-        let error = flow.refresh(&old_credential("old-refresh"), &AbortController::new().signal()).await.unwrap_err();
+        let error = flow
+            .refresh(
+                &old_credential("old-refresh"),
+                &AbortController::new().signal(),
+            )
+            .await
+            .unwrap_err();
 
-        assert_eq!(error.to_string(), "Invalid Cursor OAuth response field: accessToken");
+        assert_eq!(
+            error.to_string(),
+            "Invalid Cursor OAuth response field: accessToken"
+        );
     }
 
     #[tokio::test]
@@ -932,7 +1168,10 @@ mod tests {
         let transport = Arc::new(FakeTransport::new(TEST_START_MS));
         let flow = flow(&transport);
 
-        let auth: ModelAuth = flow.to_auth(&OAuthCredential::new("token", "r", 0.0)).await.unwrap();
+        let auth: ModelAuth = flow
+            .to_auth(&OAuthCredential::new("token", "r", 0.0))
+            .await
+            .unwrap();
 
         assert_eq!(auth.api_key.as_deref(), Some("token"));
         assert!(auth.headers.is_none());

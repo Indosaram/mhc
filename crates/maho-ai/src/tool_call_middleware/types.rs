@@ -74,7 +74,8 @@ impl ToolResultContent {
 }
 
 /// `onError?: (message: string, metadata?: Record<string, unknown>) => void`.
-pub type ParserErrorHandler = std::sync::Arc<dyn Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync>;
+pub type ParserErrorHandler =
+    std::sync::Arc<dyn Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct ParserOptions {
@@ -86,7 +87,10 @@ pub struct ParserOptions {
 impl std::fmt::Debug for ParserOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParserOptions")
-            .field("emit_raw_tool_call_text_on_error", &self.emit_raw_tool_call_text_on_error)
+            .field(
+                "emit_raw_tool_call_text_on_error",
+                &self.emit_raw_tool_call_text_on_error,
+            )
             .field("on_error", &self.on_error.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -111,9 +115,18 @@ pub struct ParsedToolCall {
 /// Maps 1:1 to `AssistantMessageEvent`s for seamless integration.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamParserEvent {
-    Text { text: String },
-    ToolcallStart { index: usize, name: String, id: String },
-    ToolcallDelta { index: usize, arguments_delta: String },
+    Text {
+        text: String,
+    },
+    ToolcallStart {
+        index: usize,
+        name: String,
+        id: String,
+    },
+    ToolcallDelta {
+        index: usize,
+        arguments_delta: String,
+    },
     ToolcallEnd {
         index: usize,
         name: String,
@@ -140,16 +153,30 @@ pub trait ToolCallProtocol: Send + Sync {
     fn format_tools_system_prompt(&self, tools: &[Tool]) -> String;
 
     /// Format a tool response for inclusion in the conversation context.
-    fn format_tool_response(&self, tool_name: &str, tool_call_id: &str, content: &[ToolResultContent]) -> String;
+    fn format_tool_response(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        content: &[ToolResultContent],
+    ) -> String;
 
     /// Format a tool call for sending to the model.
     fn format_tool_call(&self, name: &str, args: &serde_json::Map<String, Value>) -> String;
 
     /// Parse generated text to extract tool calls.
-    fn parse_generated_text(&self, text: &str, tools: &[Tool], options: Option<&ParserOptions>) -> Vec<ParsedToolCall>;
+    fn parse_generated_text(
+        &self,
+        text: &str,
+        tools: &[Tool],
+        options: Option<&ParserOptions>,
+    ) -> Vec<ParsedToolCall>;
 
     /// Create a stream parser for incremental parsing during streaming.
-    fn create_stream_parser(&self, tools: Vec<Tool>, options: Option<ParserOptions>) -> Box<dyn StreamParser + Send>;
+    fn create_stream_parser(
+        &self,
+        tools: Vec<Tool>,
+        options: Option<ParserOptions>,
+    ) -> Box<dyn StreamParser + Send>;
 }
 
 #[cfg(test)]

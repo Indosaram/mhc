@@ -1,13 +1,38 @@
 use maho_ext_config_reload::index::{build_builtin_watch_targets, resolve_config_reload_settings};
+use maho_ext_config_reload::{
+    index::{build_external_watch_targets, group_changed_paths},
+    protocol::*,
+};
 use serde_json::json;
-use maho_ext_config_reload::{index::{build_external_watch_targets, group_changed_paths}, protocol::*};
 #[test]
 fn external_file_filters_and_literal_dot_directory_are_grouped() {
     let root = tempfile::tempdir().unwrap();
-    let registrations = vec![ConfigWatchRegistration { id: "external".into(), display_name: "fixture".into(), targets: vec![ConfigWatchTarget { path: "./settings.json".into(), kind: ConfigWatchTargetKind::File, filter_globs: None }, ConfigWatchTarget { path: ".".into(), kind: ConfigWatchTargetKind::Dir, filter_globs: Some(vec!["/.omo".into()]) }] }];
+    let registrations = vec![ConfigWatchRegistration {
+        id: "external".into(),
+        display_name: "fixture".into(),
+        targets: vec![
+            ConfigWatchTarget {
+                path: "./settings.json".into(),
+                kind: ConfigWatchTargetKind::File,
+                filter_globs: None,
+            },
+            ConfigWatchTarget {
+                path: ".".into(),
+                kind: ConfigWatchTargetKind::Dir,
+                filter_globs: Some(vec!["/.omo".into()]),
+            },
+        ],
+    }];
     let targets = build_external_watch_targets(root.path(), &registrations);
-    assert_eq!(targets[1].target.allow_list.as_ref().unwrap(), &[std::path::PathBuf::from(".omo")]);
-    let paths = vec![root.path().join("settings.json"), root.path().join(".omo"), root.path().join("unmatched")];
+    assert_eq!(
+        targets[1].target.allow_list.as_ref().unwrap(),
+        &[std::path::PathBuf::from(".omo")]
+    );
+    let paths = vec![
+        root.path().join("settings.json"),
+        root.path().join(".omo"),
+        root.path().join("unmatched"),
+    ];
     let groups = group_changed_paths(&paths, &targets, &[]);
     assert_eq!(groups["external"], paths[..2]);
     assert_eq!(groups["builtin"], paths[2..]);
@@ -20,15 +45,28 @@ fn missing_resources_use_parent_presence_and_untrusted_project_is_omitted() {
     let settings = resolve_config_reload_settings(&json!({}), &json!({}));
     let targets = build_builtin_watch_targets(root.path(), &agent, false, &settings, &[]);
     assert_eq!(targets.len(), 3);
-    assert!(targets.iter().all(|target| !target.target.id.contains("project")));
-    assert_eq!(targets.iter().filter(|target| target.rearm_on_creation.is_some()).count(), 2);
+    assert!(
+        targets
+            .iter()
+            .all(|target| !target.target.id.contains("project"))
+    );
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| target.rearm_on_creation.is_some())
+            .count(),
+        2
+    );
 }
 #[test]
 fn trusted_project_presence_watches_config_name() {
     let root = tempfile::tempdir().unwrap();
     let settings = resolve_config_reload_settings(&json!({}), &json!({}));
     let targets = build_builtin_watch_targets(root.path(), root.path(), true, &settings, &[]);
-    let presence = targets.iter().find(|target| target.target.id == "builtin-project-presence").unwrap();
+    let presence = targets
+        .iter()
+        .find(|target| target.target.id == "builtin-project-presence")
+        .unwrap();
     assert!(presence.rearm_on_creation.is_some());
     assert_eq!(presence.target.allow_list.as_ref().unwrap().len(), 1);
 }
@@ -40,7 +78,10 @@ fn symlink_resource_uses_presence_target_instead_of_following_directory() {
     std::os::unix::fs::symlink(outside.path(), root.path().join("prompts")).unwrap();
     let settings = resolve_config_reload_settings(&json!({}), &json!({}));
     let targets = build_builtin_watch_targets(root.path(), root.path(), false, &settings, &[]);
-    let prompts = targets.iter().find(|target| target.target.id == "builtin-global-prompts-presence").unwrap();
+    let prompts = targets
+        .iter()
+        .find(|target| target.target.id == "builtin-global-prompts-presence")
+        .unwrap();
     assert_eq!(prompts.rearm_on_creation, Some(root.path().join("prompts")));
 }
 #[test]
@@ -49,10 +90,22 @@ fn skill_and_external_paths_resolve_like_senpi_resolve_path() {
     use maho_ext_config_reload::index::resolve_watch_path;
     let root = tempfile::tempdir().unwrap();
     let home = maho_core::config::home_dir();
-    assert_eq!(resolve_watch_path("  ./skills ", root.path()), root.path().join("skills"));
-    assert_eq!(resolve_watch_path("~/my-skills", root.path()), std::path::Path::new(&home).join("my-skills"));
-    assert_eq!(resolve_watch_path("file:///tmp/skills", root.path()), std::path::PathBuf::from("/tmp/skills"));
-    assert_eq!(resolve_watch_path("a/../b", root.path()), root.path().join("b"));
+    assert_eq!(
+        resolve_watch_path("  ./skills ", root.path()),
+        root.path().join("skills")
+    );
+    assert_eq!(
+        resolve_watch_path("~/my-skills", root.path()),
+        std::path::Path::new(&home).join("my-skills")
+    );
+    assert_eq!(
+        resolve_watch_path("file:///tmp/skills", root.path()),
+        std::path::PathBuf::from("/tmp/skills")
+    );
+    assert_eq!(
+        resolve_watch_path("a/../b", root.path()),
+        root.path().join("b")
+    );
 }
 #[test]
 fn rearmed_project_container_is_skipped_by_presence_group() {
@@ -61,6 +114,9 @@ fn rearmed_project_container_is_skipped_by_presence_group() {
     let targets = build_builtin_watch_targets(root.path(), root.path(), true, &settings, &[]);
     let container = root.path().join(maho_core::config::config_dir_name());
     let paths = vec![container.clone()];
-    assert_eq!(group_changed_paths(&paths, &targets, &[]).get("builtin"), Some(&paths));
+    assert_eq!(
+        group_changed_paths(&paths, &targets, &[]).get("builtin"),
+        Some(&paths)
+    );
     assert!(group_changed_paths(&paths, &targets, &[container]).is_empty());
 }

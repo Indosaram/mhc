@@ -15,6 +15,9 @@ mod session_spawn;
 mod stale_session_sweep;
 mod window_spawn;
 
+pub use crate::pane_auth::{
+    build_pane_auth_environment_args, build_pane_auth_environment_args_from,
+};
 pub use deps::{
     ActivateTmuxPaneDeps, CloseTmuxPaneDependencies, DelayFn, EnforceMainPaneWidthDeps,
     GetPaneDimensionsDeps, GetTmuxPathFn, KillTmuxSessionDeps, LogFn, ReplaceTmuxPaneDeps,
@@ -30,7 +33,6 @@ pub use layout::{
 };
 pub use pane_activate::{ActivateTmuxPaneRequest, activate_tmux_pane};
 pub use pane_close::{close_tmux_pane, close_tmux_pane_with_dependencies};
-pub use crate::pane_auth::{build_pane_auth_environment_args, build_pane_auth_environment_args_from};
 pub use pane_command::{
     build_subagent_pane_title, build_tmux_attach_command, build_tmux_attach_command_from,
     build_tmux_placeholder_command, build_tmux_placeholder_command_from, escape_tmux_format,

@@ -77,11 +77,16 @@ fn terminal_record(project_dir: &std::path::Path, final_response: &str) -> TaskR
 }
 
 fn dag_store(project_dir: &std::path::Path) -> DagFileStore {
-    create_dag_file_store(&DagStoreConfig::new(project_dir), DagStoreOptions::default()).expect("dag store opens")
+    create_dag_file_store(
+        &DagStoreConfig::new(project_dir),
+        DagStoreOptions::default(),
+    )
+    .expect("dag store opens")
 }
 
 #[test]
-fn given_a_terminal_node_record_when_persisted_then_the_response_file_carries_the_sha256_and_byte_count_of_the_copy() {
+fn given_a_terminal_node_record_when_persisted_then_the_response_file_carries_the_sha256_and_byte_count_of_the_copy()
+ {
     let project_dir = temp_project();
     let store = dag_store(&project_dir);
     let final_response = "plan complete: shipped 3 files\nwith a trailing note";
@@ -98,17 +103,22 @@ fn given_a_terminal_node_record_when_persisted_then_the_response_file_carries_th
     let DagNodeResultPersistOutcome::Persisted { artifact } = outcome else {
         panic!("expected persisted outcome");
     };
-    assert_eq!(artifact.relative_path, format!("dag/results/{RUN_ID}/{NODE_ID}.txt"));
+    assert_eq!(
+        artifact.relative_path,
+        format!("dag/results/{RUN_ID}/{NODE_ID}.txt")
+    );
     assert_eq!(artifact.sha256, sha256_hex(final_response));
     assert_eq!(artifact.bytes, final_response.len() as u64);
     assert_eq!(
-        std::fs::read_to_string(store.state_dir.join(&artifact.relative_path)).expect("read artifact"),
+        std::fs::read_to_string(store.state_dir.join(&artifact.relative_path))
+            .expect("read artifact"),
         final_response
     );
 }
 
 #[test]
-fn given_run_stats_on_the_terminal_record_when_persisted_then_a_stats_sidecar_holds_them_with_its_own_digest() {
+fn given_run_stats_on_the_terminal_record_when_persisted_then_a_stats_sidecar_holds_them_with_its_own_digest()
+ {
     let project_dir = temp_project();
     let store = dag_store(&project_dir);
     let record = terminal_record(&project_dir, "build ok");
@@ -125,8 +135,12 @@ fn given_run_stats_on_the_terminal_record_when_persisted_then_a_stats_sidecar_ho
         panic!("expected persisted outcome");
     };
     let sidecar = artifact.stats.expect("expected stats sidecar");
-    assert_eq!(sidecar.relative_path, format!("dag/results/{RUN_ID}/{NODE_ID}.stats.json"));
-    let raw = std::fs::read_to_string(store.state_dir.join(&sidecar.relative_path)).expect("read sidecar");
+    assert_eq!(
+        sidecar.relative_path,
+        format!("dag/results/{RUN_ID}/{NODE_ID}.stats.json")
+    );
+    let raw = std::fs::read_to_string(store.state_dir.join(&sidecar.relative_path))
+        .expect("read sidecar");
     assert_eq!(sidecar.sha256, sha256_hex(&raw));
     assert_eq!(sidecar.bytes, raw.len() as u64);
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse sidecar json");
@@ -137,7 +151,8 @@ fn given_run_stats_on_the_terminal_record_when_persisted_then_a_stats_sidecar_ho
 }
 
 #[test]
-fn given_a_persisted_node_when_the_task_record_is_deleted_then_resume_reuse_still_reads_the_output_and_stats() {
+fn given_a_persisted_node_when_the_task_record_is_deleted_then_resume_reuse_still_reads_the_output_and_stats()
+ {
     let project_dir = temp_project();
     let store = dag_store(&project_dir);
     let records = TaskRecordStore::new(&StateDirConfig {
@@ -188,7 +203,8 @@ fn given_an_unwritable_result_path_when_persisting_then_a_journal_corrupt_diagno
     let DagNodeResultPersistOutcome::Failed { diagnostic } = outcome else {
         panic!("expected failed outcome");
     };
-    let crate::dag::store::DagStoreDiagnostic::JournalCorrupt { run_id, path, .. } = diagnostic else {
+    let crate::dag::store::DagStoreDiagnostic::JournalCorrupt { run_id, path, .. } = diagnostic
+    else {
         panic!("expected journal_corrupt diagnostic");
     };
     assert_eq!(run_id, Some(RUN_ID.to_string()));
@@ -210,7 +226,10 @@ fn given_an_unwritable_result_path_when_persisting_then_a_journal_corrupt_diagno
         record: &record,
         now: None,
     });
-    assert!(matches!(retried, DagNodeResultPersistOutcome::Persisted { .. }));
+    assert!(matches!(
+        retried,
+        DagNodeResultPersistOutcome::Persisted { .. }
+    ));
 }
 
 #[test]
@@ -266,7 +285,12 @@ fn given_a_terminal_record_without_run_stats_when_persisted_then_no_sidecar_is_w
         panic!("expected persisted outcome");
     };
     assert_eq!(artifact.stats, None);
-    assert!(!store.state_dir.join(format!("dag/results/{RUN_ID}/{NODE_ID}.stats.json")).exists());
+    assert!(
+        !store
+            .state_dir
+            .join(format!("dag/results/{RUN_ID}/{NODE_ID}.stats.json"))
+            .exists()
+    );
     let reused = read_dag_node_result(DagNodeResultReadInput {
         store: &store,
         run_id: RUN_ID,
@@ -277,23 +301,55 @@ fn given_a_terminal_record_without_run_stats_when_persisted_then_no_sidecar_is_w
     assert_eq!(reused.run_stats, None);
 }
 
-
 #[test]
 fn given_an_existing_result_when_replaced_then_only_final_artifacts_remain() {
     let project_dir = temp_project();
     let store = dag_store(&project_dir);
     let first = terminal_record(&project_dir, "first result");
     let second = terminal_record(&project_dir, "second result");
-    assert!(matches!(persist_dag_node_result(DagNodeResultPersistInput {
-        store: &store, run_id: RUN_ID.to_string(), node_id: NODE_ID.to_string(), record: &first, now: None,
-    }), DagNodeResultPersistOutcome::Persisted { .. }));
-    assert!(matches!(persist_dag_node_result(DagNodeResultPersistInput {
-        store: &store, run_id: RUN_ID.to_string(), node_id: NODE_ID.to_string(), record: &second, now: None,
-    }), DagNodeResultPersistOutcome::Persisted { .. }));
-    let result = read_dag_node_result(DagNodeResultReadInput { store: &store, run_id: RUN_ID, node_id: NODE_ID }).expect("result");
+    assert!(matches!(
+        persist_dag_node_result(DagNodeResultPersistInput {
+            store: &store,
+            run_id: RUN_ID.to_string(),
+            node_id: NODE_ID.to_string(),
+            record: &first,
+            now: None,
+        }),
+        DagNodeResultPersistOutcome::Persisted { .. }
+    ));
+    assert!(matches!(
+        persist_dag_node_result(DagNodeResultPersistInput {
+            store: &store,
+            run_id: RUN_ID.to_string(),
+            node_id: NODE_ID.to_string(),
+            record: &second,
+            now: None,
+        }),
+        DagNodeResultPersistOutcome::Persisted { .. }
+    ));
+    let result = read_dag_node_result(DagNodeResultReadInput {
+        store: &store,
+        run_id: RUN_ID,
+        node_id: NODE_ID,
+    })
+    .expect("result");
     assert_eq!(result.output, "second result");
-    let mut files: Vec<_> = std::fs::read_dir(store.paths.result(RUN_ID, NODE_ID).parent().expect("result directory"))
-        .expect("list artifacts").map(|entry| entry.expect("directory entry").file_name()).collect();
+    let mut files: Vec<_> = std::fs::read_dir(
+        store
+            .paths
+            .result(RUN_ID, NODE_ID)
+            .parent()
+            .expect("result directory"),
+    )
+    .expect("list artifacts")
+    .map(|entry| entry.expect("directory entry").file_name())
+    .collect();
     files.sort();
-    assert_eq!(files, vec![std::ffi::OsString::from(format!("{NODE_ID}.stats.json")), std::ffi::OsString::from(format!("{NODE_ID}.txt"))]);
+    assert_eq!(
+        files,
+        vec![
+            std::ffi::OsString::from(format!("{NODE_ID}.stats.json")),
+            std::ffi::OsString::from(format!("{NODE_ID}.txt"))
+        ]
+    );
 }

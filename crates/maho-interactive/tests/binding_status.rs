@@ -115,10 +115,13 @@ async fn reload_preserves_host_lifecycle_status_and_receives_later_records() {
     let (mut mode, _directory, session) = bound_mode().await;
     let initial = status(&mode, LIFECYCLE_STATUS_KEY);
     assert!(initial.is_some());
-    mode.extension_ui.set_status("extension-status", Some("temporary"));
+    mode.extension_ui
+        .set_status("extension-status", Some("temporary"));
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         assert_eq!(
-            mode.submit("/reload", Default::default()).await.expect("reload command"),
+            mode.submit("/reload", Default::default())
+                .await
+                .expect("reload command"),
             maho_core::agent_session::PromptDisposition::Handled
         );
         mode.render(100);
@@ -126,16 +129,24 @@ async fn reload_preserves_host_lifecycle_status_and_receives_later_records() {
             mode.submit_editor().await.expect("queued reload"),
             Some(maho_core::agent_session::PromptDisposition::Handled)
         );
-    }).await.expect("reload deadline");
+    })
+    .await
+    .expect("reload deadline");
     assert_eq!(status(&mode, LIFECYCLE_STATUS_KEY), initial);
     assert_eq!(status(&mode, "extension-status"), None);
     let seq = session.lifecycle_snapshot()["seq"].as_u64().unwrap_or(0);
-    session.emit_extension_event("session_lifecycle", &json!({
-        "type":"session_lifecycle", "sessionId":session.session_id(),
-        "lifecycle":{"state":"waiting_background", "seq":seq + 1}
-    }));
+    session.emit_extension_event(
+        "session_lifecycle",
+        &json!({
+            "type":"session_lifecycle", "sessionId":session.session_id(),
+            "lifecycle":{"state":"waiting_background", "seq":seq + 1}
+        }),
+    );
     mode.drain_events();
-    assert_eq!(status(&mode, LIFECYCLE_STATUS_KEY).as_deref(), Some("waiting_background"));
+    assert_eq!(
+        status(&mode, LIFECYCLE_STATUS_KEY).as_deref(),
+        Some("waiting_background")
+    );
     mode.dispose();
 }
 

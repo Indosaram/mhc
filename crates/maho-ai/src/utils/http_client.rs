@@ -49,7 +49,12 @@ mod tests {
 
     #[test]
     fn one_client_per_runtime() {
-        let runtime = || tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+        };
         let (first, second) = (runtime(), runtime());
         let first_id = first.handle().id();
         let second_id = second.handle().id();

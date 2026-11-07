@@ -278,7 +278,13 @@ fn w2batch_given_a_parent_abort_during_three_waits_when_the_batch_settles_then_e
     };
 
     // when
-    let output = run(&harness.manager, &items(3), Some(signal), false, &start_item);
+    let output = run(
+        &harness.manager,
+        &items(3),
+        Some(signal),
+        false,
+        &start_item,
+    );
 
     // then
     let ids = ids.lock().expect("ids lock").clone();
@@ -318,7 +324,13 @@ fn w2batch_given_an_already_aborted_parent_when_executed_then_nothing_is_started
     };
 
     // when
-    let output = run(&harness.manager, &items(3), Some(&signal), false, &start_item);
+    let output = run(
+        &harness.manager,
+        &items(3),
+        Some(&signal),
+        false,
+        &start_item,
+    );
 
     // then
     assert_eq!(calls.load(Ordering::SeqCst), 0);

@@ -1,7 +1,9 @@
 //! Model choice for a delegated task: an explicit model, a configured category or the agent's own
 //! models, resolved with `maho_model_select::resolve_delegate_model` (spec model-selection §5.4).
 use crate::agents::AgentDefinition;
-use maho_model_select::{DelegateChoice, DelegateInput, normalize_reasoning, resolve_delegate_model};
+use maho_model_select::{
+    DelegateChoice, DelegateInput, normalize_reasoning, resolve_delegate_model,
+};
 use serde_json::Value;
 
 /// Thinking levels the child CLI accepts (`--thinking`).
@@ -63,8 +65,12 @@ fn provider_part(model: &str) -> Option<&str> {
 
 /// Resolves `plan` again without the candidates on a `dropped` provider (same rules as
 /// [`choose_model`]); `(model, thinking)` or `None` when no candidate remains.
-pub fn resolve_without(plan: &FallbackPlan, dropped: &[String]) -> Option<(String, Option<String>)> {
-    let keep = |model: &String| provider_part(model).is_none_or(|p| !dropped.iter().any(|d| d == p));
+pub fn resolve_without(
+    plan: &FallbackPlan,
+    dropped: &[String],
+) -> Option<(String, Option<String>)> {
+    let keep =
+        |model: &String| provider_part(model).is_none_or(|p| !dropped.iter().any(|d| d == p));
     let mut models: Vec<String> = plan.models.iter().filter(|m| keep(m)).cloned().collect();
     let parent = plan.parent_model.clone().filter(|m| keep(m));
     if models.is_empty() && parent.is_none() {
@@ -87,7 +93,8 @@ pub fn resolve_without(plan: &FallbackPlan, dropped: &[String]) -> Option<(Strin
     };
     match resolve_delegate_model(&input) {
         DelegateChoice::Resolved(resolved) if keep(&resolved.model) => {
-            let thinking = thinking_of(resolved.variant.as_deref()).or(thinking_of(plan.reasoning.as_deref()));
+            let thinking =
+                thinking_of(resolved.variant.as_deref()).or(thinking_of(plan.reasoning.as_deref()));
             Some((resolved.model, thinking))
         }
         DelegateChoice::Resolved(_) => None,
@@ -207,7 +214,9 @@ pub fn choose_model(
         let Some(fields) = fields else {
             let known = category_names(context.view);
             return Err(if known.is_empty() {
-                format!("Unknown category \"{category}\": no categories are configured (`categories` in omo.jsonc)")
+                format!(
+                    "Unknown category \"{category}\": no categories are configured (`categories` in omo.jsonc)"
+                )
             } else {
                 format!(
                     "Unknown category \"{category}\". Configured categories: {}",
@@ -258,7 +267,12 @@ pub fn choose_model(
     }
     let rerouted = choice.source != "explicit" && input.user_model.is_some();
     if rerouted {
-        let models: Vec<String> = input.user_model.iter().chain(&input.user_fallbacks).cloned().collect();
+        let models: Vec<String> = input
+            .user_model
+            .iter()
+            .chain(&input.user_fallbacks)
+            .cloned()
+            .collect();
         // The parent session's model is the last candidate of a category or agent choice.
         if let Some(parent) = context.parent_model.filter(|p| !p.trim().is_empty())
             && input.user_model.as_deref() != Some(parent)
@@ -280,7 +294,8 @@ pub fn choose_model(
                 choice.source = format!("{} (fallback)", choice.source);
             }
             choice.model = Some(resolved.model);
-            choice.thinking = thinking_of(resolved.variant.as_deref()).or(thinking_of(reasoning.as_deref()));
+            choice.thinking =
+                thinking_of(resolved.variant.as_deref()).or(thinking_of(reasoning.as_deref()));
         }
         DelegateChoice::Deferred | DelegateChoice::None => {
             choice.model = context.parent_model.map(str::to_owned);
@@ -422,12 +437,22 @@ mod tests {
             available: vec!["a/one".into(), "b/two".into(), "c/three".into()],
             reasoning: None,
         };
-        assert_eq!(resolve_without(&plan, &["a".into()]).map(|c| c.0).as_deref(), Some("b/two"));
         assert_eq!(
-            resolve_without(&plan, &["a".into(), "b".into()]).map(|c| c.0).as_deref(),
+            resolve_without(&plan, &["a".into()])
+                .map(|c| c.0)
+                .as_deref(),
+            Some("b/two")
+        );
+        assert_eq!(
+            resolve_without(&plan, &["a".into(), "b".into()])
+                .map(|c| c.0)
+                .as_deref(),
             Some("c/three")
         );
-        assert_eq!(resolve_without(&plan, &["a".into(), "b".into(), "c".into()]), None);
+        assert_eq!(
+            resolve_without(&plan, &["a".into(), "b".into(), "c".into()]),
+            None
+        );
         let same = FallbackPlan {
             models: vec!["a/one".into(), "a/two".into()],
             ..plan.clone()
@@ -438,7 +463,12 @@ mod tests {
             available: vec!["p/main".into()],
             ..same
         };
-        assert_eq!(resolve_without(&with_parent, &["a".into()]).map(|c| c.0).as_deref(), Some("p/main"));
+        assert_eq!(
+            resolve_without(&with_parent, &["a".into()])
+                .map(|c| c.0)
+                .as_deref(),
+            Some("p/main")
+        );
     }
 
     #[test]

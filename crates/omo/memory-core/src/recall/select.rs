@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use unicode_normalization::UnicodeNormalization;
 
-use super::corpus_derived::CorpusDerived;
 use super::bm25::{
     RankedRecallPosition, RecallQueryExpansions, is_han_character, rank_recall_positions_bm25,
     recall_expansion_weights, recall_terms, tokenize_recall_text,
 };
+use super::corpus_derived::CorpusDerived;
 use super::haystack::normalized_haystack;
 use super::provider::RecallDocument;
 use super::strategy::{RecallStrategy, choose_recall_strategy_with, has_cjk, haystack_cjk_share};
@@ -171,7 +171,10 @@ fn expansion_texts(expansions: Option<&RecallQueryExpansions>) -> Vec<String> {
         &expansions.synonyms,
         &expansions.keywords,
         &expansions.related,
-    ].into_iter().flatten() {
+    ]
+    .into_iter()
+    .flatten()
+    {
         texts.extend(values.iter().cloned());
     }
     if let Some(note_line) = &expansions.note_line {
@@ -616,7 +619,8 @@ fn find_chars(haystack: &[char], needle: &[char]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    (0..=haystack.len() - needle.len()).find(|&start| &haystack[start..start + needle.len()] == needle)
+    (0..=haystack.len() - needle.len())
+        .find(|&start| &haystack[start..start + needle.len()] == needle)
 }
 
 fn collapse_whitespace(value: &str) -> String {

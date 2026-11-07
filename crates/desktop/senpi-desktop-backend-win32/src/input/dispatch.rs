@@ -18,11 +18,11 @@ use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{DesktopPoint, Target};
 
 use super::held::{Held, HeldKey, Route};
-use super::keys::{Stroke, VK_MENU, chord_virtual_keys, named_virtual_key};
+use super::keys::{chord_virtual_keys, named_virtual_key, Stroke, VK_MENU};
 use super::native::{self, Window};
 use super::{background, compositor, system};
 use crate::ax::Win32Ax;
-use crate::capture::{PhysicalRect, all_displays, logical_bounds, physical_point};
+use crate::capture::{all_displays, logical_bounds, physical_point, PhysicalRect};
 use crate::integrity::IntegrityRid;
 
 /// How one key transition is delivered.

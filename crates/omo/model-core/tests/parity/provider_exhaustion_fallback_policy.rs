@@ -22,8 +22,7 @@ fn error_info(error: &Value) -> ErrorInfo {
 }
 
 #[test]
-fn quota_subscription_and_billing_exhaustion_are_eligible_and_model_classifier_agrees()
-{
+fn quota_subscription_and_billing_exhaustion_are_eligible_and_model_classifier_agrees() {
     let errors = [
         json!({ "name": "QuotaExceededError", "message": "Quota exceeded for this billing period." }),
         json!({ "message": "Subscription limit exceeded. You can continue using free models." }),

@@ -15,7 +15,11 @@ use std::sync::Arc;
 pub trait AiBinding: Send + Sync {
     fn ai_gateway_log_id(&self) -> Option<String>;
     fn has_fetch(&self) -> bool;
-    fn fetch(&self, input: &str, init: Option<&BindingRequestInit>) -> Result<BindingResponse, String>;
+    fn fetch(
+        &self,
+        input: &str,
+        init: Option<&BindingRequestInit>,
+    ) -> Result<BindingResponse, String>;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,7 +59,11 @@ impl AiBindingFetch {
         Ok(Self { binding })
     }
 
-    pub fn fetch(&self, input: &str, init: Option<&BindingRequestInit>) -> Result<BindingResponse, String> {
+    pub fn fetch(
+        &self,
+        input: &str,
+        init: Option<&BindingRequestInit>,
+    ) -> Result<BindingResponse, String> {
         self.binding.fetch(input, init)
     }
 }
@@ -75,7 +83,11 @@ mod tests {
             false
         }
 
-        fn fetch(&self, _input: &str, _init: Option<&BindingRequestInit>) -> Result<BindingResponse, String> {
+        fn fetch(
+            &self,
+            _input: &str,
+            _init: Option<&BindingRequestInit>,
+        ) -> Result<BindingResponse, String> {
             Err("unreachable".into())
         }
     }
@@ -91,7 +103,11 @@ mod tests {
             true
         }
 
-        fn fetch(&self, input: &str, init: Option<&BindingRequestInit>) -> Result<BindingResponse, String> {
+        fn fetch(
+            &self,
+            input: &str,
+            init: Option<&BindingRequestInit>,
+        ) -> Result<BindingResponse, String> {
             Ok(BindingResponse {
                 status: 200,
                 headers: vec![("x-echo".into(), input.to_owned())],
@@ -113,10 +129,18 @@ mod tests {
         let fetch = AiBindingFetch::new(Arc::new(EchoFetch)).expect("fetch");
         let init = BindingRequestInit {
             method: Some("POST".into()),
-            headers: vec![("cf-aig-authorization".into(), format!("Bearer {CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL}"))],
+            headers: vec![(
+                "cf-aig-authorization".into(),
+                format!("Bearer {CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL}"),
+            )],
             body: Some(b"{}".to_vec()),
         };
-        let response = fetch.fetch("https://workers-binding.ai/ai-gateway/gateways/g/openai", Some(&init)).expect("response");
+        let response = fetch
+            .fetch(
+                "https://workers-binding.ai/ai-gateway/gateways/g/openai",
+                Some(&init),
+            )
+            .expect("response");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{}");
     }

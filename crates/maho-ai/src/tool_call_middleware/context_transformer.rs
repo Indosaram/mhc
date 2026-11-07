@@ -195,9 +195,9 @@ pub fn transform_context(context: &Context, protocol: &dyn ToolCallProtocol) -> 
 
 fn transform_message(message: &Message, protocol: &dyn ToolCallProtocol) -> Message {
     match message {
-        Message::Assistant(assistant) => {
-            Message::Assistant(std::sync::Arc::new(transform_assistant_message(assistant, protocol)))
-        }
+        Message::Assistant(assistant) => Message::Assistant(std::sync::Arc::new(
+            transform_assistant_message(assistant, protocol),
+        )),
         Message::ToolResult(tool_result) => {
             Message::User(transform_tool_result_message(tool_result, protocol))
         }
@@ -678,10 +678,9 @@ mod tests {
 
     #[test]
     fn should_pass_through_an_assistant_message_without_tool_calls_unchanged() {
-        let assistant_turn =
-            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::text(
-                "Hello there",
-            )])));
+        let assistant_turn = Message::Assistant(std::sync::Arc::new(plain_assistant(vec![
+            ContentBlock::text("Hello there"),
+        ])));
         let context = Context {
             active_tool_names: None,
             system_prompt: Some("You are helpful".into()),
@@ -766,9 +765,9 @@ mod tests {
                 is_error: false,
                 timestamp: 2,
             }),
-            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::text(
-                "It's rainy in Tokyo",
-            )]))),
+            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![
+                ContentBlock::text("It's rainy in Tokyo"),
+            ]))),
         ];
         let context = Context {
             active_tool_names: None,
@@ -791,8 +790,8 @@ mod tests {
     }
 
     fn flagged_tool_call_message() -> Message {
-        Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::ToolCall(
-            ToolCall {
+        Message::Assistant(std::sync::Arc::new(plain_assistant(vec![
+            ContentBlock::ToolCall(ToolCall {
                 id: "call_flagged".into(),
                 name: "get_weather".into(),
                 arguments: json!({"city": "Seo"}).as_object().expect("object").clone(),
@@ -800,8 +799,8 @@ mod tests {
                 error_message: Some("Tool call was truncated mid-arguments".into()),
                 thought_signature: None,
                 namespace: None,
-            },
-        )])))
+            }),
+        ])))
     }
 
     fn retry_diagnostic_message() -> Message {
@@ -877,18 +876,17 @@ mod tests {
 
     #[test]
     fn replays_flagged_calls_byte_identically_to_unflagged_calls() {
-        let unflagged =
-            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::ToolCall(
-                ToolCall {
-                    id: "call_123".into(),
-                    name: "get_weather".into(),
-                    arguments: json!({"city": "Seo"}).as_object().expect("object").clone(),
-                    incomplete: None,
-                    error_message: None,
-                    thought_signature: None,
-                    namespace: None,
-                },
-            )])));
+        let unflagged = Message::Assistant(std::sync::Arc::new(plain_assistant(vec![
+            ContentBlock::ToolCall(ToolCall {
+                id: "call_123".into(),
+                name: "get_weather".into(),
+                arguments: json!({"city": "Seo"}).as_object().expect("object").clone(),
+                incomplete: None,
+                error_message: None,
+                thought_signature: None,
+                namespace: None,
+            }),
+        ])));
         let base_context = Context {
             active_tool_names: None,
             system_prompt: Some("You are helpful".into()),

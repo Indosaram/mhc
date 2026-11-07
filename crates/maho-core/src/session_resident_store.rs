@@ -44,7 +44,10 @@ struct ResidentStoreInner {
 
 impl std::fmt::Debug for ResidentStringStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("ResidentStringStore").field("max_bytes", &self.max_bytes).finish_non_exhaustive()
+        formatter
+            .debug_struct("ResidentStringStore")
+            .field("max_bytes", &self.max_bytes)
+            .finish_non_exhaustive()
     }
 }
 
@@ -69,7 +72,9 @@ impl ResidentStringStore {
                 evicted_count: 0,
                 evicted_bytes: 0,
             })),
-            max_bytes: options.max_bytes.unwrap_or(DEFAULT_RESIDENT_STRING_BUDGET_BYTES),
+            max_bytes: options
+                .max_bytes
+                .unwrap_or(DEFAULT_RESIDENT_STRING_BUDGET_BYTES),
             blobs_dir: options.blobs_dir,
         }
     }
@@ -176,7 +181,11 @@ impl ResidentStringStore {
         Cow::Owned(self.materialize(value))
     }
 
-    pub fn materialize_with(&self, value: &Value, on_missing: Option<MissingStringCallback<'_>>) -> Value {
+    pub fn materialize_with(
+        &self,
+        value: &Value,
+        on_missing: Option<MissingStringCallback<'_>>,
+    ) -> Value {
         if !contains_string(value, &|text| text.starts_with(RESIDENT_STRING_PREFIX)) {
             return value.clone();
         }
@@ -238,8 +247,14 @@ impl ResidentStringStore {
         token
     }
 
-    pub fn materialize_string(&self, text: &str, on_missing: Option<MissingStringCallback<'_>>) -> String {
-        let Some(id) = text.strip_prefix(RESIDENT_STRING_PREFIX) else { return text.to_owned() };
+    pub fn materialize_string(
+        &self,
+        text: &str,
+        on_missing: Option<MissingStringCallback<'_>>,
+    ) -> String {
+        let Some(id) = text.strip_prefix(RESIDENT_STRING_PREFIX) else {
+            return text.to_owned();
+        };
         {
             let mut inner = self.inner.lock().expect("resident store lock");
             // PERF-DIVERGENCE(senpi session-resident-store.ts): upstream's Map delete+set is O(1); we move the hit to the most-recent slot in place instead of shift_remove + re-insert with key/text copies. Same LRU order and returned text.
@@ -254,7 +269,9 @@ impl ResidentStringStore {
         if let Some(hydrated) = self.read_blob(id) {
             return hydrated;
         }
-        on_missing.and_then(|callback| callback(id)).unwrap_or_else(|| text.to_owned())
+        on_missing
+            .and_then(|callback| callback(id))
+            .unwrap_or_else(|| text.to_owned())
     }
 
     fn enforce_budget(&self, inner: &mut ResidentStoreInner) {
@@ -272,7 +289,9 @@ impl ResidentStringStore {
     }
 
     fn write_blob(&self, id: &str, text: &str, inner: &mut ResidentStoreInner) -> bool {
-        let Some(dir) = self.resolved_blobs_dir() else { return false };
+        let Some(dir) = self.resolved_blobs_dir() else {
+            return false;
+        };
         let final_path = Path::new(&dir).join(format!("{id}.blob"));
         let temp_path = Path::new(&dir).join(format!("{id}.blob.tmp"));
         if std::fs::create_dir_all(&dir).is_err() {
@@ -280,8 +299,12 @@ impl ResidentStringStore {
         }
         if !final_path.exists() {
             let envelope = serde_json::json!({ "v": 1, "text": text });
-            let Ok(serialized) = serde_json::to_string(&envelope) else { return false };
-            if std::fs::write(&temp_path, serialized).is_err() || std::fs::rename(&temp_path, &final_path).is_err() {
+            let Ok(serialized) = serde_json::to_string(&envelope) else {
+                return false;
+            };
+            if std::fs::write(&temp_path, serialized).is_err()
+                || std::fs::rename(&temp_path, &final_path).is_err()
+            {
                 let _ = std::fs::remove_file(&temp_path);
                 return false;
             }
@@ -296,9 +319,10 @@ impl ResidentStringStore {
         let file = Path::new(&dir).join(format!("{id}.blob"));
         if let Ok(content) = std::fs::read_to_string(&file)
             && let Ok(parsed) = serde_json::from_str::<Value>(&content)
-                && let Some(text) = parsed.get("text").and_then(Value::as_str) {
-                    return Some(text.to_owned());
-                }
+            && let Some(text) = parsed.get("text").and_then(Value::as_str)
+        {
+            return Some(text.to_owned());
+        }
         let _ = std::fs::remove_file(&file);
         None
     }
@@ -330,7 +354,12 @@ fn transform_json(value: &Value, transform: &dyn Fn(&str) -> String) -> Value {
             }
         }
         Value::Null | Value::Bool(_) => value.clone(),
-        Value::Array(items) => Value::Array(items.iter().map(|item| transform_json(item, transform)).collect()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| transform_json(item, transform))
+                .collect(),
+        ),
         Value::Object(object) => {
             let mut transformed = Map::new();
             for (key, item) in object {
@@ -367,10 +396,16 @@ mod tests {
 
     #[test]
     fn absorb_moves_strings_in_order_and_applies_the_budget() {
-        let staging = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let staging = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(usize::MAX),
+            ..Default::default()
+        });
         let first = staging.externalize_string(&"a".repeat(40 * KB));
         let second = staging.externalize_string(&"b".repeat(40 * KB));
-        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let store = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(usize::MAX),
+            ..Default::default()
+        });
         store.absorb(&staging);
         assert_eq!(staging.stats().blob_count, 0);
         assert_eq!(staging.stats().blob_bytes, 0);
@@ -381,7 +416,12 @@ mod tests {
 
     fn blob_files(dir: &str) -> Vec<String> {
         let mut files: Vec<String> = std::fs::read_dir(dir)
-            .map(|entries| entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
             .unwrap_or_default();
         files.sort();
         files
@@ -389,7 +429,10 @@ mod tests {
 
     #[test]
     fn round_trips_large_strings_without_a_backing_directory() {
-        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let store = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(usize::MAX),
+            ..Default::default()
+        });
         let text = "a".repeat(40 * KB);
         let token = store.externalize(&Value::from(text.clone()));
         assert_ne!(token, Value::from(text.clone()));
@@ -398,7 +441,10 @@ mod tests {
 
     #[test]
     fn never_evicts_without_a_recoverable_backing_directory() {
-        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(64 * KB), ..Default::default() });
+        let store = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(64 * KB),
+            ..Default::default()
+        });
         let first = store.externalize(&Value::from("x".repeat(40 * KB)));
         let second = store.externalize(&Value::from("y".repeat(40 * KB)));
         assert_eq!(store.materialize(&first), Value::from("x".repeat(40 * KB)));
@@ -416,11 +462,18 @@ mod tests {
             blobs_dir: Some(Arc::new(move || Some(dir.clone()))),
         });
         let texts: Vec<String> = ["a", "b", "c"].iter().map(|c| c.repeat(40 * KB)).collect();
-        let tokens: Vec<Value> = texts.iter().map(|text| store.externalize(&Value::from(text.clone()))).collect();
+        let tokens: Vec<Value> = texts
+            .iter()
+            .map(|text| store.externalize(&Value::from(text.clone())))
+            .collect();
         let stats = store.stats();
         assert!(stats.evicted_count > 0);
         assert!(stats.blob_bytes <= 96 * KB);
-        assert!(blob_files(&blobs).iter().any(|file| file.ends_with(".blob")));
+        assert!(
+            blob_files(&blobs)
+                .iter()
+                .any(|file| file.ends_with(".blob"))
+        );
         for (index, token) in tokens.iter().enumerate() {
             assert_eq!(store.materialize(token), Value::from(texts[index].clone()));
         }
@@ -531,7 +584,11 @@ mod tests {
         });
         let text = "c".repeat(40 * KB);
         let token = store.externalize(&Value::from(text.clone()));
-        let id = token.as_str().unwrap_or_default().trim_start_matches(RESIDENT_STRING_PREFIX).to_owned();
+        let id = token
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches(RESIDENT_STRING_PREFIX)
+            .to_owned();
         std::fs::write(std::path::Path::new(&dir).join(format!("{id}.blob")), "{}").expect("write");
         let recovered = store.materialize_with(&token, Some(&|_| Some(text.clone())));
         assert_eq!(recovered, Value::from(text));
@@ -565,16 +622,29 @@ mod tests {
         });
         let text = "z".repeat(40 * KB);
         let token = store.externalize(&Value::from(text.clone()));
-        let id = token.as_str().unwrap_or_default().trim_start_matches(RESIDENT_STRING_PREFIX).to_owned();
+        let id = token
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches(RESIDENT_STRING_PREFIX)
+            .to_owned();
         let file = std::path::Path::new(&dir).join(format!("{id}.blob"));
         std::fs::write(&file, "garbage").expect("write");
-        assert!(store.materialize_with(&token, Some(&|_| None)).as_str().unwrap_or_default().starts_with(RESIDENT_STRING_PREFIX));
+        assert!(
+            store
+                .materialize_with(&token, Some(&|_| None))
+                .as_str()
+                .unwrap_or_default()
+                .starts_with(RESIDENT_STRING_PREFIX)
+        );
         assert!(!file.exists());
     }
 
     #[test]
     fn leaves_strings_resident_on_spill_without_a_backing_directory() {
-        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let store = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(usize::MAX),
+            ..Default::default()
+        });
         let text = "p".repeat(40 * KB);
         let token = store.externalize(&Value::from(text.clone()));
         store.spill_resident();
@@ -583,11 +653,19 @@ mod tests {
 
     #[test]
     fn externalize_and_materialize_in_place_round_trip_runtime_state() {
-        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let store = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(usize::MAX),
+            ..Default::default()
+        });
         let text = "m".repeat(40 * KB);
         let mut value = serde_json::json!({ "a": { "b": [text.clone()] }, "n": 1 });
         store.externalize_in_place(&mut value);
-        assert!(value["a"]["b"][0].as_str().unwrap_or_default().starts_with(RESIDENT_STRING_PREFIX));
+        assert!(
+            value["a"]["b"][0]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with(RESIDENT_STRING_PREFIX)
+        );
         store.materialize_in_place(&mut value);
         assert_eq!(value["a"]["b"][0], Value::from(text));
         assert_eq!(value["n"], 1);
@@ -612,9 +690,15 @@ mod tests {
     #[test]
     fn short_strings_and_already_resident_tokens_pass_through() {
         let store = ResidentStringStore::new(ResidentStringStoreOptions::default());
-        assert_eq!(store.externalize(&Value::from("small")), Value::from("small"));
+        assert_eq!(
+            store.externalize(&Value::from("small")),
+            Value::from("small")
+        );
         let token = format!("{RESIDENT_STRING_PREFIX}deadbeef");
-        assert_eq!(store.externalize(&Value::from(token.clone())), Value::from(token));
+        assert_eq!(
+            store.externalize(&Value::from(token.clone())),
+            Value::from(token)
+        );
     }
 
     #[test]
@@ -633,7 +717,10 @@ mod tests {
 
     #[test]
     fn transforms_nested_structures_and_preserves_non_strings() {
-        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let store = ResidentStringStore::new(ResidentStringStoreOptions {
+            max_bytes: Some(usize::MAX),
+            ..Default::default()
+        });
         let text = "n".repeat(40 * KB);
         let value = serde_json::json!({ "list": [text.clone(), 1, true, null], "inner": { "s": text.clone() } });
         let externalized = store.externalize(&value);

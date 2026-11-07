@@ -360,6 +360,30 @@ impl TaskComponent {
                     component.engine.pause.clone(),
                 )),
                 session_id: custody_session,
+                fail_resume: {
+                    let store = component.engine.store.clone();
+                    Some(Arc::new(move |task_id: &str| {
+                        // `Interrupt` is only legal from `Running` (a tested lifecycle invariant),
+                        // and a stranded participant is `Paused`, where `Cancel` is the transition
+                        // that ends it. The message says why, so the record is not mistaken for a
+                        // user-issued cancel.
+                        store
+                            .transition(
+                                task_id,
+                                &senpi_task::state::TaskTransition::Cancel {
+                                    timestamp: chrono::Utc::now()
+                                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                                    error_message: Some(
+                                        "resume failed after the run was paused; the task cannot continue"
+                                            .into(),
+                                    ),
+                                    run_stats: None,
+                                },
+                            )
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    }))
+                },
             },
         );
         let state_dir = component.engine.store.state_dir().to_path_buf();
@@ -1152,6 +1176,8 @@ impl TaskComponent {
             return;
         }
         self.set_team_routing(None);
+        // Stop the lifecycle's recovery worker before the store owner may reclaim its directory.
+        self.engine.lifecycle.dispose();
         self.engine.store.set_record_listener(None);
         self.engine.store.set_mutation_listener(None);
         self.engine.store.set_write_listener(None);

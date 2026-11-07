@@ -2,7 +2,7 @@
 //!
 //! Upstream counterpart: `store-extension/index.ts` and `store-extension/migrations.ts`.
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::migrations::{GATEWAY_RULES_EXTENSION_NAME, GATEWAY_RULES_MIGRATIONS};
@@ -162,7 +162,11 @@ pub fn apply_gateway_rules_migrations_with_now(
     }
 
     // Apply remaining migrations sequentially
-    for (idx, stage) in GATEWAY_RULES_MIGRATIONS.iter().enumerate().skip(start_version as usize) {
+    for (idx, stage) in GATEWAY_RULES_MIGRATIONS
+        .iter()
+        .enumerate()
+        .skip(start_version as usize)
+    {
         for sql in *stage {
             tx.execute(sql, [])?;
         }
@@ -194,9 +198,8 @@ pub fn block_for_session(
             "session_durable_id must be a non-empty string".into(),
         ));
     }
-    let mut stmt = conn.prepare(
-        "SELECT version, block FROM gateway_rules_blocks WHERE session_durable_id = ?",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT version, block FROM gateway_rules_blocks WHERE session_durable_id = ?")?;
     let row = stmt
         .query_row(params![session_durable_id], |r| {
             Ok(SessionRulesBlock {

@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_senpi-desktop-engine");
 const TWO_DISPLAYS: &str = concat!(

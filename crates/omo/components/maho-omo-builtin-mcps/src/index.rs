@@ -41,7 +41,11 @@ impl BuiltinMcpsComponent {
     }
 
     pub fn from_env(env: &BTreeMap<String, String>) -> Self {
-        Self { options: BuiltinMcpsComponentOptions { env: Some(env.clone()) } }
+        Self {
+            options: BuiltinMcpsComponentOptions {
+                env: Some(env.clone()),
+            },
+        }
     }
 }
 
@@ -55,7 +59,9 @@ impl Extension for BuiltinMcpsComponent {
 }
 
 /// Upstream `register(pi)`: `registerMcpServer(context7)` then `registerMcpServer(grep_app)`.
-pub fn builtin_mcp_declarations(env: &BTreeMap<String, String>) -> Vec<(&'static str, McpServerDeclaration)> {
+pub fn builtin_mcp_declarations(
+    env: &BTreeMap<String, String>,
+) -> Vec<(&'static str, McpServerDeclaration)> {
     vec![
         (CONTEXT7_SERVER_NAME, create_context7_declaration(env)),
         (GREP_APP_SERVER_NAME, grep_app_declaration()),
@@ -68,7 +74,11 @@ pub fn create_context7_declaration(env: &BTreeMap<String, String>) -> McpServerD
         transport: Some(McpTransport::Http),
         url: Some(CONTEXT7_URL.to_owned()),
         enabled: Some(true),
-        auth: Some(if authenticated { McpAuth::Bearer } else { McpAuth::Disabled }),
+        auth: Some(if authenticated {
+            McpAuth::Bearer
+        } else {
+            McpAuth::Disabled
+        }),
         bearer_token_env: authenticated.then(|| CONTEXT7_API_KEY_ENV.to_owned()),
         lifecycle: Some(McpLifecycle::Lazy),
         exposure: Some(DEFERRED_EXPOSURE),

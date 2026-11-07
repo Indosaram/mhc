@@ -1,7 +1,7 @@
 //! Port of senpi packages/ai/src/providers/ant-ling.ts.
 
-use crate::auth::types::ProviderAuth;
 use crate::auth::helpers::env_api_key_auth;
+use crate::auth::types::ProviderAuth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::builtin_api_streams;
 use std::sync::Arc;
@@ -12,7 +12,13 @@ pub fn ant_ling_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsErr
         name: Some("Ant Ling".into()),
         base_url: Some("https://api.ant-ling.com/v1".into()),
         headers: None,
-        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("Ant Ling API key", &["ANT_LING_API_KEY"]))), oauth: None }),
+        auth: Some(ProviderAuth {
+            api_key: Some(Arc::new(env_api_key_auth(
+                "Ant Ling API key",
+                &["ANT_LING_API_KEY"],
+            ))),
+            oauth: None,
+        }),
         models: super::ant_ling_models::ant_ling_models(),
         fetch_models: None,
         restore_models: None,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use maho_agent::harness::context::BACKGROUND_CONTEXT;
 use maho_agent::harness::session::commit::{insert_entry, insert_usage};
 use maho_agent::harness::session::types::NewEntry;
-use maho_agent::harness::session::values::{set_value, session_name};
+use maho_agent::harness::session::values::{session_name, set_value};
 use maho_agent::harness::session::{MemoryStorage, MemoryStorageOptions, Storage};
 
 const NOW: i64 = 1_700_000_000_000;
@@ -24,7 +24,10 @@ async fn uses_the_injected_clock_once_per_transaction() {
         .commit(
             vec![
                 insert_entry(NewEntry::custom("first", None, "note")),
-                maho_agent::harness::session::types::Write::Value(set_value(&session_name(), serde_json::json!("first"))),
+                maho_agent::harness::session::types::Write::Value(set_value(
+                    &session_name(),
+                    serde_json::json!("first"),
+                )),
             ],
             &BACKGROUND_CONTEXT,
         )
@@ -32,10 +35,9 @@ async fn uses_the_injected_clock_once_per_transaction() {
         .expect("first commit");
     let second = storage
         .commit(
-            vec![maho_agent::harness::session::types::Write::Value(set_value(
-                &session_name(),
-                serde_json::json!("second"),
-            ))],
+            vec![maho_agent::harness::session::types::Write::Value(
+                set_value(&session_name(), serde_json::json!("second")),
+            )],
             &BACKGROUND_CONTEXT,
         )
         .await
@@ -43,8 +45,14 @@ async fn uses_the_injected_clock_once_per_transaction() {
 
     assert_eq!(first.timestamp, NOW);
     assert_eq!(second.timestamp, NOW + 1);
-    let entries = storage.get_entries(vec!["first".to_owned()], &BACKGROUND_CONTEXT).await.expect("entries");
-    assert_eq!(entries.get("first").expect("first entry").timestamp, first.timestamp);
+    let entries = storage
+        .get_entries(vec!["first".to_owned()], &BACKGROUND_CONTEXT)
+        .await
+        .expect("entries");
+    assert_eq!(
+        entries.get("first").expect("first entry").timestamp,
+        first.timestamp
+    );
     let _ = insert_usage;
     storage.close(&BACKGROUND_CONTEXT).await;
 }

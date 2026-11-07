@@ -203,7 +203,10 @@ fn dynamic_discovery_selects_only_the_higher_priority_root_single_file() {
 }
 #[test]
 fn relative_path_different_drives_returns_target_verbatim() {
-    use std::path::Path;
     use maho_ext_rules::rules::engine::relative_path;
-    assert_eq!(relative_path(Path::new("C:/a/b"), Path::new("D:/x/y")), "D:/x/y");
+    use std::path::Path;
+    assert_eq!(
+        relative_path(Path::new("C:/a/b"), Path::new("D:/x/y")),
+        "D:/x/y"
+    );
 }

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    ActiveStopPath, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS, StopPathId, StopPolicy, StopSource,
-    Supervisor,
+    ActiveStopPath, StopPathId, StopPolicy, StopSource, Supervisor, HEARTBEAT_FRESH_MS,
+    HEARTBEAT_INTERVAL_MS,
 };
 use crate::{clock::FakeClock, reset::ResumeToken};
 

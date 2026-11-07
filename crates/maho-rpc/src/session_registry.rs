@@ -364,7 +364,9 @@ impl RpcSessionRegistry {
             return Err(RpcSessionRegistryError::new(
                 crate::rpc_types::RPC_ERROR_SESSION_NOT_HELD,
                 None,
-                Some(serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"})),
+                Some(
+                    serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"}),
+                ),
             ));
         }
         if profile.session_kind == Some(maho_ext_api::SessionKind::Worker)
@@ -664,8 +666,10 @@ pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
         path.canonicalize().map(strip_verbatim_prefix)
     } else {
         let parent = path.parent().unwrap_or(Path::new("."));
-        Ok(strip_verbatim_prefix(parent.canonicalize()?)
-            .join(path.file_name().unwrap_or_default()))
+        Ok(
+            strip_verbatim_prefix(parent.canonicalize()?)
+                .join(path.file_name().unwrap_or_default()),
+        )
     }
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -698,7 +702,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut profile = RpcSessionLaunchProfile::default();
         profile.runtime.cwd = root.path().to_string_lossy().into_owned();
-        profile.session_path = Some(root.path().join("unheld.jsonl").to_string_lossy().into_owned());
+        profile.session_path = Some(
+            root.path()
+                .join("unheld.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+        );
         let mut registry = RpcSessionRegistry::default();
         let error = registry
             .admit_open_with_policy(profile, false, 0., true)

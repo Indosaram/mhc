@@ -109,8 +109,10 @@ pub fn run_team_list_in(
     }
 
     let active = service.list_teams()?;
-    let active_by_name: BTreeMap<&str, &ActiveTeamSummary> =
-        active.iter().map(|team| (team.team_name.as_str(), team)).collect();
+    let active_by_name: BTreeMap<&str, &ActiveTeamSummary> = active
+        .iter()
+        .map(|team| (team.team_name.as_str(), team))
+        .collect();
 
     let mut entries: Vec<TeamListEntry> = Vec::new();
     for spec in &filtered {
@@ -119,7 +121,8 @@ pub fn run_team_list_in(
         entries.push(TeamListEntry {
             name: spec.name.clone(),
             scope: spec.scope,
-            status: active_team.map_or_else(|| "not-started".to_string(), |team| team.status.clone()),
+            status: active_team
+                .map_or_else(|| "not-started".to_string(), |team| team.status.clone()),
             team_run_id: active_team.map(|team| team.team_run_id.clone()),
             member_count: active_team.map_or(declared_count, |team| team.member_count),
         });

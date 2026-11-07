@@ -127,7 +127,11 @@ pub struct DaxnutsComponent {
 
 impl DaxnutsComponent {
     pub fn new(theme: Theme) -> Self {
-        Self { image: build_image(), tick: 0, theme }
+        Self {
+            image: build_image(),
+            tick: 0,
+            theme,
+        }
     }
 
     pub fn tick(&mut self) {
@@ -153,7 +157,8 @@ impl Component for DaxnutsComponent {
 
         lines.push(String::new());
 
-        let revealed_rows = ((self.tick as f64 / MAX_TICKS as f64) * (self.image.len() + 3) as f64) as usize;
+        let revealed_rows =
+            ((self.tick as f64 / MAX_TICKS as f64) * (self.image.len() + 3) as f64) as usize;
         let revealed_rows = revealed_rows.min(self.image.len());
 
         for (index, row) in self.image.iter().enumerate() {
@@ -161,7 +166,10 @@ impl Component for DaxnutsComponent {
                 lines.push(center(row));
             } else if index == revealed_rows {
                 let scanline = "▓".repeat(WIDTH);
-                lines.push(center(&format!("{}{scanline}{RESET}", rgb(100, 200, 255, false))));
+                lines.push(center(&format!(
+                    "{}{scanline}{RESET}",
+                    rgb(100, 200, 255, false)
+                )));
             } else {
                 lines.push(center(&" ".repeat(WIDTH)));
             }
@@ -171,7 +179,9 @@ impl Component for DaxnutsComponent {
 
         let text_phase = (self.tick as f64 - MAX_TICKS as f64 * 0.6).max(0.0);
         if text_phase > 0.0 || self.tick >= MAX_TICKS {
-            lines.push(center(&t.fg(ThemeColor::Accent, "Free Kimi K2.5 via OpenCode Zen")));
+            lines.push(center(
+                &t.fg(ThemeColor::Accent, "Free Kimi K2.5 via OpenCode Zen"),
+            ));
             lines.push(center(&t.fg(ThemeColor::Success, "\"Powered by daxnuts\"")));
             lines.push(center(&t.fg(ThemeColor::Muted, "— @thdxr")));
         } else {
@@ -183,7 +193,10 @@ impl Component for DaxnutsComponent {
         lines.push(String::new());
         if text_phase > 2.0 || self.tick >= MAX_TICKS {
             lines.push(center(&t.fg(ThemeColor::Dim, "Try OpenCode")));
-            lines.push(center(&t.fg(ThemeColor::MdLink, "https://mistral.ai/news/mistral-vibe-2-0")));
+            lines.push(center(&t.fg(
+                ThemeColor::MdLink,
+                "https://mistral.ai/news/mistral-vibe-2-0",
+            )));
         } else {
             lines.push(String::new());
             lines.push(String::new());

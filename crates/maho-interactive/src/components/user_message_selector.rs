@@ -31,7 +31,11 @@ pub struct UserMessageList {
 }
 
 impl UserMessageList {
-    pub fn new(messages: Vec<UserMessageItem>, initial_selected_id: Option<&str>, theme: Theme) -> Self {
+    pub fn new(
+        messages: Vec<UserMessageItem>,
+        initial_selected_id: Option<&str>,
+        theme: Theme,
+    ) -> Self {
         let initial_index = initial_selected_id
             .and_then(|id| messages.iter().position(|message| message.id == id))
             .map(|index| index as i64)
@@ -41,7 +45,14 @@ impl UserMessageList {
         } else {
             messages.len().saturating_sub(1)
         };
-        Self { messages, selected_index, max_visible: 10, on_select: None, on_cancel: None, theme }
+        Self {
+            messages,
+            selected_index,
+            max_visible: 10,
+            on_select: None,
+            on_cancel: None,
+            theme,
+        }
     }
 
     pub fn selected_index(&self) -> usize {
@@ -70,7 +81,11 @@ impl Component for UserMessageList {
             let normalized = message.text.replace('\n', " ");
             let normalized = normalized.trim();
 
-            let cursor = if is_selected { self.theme.fg(ThemeColor::Accent, "› ") } else { String::from("  ") };
+            let cursor = if is_selected {
+                self.theme.fg(ThemeColor::Accent, "› ")
+            } else {
+                String::from("  ")
+            };
             let max_message_width = width.saturating_sub(2);
             let truncated = truncate_to_width(normalized, max_message_width, "...", false);
             let message_line = if is_selected {
@@ -81,7 +96,10 @@ impl Component for UserMessageList {
             lines.push(message_line);
 
             let position = index + 1;
-            lines.push(self.theme.fg(ThemeColor::Muted, &format!("  Message {position} of {}", self.messages.len())));
+            lines.push(self.theme.fg(
+                ThemeColor::Muted,
+                &format!("  Message {position} of {}", self.messages.len()),
+            ));
             lines.push(String::new());
         }
 
@@ -110,7 +128,10 @@ impl Component for UserMessageList {
                 self.selected_index + 1
             };
         } else if keybindings.matches(data, "tui.select.confirm") {
-            let selected = self.messages.get(self.selected_index).map(|message| message.id.clone());
+            let selected = self
+                .messages
+                .get(self.selected_index)
+                .map(|message| message.id.clone());
             if let (Some(id), Some(on_select)) = (selected, self.on_select.as_mut()) {
                 on_select(&id);
             }
@@ -141,7 +162,11 @@ impl UserMessageSelectorComponent {
     ) -> Self {
         let mut content = Container::new();
         content.add_child(Rc::new(RefCell::new(Spacer::new(1))));
-        content.add_child(Rc::new(RefCell::new(Text::with_padding(theme.bold("Fork from Message"), 1, 0))));
+        content.add_child(Rc::new(RefCell::new(Text::with_padding(
+            theme.bold("Fork from Message"),
+            1,
+            0,
+        ))));
         content.add_child(Rc::new(RefCell::new(Text::with_padding(
             theme.fg(
                 ThemeColor::Muted,
@@ -168,7 +193,10 @@ impl UserMessageSelectorComponent {
             on_cancel();
         }
 
-        Self { content, message_list }
+        Self {
+            content,
+            message_list,
+        }
     }
 
     pub fn message_list(&self) -> &Rc<RefCell<UserMessageList>> {

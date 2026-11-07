@@ -85,7 +85,7 @@ fn first_text(result: &TaskToolResult) -> String {
 
 #[test]
 fn w2sig_given_pre_aborted_signal_when_spawn_executes_then_returns_cancelled_without_starting_child()
-{
+ {
     // given
     let harness = default_manager();
     let signal = AbortSignal::default();
@@ -147,8 +147,14 @@ fn w2sig_given_child_terminal_during_parent_abort_when_cancellation_is_noop_then
     let input = params(None);
 
     let (result, task_id) = std::thread::scope(|scope| {
-        let execution =
-            scope.spawn(|| run(&harness.manager, "call-terminal-race", &input, Some(&signal)));
+        let execution = scope.spawn(|| {
+            run(
+                &harness.manager,
+                "call-terminal-race",
+                &input,
+                Some(&signal),
+            )
+        });
         let task_id = wait_for_waiter(&harness.manager);
 
         // when
@@ -170,7 +176,7 @@ fn w2sig_given_child_terminal_during_parent_abort_when_cancellation_is_noop_then
 
 #[test]
 fn w2sig_given_background_child_started_when_parent_aborts_then_child_survives_without_cancellation()
-{
+ {
     // given
     let harness = default_manager();
     let signal = AbortSignal::default();

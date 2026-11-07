@@ -32,7 +32,13 @@ pub fn toggle_favorite_model(
     id: &str,
 ) -> FavoriteModelIds {
     match favorite_ids {
-        None => Some(all_ids.iter().filter(|candidate| *candidate != id).cloned().collect()),
+        None => Some(
+            all_ids
+                .iter()
+                .filter(|candidate| *candidate != id)
+                .cloned()
+                .collect(),
+        ),
         Some(ids) => {
             if let Some(index) = ids.iter().position(|candidate| candidate == id) {
                 let mut next = ids.clone();
@@ -78,16 +84,31 @@ pub fn clear_favorite_models(
 ) -> FavoriteModelIds {
     let Some(ids) = favorite_ids else {
         return Some(match target_ids {
-            Some(targets) => all_ids.iter().filter(|id| !targets.contains(id)).cloned().collect(),
+            Some(targets) => all_ids
+                .iter()
+                .filter(|id| !targets.contains(id))
+                .cloned()
+                .collect(),
             None => Vec::new(),
         });
     };
-    let targets: Vec<String> = target_ids.map(<[String]>::to_vec).unwrap_or_else(|| ids.clone());
-    Some(ids.iter().filter(|id| !targets.contains(id)).cloned().collect())
+    let targets: Vec<String> = target_ids
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| ids.clone());
+    Some(
+        ids.iter()
+            .filter(|id| !targets.contains(id))
+            .cloned()
+            .collect(),
+    )
 }
 
 /// senpi's `moveFavoriteModel`.
-pub fn move_favorite_model(favorite_ids: &FavoriteModelIds, id: &str, delta: i64) -> FavoriteModelIds {
+pub fn move_favorite_model(
+    favorite_ids: &FavoriteModelIds,
+    id: &str,
+    delta: i64,
+) -> FavoriteModelIds {
     let Some(ids) = favorite_ids else {
         return None;
     };
@@ -104,7 +125,10 @@ pub fn move_favorite_model(favorite_ids: &FavoriteModelIds, id: &str, delta: i64
 }
 
 /// senpi's `getSortedFavoriteModelIds`.
-pub fn get_sorted_favorite_model_ids(favorite_ids: &FavoriteModelIds, all_ids: &[String]) -> Vec<String> {
+pub fn get_sorted_favorite_model_ids(
+    favorite_ids: &FavoriteModelIds,
+    all_ids: &[String],
+) -> Vec<String> {
     match favorite_ids {
         None => all_ids.to_vec(),
         Some(ids) => {

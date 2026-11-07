@@ -72,10 +72,8 @@ const MAX_HIGHLIGHT_LINES: usize = 2000;
 type LruCache<T> = LazyLock<Mutex<IndexMap<String, CacheEntry<T>>>>;
 
 static NEXT_STYLE_ID: AtomicU64 = AtomicU64::new(0);
-static RENDER_CACHE: LruCache<Arc<Vec<String>>> =
-    LazyLock::new(|| Mutex::new(IndexMap::new()));
-static PARSE_CACHE: LruCache<Arc<Vec<Token>>> =
-    LazyLock::new(|| Mutex::new(IndexMap::new()));
+static RENDER_CACHE: LruCache<Arc<Vec<String>>> = LazyLock::new(|| Mutex::new(IndexMap::new()));
+static PARSE_CACHE: LruCache<Arc<Vec<Token>>> = LazyLock::new(|| Mutex::new(IndexMap::new()));
 static HIGHLIGHT_CACHE: LazyLock<Mutex<IndexMap<String, Arc<Vec<String>>>>> =
     LazyLock::new(|| Mutex::new(IndexMap::new()));
 static HIGHLIGHT_CALL_COUNT: LazyLock<Mutex<usize>> = LazyLock::new(|| Mutex::new(0));
@@ -212,9 +210,11 @@ impl Markdown {
     pub fn render(&mut self, width: usize) -> Vec<String> {
         if let (Some(lines), Some(text), Some(cached_width)) =
             (&self.cached_lines, &self.cached_text, self.cached_width)
-            && *text == self.text && cached_width == width {
-                return lines.clone();
-            }
+            && *text == self.text
+            && cached_width == width
+        {
+            return lines.clone();
+        }
 
         let content_width = 1.max(width.saturating_sub(self.padding_x * 2));
         let text = self.text.clone();
@@ -261,14 +261,15 @@ impl Markdown {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = cache.get(&render_key)
-                && *entry.source == *normalized_text {
-                    let lines = entry.value.to_vec();
-                    drop(cache);
-                    self.cached_text = Some(self.text.clone());
-                    self.cached_width = Some(width);
-                    self.cached_lines = Some(lines.clone());
-                    return lines;
-                }
+                && *entry.source == *normalized_text
+            {
+                let lines = entry.value.to_vec();
+                drop(cache);
+                self.cached_text = Some(self.text.clone());
+                self.cached_width = Some(width);
+                self.cached_lines = Some(lines.clone());
+                return lines;
+            }
         }
 
         let normalized_source: Arc<str> = Arc::from(normalized_text.as_str());
@@ -345,10 +346,8 @@ impl Markdown {
                 None => {
                     let visible_len = visible_width(&line_with_margins);
                     let padding_needed = width.saturating_sub(visible_len);
-                    content_lines.push(format!(
-                        "{line_with_margins}{}",
-                        " ".repeat(padding_needed)
-                    ));
+                    content_lines
+                        .push(format!("{line_with_margins}{}", " ".repeat(padding_needed)));
                 }
             }
         }
@@ -527,7 +526,12 @@ impl Markdown {
         let mut cache = HIGHLIGHT_CACHE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache_set(&mut cache, key, Arc::clone(&highlighted), HIGHLIGHT_CACHE_MAX);
+        cache_set(
+            &mut cache,
+            key,
+            Arc::clone(&highlighted),
+            HIGHLIGHT_CACHE_MAX,
+        );
         Some(highlighted)
     }
 
@@ -538,7 +542,10 @@ impl Markdown {
         lang: Option<&str>,
         indent: &str,
     ) {
-        lines.push((self.theme.code_block_border)(&format!("```{}", lang.unwrap_or(""))));
+        lines.push((self.theme.code_block_border)(&format!(
+            "```{}",
+            lang.unwrap_or("")
+        )));
         match self.highlight_code_block(code, lang) {
             Some(highlighted) => {
                 for line in highlighted.iter() {
@@ -549,7 +556,9 @@ impl Markdown {
                 if self.theme.highlight_code.is_some() && self.exceeds_highlight_cap(code) {
                     lines.push(format!(
                         "{indent}{}",
-                        (self.theme.code_block)("[syntax highlighting skipped: code block too large]")
+                        (self.theme.code_block)(
+                            "[syntax highlighting skipped: code block too large]"
+                        )
                     ));
                 }
                 for code_line in code.split('\n') {
@@ -587,7 +596,8 @@ impl Markdown {
                     },
                     style_prefix: Self::get_style_prefix(&heading_style_fn),
                 };
-                let heading_text = self.render_inline_tokens(tokens.tokens(), Some(&heading_style_context));
+                let heading_text =
+                    self.render_inline_tokens(tokens.tokens(), Some(&heading_style_context));
                 let styled_heading = if *depth >= 3 {
                     format!("{}{}", heading_style_fn(&heading_prefix), heading_text)
                 } else {
@@ -600,7 +610,8 @@ impl Markdown {
             }
 
             Token::Paragraph { tokens, .. } => {
-                let paragraph_text = self.render_inline_tokens(tokens.tokens(), style_context.as_ref());
+                let paragraph_text =
+                    self.render_inline_tokens(tokens.tokens(), style_context.as_ref());
                 lines.push(paragraph_text);
                 if next_token_type.is_some_and(|value| value != "list" && value != "space") {
                     lines.push(String::new());
@@ -651,7 +662,8 @@ impl Markdown {
             }
 
             Token::Table { .. } => {
-                let table_lines = self.render_table(token, width, next_token_type, style_context.as_ref());
+                let table_lines =
+                    self.render_table(token, width, next_token_type, style_context.as_ref());
                 lines.extend(table_lines);
             }
 
@@ -691,14 +703,20 @@ impl Markdown {
                     ));
                 }
 
-                while rendered_quote_lines.last().is_some_and(|line| line.is_empty()) {
+                while rendered_quote_lines
+                    .last()
+                    .is_some_and(|line| line.is_empty())
+                {
                     rendered_quote_lines.pop();
                 }
 
                 for quote_line in &rendered_quote_lines {
                     let styled_line = apply_quote_style(quote_line);
                     for wrapped_line in wrap_text_with_ansi(&styled_line, quote_content_width) {
-                        lines.push(format!("{}{wrapped_line}", (self.theme.quote_border)("\u{2502} ")));
+                        lines.push(format!(
+                            "{}{wrapped_line}",
+                            (self.theme.quote_border)("\u{2502} ")
+                        ));
                     }
                 }
                 if next_token_type.is_some_and(|value| value != "space") {
@@ -759,17 +777,20 @@ impl Markdown {
         for token in tokens {
             match token {
                 Token::Escape { raw, text } => {
-                    let value = if self.options.preserve_backslash_escapes { raw } else { text };
+                    let value = if self.options.preserve_backslash_escapes {
+                        raw
+                    } else {
+                        text
+                    };
                     result.push_str(&apply_text_with_newlines(value));
                 }
-                Token::Text { text, tokens, .. } => {
-                    match tokens {
-                        Some(inline) if !inline.tokens().is_empty() => {
-                            result.push_str(&self.render_inline_tokens(inline.tokens(), Some(&resolved)));
-                        }
-                        _ => result.push_str(&apply_text_with_newlines(text)),
+                Token::Text { text, tokens, .. } => match tokens {
+                    Some(inline) if !inline.tokens().is_empty() => {
+                        result
+                            .push_str(&self.render_inline_tokens(inline.tokens(), Some(&resolved)));
                     }
-                }
+                    _ => result.push_str(&apply_text_with_newlines(text)),
+                },
                 Token::Paragraph { tokens, .. } => {
                     result.push_str(&self.render_inline_tokens(tokens.tokens(), Some(&resolved)));
                 }
@@ -798,23 +819,23 @@ impl Markdown {
                 Token::LatexLiteral { text, .. } => {
                     result.push_str(&apply_text_with_newlines(text));
                 }
-                Token::Link { tokens, href, text, .. } => {
-                    {
-                        let link_text = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
-                        let styled_link = (self.theme.link)(&(self.theme.underline)(&link_text));
-                        if get_capabilities().hyperlinks {
-                            result.push_str(&hyperlink(&styled_link, href));
+                Token::Link {
+                    tokens, href, text, ..
+                } => {
+                    let link_text = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
+                    let styled_link = (self.theme.link)(&(self.theme.underline)(&link_text));
+                    if get_capabilities().hyperlinks {
+                        result.push_str(&hyperlink(&styled_link, href));
+                        result.push_str(&style_prefix);
+                    } else {
+                        let href_for_comparison = href.strip_prefix("mailto:").unwrap_or(href);
+                        if text == href || text == href_for_comparison {
+                            result.push_str(&styled_link);
                             result.push_str(&style_prefix);
                         } else {
-                            let href_for_comparison = href.strip_prefix("mailto:").unwrap_or(href);
-                            if text == href || text == href_for_comparison {
-                                result.push_str(&styled_link);
-                                result.push_str(&style_prefix);
-                            } else {
-                                result.push_str(&styled_link);
-                                result.push_str(&(self.theme.link_url)(&format!(" ({href})")));
-                                result.push_str(&style_prefix);
-                            }
+                            result.push_str(&styled_link);
+                            result.push_str(&(self.theme.link_url)(&format!(" ({href})")));
+                            result.push_str(&style_prefix);
                         }
                     }
                 }
@@ -859,7 +880,14 @@ impl Markdown {
         width: usize,
         style_context: Option<&InlineStyleContext>,
     ) -> Vec<String> {
-        let Token::List { items, ordered, start, loose, .. } = token else {
+        let Token::List {
+            items,
+            ordered,
+            start,
+            loose,
+            ..
+        } = token
+        else {
             return Vec::new();
         };
         let mut lines: Vec<String> = Vec::new();
@@ -882,7 +910,12 @@ impl Markdown {
                 "- ".to_string()
             };
             let (task, checked, item_tokens) = match item {
-                Token::ListItem { task, checked, tokens, .. } => (*task, *checked, tokens.as_slice()),
+                Token::ListItem {
+                    task,
+                    checked,
+                    tokens,
+                    ..
+                } => (*task, *checked, tokens.as_slice()),
                 _ => (false, false, &[][..]),
             };
             let task_marker = if task {
@@ -902,7 +935,8 @@ impl Markdown {
                     rendered_any_line = true;
                     continue;
                 }
-                let item_lines = self.render_token(item_token, item_width, None, style_context.cloned());
+                let item_lines =
+                    self.render_token(item_token, item_width, None, style_context.cloned());
                 for line in item_lines {
                     for wrapped_line in wrap_text_with_ansi(&line, item_width) {
                         let line_prefix = if rendered_any_line {
@@ -965,7 +999,10 @@ impl Markdown {
         next_token_type: Option<&str>,
         style_context: Option<&InlineStyleContext>,
     ) -> Vec<String> {
-        let Token::Table { header, rows, raw, .. } = token else {
+        let Token::Table {
+            header, rows, raw, ..
+        } = token
+        else {
             return Vec::new();
         };
         let mut lines: Vec<String> = Vec::new();
@@ -1098,9 +1135,14 @@ impl Markdown {
             .iter()
             .map(|width| "\u{2500}".repeat(*width))
             .collect();
-        lines.push(format!("\u{250c}\u{2500}{}\u{2500}\u{2510}", top_border_cells.join("\u{2500}\u{252c}\u{2500}")));
+        lines.push(format!(
+            "\u{250c}\u{2500}{}\u{2500}\u{2510}",
+            top_border_cells.join("\u{2500}\u{252c}\u{2500}")
+        ));
 
-        let style_prefix = style_context.map(|context| context.style_prefix.clone()).unwrap_or_default();
+        let style_prefix = style_context
+            .map(|context| context.style_prefix.clone())
+            .unwrap_or_default();
         let header_cell_lines: Vec<Vec<String>> = header_texts
             .iter()
             .enumerate()
@@ -1116,12 +1158,17 @@ impl Markdown {
                     let text = cell_lines.get(line_index).cloned().unwrap_or_default();
                     let padded = format!(
                         "{text}{}",
-                        " ".repeat(column_widths[column_index].saturating_sub(visible_width(&text)))
+                        " ".repeat(
+                            column_widths[column_index].saturating_sub(visible_width(&text))
+                        )
                     );
                     (self.theme.bold)(&padded)
                 })
                 .collect();
-            lines.push(format!("\u{2502} {} \u{2502}", row_parts.join(" \u{2502} ")));
+            lines.push(format!(
+                "\u{2502} {} \u{2502}",
+                row_parts.join(" \u{2502} ")
+            ));
         }
 
         let separator_cells: Vec<String> = column_widths
@@ -1155,7 +1202,10 @@ impl Markdown {
                         )
                     })
                     .collect();
-                lines.push(format!("\u{2502} {} \u{2502}", row_parts.join(" \u{2502} ")));
+                lines.push(format!(
+                    "\u{2502} {} \u{2502}",
+                    row_parts.join(" \u{2502} ")
+                ));
             }
             if row_index < rows.len() - 1 {
                 lines.push(separator_line.clone());
@@ -1187,10 +1237,15 @@ impl Markdown {
 }
 
 static ORDERED_LIST_MARKER: LazyLock<crate::components::markdown_helpers::Rule> =
-    LazyLock::new(|| crate::components::markdown_helpers::Rule::new(r"^(?: {0,3})(\d{1,9}[.)])[ \t]+", ""));
+    LazyLock::new(|| {
+        crate::components::markdown_helpers::Rule::new(r"^(?: {0,3})(\d{1,9}[.)])[ \t]+", "")
+    });
 static UNORDERED_LIST_MARKER: LazyLock<crate::components::markdown_helpers::Rule> =
     LazyLock::new(|| {
-        crate::components::markdown_helpers::Rule::new(r"^(?: {0,3})([-+*])(?:[ \t]+|(?=\r?\n|$))", "")
+        crate::components::markdown_helpers::Rule::new(
+            r"^(?: {0,3})([-+*])(?:[ \t]+|(?=\r?\n|$))",
+            "",
+        )
     });
 
 fn trim_partial_closing_fences(tokens: &mut [Token]) {
@@ -1238,4 +1293,3 @@ fn trim_partial_closing_fences(tokens: &mut [Token]) {
 
 static FENCE_MARKER: LazyLock<crate::components::markdown_helpers::Rule> =
     LazyLock::new(|| crate::components::markdown_helpers::Rule::new(r"^(`{3,}|~{3,})", ""));
-

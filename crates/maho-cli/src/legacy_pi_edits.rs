@@ -264,11 +264,15 @@ mod tests {
         fs::create_dir_all(&agent).expect("agent");
         fs::write(pi.join("settings.json"), "changed").expect("pi settings");
         fs::write(agent.join("settings.json"), "original").expect("agent settings");
-        fs::OpenOptions::new().write(true).open(pi.join("settings.json"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(pi.join("settings.json"))
             .expect("pi")
             .set_modified(UNIX_EPOCH + Duration::from_secs(200))
             .expect("mtime");
-        fs::OpenOptions::new().write(true).open(agent.join("settings.json"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(agent.join("settings.json"))
             .expect("agent")
             .set_modified(UNIX_EPOCH + Duration::from_secs(100))
             .expect("mtime");
@@ -296,7 +300,9 @@ mod tests {
         let (_root, home, pi, agent) = fixture();
         fs::write(pi.join("auth.json"), "same").expect("pi auth");
         fs::write(agent.join("auth.json"), "same").expect("agent auth");
-        fs::OpenOptions::new().write(true).open(pi.join("auth.json"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(pi.join("auth.json"))
             .expect("pi auth")
             .set_modified(UNIX_EPOCH + Duration::from_secs(400))
             .expect("auth mtime");

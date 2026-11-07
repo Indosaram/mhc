@@ -1,16 +1,16 @@
-use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use maho_ext_api::{
     EventBus, ExtensionApi, LoadedExtension, SourceInfo, SourceOrigin, SourceScope,
 };
 use maho_omo_computer_use::permission_events::{
+    CHILD_PERMISSION_EVENT, OMO_SENPI_TASK_DEPTH, OMO_SENPI_TASK_ROOT_SESSION_ID,
+    OMO_SENPI_TASK_RPC_CHILD, ROOT_PERMISSION_EVENT, TASK_CHILD_EXTENSION_EVENT,
     wire_computer_permission_events,
-    CHILD_PERMISSION_EVENT, ROOT_PERMISSION_EVENT, TASK_CHILD_EXTENSION_EVENT,
-    OMO_SENPI_TASK_DEPTH, OMO_SENPI_TASK_ROOT_SESSION_ID, OMO_SENPI_TASK_RPC_CHILD,
 };
 use senpi_desktop_protocol::{PermissionDeniedData, TccPermission};
 use serde_json::json;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn fake_loaded_extension(name: &str) -> LoadedExtension {
     LoadedExtension::new(
@@ -38,7 +38,9 @@ fn fake_api(name: &str) -> ExtensionApi {
 fn sample_permission_data(perm: TccPermission, app: &str) -> PermissionDeniedData {
     PermissionDeniedData {
         permission: perm,
-        settings_url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture".to_string(),
+        settings_url:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+                .to_string(),
         app: app.to_string(),
         relaunch_required: true,
     }
@@ -50,12 +52,18 @@ fn test_routes_in_process_child_denial_to_root_session_connection() {
     let emitted_root = Arc::new(std::sync::Mutex::new(Vec::new()));
     let em_clone = Arc::clone(&emitted_root);
 
-    let _sub_root = root_api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |val| {
-        em_clone.lock().unwrap().push(val.clone());
-    }));
+    let _sub_root = root_api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |val| {
+            em_clone.lock().unwrap().push(val.clone());
+        }),
+    );
 
     let _root_reporter = wire_computer_permission_events(&mut root_api, &BTreeMap::new());
-    root_api.events.emit("session_start", &json!({ "session_id": "root-session-id-1" }));
+    root_api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-session-id-1" }),
+    );
 
     let child_event = json!({
         "type": CHILD_PERMISSION_EVENT,
@@ -83,27 +91,42 @@ fn test_routes_process_child_denial_to_root_session_connection() {
     let emitted_root = Arc::new(std::sync::Mutex::new(Vec::new()));
     let em_clone = Arc::clone(&emitted_root);
 
-    let _sub_root = root_api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |val| {
-        em_clone.lock().unwrap().push(val.clone());
-    }));
+    let _sub_root = root_api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |val| {
+            em_clone.lock().unwrap().push(val.clone());
+        }),
+    );
 
     let _root_reporter = wire_computer_permission_events(&mut root_api, &BTreeMap::new());
-    root_api.events.emit("session_start", &json!({ "session_id": "root-session-id-2" }));
+    root_api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-session-id-2" }),
+    );
 
     let mut child_env = BTreeMap::new();
     child_env.insert(OMO_SENPI_TASK_RPC_CHILD.to_string(), "1".to_string());
     child_env.insert(OMO_SENPI_TASK_DEPTH.to_string(), "1".to_string());
-    child_env.insert(OMO_SENPI_TASK_ROOT_SESSION_ID.to_string(), "root-session-id-2".to_string());
+    child_env.insert(
+        OMO_SENPI_TASK_ROOT_SESSION_ID.to_string(),
+        "root-session-id-2".to_string(),
+    );
 
     let mut child_api = fake_api("child-process");
     let emitted_child = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ec_clone = Arc::clone(&emitted_child);
-    let _sub_child = child_api.events.on(CHILD_PERMISSION_EVENT, Arc::new(move |val| {
-        ec_clone.lock().unwrap().push(val.clone());
-    }));
+    let _sub_child = child_api.events.on(
+        CHILD_PERMISSION_EVENT,
+        Arc::new(move |val| {
+            ec_clone.lock().unwrap().push(val.clone());
+        }),
+    );
 
     let child_reporter = wire_computer_permission_events(&mut child_api, &child_env);
-    child_api.events.emit("session_start", &json!({ "session_id": "child-session-id-2" }));
+    child_api.events.emit(
+        "session_start",
+        &json!({ "session_id": "child-session-id-2" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Process Child App");
     child_reporter(data);
@@ -132,12 +155,18 @@ fn test_routes_nested_child_denial_to_root_session_connection() {
     let emitted_root = Arc::new(std::sync::Mutex::new(Vec::new()));
     let em_clone = Arc::clone(&emitted_root);
 
-    let _sub_root = root_api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |val| {
-        em_clone.lock().unwrap().push(val.clone());
-    }));
+    let _sub_root = root_api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |val| {
+            em_clone.lock().unwrap().push(val.clone());
+        }),
+    );
 
     let _root_reporter = wire_computer_permission_events(&mut root_api, &BTreeMap::new());
-    root_api.events.emit("session_start", &json!({ "session_id": "root-nested-master" }));
+    root_api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-nested-master" }),
+    );
 
     let child_event = json!({
         "type": CHILD_PERMISSION_EVENT,
@@ -165,12 +194,18 @@ fn test_routes_in_process_nested_process_denial_through_shared_task_owner() {
     let emitted_root = Arc::new(std::sync::Mutex::new(Vec::new()));
     let em_clone = Arc::clone(&emitted_root);
 
-    let _sub_root = root_api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |val| {
-        em_clone.lock().unwrap().push(val.clone());
-    }));
+    let _sub_root = root_api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |val| {
+            em_clone.lock().unwrap().push(val.clone());
+        }),
+    );
 
     let _root_reporter = wire_computer_permission_events(&mut root_api, &BTreeMap::new());
-    root_api.events.emit("session_start", &json!({ "session_id": "root-shared-owner-id" }));
+    root_api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-shared-owner-id" }),
+    );
 
     let child_event = json!({
         "type": CHILD_PERMISSION_EVENT,
@@ -196,12 +231,18 @@ fn test_shares_one_root_latch_across_direct_and_different_child_denials() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub_root = root_api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub_root = root_api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let root_reporter = wire_computer_permission_events(&mut root_api, &BTreeMap::new());
-    root_api.events.emit("session_start", &json!({ "session_id": "root-shared-latch-id" }));
+    root_api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-shared-latch-id" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Direct App");
     root_reporter(data);
@@ -227,21 +268,29 @@ fn test_drops_invalid_child_relay_instead_of_mapping_permission() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub_root = root_api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub_root = root_api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let _root_reporter = wire_computer_permission_events(&mut root_api, &BTreeMap::new());
-    root_api.events.emit("session_start", &json!({ "session_id": "root-inv-relay" }));
+    root_api
+        .events
+        .emit("session_start", &json!({ "session_id": "root-inv-relay" }));
 
-    root_api.events.emit(TASK_CHILD_EXTENSION_EVENT, &json!({
-        "parent_session_id": "root-inv-relay",
-        "root_session_id": "root-inv-relay",
-        "event": {
-            "type": CHILD_PERMISSION_EVENT,
-            "permission": "unsupported_device"
-        }
-    }));
+    root_api.events.emit(
+        TASK_CHILD_EXTENSION_EVENT,
+        &json!({
+            "parent_session_id": "root-inv-relay",
+            "root_session_id": "root-inv-relay",
+            "event": {
+                "type": CHILD_PERMISSION_EVENT,
+                "permission": "unsupported_device"
+            }
+        }),
+    );
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -252,12 +301,18 @@ fn test_emits_root_permission_event_before_returning_direct_denial() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ev = Arc::clone(&events);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |payload| {
-        ev.lock().unwrap().push(payload.clone());
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |payload| {
+            ev.lock().unwrap().push(payload.clone());
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-direct-denial" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "sess-direct-denial" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Direct Target");
     reporter(data);
@@ -273,12 +328,16 @@ fn test_emits_root_permission_event_before_returning_cua_denial() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ev = Arc::clone(&events);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |payload| {
-        ev.lock().unwrap().push(payload.clone());
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |payload| {
+            ev.lock().unwrap().push(payload.clone());
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-cua-denial" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-cua-denial" }));
 
     let data = sample_permission_data(TccPermission::Accessibility, "CUA Target");
     reporter(data);
@@ -294,12 +353,16 @@ fn test_emits_root_permission_event_before_returning_js_denial() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ev = Arc::clone(&events);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |payload| {
-        ev.lock().unwrap().push(payload.clone());
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |payload| {
+            ev.lock().unwrap().push(payload.clone());
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-js-denial" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-js-denial" }));
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "JS Eval Host");
     reporter(data);
@@ -315,12 +378,16 @@ fn test_emits_root_permission_event_before_returning_py_denial() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ev = Arc::clone(&events);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |payload| {
-        ev.lock().unwrap().push(payload.clone());
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |payload| {
+            ev.lock().unwrap().push(payload.clone());
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-py-denial" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-py-denial" }));
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Python Eval Host");
     reporter(data);
@@ -336,12 +403,18 @@ fn test_deduplicates_cross_path_denials_but_emits_second_permission() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-cross-path-multi" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "sess-cross-path-multi" }),
+    );
 
     let d1 = sample_permission_data(TccPermission::ScreenRecording, "App 1");
     let d2 = sample_permission_data(TccPermission::Accessibility, "App 2");
@@ -359,12 +432,16 @@ fn test_never_emits_permission_event_for_timeout_error() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let _reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-timeout" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-timeout" }));
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -375,12 +452,16 @@ fn test_never_emits_permission_event_for_invalid_target_error() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let _reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-inv-target" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-inv-target" }));
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -391,12 +472,16 @@ fn test_never_emits_permission_event_for_internal_error() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let _reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-internal" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-internal" }));
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -407,12 +492,16 @@ fn test_never_emits_permission_event_for_stoppath_unavailable_error() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let _reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-stoppath" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "sess-stoppath" }));
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -423,9 +512,12 @@ fn test_never_emits_permission_event_for_native_unavailable_engine() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -436,9 +528,12 @@ fn test_never_emits_permission_event_for_quarantined_engine() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -449,9 +544,12 @@ fn test_never_emits_for_unsupported_host_or_invalid_tool_arguments() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -462,9 +560,12 @@ fn test_drops_engine_permission_denied_whose_permission_data_is_not_recognized()
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
@@ -475,12 +576,18 @@ fn test_delivers_denial_and_preserves_caller_error_when_marker_cannot_be_saved()
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-save-marker-fail" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "sess-save-marker-fail" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Save Test App");
     reporter(data);
@@ -494,12 +601,18 @@ fn test_keeps_denied_permission_latched_across_reload_after_marker_fails() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "sess-reload-latch-pass" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "sess-reload-latch-pass" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Reload Target App");
     reporter(data.clone());
@@ -514,17 +627,26 @@ fn test_retains_same_root_latch_across_starts_and_reload_but_not_new_root() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "root-lifecycle-1" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-lifecycle-1" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "App");
     reporter(data.clone());
 
-    api.events.emit("session_start", &json!({ "session_id": "root-lifecycle-2" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-lifecycle-2" }),
+    );
     reporter(data);
 
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -536,9 +658,12 @@ fn test_ignores_another_owners_denial_and_malformed_data_without_consuming_latch
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let reporter = wire_computer_permission_events(&mut api, &BTreeMap::new());
     let data = sample_permission_data(TccPermission::ScreenRecording, "No Session App");
@@ -553,12 +678,18 @@ fn test_retains_failed_write_latch_when_reporter_evaluated_again() {
     let count = Arc::new(AtomicUsize::new(0));
     let c = Arc::clone(&count);
 
-    let _sub = api.events.on(ROOT_PERMISSION_EVENT, Arc::new(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
+    let _sub = api.events.on(
+        ROOT_PERMISSION_EVENT,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     let r1 = wire_computer_permission_events(&mut api, &BTreeMap::new());
-    api.events.emit("session_start", &json!({ "session_id": "root-persist-latch" }));
+    api.events.emit(
+        "session_start",
+        &json!({ "session_id": "root-persist-latch" }),
+    );
 
     let data = sample_permission_data(TccPermission::ScreenRecording, "Persist App");
     r1(data.clone());

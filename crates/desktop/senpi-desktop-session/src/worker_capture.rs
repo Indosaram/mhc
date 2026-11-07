@@ -5,7 +5,7 @@ use senpi_desktop_core::error::CoreResult;
 use senpi_desktop_core::protocol_params::CaptureParams;
 use senpi_desktop_core::types::{CaptureResult, DesktopSessionOptions, Target};
 
-use crate::budget::{Budget, Delivery, plan_screenshot};
+use crate::budget::{plan_screenshot, Budget, Delivery};
 use crate::request::Response;
 use crate::worker::Worker;
 

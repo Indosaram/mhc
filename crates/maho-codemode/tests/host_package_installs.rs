@@ -284,10 +284,10 @@ async fn host_slot_is_fifo_and_interrupt_retains_worker_state() {
             Duration::from_secs(5),
             kernel.interrupt("stop", Some("cancel-host")),
         )
-            .await
-            .expect("interrupt completed")
-            .expect("interrupt")
-            .0
+        .await
+        .expect("interrupt completed")
+        .expect("interrupt")
+        .0
     );
     assert_eq!(cancelled_rx.try_recv(), Ok(()));
     assert_eq!(

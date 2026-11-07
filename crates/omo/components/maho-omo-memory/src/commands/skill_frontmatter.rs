@@ -87,9 +87,9 @@ fn has_name_key(line: &str) -> bool {
 
 fn format_yaml_scalar(value: &str) -> String {
     let plain = !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-');
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        });
     if plain {
         value.to_owned()
     } else {
@@ -97,43 +97,95 @@ fn format_yaml_scalar(value: &str) -> String {
     }
 }
 
-pub fn set_skill_frontmatter_field(content: &str, field: &str, value: &str) -> SkillFrontmatterFieldWriteResult {
+pub fn set_skill_frontmatter_field(
+    content: &str,
+    field: &str,
+    value: &str,
+) -> SkillFrontmatterFieldWriteResult {
     if field.trim().is_empty() {
-        return SkillFrontmatterFieldWriteResult { content: content.to_owned(), changed: false, reason: Some("field name is empty".to_owned()) };
+        return SkillFrontmatterFieldWriteResult {
+            content: content.to_owned(),
+            changed: false,
+            reason: Some("field name is empty".to_owned()),
+        };
     }
     let Some(found) = frontmatter_match(content) else {
-        return SkillFrontmatterFieldWriteResult { content: content.to_owned(), changed: false, reason: Some("missing YAML frontmatter".to_owned()) };
+        return SkillFrontmatterFieldWriteResult {
+            content: content.to_owned(),
+            changed: false,
+            reason: Some("missing YAML frontmatter".to_owned()),
+        };
     };
     let opening = &content[..found.opening_len];
     let frontmatter = &content[found.opening_len..found.frontmatter_end];
     let closing_end = found.frontmatter_end + found.closing_len;
     let closing = &content[found.frontmatter_end..closing_end];
-    let newline = if opening.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = frontmatter.replace("\r\n", "\n").split('\n').map(str::to_owned).collect();
+    let newline = if opening.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut lines: Vec<String> = frontmatter
+        .replace("\r\n", "\n")
+        .split('\n')
+        .map(str::to_owned)
+        .collect();
     let key = format!("{field}:");
     let index = lines.iter().position(|line| {
         let trimmed = line.trim_start();
         trimmed.strip_prefix(&key).is_some_and(|_| true)
-            || trimmed.strip_prefix(field).is_some_and(|rest| rest.trim_start().starts_with(':'))
+            || trimmed
+                .strip_prefix(field)
+                .is_some_and(|rest| rest.trim_start().starts_with(':'))
     });
     if let Some(index) = index {
         let trimmed = lines[index].trim_start();
-        let current = trimmed.strip_prefix(field).unwrap_or("").trim_start().strip_prefix(':').unwrap_or("").trim();
-        let unquoted = current.strip_prefix('"').and_then(|v| v.strip_suffix('"'))
-            .or_else(|| current.strip_prefix('\'').and_then(|v| v.strip_suffix('\''))).unwrap_or(current);
+        let current = trimmed
+            .strip_prefix(field)
+            .unwrap_or("")
+            .trim_start()
+            .strip_prefix(':')
+            .unwrap_or("")
+            .trim();
+        let unquoted = current
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| {
+                current
+                    .strip_prefix('\'')
+                    .and_then(|v| v.strip_suffix('\''))
+            })
+            .unwrap_or(current);
         if unquoted == value {
-            return SkillFrontmatterFieldWriteResult { content: content.to_owned(), changed: false, reason: None };
+            return SkillFrontmatterFieldWriteResult {
+                content: content.to_owned(),
+                changed: false,
+                reason: None,
+            };
         }
         lines[index] = format!("{field}: {}", format_yaml_scalar(value));
         let mut end = index + 1;
-        while end < lines.len() && lines[end].chars().next().is_some_and(char::is_whitespace) && !lines[end].trim().is_empty() { end += 1; }
+        while end < lines.len()
+            && lines[end].chars().next().is_some_and(char::is_whitespace)
+            && !lines[end].trim().is_empty()
+        {
+            end += 1;
+        }
         lines.drain(index + 1..end);
     } else {
         lines.push(format!("{field}: {}", format_yaml_scalar(value)));
     }
-    let next = format!("{opening}{}{closing}{}", lines.join(newline), &content[closing_end..]);
+    let next = format!(
+        "{opening}{}{closing}{}",
+        lines.join(newline),
+        &content[closing_end..]
+    );
     let changed = next != content;
-    SkillFrontmatterFieldWriteResult { content: next, changed, reason: None }
+    SkillFrontmatterFieldWriteResult {
+        content: next,
+        changed,
+        reason: None,
+    }
 }
 
 pub fn repair_skill_name_frontmatter_content(
@@ -159,7 +211,11 @@ pub fn repair_skill_name_frontmatter_content(
     let opening = &content[..found.opening_len];
     let frontmatter = &content[found.opening_len..found.frontmatter_end];
     let closing = &content[found.frontmatter_end..found.frontmatter_end + found.closing_len];
-    let newline = if opening.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if opening.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let normalized = frontmatter.replace("\r\n", "\n");
     let mut lines: Vec<String> = normalized.split('\n').map(str::to_owned).collect();
     let name_line_index = lines.iter().position(|line| has_name_key(line));
@@ -186,7 +242,11 @@ pub fn repair_skill_name_frontmatter_content(
         lines.join(newline),
         &content[match_len..]
     );
-    SkillNameFrontmatterContentRepairResult { content: next, changed: true, reason: None }
+    SkillNameFrontmatterContentRepairResult {
+        content: next,
+        changed: true,
+        reason: None,
+    }
 }
 
 fn path_exists(path: &Path) -> bool {
@@ -261,18 +321,20 @@ pub fn repair_missing_skill_name_frontmatter(
             .to_owned();
         let repair = repair_skill_name_frontmatter_content(&content, &skill_name);
         if let Some(reason) = repair.reason {
-            result
-                .skipped
-                .push(SkillNameFrontmatterRepairSkippedFile { path: display_path, reason });
+            result.skipped.push(SkillNameFrontmatterRepairSkippedFile {
+                path: display_path,
+                reason,
+            });
             continue;
         }
         if !repair.changed {
             continue;
         }
         if let Err(error) = std::fs::write(&skill_file, repair.content) {
-            result
-                .skipped
-                .push(SkillNameFrontmatterRepairSkippedFile { path: display_path, reason: error.to_string() });
+            result.skipped.push(SkillNameFrontmatterRepairSkippedFile {
+                path: display_path,
+                reason: error.to_string(),
+            });
             continue;
         }
         result.repaired.push(display_path);
@@ -327,11 +389,15 @@ mod tests {
     }
 
     #[test]
-    fn given_frontmatter_without_a_name_key_when_repaired_then_the_directory_name_is_inserted_first() {
+    fn given_frontmatter_without_a_name_key_when_repaired_then_the_directory_name_is_inserted_first()
+     {
         let content = "---\ndescription: Commit helper\n---\nBody\n";
         let result = repair_skill_name_frontmatter_content(content, "commit");
         assert!(result.changed);
-        assert_eq!(result.content, "---\nname: commit\ndescription: Commit helper\n---\nBody\n");
+        assert_eq!(
+            result.content,
+            "---\nname: commit\ndescription: Commit helper\n---\nBody\n"
+        );
     }
 
     #[test]
@@ -359,11 +425,16 @@ mod tests {
 
     #[test]
     fn field_setter_preserves_body_bytes_and_replaces_folded_value() {
-        let content = "---\r\ndescription: >\r\n  old value\r\nname: skill\r\n---\r\nbody\r\n\u{ff}";
+        let content =
+            "---\r\ndescription: >\r\n  old value\r\nname: skill\r\n---\r\nbody\r\n\u{ff}";
         let result = set_skill_frontmatter_field(content, "description", "new value");
         assert!(result.changed);
         assert!(result.content.ends_with("body\r\n\u{ff}"));
-        assert!(result.content.contains("description: \"new value\"\r\nname: skill"));
+        assert!(
+            result
+                .content
+                .contains("description: \"new value\"\r\nname: skill")
+        );
         assert!(!set_skill_frontmatter_field(&result.content, "description", "new value").changed);
     }
 
@@ -387,37 +458,56 @@ mod tests {
     fn given_skill_files_in_nested_directories_when_repaired_then_only_name_less_files_change() {
         let dir = temp_root();
         std::fs::create_dir_all(dir.path().join("skills").join("commit")).expect("commit");
-        std::fs::write(dir.path().join("skills").join("commit").join("SKILL.md"), "---\ndescription: x\n---\n")
-            .expect("commit skill");
-        std::fs::create_dir_all(dir.path().join("skills").join("nested").join("review")).expect("nested");
         std::fs::write(
-            dir.path().join("skills").join("nested").join("review").join("SKILL.md"),
+            dir.path().join("skills").join("commit").join("SKILL.md"),
+            "---\ndescription: x\n---\n",
+        )
+        .expect("commit skill");
+        std::fs::create_dir_all(dir.path().join("skills").join("nested").join("review"))
+            .expect("nested");
+        std::fs::write(
+            dir.path()
+                .join("skills")
+                .join("nested")
+                .join("review")
+                .join("SKILL.md"),
             "---\nname: review\ndescription: y\n---\n",
         )
         .expect("review skill");
         std::fs::create_dir_all(dir.path().join("skills").join("flat")).expect("flat");
-        std::fs::write(dir.path().join("skills").join("flat").join("notes.md"), "---\ndescription: not a skill\n---\n")
-            .expect("notes");
+        std::fs::write(
+            dir.path().join("skills").join("flat").join("notes.md"),
+            "---\ndescription: not a skill\n---\n",
+        )
+        .expect("notes");
 
         let result = repair_missing_skill_name_frontmatter(Some(dir.path()));
 
         assert_eq!(result.scanned, 2);
         assert_eq!(result.repaired, vec!["skills/commit/SKILL.md".to_owned()]);
         assert!(result.skipped.is_empty());
-        let repaired = std::fs::read_to_string(dir.path().join("skills").join("commit").join("SKILL.md"))
-            .expect("repaired");
+        let repaired =
+            std::fs::read_to_string(dir.path().join("skills").join("commit").join("SKILL.md"))
+                .expect("repaired");
         assert!(repaired.contains("name: commit"));
     }
 
     #[test]
-    fn given_a_repaired_file_and_a_skipped_file_when_the_report_is_formatted_then_both_sections_render() {
+    fn given_a_repaired_file_and_a_skipped_file_when_the_report_is_formatted_then_both_sections_render()
+     {
         let dir = temp_root();
         std::fs::create_dir_all(dir.path().join("skills").join("commit")).expect("commit");
-        std::fs::write(dir.path().join("skills").join("commit").join("SKILL.md"), "---\ndescription: x\n---\n")
-            .expect("commit skill");
+        std::fs::write(
+            dir.path().join("skills").join("commit").join("SKILL.md"),
+            "---\ndescription: x\n---\n",
+        )
+        .expect("commit skill");
         std::fs::create_dir_all(dir.path().join("skills").join("broken")).expect("broken");
-        std::fs::write(dir.path().join("skills").join("broken").join("SKILL.md"), "no frontmatter\n")
-            .expect("broken skill");
+        std::fs::write(
+            dir.path().join("skills").join("broken").join("SKILL.md"),
+            "no frontmatter\n",
+        )
+        .expect("broken skill");
         let result = repair_missing_skill_name_frontmatter(Some(dir.path()));
         let report = format_skill_name_frontmatter_repair_report(&result);
         assert!(report.contains("skills/commit/SKILL.md"));

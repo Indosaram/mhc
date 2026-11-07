@@ -1,4 +1,4 @@
-use senpi_desktop_protocol::{ComputerCallStep, is_read_only_computer_call};
+use senpi_desktop_protocol::{is_read_only_computer_call, ComputerCallStep};
 
 fn rejection_reason(chain: &[ComputerCallStep]) -> &'static str {
     match is_read_only_computer_call(chain) {

@@ -16,11 +16,18 @@ enum Coerced {
     Invalid,
 }
 
-const ALIAS_GROUPS: &[&[&str]] =
-    &[&["file_path", "path", "filename", "file"], &["old_string", "old_str", "old_text"], &["new_string", "new_str", "new_text"], &["command", "cmd"]];
+const ALIAS_GROUPS: &[&[&str]] = &[
+    &["file_path", "path", "filename", "file"],
+    &["old_string", "old_str", "old_text"],
+    &["new_string", "new_str", "new_text"],
+    &["command", "cmd"],
+];
 
 fn normalize_name(name: &str) -> String {
-    name.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    name.to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
 }
 
 static ALIAS_LOOKUP: LazyLock<HashMap<String, &'static [&'static str]>> = LazyLock::new(|| {
@@ -51,7 +58,10 @@ fn resolve_property_name(raw_name: &str, properties: &Map<String, Value>) -> Opt
     }
 
     let normalized = normalize_name(raw_name);
-    let by_normalized: Vec<&String> = properties.keys().filter(|property| normalize_name(property) == normalized).collect();
+    let by_normalized: Vec<&String> = properties
+        .keys()
+        .filter(|property| normalize_name(property) == normalized)
+        .collect();
     if by_normalized.len() == 1 {
         return Some(by_normalized[0].clone());
     }
@@ -64,10 +74,17 @@ fn resolve_property_name(raw_name: &str, properties: &Map<String, Value>) -> Opt
         .keys()
         .filter(|property| {
             let property_normalized = normalize_name(property);
-            property_normalized != normalized && alias_group.iter().any(|alias| normalize_name(alias) == property_normalized)
+            property_normalized != normalized
+                && alias_group
+                    .iter()
+                    .any(|alias| normalize_name(alias) == property_normalized)
         })
         .collect();
-    if by_alias.len() == 1 { Some(by_alias[0].clone()) } else { None }
+    if by_alias.len() == 1 {
+        Some(by_alias[0].clone())
+    } else {
+        None
+    }
 }
 
 enum AdditionalSchema<'a> {
@@ -88,14 +105,23 @@ fn filter_unknown_keys_deep(value: Value, schema: &Value) -> Value {
         && let Value::Array(items) = &value
         && let Some(item_schema) = schema.get("items").filter(|s| !s.is_array())
     {
-        return Value::Array(items.iter().cloned().map(|entry| filter_unknown_keys_deep(entry, item_schema)).collect());
+        return Value::Array(
+            items
+                .iter()
+                .cloned()
+                .map(|entry| filter_unknown_keys_deep(entry, item_schema))
+                .collect(),
+        );
     }
 
     if is_object_schema(schema)
         && let Value::Object(object) = &value
     {
         let empty = Map::new();
-        let properties = schema.get("properties").and_then(Value::as_object).unwrap_or(&empty);
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or(&empty);
         let additional = get_additional_properties_schema(schema);
         let mut filtered = Map::new();
         for (raw_key, entry) in object {
@@ -113,7 +139,10 @@ fn filter_unknown_keys_deep(value: Value, schema: &Value) -> Value {
                     filtered.insert(raw_key.clone(), entry.clone());
                 }
                 Some(AdditionalSchema::Schema(schema)) => {
-                    filtered.insert(raw_key.clone(), filter_unknown_keys_deep(entry.clone(), schema));
+                    filtered.insert(
+                        raw_key.clone(),
+                        filter_unknown_keys_deep(entry.clone(), schema),
+                    );
                 }
                 None => {}
             }
@@ -151,7 +180,11 @@ fn repair_lone_surrogate_escapes(json: &str) -> String {
     let mut index = 0usize;
     while index < chars.len() {
         if chars[index] == '\\' && chars.get(index + 1) == Some(&'u') {
-            let preceding_backslashes = chars[..index].iter().rev().take_while(|c| **c == '\\').count();
+            let preceding_backslashes = chars[..index]
+                .iter()
+                .rev()
+                .take_while(|c| **c == '\\')
+                .count();
             if preceding_backslashes % 2 == 0
                 && let Some(code) = hex4(&chars, index + 2)
             {
@@ -226,11 +259,15 @@ fn coerce_known_value(raw_value: &str, schema: &Value) -> Coerced {
             _ => Coerced::Invalid,
         },
         Some("array") => match try_parse_json_tolerant(&value) {
-            Coerced::Ok(parsed @ Value::Array(_)) => Coerced::Ok(filter_unknown_keys_deep(parsed, schema)),
+            Coerced::Ok(parsed @ Value::Array(_)) => {
+                Coerced::Ok(filter_unknown_keys_deep(parsed, schema))
+            }
             _ => Coerced::Invalid,
         },
         Some("object") => match try_parse_json_tolerant(&value) {
-            Coerced::Ok(parsed) if parsed.is_object() => Coerced::Ok(filter_unknown_keys_deep(parsed, schema)),
+            Coerced::Ok(parsed) if parsed.is_object() => {
+                Coerced::Ok(filter_unknown_keys_deep(parsed, schema))
+            }
             _ => Coerced::Invalid,
         },
         _ => Coerced::Ok(coerce_unknown_value(raw_value)),
@@ -304,11 +341,19 @@ fn schema_accepts(schema: &Value, value: &Value) -> bool {
     if !matches_keyword_constraints(schema, value) {
         return false;
     }
-    let Some(schema_type) = schema_type(schema) else { return true };
+    let Some(schema_type) = schema_type(schema) else {
+        return true;
+    };
     match schema_type {
-        "string" => value.as_str().is_some_and(|text| length_within(schema, text.chars().count())),
-        "number" => value.as_f64().is_some_and(|number| number_within(schema, number)),
-        "integer" => value.as_f64().is_some_and(|number| number.fract() == 0.0 && number_within(schema, number)),
+        "string" => value
+            .as_str()
+            .is_some_and(|text| length_within(schema, text.chars().count())),
+        "number" => value
+            .as_f64()
+            .is_some_and(|number| number_within(schema, number)),
+        "integer" => value
+            .as_f64()
+            .is_some_and(|number| number.fract() == 0.0 && number_within(schema, number)),
         "boolean" => value.is_boolean(),
         "null" => value.is_null(),
         "array" => match value.as_array() {
@@ -317,16 +362,23 @@ fn schema_accepts(schema: &Value, value: &Value) -> bool {
                     return false;
                 }
                 match schema.get("items") {
-                    Some(item_schema) if item_schema.is_object() => items.iter().all(|item| schema_accepts(item_schema, item)),
+                    Some(item_schema) if item_schema.is_object() => {
+                        items.iter().all(|item| schema_accepts(item_schema, item))
+                    }
                     _ => true,
                 }
             }
             None => false,
         },
         "object" => {
-            let Some(object) = value.as_object() else { return false };
-            let required: Vec<&str> =
-                schema.get("required").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let Some(object) = value.as_object() else {
+                return false;
+            };
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|r| r.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
             if !required.iter().all(|key| object.contains_key(*key)) {
                 return false;
             }
@@ -341,7 +393,9 @@ fn schema_accepts(schema: &Value, value: &Value) -> bool {
                 }
             }
             if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
-                let known: std::collections::HashSet<&str> = properties.map(|p| p.keys().map(String::as_str).collect()).unwrap_or_default();
+                let known: std::collections::HashSet<&str> = properties
+                    .map(|p| p.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
                 if object.keys().any(|key| !known.contains(key.as_str())) {
                     return false;
                 }
@@ -352,13 +406,20 @@ fn schema_accepts(schema: &Value, value: &Value) -> bool {
     }
 }
 
-pub fn coerce_antml_parameters(raw_params: &[InvokeParameter], tool: &Tool) -> Option<Map<String, Value>> {
+pub fn coerce_antml_parameters(
+    raw_params: &[InvokeParameter],
+    tool: &Tool,
+) -> Option<Map<String, Value>> {
     if !is_object_schema(&tool.parameters) {
         return None;
     }
 
     let empty = Map::new();
-    let properties = tool.parameters.get("properties").and_then(Value::as_object).unwrap_or(&empty);
+    let properties = tool
+        .parameters
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
     let additional = get_additional_properties_schema(&tool.parameters);
     let mut arguments_record = Map::new();
 
@@ -370,7 +431,8 @@ pub fn coerce_antml_parameters(raw_params: &[InvokeParameter], tool: &Tool) -> O
             match &additional {
                 None => continue,
                 Some(AdditionalSchema::True) => {
-                    arguments_record.insert(raw_param.name.clone(), coerce_unknown_value(&raw_value));
+                    arguments_record
+                        .insert(raw_param.name.clone(), coerce_unknown_value(&raw_value));
                 }
                 Some(AdditionalSchema::Schema(schema)) => {
                     if let Coerced::Ok(value) = coerce_known_value(&raw_value, schema) {
@@ -381,7 +443,9 @@ pub fn coerce_antml_parameters(raw_params: &[InvokeParameter], tool: &Tool) -> O
             continue;
         };
 
-        let Some(property_schema) = properties.get(&property_name) else { continue };
+        let Some(property_schema) = properties.get(&property_name) else {
+            continue;
+        };
         match coerce_known_value(&raw_value, property_schema) {
             Coerced::Ok(value) => {
                 arguments_record.insert(property_name, value);
@@ -400,17 +464,28 @@ mod tests {
     use serde_json::json;
 
     fn tool(parameters: Value) -> Tool {
-        Tool { name: "t".into(), description: "d".into(), parameters, output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "t".into(),
+            description: "d".into(),
+            parameters,
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn param(name: &str, raw_value: &str) -> InvokeParameter {
-        InvokeParameter { name: name.into(), raw_value: raw_value.into() }
+        InvokeParameter {
+            name: name.into(),
+            raw_value: raw_value.into(),
+        }
     }
 
     #[test]
     fn resolves_aliased_parameter_names_to_the_declared_property() {
         let schema = json!({"type": "object", "properties": {"file_path": {"type": "string"}}});
-        let result = coerce_antml_parameters(&[param("path", "a.txt")], &tool(schema)).expect("coerces");
+        let result =
+            coerce_antml_parameters(&[param("path", "a.txt")], &tool(schema)).expect("coerces");
         assert_eq!(result.get("file_path"), Some(&json!("a.txt")));
     }
 
@@ -421,7 +496,8 @@ mod tests {
             "properties": {"obj": {"type": "object", "properties": {"a": {"type": "string"}}}}
         });
         let result =
-            coerce_antml_parameters(&[param("obj", r#"{"a":"x","unknown":"y"}"#)], &tool(schema)).expect("coerces");
+            coerce_antml_parameters(&[param("obj", r#"{"a":"x","unknown":"y"}"#)], &tool(schema))
+                .expect("coerces");
         assert_eq!(result.get("obj"), Some(&json!({"a": "x"})));
     }
 
@@ -434,14 +510,16 @@ mod tests {
     #[test]
     fn keeps_additional_property_when_schema_allows_it() {
         let schema = json!({"type": "object", "properties": {}, "additionalProperties": true});
-        let result = coerce_antml_parameters(&[param("extra", "hello")], &tool(schema)).expect("coerces");
+        let result =
+            coerce_antml_parameters(&[param("extra", "hello")], &tool(schema)).expect("coerces");
         assert_eq!(result.get("extra"), Some(&json!("hello")));
     }
 
     #[test]
     fn drops_unknown_property_when_additional_properties_is_false() {
         let schema = json!({"type": "object", "properties": {}, "additionalProperties": false});
-        let result = coerce_antml_parameters(&[param("extra", "hello")], &tool(schema)).expect("coerces");
+        let result =
+            coerce_antml_parameters(&[param("extra", "hello")], &tool(schema)).expect("coerces");
         assert!(result.is_empty());
     }
 
@@ -454,7 +532,8 @@ mod tests {
     fn repairs_lone_surrogates_in_string_values() {
         let lone_high = String::from_utf16_lossy(&[0xD800]);
         let schema = json!({"type": "object", "properties": {"s": {"type": "string"}}});
-        let result = coerce_antml_parameters(&[param("s", &lone_high)], &tool(schema)).expect("coerces");
+        let result =
+            coerce_antml_parameters(&[param("s", &lone_high)], &tool(schema)).expect("coerces");
         assert_eq!(result.get("s"), Some(&json!("\u{FFFD}")));
     }
 

@@ -34,7 +34,8 @@ pub struct EntrySearchHit {
 /// `searchEntries` is optional in TS; `None` is the faithful analogue of the absent method.
 pub trait SessionSearchService: Send + Sync {
     fn search_sessions(&self, query: SearchQuery) -> BoxFuture<'static, Vec<SessionSearchHit>>;
-    fn search_entries(&self, query: SearchQuery) -> Option<BoxFuture<'static, Vec<EntrySearchHit>>>;
+    fn search_entries(&self, query: SearchQuery)
+    -> Option<BoxFuture<'static, Vec<EntrySearchHit>>>;
     fn sync(&self) -> BoxFuture<'static, ()>;
     fn notify(&self, session_id: String);
     fn remove(&self, session_id: String) -> BoxFuture<'static, ()>;

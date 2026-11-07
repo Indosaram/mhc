@@ -35,7 +35,8 @@ use serde_json::Value;
 
 use crate::kibitzer_child::{JudgeSettle, KibitzerChildSpawner};
 use crate::kibitzer_contract::{
-    KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState, KibitzerSidecarTimers, WarnFn,
+    KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState, KibitzerSidecarTimers,
+    WarnFn,
 };
 use crate::kibitzer_events::KibitzerEventCaps;
 use crate::kibitzer_session_resources::KibitzerSessionResources;
@@ -137,7 +138,11 @@ impl KibitzerSidecar {
             .on_wake
             .clone()
             .unwrap_or_else(|| Arc::new(|_outcome: KibitzerWakeOutcome| {}));
-        let turns = Arc::new(create_turn_lifecycle(Arc::clone(&core), options.spawn.clone(), on_wake));
+        let turns = Arc::new(create_turn_lifecycle(
+            Arc::clone(&core),
+            options.spawn.clone(),
+            on_wake,
+        ));
         let recovery = Arc::new(create_recovery(Arc::clone(&core), options.spawn.clone()));
         // The admission is consumed by the wake transitions; it is NOT retained on the sidecar.
         let admission = Arc::new(create_admission(
@@ -156,7 +161,12 @@ impl KibitzerSidecar {
             options.spawn.clone(),
             options.deliver.clone(),
         );
-        Arc::new(Self { core, turns, recovery, wake })
+        Arc::new(Self {
+            core,
+            turns,
+            recovery,
+            wake,
+        })
     }
 
     pub fn session_id(&self) -> &str {
@@ -274,13 +284,20 @@ impl KibitzerSidecar {
                     (record.child.clone(), record.active_turn.clone())
                 };
                 if let (Some(child), Some(turn)) = (child, turn) {
-                    *turn.abort.lock().unwrap_or_else(PoisonError::into_inner) = Some(KibitzerWakeAbort::Shutdown);
+                    *turn.abort.lock().unwrap_or_else(PoisonError::into_inner) =
+                        Some(KibitzerWakeAbort::Shutdown);
                     turns.clear_deadline(&turn);
-                    turns.abort_handle(Arc::clone(&child.handle), KibitzerWakeAbort::Shutdown).await;
+                    turns
+                        .abort_handle(Arc::clone(&child.handle), KibitzerWakeAbort::Shutdown)
+                        .await;
                     // Settle inline: shutdown must not depend on the aborted turn ever reporting back.
                     wake.settle_transition(
                         turn,
-                        JudgeSettle { completed: false, cancelled: true, failure_message: None },
+                        JudgeSettle {
+                            completed: false,
+                            cancelled: true,
+                            failure_message: None,
+                        },
                     )
                     .await;
                 }
@@ -317,7 +334,11 @@ impl KibitzerSidecar {
             return false;
         }
         self.remember_task(prompt);
-        self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).on_prompt(prompt, cursor)
+        self.core
+            .stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .on_prompt(prompt, cursor)
     }
 
     /// `events.onToolCall`: buffer a tool call. False once disposed.
@@ -333,7 +354,13 @@ impl KibitzerSidecar {
     }
 
     /// `events.onToolResult`: buffer a tool result. False once disposed.
-    pub fn on_tool_result(&self, tool_name: &str, result: &Value, is_error: bool, cursor: usize) -> bool {
+    pub fn on_tool_result(
+        &self,
+        tool_name: &str,
+        result: &Value,
+        is_error: bool,
+        cursor: usize,
+    ) -> bool {
         if self.core.is_disposed() {
             return false;
         }
@@ -346,19 +373,31 @@ impl KibitzerSidecar {
 
     /// `events.size`: buffered (unfolded) events.
     pub fn event_size(&self) -> usize {
-        self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).size()
+        self.core
+            .stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .size()
     }
 
     /// `events.lastCursor`: the newest parent cursor the stream has seen, if any.
     pub fn last_cursor(&self) -> Option<usize> {
-        self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).last_cursor()
+        self.core
+            .stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_cursor()
     }
 
     /// `rememberTask`: the FIRST non-empty prompt becomes the whitespace-normalized task summary,
     /// capped at `TASK_SUMMARY_HEAD_CHARS` UTF-16 units; later prompts do not overwrite it.
     fn remember_task(&self, prompt: &str) {
         {
-            let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if record.task_summary.is_some() {
                 return;
             }
@@ -368,7 +407,11 @@ impl KibitzerSidecar {
             return;
         }
         let capped = truncate_utf16(&line, TASK_SUMMARY_HEAD_CHARS);
-        self.core.record.lock().unwrap_or_else(PoisonError::into_inner).task_summary = Some(capped);
+        self.core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .task_summary = Some(capped);
     }
 }
 

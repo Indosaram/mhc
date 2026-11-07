@@ -21,7 +21,7 @@ pub mod rules_block;
 pub mod store_extension;
 pub mod thread;
 
-pub use index::{has_scopes, GatewayComponent, GatewayComponentOptions};
+pub use index::{GatewayComponent, GatewayComponentOptions, has_scopes};
 pub use migrations::{GATEWAY_RULES_EXTENSION_NAME, GATEWAY_RULES_MIGRATIONS};
 pub use paths::{
     gateway_database_path, gateway_inbox_directory, gateway_outbox_marker_path,
@@ -32,12 +32,13 @@ pub use prompt::{
     GatewayRulesStore, SqliteGatewayRulesStore,
 };
 pub use rules_block::{
-    compose_gateway_rules_block, escape_rule_text, mark_gateway_rules_block,
-    render_operating_rules_block, GATEWAY_RULES_SENTINEL_BEGIN, GATEWAY_RULES_SENTINEL_END,
+    GATEWAY_RULES_SENTINEL_BEGIN, GATEWAY_RULES_SENTINEL_END, compose_gateway_rules_block,
+    escape_rule_text, mark_gateway_rules_block, render_operating_rules_block,
 };
 pub use store_extension::{
-    apply_gateway_rules_migrations, apply_gateway_rules_migrations_with_now, block_for_session, rules_committed, sessions_with_rules,
     CommittedOutcome, CommittedResult, DeliverySummary, EnqueueDeliveryRequest,
     GatewayDeliveryEnqueueSeam, RulesCommittedArgs, RulesCommittedTarget, SessionRulesBlock,
-    SessionWithRule, SessionsWithRulesResult,
+    SessionWithRule, SessionsWithRulesResult, apply_gateway_rules_migrations,
+    apply_gateway_rules_migrations_with_now, block_for_session, rules_committed,
+    sessions_with_rules,
 };

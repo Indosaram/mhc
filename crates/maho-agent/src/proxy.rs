@@ -200,7 +200,8 @@ async fn run_proxy_stream(
     context: &Context,
     options: &ProxyStreamOptions,
 ) {
-    let mut partial = AssistantMessage { credential_served_recently: None,
+    let mut partial = AssistantMessage {
+        credential_served_recently: None,
         thinking_level: None,
         provider_diagnostic: None,
         content: Vec::new(),

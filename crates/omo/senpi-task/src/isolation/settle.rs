@@ -59,10 +59,10 @@ pub fn settle_isolation(input: &SettleIsolationInput<'_>) -> IsolationMergeResul
         },
     };
 
-    let delta = match input.runtime.capture_delta(
-        Path::new(&input.isolation.merged_dir),
-        &baseline,
-    ) {
+    let delta = match input
+        .runtime
+        .capture_delta(Path::new(&input.isolation.merged_dir), &baseline)
+    {
         Ok(delta) => delta,
         Err(error) => {
             return IsolationMergeResult::retained(

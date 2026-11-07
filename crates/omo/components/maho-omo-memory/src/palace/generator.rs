@@ -7,7 +7,9 @@ use memory_core::git::GitMemoryRepo;
 use serde::Serialize;
 
 use super::PalaceError;
-use super::entry_collector::{PalaceCoreEntry, PalaceExternalEntry, collect_core, collect_external};
+use super::entry_collector::{
+    PalaceCoreEntry, PalaceExternalEntry, collect_core, collect_external,
+};
 use super::history_collector::{PalaceHistory, collect_history};
 use super::people::{PalacePeople, PalacePeopleOptions, collect_people};
 use super::reflection_collector::{PalaceReflection, collect_reflection};
@@ -66,7 +68,11 @@ pub fn generate_palace_html(
     context: &MemoryIdentityContext,
     options: GeneratePalaceOptions,
 ) -> Result<GeneratePalaceResult, PalaceError> {
-    let generated_at = options.now.as_ref().map(|now| now()).unwrap_or_else(Utc::now);
+    let generated_at = options
+        .now
+        .as_ref()
+        .map(|now| now())
+        .unwrap_or_else(Utc::now);
     let data = collect_palace_data(
         context,
         generated_at,
@@ -90,7 +96,10 @@ pub fn collect_palace_data(
     outcome_limit: usize,
     people: PalacePeopleOptions,
 ) -> Result<PalaceData, PalaceError> {
-    let repo = GitMemoryRepo::open(context.identity_paths.repo.clone(), context.identity.as_str())?;
+    let repo = GitMemoryRepo::open(
+        context.identity_paths.repo.clone(),
+        context.identity.as_str(),
+    )?;
     let head = repo.head().ok().flatten();
     let core = collect_core(&repo, head.as_deref())?;
     let external = collect_external(&repo, head.as_deref())?;
@@ -223,10 +232,23 @@ mod tests {
         let data = inline_json(&html);
 
         assert!(data["core"]["entries"].is_array());
-        assert!(data["core"]["entries"].to_string().contains("system/persona.md"));
-        assert_eq!(data["metadata"]["identity"].as_str(), Some(fixture.identity.as_str()));
-        assert_eq!(data["metadata"]["headSha"].as_str(), Some(fixture.head.as_str()));
-        assert_eq!(data["metadata"]["recompiledAt"].as_str(), Some("2026-08-09T12:00:00.000Z"));
+        assert!(
+            data["core"]["entries"]
+                .to_string()
+                .contains("system/persona.md")
+        );
+        assert_eq!(
+            data["metadata"]["identity"].as_str(),
+            Some(fixture.identity.as_str())
+        );
+        assert_eq!(
+            data["metadata"]["headSha"].as_str(),
+            Some(fixture.head.as_str())
+        );
+        assert_eq!(
+            data["metadata"]["recompiledAt"].as_str(),
+            Some("2026-08-09T12:00:00.000Z")
+        );
         assert!(html.contains(fixture.head.as_str()));
     }
 
@@ -237,7 +259,10 @@ mod tests {
         let result = generate_palace_html(
             &fixture.context,
             GeneratePalaceOptions {
-                people: Some(PalacePeopleOptions { enabled: true, ..Default::default() }),
+                people: Some(PalacePeopleOptions {
+                    enabled: true,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         )
@@ -245,7 +270,10 @@ mod tests {
         let html = std::fs::read_to_string(&result.path).expect("test");
 
         let tabs = tabs(&html);
-        assert_eq!(tabs, ["core", "external", "history", "reflection", "people"]);
+        assert_eq!(
+            tabs,
+            ["core", "external", "history", "reflection", "people"]
+        );
         for tab in tabs {
             let panel = format!("id=\"panel-{tab}\"");
             assert!(html.contains(panel.as_str()));
@@ -286,12 +314,22 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let fixture = create_palace_fixture(false);
 
-        let result = generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
+        let result =
+            generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
 
-        let name = result.path.file_name().unwrap().to_string_lossy().to_string();
+        let name = result
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert!(name.starts_with("palace-") && name.ends_with(".html"));
         assert_eq!(
-            std::fs::metadata(&result.path).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&result.path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600
         );
         let dir = result.path.parent().unwrap();
@@ -305,7 +343,8 @@ mod tests {
     fn script_breakout_payload_is_escaped() {
         let fixture = create_palace_fixture(true);
 
-        let result = generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
+        let result =
+            generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
         let html = std::fs::read_to_string(&result.path).unwrap();
 
         assert!(!html.contains(INJECTION_PAYLOAD));
@@ -326,7 +365,8 @@ mod tests {
             "chore: add separator fixture",
         );
 
-        let result = generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
+        let result =
+            generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
         let html = std::fs::read_to_string(&result.path).unwrap();
 
         assert!(!html.contains('\u{2028}'));
@@ -339,7 +379,8 @@ mod tests {
     fn viewer_is_self_contained() {
         let fixture = create_palace_fixture(false);
 
-        let result = generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
+        let result =
+            generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
         let html = std::fs::read_to_string(&result.path).unwrap();
 
         assert!(!html.contains("http://"));
@@ -352,7 +393,8 @@ mod tests {
     fn committed_binary_lists_size_only() {
         let fixture = create_palace_fixture(false);
 
-        let result = generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
+        let result =
+            generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
         let html = std::fs::read_to_string(&result.path).unwrap();
         let data = inline_json(&html);
         let external = data["external"]["entries"].as_array().unwrap();

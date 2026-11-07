@@ -1,6 +1,5 @@
 //! Native OMO extension entry and shared host composition (todo 47 residual).
 
-pub mod skill_mcp_manager;
 pub mod capture;
 pub mod claude_compat;
 pub mod component_list;
@@ -13,6 +12,7 @@ pub mod provisioning;
 pub mod runtime;
 pub mod scheduler;
 pub mod settle_observers;
+pub mod skill_mcp_manager;
 pub mod startup_deferral;
 pub mod task_coordinator;
 pub mod tool_hook_status;

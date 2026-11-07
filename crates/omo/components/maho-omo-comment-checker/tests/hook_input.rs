@@ -1,18 +1,30 @@
 use crate::support;
-use std::{path::Path, sync::Arc};
 use maho_ext_api::*;
 use maho_omo_comment_checker::hook_input::to_hook_input;
+use std::{path::Path, sync::Arc};
 
 struct BoundSession;
 impl ToolSessionManager for BoundSession {
-    fn session_id(&self) -> &str { "session-1" }
-    fn session_file(&self) -> Option<&Path> { Some(Path::new("/tmp/transcript.jsonl")) }
+    fn session_id(&self) -> &str {
+        "session-1"
+    }
+    fn session_file(&self) -> Option<&Path> {
+        Some(Path::new("/tmp/transcript.jsonl"))
+    }
 }
 impl SessionManager for BoundSession {
-    fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
-    fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
-    fn get_leaf_id(&self) -> Option<String> { None }
-    fn get_session_name(&self) -> Option<String> { None }
+    fn get_entries(&self) -> Vec<SessionEntry> {
+        Vec::new()
+    }
+    fn get_branch(&self) -> Vec<SessionEntry> {
+        Vec::new()
+    }
+    fn get_leaf_id(&self) -> Option<String> {
+        None
+    }
+    fn get_session_name(&self) -> Option<String> {
+        None
+    }
 }
 
 #[test]
@@ -20,9 +32,15 @@ fn bound_session_and_tool_response_reach_checker() {
     let mut ctx = support::context();
     ctx.session_manager = Arc::new(BoundSession);
     ctx.cwd = "/workspace".into();
-    let event = ToolResultEvent { tool_name: "write".into(), tool_call_id: "id".into(),
-        input: serde_json::json!({"content":"written"}), content: vec![ToolContent::text("original")],
-        details: Some(serde_json::json!({"retained":true})), is_error: false, usage: None };
+    let event = ToolResultEvent {
+        tool_name: "write".into(),
+        tool_call_id: "id".into(),
+        input: serde_json::json!({"content":"written"}),
+        content: vec![ToolContent::text("original")],
+        details: Some(serde_json::json!({"retained":true})),
+        is_error: false,
+        usage: None,
+    };
     let hook = to_hook_input(&event, &ctx, "/workspace/file.rs");
     assert_eq!(hook.session_id, "session-1");
     assert_eq!(hook.transcript_path, "/tmp/transcript.jsonl");
@@ -30,17 +48,26 @@ fn bound_session_and_tool_response_reach_checker() {
     assert_eq!(hook.tool_name, "write");
     assert_eq!(hook.hook_event_name, "PostToolUse");
     assert_eq!(hook.tool_input.content.as_deref(), Some("written"));
-    assert_eq!(hook.tool_response, Some(serde_json::json!({
-        "content":[{"type":"text","text":"original"}],"details":{"retained":true},"isError":false
-    })));
+    assert_eq!(
+        hook.tool_response,
+        Some(serde_json::json!({
+            "content":[{"type":"text","text":"original"}],"details":{"retained":true},"isError":false
+        }))
+    );
 }
 
 #[test]
 fn edit_aliases_preserve_precedence_and_filter_invalid_entries() {
-    let event = ToolResultEvent { tool_name: "edit".into(), tool_call_id: "id".into(),
+    let event = ToolResultEvent {
+        tool_name: "edit".into(),
+        tool_call_id: "id".into(),
         input: serde_json::json!({"old_string":"primary","oldText":"fallback","newText":"new",
             "edits":[{"oldText":"a","newText":"b"},null,{"old_string":"c"},{"old_string":"d","new_string":"e","oldText":"ignored"}]}),
-        content: Vec::new(), details: None, is_error: false, usage: None };
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    };
     let hook = to_hook_input(&event, &support::context(), "/tmp/file.rs");
     assert_eq!(hook.tool_input.old_string.as_deref(), Some("primary"));
     assert_eq!(hook.tool_input.new_string.as_deref(), Some("new"));
@@ -55,15 +82,41 @@ fn edit_aliases_preserve_precedence_and_filter_invalid_entries() {
 #[test]
 fn absent_session_uses_upstream_unknown_fallback() {
     struct MissingSession;
-    impl ToolSessionManager for MissingSession { fn session_id(&self) -> &str { "" } fn session_file(&self) -> Option<&Path> { None } }
+    impl ToolSessionManager for MissingSession {
+        fn session_id(&self) -> &str {
+            ""
+        }
+        fn session_file(&self) -> Option<&Path> {
+            None
+        }
+    }
     impl SessionManager for MissingSession {
-        fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
-        fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
-        fn get_leaf_id(&self) -> Option<String> { None }
-        fn get_session_name(&self) -> Option<String> { None }
+        fn get_entries(&self) -> Vec<SessionEntry> {
+            Vec::new()
+        }
+        fn get_branch(&self) -> Vec<SessionEntry> {
+            Vec::new()
+        }
+        fn get_leaf_id(&self) -> Option<String> {
+            None
+        }
+        fn get_session_name(&self) -> Option<String> {
+            None
+        }
     }
     let mut ctx = support::context();
     ctx.session_manager = Arc::new(MissingSession);
-    let event = ToolResultEvent { tool_name: "write".into(), tool_call_id: "id".into(), input: serde_json::json!({}), content: Vec::new(), details: None, is_error: false, usage: None };
-    assert_eq!(to_hook_input(&event, &ctx, "/tmp/file").session_id, "unknown");
+    let event = ToolResultEvent {
+        tool_name: "write".into(),
+        tool_call_id: "id".into(),
+        input: serde_json::json!({}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    };
+    assert_eq!(
+        to_hook_input(&event, &ctx, "/tmp/file").session_id,
+        "unknown"
+    );
 }

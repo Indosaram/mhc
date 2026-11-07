@@ -45,9 +45,11 @@ fn write_atomic(dir: &Path, name: &str, value: &impl Serialize) -> std::io::Resu
         file.write_all(&bytes)?;
         file.sync_all()
     });
-    written.and_then(|()| std::fs::rename(&tmp, dir.join(name))).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    written
+        .and_then(|()| std::fs::rename(&tmp, dir.join(name)))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
 }
 
 /// Worker side: sends one call and waits for the answer.
@@ -55,7 +57,13 @@ pub async fn call(store: &PoolStore, request: &CallRequest) -> CallResponse {
     let dir = calls_dir(store);
     let id = uuid::Uuid::new_v4().simple().to_string();
     if let Err(error) = write_atomic(&dir, &format!("{id}.req.json"), request) {
-        return CallResponse { text: format!("{}: cannot reach the parent session: {error}", codes::TOOLS_UNAVAILABLE), is_error: true };
+        return CallResponse {
+            text: format!(
+                "{}: cannot reach the parent session: {error}",
+                codes::TOOLS_UNAVAILABLE
+            ),
+            is_error: true,
+        };
     }
     let response_path = dir.join(format!("{id}.res.json"));
     let deadline = tokio::time::Instant::now() + CALL_TIMEOUT;
@@ -63,34 +71,62 @@ pub async fn call(store: &PoolStore, request: &CallRequest) -> CallResponse {
         if let Ok(bytes) = std::fs::read(&response_path) {
             let _ = std::fs::remove_file(&response_path);
             return serde_json::from_slice(&bytes).unwrap_or_else(|error| CallResponse {
-                text: format!("{}: unreadable answer from the parent session: {error}", codes::TOOLS_UNAVAILABLE),
+                text: format!(
+                    "{}: unreadable answer from the parent session: {error}",
+                    codes::TOOLS_UNAVAILABLE
+                ),
                 is_error: true,
             });
         }
         tokio::time::sleep(CALL_CHECK).await;
     }
     let _ = std::fs::remove_file(dir.join(format!("{id}.req.json")));
-    CallResponse { text: format!("{}: the parent session did not answer", codes::TOOLS_UNAVAILABLE), is_error: true }
+    CallResponse {
+        text: format!(
+            "{}: the parent session did not answer",
+            codes::TOOLS_UNAVAILABLE
+        ),
+        is_error: true,
+    }
 }
 
 /// Executes a granted tool in the parent runtime.
-pub type Executor = std::sync::Arc<dyn Fn(String, Value) -> crate::host::BoxFuture<CallResponse> + Send + Sync>;
+pub type Executor =
+    std::sync::Arc<dyn Fn(String, Value) -> crate::host::BoxFuture<CallResponse> + Send + Sync>;
 
 /// Parent side: answers the pending calls once.
 pub async fn serve_once(store: &PoolStore, execute: &Executor) {
     let dir = calls_dir(store);
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
     let pending: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".req.json") && !n.starts_with('.')))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".req.json") && !n.starts_with('.'))
+        })
         .collect();
     for path in pending {
-        let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".req.json")).map(str::to_owned) else { continue };
-        let request: Option<CallRequest> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let Some(id) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".req.json"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let request: Option<CallRequest> = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok());
         let _ = std::fs::remove_file(&path);
         let response = match request {
-            None => CallResponse { text: format!("{}: malformed tool call", codes::INVALID_INPUT), is_error: true },
+            None => CallResponse {
+                text: format!("{}: malformed tool call", codes::INVALID_INPUT),
+                is_error: true,
+            },
             Some(request) => match store.load(&request.pool_id) {
                 Ok(Some(record))
                     if record.status != PoolStatus::Cancelled
@@ -99,20 +135,31 @@ pub async fn serve_once(store: &PoolStore, execute: &Executor) {
                 {
                     execute(request.tool, request.params).await
                 }
-                Ok(_) => CallResponse { text: format!("{}: this tool is not granted to this worker", codes::POLICY_DENIED), is_error: true },
-                Err(error) => CallResponse { text: error.to_string(), is_error: true },
+                Ok(_) => CallResponse {
+                    text: format!(
+                        "{}: this tool is not granted to this worker",
+                        codes::POLICY_DENIED
+                    ),
+                    is_error: true,
+                },
+                Err(error) => CallResponse {
+                    text: error.to_string(),
+                    is_error: true,
+                },
             },
         };
         if let Err(error) = write_atomic(&dir, &format!("{id}.res.json"), &response) {
-            maho_ext_api::diagnostic(&format!("workpool: cannot answer a worker tool call: {error}"));
+            maho_ext_api::diagnostic(&format!(
+                "workpool: cannot answer a worker tool call: {error}"
+            ));
         }
     }
 }
 
 /// Whether any pool in `store` grants extra tools and is not cancelled.
 pub fn has_granting_pools(store: &PoolStore) -> bool {
-    store
-        .load_all()
-        .into_iter()
-        .any(|(_, loaded)| loaded.is_ok_and(|record| record.status != PoolStatus::Cancelled && !record.tools.is_empty()))
+    store.load_all().into_iter().any(|(_, loaded)| {
+        loaded
+            .is_ok_and(|record| record.status != PoolStatus::Cancelled && !record.tools.is_empty())
+    })
 }

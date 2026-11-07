@@ -130,7 +130,9 @@ fn given_retained_entry_when_files_are_listed_then_headers_carry_no_payload_unti
     let loaded = files[0].load().expect("load");
     assert_eq!(loaded.range, files[0].header.range);
     assert_eq!(loaded.entries.len(), 4);
-    queue.mark_consumed(std::slice::from_ref(&loaded)).expect("consume");
+    queue
+        .mark_consumed(std::slice::from_ref(&loaded))
+        .expect("consume");
     assert!(files[0].load().is_none());
 }
 
@@ -257,7 +259,8 @@ fn given_queue_file_landed_without_cursor_write_when_next_settle_runs_then_retai
 }
 
 #[test]
-fn given_multiple_queue_files_when_list_pending_files_runs_then_headers_and_order_match_list_pending() {
+fn given_multiple_queue_files_when_list_pending_files_runs_then_headers_and_order_match_list_pending()
+ {
     let (_dir, paths) = identity_fixture();
     let queue = queue_with(&paths, 0);
 
@@ -287,15 +290,16 @@ fn given_multiple_queue_files_when_list_pending_files_runs_then_headers_and_orde
         })
         .collect();
 
-    for (i, (file, expected)) in pending_files.iter().zip(expected_headers.iter()).enumerate() {
+    for (i, (file, expected)) in pending_files
+        .iter()
+        .zip(expected_headers.iter())
+        .enumerate()
+    {
         assert_eq!(file.header, *expected, "mismatch at index {i}");
         assert_eq!(file.file_path.exists(), true);
     }
 
-    assert_eq!(
-        file_headers,
-        expected_headers.iter().collect::<Vec<_>>()
-    );
+    assert_eq!(file_headers, expected_headers.iter().collect::<Vec<_>>());
 }
 
 #[test]

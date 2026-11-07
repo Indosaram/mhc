@@ -26,11 +26,12 @@ static MANUAL_ACCESSIBILITY: LazyLock<Mutex<HashSet<libc::pid_t>>> =
 /// the private SPI, else by title plus frame, else by a unique title.
 pub(super) fn window_root(win: &DesktopWindow) -> CoreResult<Element> {
     element::ensure_trusted()?;
-    let pid = win
-        .pid
-        .ok_or_else(|| DesktopError::ax_failed(format!("window {} has no owning process id", win.id)))?;
-    let pid = libc::pid_t::try_from(pid)
-        .map_err(|_| DesktopError::ax_failed(format!("window {} has an invalid process id", win.id)))?;
+    let pid = win.pid.ok_or_else(|| {
+        DesktopError::ax_failed(format!("window {} has no owning process id", win.id))
+    })?;
+    let pid = libc::pid_t::try_from(pid).map_err(|_| {
+        DesktopError::ax_failed(format!("window {} has an invalid process id", win.id))
+    })?;
     let app = element::create_application(pid)?;
     set_timeout(&app)?;
     enable_web_accessibility(pid, &app);
@@ -161,8 +162,8 @@ pub(super) fn focused_element() -> CoreResult<Option<Element>> {
 /// Every attribute name with its value rendered and truncated to 200 chars.
 pub(super) fn attributes(element: &AXUIElement) -> CoreResult<Vec<(String, String)>> {
     // SAFETY: The slot is writable and receives a create-rule CFArray.
-    let names =
-        element::copy_name_array(|slot| unsafe { element.copy_attribute_names(slot) }).map_err(|error| {
+    let names = element::copy_name_array(|slot| unsafe { element.copy_attribute_names(slot) })
+        .map_err(|error| {
             DesktopError::ax_failed(format!("AXUIElementCopyAttributeNames failed ({error:?})"))
         })?;
     Ok(names

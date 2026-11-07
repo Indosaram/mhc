@@ -4,12 +4,8 @@
 use std::sync::Arc;
 
 use maho_ext_api::ExtensionApi;
-use memory_core::{
-    git::GitMemoryRepo,
-    sync::MirrorSync,
-};
+use memory_core::{git::GitMemoryRepo, sync::MirrorSync};
 
-use crate::worker::spawn_supervisor_support::install_memory_hooks as install_hooks;
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
 use super::backup::create_repo_backup;
 use super::memfs_extra::{memfs_backup, memfs_diff, memfs_restore, memfs_tokens};
@@ -22,6 +18,7 @@ use super::types::{
     BoxFuture, CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel,
     command_context_from, finish, identity_for_init, require_identity, respond,
 };
+use crate::worker::spawn_supervisor_support::install_memory_hooks as install_hooks;
 
 const SUBCOMMANDS: [&str; 9] = [
     "status", "init", "sync", "repair", "reset", "backup", "restore", "diff", "tokens",
@@ -29,10 +26,7 @@ const SUBCOMMANDS: [&str; 9] = [
 
 const SKILLS_USAGE_FILENAME: &str = "skills-usage.json";
 
-fn mirror_for<'a>(
-    repo: &'a GitMemoryRepo,
-    deps: &'a MemoryCommandDeps,
-) -> MirrorSync<'a> {
+fn mirror_for<'a>(repo: &'a GitMemoryRepo, deps: &'a MemoryCommandDeps) -> MirrorSync<'a> {
     match &deps.exec {
         Some(exec) => MirrorSync::with_exec(repo, exec.as_ref()),
         None => MirrorSync::new(repo),
@@ -68,7 +62,10 @@ fn memfs_status<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, Comman
         };
         let mut lines = vec![
             format!("# Memfs status: {}", input.identity.identity),
-            format!("Repository: {}", input.identity.identity_paths.repo.display()),
+            format!(
+                "Repository: {}",
+                input.identity.identity_paths.repo.display()
+            ),
             format!("HEAD: {head_text}"),
             format!(
                 "Working tree: {}",
@@ -99,7 +96,11 @@ fn memfs_status<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, Comman
         respond(
             input.ctx,
             lines.join("\n"),
-            if dirty { NotifyLevel::Warning } else { NotifyLevel::Info },
+            if dirty {
+                NotifyLevel::Warning
+            } else {
+                NotifyLevel::Info
+            },
         )
     })
 }
@@ -107,7 +108,9 @@ fn memfs_status<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, Comman
 fn memfs_init<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse> {
     Box::pin(async move {
         if has_git_repo(input.identity) {
-            let head = open_repo(input.deps, input.identity).ok().and_then(|repo| repo.head().ok().flatten());
+            let head = open_repo(input.deps, input.identity)
+                .ok()
+                .and_then(|repo| repo.head().ok().flatten());
             let suffix = head
                 .map(|head| format!(" (HEAD {})", short_sha(&head)))
                 .unwrap_or_default();
@@ -163,7 +166,11 @@ fn memfs_sync<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandR
                 NotifyLevel::Error,
             );
         }
-        respond(input.ctx, format!("pushed main to {redacted}"), NotifyLevel::Info)
+        respond(
+            input.ctx,
+            format!("pushed main to {redacted}"),
+            NotifyLevel::Info,
+        )
     })
 }
 
@@ -191,7 +198,12 @@ fn memfs_repair<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, Comman
             ),
         ];
         if !report.is_empty() {
-            lines.extend(report.split('\n').filter(|line| !line.is_empty()).map(|line| format!("- {line}")));
+            lines.extend(
+                report
+                    .split('\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| format!("- {line}")),
+            );
         }
         respond(input.ctx, lines.join("\n"), NotifyLevel::Info)
     })
@@ -218,7 +230,11 @@ fn memfs_reset<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, Command
                 )
                 .await;
             if !confirmed {
-                return respond(input.ctx, "reset aborted; nothing changed", NotifyLevel::Info);
+                return respond(
+                    input.ctx,
+                    "reset aborted; nothing changed",
+                    NotifyLevel::Info,
+                );
             }
         } else if !input.parsed.flag_is_true("force") {
             return respond(
@@ -268,7 +284,10 @@ fn render_skills_usage(runtime_dir: &std::path::Path) -> Option<String> {
         let Some(entry) = value.as_object() else {
             continue;
         };
-        let count = entry.get("count").and_then(serde_json::Value::as_i64).unwrap_or(0);
+        let count = entry
+            .get("count")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
         let last_used_at = entry
             .get("lastUsedAt")
             .and_then(serde_json::Value::as_str)
@@ -305,7 +324,12 @@ pub async fn handle_memfs(
     ctx: &CommandContext,
     args: &str,
 ) -> CommandResponse {
-    let parsed = parse_command_args_full(args, ParseCommandArgsOptions { booleans: &["force"] });
+    let parsed = parse_command_args_full(
+        args,
+        ParseCommandArgsOptions {
+            booleans: &["force"],
+        },
+    );
     let Some(subcommand) = parsed.positionals.first().cloned() else {
         return respond(
             ctx,
@@ -340,7 +364,12 @@ pub async fn handle_memfs(
         );
     };
 
-    let input = MemfsSubcommandInput { deps, ctx, parsed: &parsed, identity: &identity };
+    let input = MemfsSubcommandInput {
+        deps,
+        ctx,
+        parsed: &parsed,
+        identity: &identity,
+    };
     handler(&input).await
 }
 
@@ -364,7 +393,10 @@ mod tests {
     use crate::commands::test_support::*;
 
     fn seeds() -> Vec<memory_core::git::GitSeedFile> {
-        vec![seed("system/persona.md", "---\ndescription: Persona\n---\nseeded persona\n")]
+        vec![seed(
+            "system/persona.md",
+            "---\ndescription: Persona\n---\nseeded persona\n",
+        )]
     }
 
     fn backup_names(root: &std::path::Path) -> Vec<String> {
@@ -382,7 +414,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_clean_repo_when_status_runs_then_head_and_a_clean_tree_are_reported_at_info_level() {
+    async fn given_a_clean_repo_when_status_runs_then_head_and_a_clean_tree_are_reported_at_info_level()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
@@ -397,11 +430,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_uncommitted_changes_when_status_runs_then_the_dirty_state_is_reported_as_a_warning() {
+    async fn given_uncommitted_changes_when_status_runs_then_the_dirty_state_is_reported_as_a_warning()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         std::fs::write(
-            identity.identity_paths.repo.join("system").join("persona.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
             "---\ndescription: Persona\n---\nedited\n",
         )
         .expect("dirty");
@@ -441,7 +479,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_existing_repository_when_init_runs_then_it_reports_idempotently_without_error() {
+    async fn given_an_existing_repository_when_init_runs_then_it_reports_idempotently_without_error()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
@@ -454,11 +493,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_unbound_session_with_a_config_resolved_identity_when_init_runs_then_it_still_initializes() {
+    async fn given_an_unbound_session_with_a_config_resolved_identity_when_init_runs_then_it_still_initializes()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(
             None,
-            FakeDepsOverrides { resolve_identity: Some(Some(identity.clone())), ..Default::default() },
+            FakeDepsOverrides {
+                resolve_identity: Some(Some(identity.clone())),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -469,7 +512,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_no_configured_mirror_when_sync_runs_then_an_actionable_error_names_memory_repository() {
+    async fn given_no_configured_mirror_when_sync_runs_then_an_actionable_error_names_memory_repository()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
@@ -477,7 +521,11 @@ mod tests {
 
         let response = handle_memfs(&fake.deps, &context.ctx, "sync").await;
 
-        assert!(response.text.contains("no memory repository mirror configured"));
+        assert!(
+            response
+                .text
+                .contains("no memory repository mirror configured")
+        );
         assert!(response.text.contains("/memory-repository set"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
     }
@@ -494,7 +542,11 @@ mod tests {
             .arg(mirror.path())
             .output()
             .expect("git init --bare");
-        assert!(init.status.success(), "git init --bare failed: {}", String::from_utf8_lossy(&init.stderr));
+        assert!(
+            init.status.success(),
+            "git init --bare failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
         repo.config_set(
             memory_core::sync::CONFIG_KEY,
             &format!("file://{}", mirror.path().display()),
@@ -505,17 +557,28 @@ mod tests {
 
         let response = handle_memfs(&fake.deps, &context.ctx, "sync").await;
 
-        assert!(response.text.contains("pushed"), "unexpected sync output: {}", response.text);
+        assert!(
+            response.text.contains("pushed"),
+            "unexpected sync output: {}",
+            response.text
+        );
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Info));
     }
 
     #[tokio::test]
-    async fn given_a_skill_missing_name_frontmatter_when_repair_runs_then_hooks_are_reinstalled_and_the_skill_is_repaired() {
+    async fn given_a_skill_missing_name_frontmatter_when_repair_runs_then_hooks_are_reinstalled_and_the_skill_is_repaired()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
-        std::fs::create_dir_all(identity.identity_paths.repo.join("skills").join("commit")).expect("dir");
+        std::fs::create_dir_all(identity.identity_paths.repo.join("skills").join("commit"))
+            .expect("dir");
         std::fs::write(
-            identity.identity_paths.repo.join("skills").join("commit").join("SKILL.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("skills")
+                .join("commit")
+                .join("SKILL.md"),
             "---\ndescription: x\n---\n",
         )
         .expect("skill");
@@ -526,77 +589,138 @@ mod tests {
 
         assert!(response.text.contains("skills/commit/SKILL.md"));
         assert!(response.text.contains("hooks"));
-        assert!(identity.identity_paths.repo.join(".git").join("hooks").join("pre-commit").exists());
+        assert!(
+            identity
+                .identity_paths
+                .repo
+                .join(".git")
+                .join("hooks")
+                .join("pre-commit")
+                .exists()
+        );
     }
 
     #[tokio::test]
-    async fn given_interactive_confirmation_when_reset_runs_then_a_backup_is_taken_first_and_the_repo_is_reinitialized() {
+    async fn given_interactive_confirmation_when_reset_runs_then_a_backup_is_taken_first_and_the_repo_is_reinitialized()
+     {
         let (root, identity) = temp_identity();
         let repo = seeded_repo(&identity, seeds());
         let head_before = repo.head().expect("head");
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions { has_ui: Some(true), ..Default::default() });
+        let context = fake_command_context(FakeContextOptions {
+            has_ui: Some(true),
+            ..Default::default()
+        });
 
         let response = handle_memfs(&fake.deps, &context.ctx, "reset").await;
 
-        assert_eq!(context.ui.confirms.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1);
+        assert_eq!(
+            context
+                .ui
+                .confirms
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
         let backups = backup_names(root.path());
         assert_eq!(backups.len(), 1);
-        assert!(root
-            .path()
-            .join("agents")
-            .join(TEST_IDENTITY)
-            .join(&backups[0])
-            .join("system")
-            .join("persona.md")
-            .exists());
+        assert!(
+            root.path()
+                .join("agents")
+                .join(TEST_IDENTITY)
+                .join(&backups[0])
+                .join("system")
+                .join("persona.md")
+                .exists()
+        );
         assert!(response.text.contains("backup"));
-        assert!(!identity.identity_paths.repo.join("system").join("persona.md").exists());
+        assert!(
+            !identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md")
+                .exists()
+        );
         assert_ne!(repo.head().expect("head"), head_before);
     }
 
     #[tokio::test]
-    async fn given_a_declined_confirmation_when_reset_runs_then_nothing_is_destroyed_and_no_backup_is_written() {
+    async fn given_a_declined_confirmation_when_reset_runs_then_nothing_is_destroyed_and_no_backup_is_written()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions { has_ui: Some(true), ..Default::default() });
+        let context = fake_command_context(FakeContextOptions {
+            has_ui: Some(true),
+            ..Default::default()
+        });
         context.ui.set_confirm_result(false);
 
         let response = handle_memfs(&fake.deps, &context.ctx, "reset").await;
 
         assert!(response.text.contains("aborted"));
         assert!(backup_names(root.path()).is_empty());
-        assert!(identity.identity_paths.repo.join("system").join("persona.md").exists());
+        assert!(
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md")
+                .exists()
+        );
     }
 
     #[tokio::test]
-    async fn given_a_noninteractive_session_without_force_when_reset_runs_then_it_refuses_and_preserves_the_repo() {
+    async fn given_a_noninteractive_session_without_force_when_reset_runs_then_it_refuses_and_preserves_the_repo()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions { has_ui: Some(false), ..Default::default() });
+        let context = fake_command_context(FakeContextOptions {
+            has_ui: Some(false),
+            ..Default::default()
+        });
 
         let response = handle_memfs(&fake.deps, &context.ctx, "reset").await;
 
         assert!(response.text.contains("--force"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
         assert!(backup_names(root.path()).is_empty());
-        assert!(identity.identity_paths.repo.join("system").join("persona.md").exists());
+        assert!(
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md")
+                .exists()
+        );
     }
 
     #[tokio::test]
-    async fn given_a_noninteractive_session_with_force_when_reset_runs_then_the_repo_is_backed_up_and_reset() {
+    async fn given_a_noninteractive_session_with_force_when_reset_runs_then_the_repo_is_backed_up_and_reset()
+     {
         let (root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions { has_ui: Some(false), ..Default::default() });
+        let context = fake_command_context(FakeContextOptions {
+            has_ui: Some(false),
+            ..Default::default()
+        });
 
         let response = handle_memfs(&fake.deps, &context.ctx, "reset --force").await;
 
         assert!(response.text.contains("reset complete"));
         assert_eq!(backup_names(root.path()).len(), 1);
-        assert!(!identity.identity_paths.repo.join("system").join("persona.md").exists());
+        assert!(
+            !identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md")
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -624,7 +748,11 @@ mod tests {
 
         let response = handle_memfs(&fake.deps, &context.ctx, "frobnicate").await;
 
-        assert!(response.text.contains("unknown /memfs subcommand: frobnicate"));
+        assert!(
+            response
+                .text
+                .contains("unknown /memfs subcommand: frobnicate")
+        );
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
     }
 }

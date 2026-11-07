@@ -20,7 +20,10 @@ struct Fixture {
 impl Default for Fixture {
     fn default() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        Self { dir, applied: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            dir,
+            applied: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
@@ -34,22 +37,32 @@ impl Fixture {
     }
 
     fn options(&self, env: &[(&str, Option<&str>)]) -> ProvisioningOptions {
-        let map: BTreeMap<String, Option<String>> =
-            env.iter().map(|(name, value)| ((*name).to_owned(), value.map(str::to_owned))).collect();
+        let map: BTreeMap<String, Option<String>> = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), value.map(str::to_owned)))
+            .collect();
         let sink_log = Arc::clone(&self.applied);
         let env_map = map.clone();
         ProvisioningOptions {
             toolkit_base_dir: Some(self.base_dir()),
             dag_sdk_base_dir: Some(self.dir.path().to_path_buf()),
-            env: Some(Arc::new(move |name: &str| env_map.get(name).cloned().flatten())),
+            env: Some(Arc::new(move |name: &str| {
+                env_map.get(name).cloned().flatten()
+            })),
             sink: Some(Arc::new(move |name: &str, value: Option<&str>| {
-                sink_log.lock().unwrap_or_else(PoisonError::into_inner).push((name.to_owned(), value.map(str::to_owned)));
+                sink_log
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((name.to_owned(), value.map(str::to_owned)));
             })),
         }
     }
 
     fn applied(&self) -> Vec<(String, Option<String>)> {
-        self.applied.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.applied
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -62,10 +75,25 @@ fn a_bare_path_with_no_preset_bin_prepends_the_dir_and_sets_the_bin() {
     let updates = provision_toolkit_path(&options);
 
     let base = fixture.base_dir().to_string_lossy().into_owned();
-    assert_eq!(updates, vec![
-        ("PATH".to_owned(), Some(format!("{base}{}/usr/bin:/bin", path_delimiter()))),
-        (TOOLKIT_BIN_ENV.to_owned(), Some(fixture.base_dir().join("cli.js").to_string_lossy().into_owned())),
-    ]);
+    assert_eq!(
+        updates,
+        vec![
+            (
+                "PATH".to_owned(),
+                Some(format!("{base}{}/usr/bin:/bin", path_delimiter()))
+            ),
+            (
+                TOOLKIT_BIN_ENV.to_owned(),
+                Some(
+                    fixture
+                        .base_dir()
+                        .join("cli.js")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -80,7 +108,13 @@ fn a_preset_bin_is_kept_while_the_dir_is_still_prepended() {
     let updates = provision_toolkit_path(&options);
 
     let base = fixture.base_dir().to_string_lossy().into_owned();
-    assert_eq!(updates, vec![("PATH".to_owned(), Some(format!("{base}{}/usr/bin", path_delimiter())))]);
+    assert_eq!(
+        updates,
+        vec![(
+            "PATH".to_owned(),
+            Some(format!("{base}{}/usr/bin", path_delimiter()))
+        )]
+    );
     assert!(!updates.iter().any(|(name, _)| name == TOOLKIT_BIN_ENV));
 }
 
@@ -93,10 +127,25 @@ fn an_empty_preset_bin_is_treated_as_unset() {
     let updates = provision_toolkit_path(&options);
 
     let base = fixture.base_dir().to_string_lossy().into_owned();
-    assert_eq!(updates, vec![
-        ("PATH".to_owned(), Some(format!("{base}{}/usr/bin", path_delimiter()))),
-        (TOOLKIT_BIN_ENV.to_owned(), Some(fixture.base_dir().join("cli.js").to_string_lossy().into_owned())),
-    ]);
+    assert_eq!(
+        updates,
+        vec![
+            (
+                "PATH".to_owned(),
+                Some(format!("{base}{}/usr/bin", path_delimiter()))
+            ),
+            (
+                TOOLKIT_BIN_ENV.to_owned(),
+                Some(
+                    fixture
+                        .base_dir()
+                        .join("cli.js")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -111,7 +160,10 @@ fn running_twice_keeps_exactly_one_leading_toolkit_entry() {
     let second = fixture.options(&[("PATH", Some(&prepended))]);
     let updates = provision_toolkit_path(&second);
 
-    assert!(updates.iter().all(|(name, _)| name != "PATH"), "PATH already leads with the toolkit dir");
+    assert!(
+        updates.iter().all(|(name, _)| name != "PATH"),
+        "PATH already leads with the toolkit dir"
+    );
     let entries: Vec<&str> = prepended.split(path_delimiter()).collect();
     assert_eq!(entries[0], base);
     assert_eq!(entries.iter().filter(|entry| **entry == base).count(), 1);
@@ -130,7 +182,11 @@ fn an_absent_toolkit_dir_leaves_the_environment_untouched() {
 fn toolkit_path_requires_complete_artifacts_and_the_omo_senpi_surface_marker() {
     let fixture = Fixture::new();
     std::fs::create_dir_all(fixture.base_dir().join("ulw-loop")).expect("toolkit dir");
-    std::fs::write(fixture.base_dir().join("ulw-loop/surface.json"), TOOLKIT_SURFACE_MARKER).expect("marker");
+    std::fs::write(
+        fixture.base_dir().join("ulw-loop/surface.json"),
+        TOOLKIT_SURFACE_MARKER,
+    )
+    .expect("marker");
     assert!(!validate_staged_toolkit(&fixture.base_dir()));
     let options = fixture.options(&[("PATH", Some("/usr/bin"))]);
     assert!(provision_toolkit_path(&options).is_empty());
@@ -139,7 +195,10 @@ fn toolkit_path_requires_complete_artifacts_and_the_omo_senpi_surface_marker() {
     create_staged_toolkit(&fixture);
     assert!(validate_staged_toolkit(&fixture.base_dir()));
     assert_eq!(
-        provision_toolkit_path(&options).iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        provision_toolkit_path(&options)
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
         vec!["PATH", TOOLKIT_BIN_ENV]
     );
 }
@@ -147,7 +206,13 @@ fn toolkit_path_requires_complete_artifacts_and_the_omo_senpi_surface_marker() {
 fn create_staged_toolkit(fixture: &Fixture) {
     let base = fixture.base_dir();
     std::fs::create_dir_all(base.join("ulw-loop")).expect("toolkit dir");
-    for path in ["cli.js", "directive.md", "ulw-loop/cli.js", "omo-agent-toolkit", "omo-agent-toolkit.cmd"] {
+    for path in [
+        "cli.js",
+        "directive.md",
+        "ulw-loop/cli.js",
+        "omo-agent-toolkit",
+        "omo-agent-toolkit.cmd",
+    ] {
         std::fs::write(base.join(path), "artifact").expect("artifact");
     }
     std::fs::write(base.join("ulw-loop/surface.json"), TOOLKIT_SURFACE_MARKER).expect("marker");
@@ -159,7 +224,10 @@ fn dag_sdk_root_is_published_only_for_an_existing_directory() {
     let present = fixture.options(&[]);
     assert_eq!(
         provision_dag_sdk_root(&present),
-        vec![(DAG_SDK_ROOT_ENV.to_owned(), Some(fixture.dir.path().to_string_lossy().into_owned()))]
+        vec![(
+            DAG_SDK_ROOT_ENV.to_owned(),
+            Some(fixture.dir.path().to_string_lossy().into_owned())
+        )]
     );
 
     let absent_dir = tempfile::tempdir().expect("tempdir");

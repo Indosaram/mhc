@@ -5,9 +5,7 @@ use std::io::{Read, Write};
 use std::rc::Rc;
 
 use maho_tui::autocomplete::{CombinedAutocompleteProvider, CommandSpec};
-use maho_tui::components::editor::{
-    Editor, EditorOptions, EditorTheme, EditorTuiHost,
-};
+use maho_tui::components::editor::{Editor, EditorOptions, EditorTheme, EditorTuiHost};
 use maho_tui::components::select_list::SelectListTheme;
 use maho_tui::utils::strip_terminal_sequences;
 
@@ -79,11 +77,7 @@ fn main() {
         },
     };
 
-    let mut editor = Editor::new(
-        Rc::new(DemoHost { rows }),
-        theme,
-        EditorOptions::default(),
-    );
+    let mut editor = Editor::new(Rc::new(DemoHost { rows }), theme, EditorOptions::default());
     let provider = CombinedAutocompleteProvider::new(
         vec![
             CommandSpec::with_description("model", "Select a model"),

@@ -82,7 +82,10 @@ pub fn format_result_envelope(record: &TaskRecord, body: &str) -> String {
         ));
     }
     match record.status {
-        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => {
+        TaskStatus::Completed
+        | TaskStatus::Failed
+        | TaskStatus::Cancelled
+        | TaskStatus::Interrupted => {
             text.push_str(&format!(
                 "<resume>task_resume id=\"{}\" continues this agent with its full context.</resume>\n",
                 record.id
@@ -139,7 +142,10 @@ pub fn format_result(
             ));
         }
         match record.status {
-            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => {
+            TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled
+            | TaskStatus::Interrupted => {
                 text.push_str(&format!(
                     "<resume>task_resume id=\"{}\" continues this agent with its full context.</resume>\n",
                     record.id
@@ -163,7 +169,11 @@ pub fn status_line(record: &TaskRecord) -> String {
         record.agent,
         record.model.as_deref().unwrap_or("(default)"),
         record.runs,
-        if record.background { "  background" } else { "" },
+        if record.background {
+            "  background"
+        } else {
+            ""
+        },
         record.description
     )
 }
@@ -179,12 +189,23 @@ mod tests {
         record.status = TaskStatus::Completed;
         record.finished_at_ms = Some(1_501);
         let text = format_result(&record, "done <task-result x>", "", "/s/Fix.md");
-        assert!(text.starts_with("<task-result id=\"Fix\" agent=\"task\" status=\"completed\" duration=\"1.5s\">"), "{text}");
-        assert!(text.contains("<output>\ndone &lt;task-result x>\n</output>"), "{text}");
+        assert!(
+            text.starts_with(
+                "<task-result id=\"Fix\" agent=\"task\" status=\"completed\" duration=\"1.5s\">"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("<output>\ndone &lt;task-result x>\n</output>"),
+            "{text}"
+        );
         assert!(text.contains("task_resume id=\"Fix\""));
         let long = format!("{}\n{}", "a".repeat(4_000), "b".repeat(20_000));
         let text = format_result(&record, &long, "", "/s/Fix.md");
-        assert!(text.contains("<preview full-output=\"/s/Fix.md\""), "{text}");
+        assert!(
+            text.contains("<preview full-output=\"/s/Fix.md\""),
+            "{text}"
+        );
         assert!(!text.contains('b'.to_string().repeat(10).as_str()));
     }
 

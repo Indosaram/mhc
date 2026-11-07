@@ -15,7 +15,10 @@ pub struct SkillInvocationPromptSkill {
 }
 
 /// `formatSkillInvocationPrompt`.
-pub fn format_skill_invocation_prompt(skills: &[SkillInvocationPromptSkill], user_request: Option<&str>) -> String {
+pub fn format_skill_invocation_prompt(
+    skills: &[SkillInvocationPromptSkill],
+    user_request: Option<&str>,
+) -> String {
     let skill_blocks: Vec<String> = skills
         .iter()
         .map(|skill| {
@@ -27,7 +30,11 @@ pub fn format_skill_invocation_prompt(skills: &[SkillInvocationPromptSkill], use
         .collect();
     let expanded_skills = skill_blocks.join("\n\n");
     match user_request {
-        Some(user_request) if user_request.chars().any(|character| !character.is_whitespace()) => {
+        Some(user_request)
+            if user_request
+                .chars()
+                .any(|character| !character.is_whitespace()) =>
+        {
             format!("{expanded_skills}\n\n<user-request>\n{user_request}\n</user-request>")
         }
         _ => expanded_skills,
@@ -72,7 +79,10 @@ fn match_skill_instruction(text: &str) -> Option<(ParsedSkillBlockSkill, usize)>
     Some((skill, captures.get(0)?.as_str().chars().count()))
 }
 
-fn to_parsed_skill_block(skills: Vec<ParsedSkillBlockSkill>, user_message: Option<String>) -> Option<ParsedSkillBlock> {
+fn to_parsed_skill_block(
+    skills: Vec<ParsedSkillBlockSkill>,
+    user_message: Option<String>,
+) -> Option<ParsedSkillBlock> {
     let first = skills.first()?.clone();
     Some(ParsedSkillBlock {
         name: first.name,
@@ -88,8 +98,10 @@ static USER_REQUEST_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static LEGACY_SKILL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n</skill>(?:\n\n([\s\S]+))?$"#)
-        .expect("legacy skill pattern")
+    Regex::new(
+        r#"^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n</skill>(?:\n\n([\s\S]+))?$"#,
+    )
+    .expect("legacy skill pattern")
 });
 
 /// `parseSkillBlock`: every chained skill block, or `None` when the text has none.
@@ -181,7 +193,10 @@ fn followed_by_separator(chars: &[char], end: usize) -> bool {
     end >= chars.len() || chars[end].is_whitespace()
 }
 
-fn match_leading_invocation(chars: &[char], cursor: usize) -> Option<(SkillInvocationSyntax, String, usize)> {
+fn match_leading_invocation(
+    chars: &[char],
+    cursor: usize,
+) -> Option<(SkillInvocationSyntax, String, usize)> {
     let rest: String = chars[cursor..].iter().collect();
     if rest.starts_with("/skill:") {
         let (name, name_end) = read_name(chars, cursor + "/skill:".chars().count())?;
@@ -214,7 +229,11 @@ pub struct ParseSkillInvocationOptions {
 
 fn inline_skill_name(token: &str, known_skill_names: Option<&HashSet<String>>) -> Option<String> {
     if let Some(stripped) = token.strip_prefix(SKILL_NAMESPACE) {
-        return if stripped.is_empty() { None } else { Some(stripped.to_string()) };
+        return if stripped.is_empty() {
+            None
+        } else {
+            Some(stripped.to_string())
+        };
     }
     match known_skill_names {
         Some(known) if known.contains(token) => Some(token.to_string()),
@@ -223,7 +242,10 @@ fn inline_skill_name(token: &str, known_skill_names: Option<&HashSet<String>>) -
 }
 
 /// `parseSkillInvocationTokens`.
-pub fn parse_skill_invocation_tokens(text: &str, options: &ParseSkillInvocationOptions) -> Vec<SkillInvocationToken> {
+pub fn parse_skill_invocation_tokens(
+    text: &str,
+    options: &ParseSkillInvocationOptions,
+) -> Vec<SkillInvocationToken> {
     let chars: Vec<char> = text.chars().collect();
     let mut tokens: Vec<SkillInvocationToken> = Vec::new();
     let mut cursor = 0usize;
@@ -297,7 +319,8 @@ fn strip_leading_invocation_separators(text: &str) -> String {
     }
     loop {
         let at_newline = cursor < chars.len()
-            && (chars[cursor] == '\n' || (chars[cursor] == '\r' && chars.get(cursor + 1) == Some(&'\n')));
+            && (chars[cursor] == '\n'
+                || (chars[cursor] == '\r' && chars.get(cursor + 1) == Some(&'\n')));
         if !at_newline {
             return chars[cursor..].iter().collect();
         }
@@ -307,7 +330,8 @@ fn strip_leading_invocation_separators(text: &str) -> String {
             cursor += 1;
         }
         let next_is_newline = cursor < chars.len()
-            && (chars[cursor] == '\n' || (chars[cursor] == '\r' && chars.get(cursor + 1) == Some(&'\n')));
+            && (chars[cursor] == '\n'
+                || (chars[cursor] == '\r' && chars.get(cursor + 1) == Some(&'\n')));
         if !next_is_newline {
             return chars[line_start..].iter().collect();
         }
@@ -333,7 +357,10 @@ pub fn remove_skill_invocation_tokens(text: &str, tokens: &[SkillInvocationToken
         }
     }
     result.extend(chars[cursor.min(chars.len())..].iter());
-    if tokens.iter().any(|token| token.position == SkillInvocationPosition::Leading) {
+    if tokens
+        .iter()
+        .any(|token| token.position == SkillInvocationPosition::Leading)
+    {
         strip_leading_invocation_separators(&result)
     } else {
         result
@@ -366,7 +393,9 @@ mod tests {
     fn a_single_invocation_renders_a_binding_instruction_block() {
         let prompt = format_skill_invocation_prompt(&[prompt_skill("demo", "do the thing")], None);
         assert!(prompt.starts_with("The user explicitly invoked the \"demo\" skill."));
-        assert!(prompt.contains("<skill-instruction name=\"demo\" location=\"/skills/demo/SKILL.md\">"));
+        assert!(
+            prompt.contains("<skill-instruction name=\"demo\" location=\"/skills/demo/SKILL.md\">")
+        );
         assert!(prompt.contains("References are relative to /skills/demo."));
         assert!(prompt.contains("do the thing"));
         assert!(prompt.ends_with("</skill-instruction>"));
@@ -384,20 +413,31 @@ mod tests {
 
     #[test]
     fn several_skills_are_joined_in_order() {
-        let prompt = format_skill_invocation_prompt(&[prompt_skill("a", "A"), prompt_skill("b", "B")], Some("go"));
+        let prompt = format_skill_invocation_prompt(
+            &[prompt_skill("a", "A"), prompt_skill("b", "B")],
+            Some("go"),
+        );
         let first = prompt.find("\"a\"").expect("a");
         let second = prompt.find("\"b\"").expect("b");
         assert!(first < second);
-        assert!(prompt.contains("</skill-instruction>\n\nThe user explicitly invoked the \"b\" skill."));
+        assert!(
+            prompt.contains("</skill-instruction>\n\nThe user explicitly invoked the \"b\" skill.")
+        );
     }
 
     #[test]
     fn a_parsed_block_round_trips_through_the_formatter() {
-        let prompt = format_skill_invocation_prompt(&[prompt_skill("demo", "body text")], Some("the request"));
+        let prompt = format_skill_invocation_prompt(
+            &[prompt_skill("demo", "body text")],
+            Some("the request"),
+        );
         let parsed = parse_skill_block(&prompt).expect("parsed");
         assert_eq!(parsed.name, "demo");
         assert_eq!(parsed.location, "/skills/demo/SKILL.md");
-        assert_eq!(parsed.content, "References are relative to /skills/demo.\n\nbody text");
+        assert_eq!(
+            parsed.content,
+            "References are relative to /skills/demo.\n\nbody text"
+        );
         assert_eq!(parsed.user_message.as_deref(), Some("the request"));
         assert_eq!(parsed.skills.len(), 1);
     }
@@ -415,7 +455,10 @@ mod tests {
 
     #[test]
     fn a_legacy_block_still_parses() {
-        let parsed = parse_skill_block("<skill name=\"old\" location=\"/old/SKILL.md\">\nbody\n</skill>\n\nrequest").expect("parsed");
+        let parsed = parse_skill_block(
+            "<skill name=\"old\" location=\"/old/SKILL.md\">\nbody\n</skill>\n\nrequest",
+        )
+        .expect("parsed");
         assert_eq!(parsed.name, "old");
         assert_eq!(parsed.content, "body");
         assert_eq!(parsed.user_message.as_deref(), Some("request"));
@@ -476,7 +519,8 @@ mod tests {
 
     #[test]
     fn inline_scanning_resumes_after_the_leading_run() {
-        let tokens = parse_skill_invocation_tokens("/skill:lead and $known here", &known(&["known"]));
+        let tokens =
+            parse_skill_invocation_tokens("/skill:lead and $known here", &known(&["known"]));
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[1].name, "known");
         assert_eq!(tokens[1].position, SkillInvocationPosition::Inline);
@@ -490,7 +534,10 @@ mod tests {
 
         let text = "say $skill:demo loudly";
         let tokens = parse_skill_invocation_tokens(text, &known(&[]));
-        assert_eq!(remove_skill_invocation_tokens(text, &tokens), "say [skill: demo] loudly");
+        assert_eq!(
+            remove_skill_invocation_tokens(text, &tokens),
+            "say [skill: demo] loudly"
+        );
     }
 
     #[test]
@@ -503,7 +550,10 @@ mod tests {
 
     #[test]
     fn the_token_cap_bounds_one_prompt() {
-        let text = (0..70).map(|index| format!("/skill:s{index}")).collect::<Vec<_>>().join(" ");
+        let text = (0..70)
+            .map(|index| format!("/skill:s{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let tokens = parse_skill_invocation_tokens(&text, &known(&[]));
         assert_eq!(tokens.len(), MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT);
     }

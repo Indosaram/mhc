@@ -230,7 +230,15 @@ pub(super) fn chord(
     for &key in keys {
         update_modifier(&mut active, key, true);
         let code = key_code(key)?;
-        post_key(source, held, code, None, true, modifier_flags(active), route)?;
+        post_key(
+            source,
+            held,
+            code,
+            None,
+            true,
+            modifier_flags(active),
+            route,
+        )?;
         thread::sleep(Duration::from_millis(8));
     }
     let mut first_error = None;
@@ -238,7 +246,15 @@ pub(super) fn chord(
         update_modifier(&mut active, key, false);
         if let Err(error) = (|| {
             let code = key_code(key)?;
-            post_key(source, held, code, None, false, modifier_flags(active), route)
+            post_key(
+                source,
+                held,
+                code,
+                None,
+                false,
+                modifier_flags(active),
+                route,
+            )
         })() {
             first_error.get_or_insert(error);
         }

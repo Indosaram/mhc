@@ -8,10 +8,10 @@
 use senpi_desktop_core::backend::{MouseButton, PointerEvent};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
-use super::dispatch::{Via, Win32Input, to_physical};
+use super::dispatch::{to_physical, Via, Win32Input};
 use super::held::{HeldButton, Route};
 use super::keys::modifier_virtual_keys;
-use super::messages::{WHEEL_DELTA, scroll_steps};
+use super::messages::{scroll_steps, WHEEL_DELTA};
 use super::native::Window;
 use super::system;
 

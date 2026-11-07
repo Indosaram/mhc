@@ -95,7 +95,9 @@ async fn fire_one<D: Delivery + ?Sized>(
     }
 }
 
-pub async fn run_due_jobs<D: Delivery + ?Sized>(options: &RunDueOptions<'_, D>) -> Result<RunDueResult> {
+pub async fn run_due_jobs<D: Delivery + ?Sized>(
+    options: &RunDueOptions<'_, D>,
+) -> Result<RunDueResult> {
     let listing = list_scheduled_jobs(options.dir)?;
     let mut events: Vec<_> = listing.invalid.iter().map(|invalid| serde_json::json!({"event":"invalid","state":invalid.state,"file":invalid.file,"error":invalid.error})).collect();
     let mut next_due_at = None;

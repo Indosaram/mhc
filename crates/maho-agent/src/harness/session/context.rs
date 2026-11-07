@@ -63,15 +63,26 @@ pub fn session_entry_to_context_messages(entry: &Entry) -> Vec<AgentMessage> {
             let mut messages = vec![AgentMessage::Custom(CustomAgentMessage::CompactionSummary(
                 create_compaction_summary_message(summary.clone(), *tokens_before, entry.timestamp),
             ))];
-            messages.extend(retained_tail.iter().filter(|m| is_context_message(m)).cloned());
+            messages.extend(
+                retained_tail
+                    .iter()
+                    .filter(|m| is_context_message(m))
+                    .cloned(),
+            );
             messages
         }
-        EntryKind::BranchSummary { from_id, summary, .. } => {
+        EntryKind::BranchSummary {
+            from_id, summary, ..
+        } => {
             if summary.is_empty() {
                 Vec::new()
             } else {
                 vec![AgentMessage::Custom(CustomAgentMessage::BranchSummary(
-                    create_branch_summary_message(summary.clone(), from_id.clone(), entry.timestamp),
+                    create_branch_summary_message(
+                        summary.clone(),
+                        from_id.clone(),
+                        entry.timestamp,
+                    ),
                 ))]
             }
         }
@@ -97,9 +108,10 @@ pub async fn build_session_context(
         };
         let projector = options.and_then(|options| options.entry_projectors.get(custom_type));
         if let Some(projector) = projector
-            && let Some(projected) = projector(entry, context).await {
-                messages.extend(projected);
-            }
+            && let Some(projected) = projector(entry, context).await
+        {
+            messages.extend(projected);
+        }
     }
     messages
 }

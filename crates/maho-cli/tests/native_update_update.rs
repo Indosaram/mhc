@@ -52,10 +52,17 @@ fn archive_of(fx: &Fixture, package: &Path) -> (PathBuf, String) {
 }
 
 fn probe_package(fx: &Fixture, fail_when_installed: bool) -> PathBuf {
-    let label = if fail_when_installed { "pkg-fail" } else { "pkg-probe" };
+    let label = if fail_when_installed {
+        "pkg-fail"
+    } else {
+        "pkg-probe"
+    };
     build_package(
         &fx.dir.path().join(label),
-        Payload::Probe { version: NEW_VERSION.to_owned(), fail_when_installed },
+        Payload::Probe {
+            version: NEW_VERSION.to_owned(),
+            fail_when_installed,
+        },
     )
 }
 
@@ -70,7 +77,10 @@ async fn printed_version(fx: &Fixture) -> String {
     command.arg("--version");
     let output = run(command).await;
     assert_status(&output, true);
-    String::from_utf8_lossy(&output.stdout).trim().trim_start_matches(['v', 'V']).to_owned()
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .to_owned()
 }
 
 fn launcher_bytes(fx: &Fixture) -> Vec<u8> {
@@ -118,7 +128,11 @@ async fn latest_is_noop() {
     let output = run(update_to(&fx, &server.url)).await;
     assert_status(&output, true);
     assert_stdout_contains(&output, "is up to date");
-    assert_eq!(versions(&fx), before_versions, "update created a version directory");
+    assert_eq!(
+        versions(&fx),
+        before_versions,
+        "update created a version directory"
+    );
     assert_eq!(pointer(&fx), before_pointer);
 }
 
@@ -130,7 +144,12 @@ async fn bad_checksum_refused() {
     let (archive_path, _) = archive_of(&fx, &package);
     let before_pointer = pointer(&fx);
     let before_versions = versions(&fx);
-    let server = serve_release(NEW_VERSION, &archive_path, checksum_line(&"deadbeef".repeat(8))).await;
+    let server = serve_release(
+        NEW_VERSION,
+        &archive_path,
+        checksum_line(&"deadbeef".repeat(8)),
+    )
+    .await;
     let output = run(update_to(&fx, &server.url)).await;
     assert_status(&output, false);
     assert_eq!(pointer(&fx), before_pointer);
@@ -188,13 +207,26 @@ async fn tampered_archive_fails_signature_and_installs_nothing() {
     // The checksum matches the tampered bytes, so only the signature can catch the change.
     let signed = std::fs::read(&archive_path).expect("read archive");
     flip_one_byte(&archive_path);
-    let digest = format!("{:x}", Sha256::digest(std::fs::read(&archive_path).expect("read tampered")));
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(&archive_path).expect("read tampered"))
+    );
     let before_pointer = pointer(&fx);
     let before_versions = versions(&fx);
-    let server = serve_release_signed(NEW_VERSION, &archive_path, checksum_line(&digest), Signing::ValidFor(signed)).await;
+    let server = serve_release_signed(
+        NEW_VERSION,
+        &archive_path,
+        checksum_line(&digest),
+        Signing::ValidFor(signed),
+    )
+    .await;
     let output = run(update_to(&fx, &server.url)).await;
     assert_status(&output, false);
-    assert!(output_text(&output).contains("signature verification failed"), "{}", output_text(&output));
+    assert!(
+        output_text(&output).contains("signature verification failed"),
+        "{}",
+        output_text(&output)
+    );
     assert_eq!(pointer(&fx), before_pointer);
     assert_eq!(versions(&fx), before_versions);
     assert!(staging_entries(&fx).is_empty());
@@ -207,10 +239,20 @@ async fn signature_from_a_different_key_is_refused() {
     let package = probe_package(&fx, false);
     let (archive_path, digest) = archive_of(&fx, &package);
     let before_pointer = pointer(&fx);
-    let server = serve_release_signed(NEW_VERSION, &archive_path, checksum_line(&digest), Signing::OtherKey).await;
+    let server = serve_release_signed(
+        NEW_VERSION,
+        &archive_path,
+        checksum_line(&digest),
+        Signing::OtherKey,
+    )
+    .await;
     let output = run(update_to(&fx, &server.url)).await;
     assert_status(&output, false);
-    assert!(output_text(&output).contains("signature verification failed"), "{}", output_text(&output));
+    assert!(
+        output_text(&output).contains("signature verification failed"),
+        "{}",
+        output_text(&output)
+    );
     assert_eq!(pointer(&fx), before_pointer);
 }
 
@@ -221,7 +263,13 @@ async fn missing_signature_is_refused_for_signed_era_versions() {
     let package = probe_package(&fx, false);
     let (archive_path, digest) = archive_of(&fx, &package);
     let before_pointer = pointer(&fx);
-    let server = serve_release_signed(NEW_VERSION, &archive_path, checksum_line(&digest), Signing::Missing).await;
+    let server = serve_release_signed(
+        NEW_VERSION,
+        &archive_path,
+        checksum_line(&digest),
+        Signing::Missing,
+    )
+    .await;
     for allow in [false, true] {
         let mut command = update_to(&fx, &server.url);
         if allow {
@@ -229,7 +277,11 @@ async fn missing_signature_is_refused_for_signed_era_versions() {
         }
         let output = run(command).await;
         assert_status(&output, false);
-        assert!(output_text(&output).contains("no signature"), "{}", output_text(&output));
+        assert!(
+            output_text(&output).contains("no signature"),
+            "{}",
+            output_text(&output)
+        );
         assert_eq!(pointer(&fx), before_pointer);
     }
 }

@@ -122,7 +122,8 @@ fn run_batch(
 }
 
 #[test]
-fn given_background_capacity_one_when_three_items_start_then_all_ids_and_queue_positions_return_as_running() {
+fn given_background_capacity_one_when_three_items_start_then_all_ids_and_queue_positions_return_as_running()
+ {
     let start_item = scripted_starts(vec![
         started(IDS[0], "one", TaskStatus::Running, None),
         started(IDS[1], "two", TaskStatus::Pending, Some(1)),
@@ -162,7 +163,8 @@ fn given_background_capacity_one_when_three_items_start_then_all_ids_and_queue_p
 }
 
 #[test]
-fn given_inherited_and_item_load_skills_when_background_items_start_then_each_result_reports_its_own_resolution() {
+fn given_inherited_and_item_load_skills_when_background_items_start_then_each_result_reports_its_own_resolution()
+ {
     let start_item = scripted_starts(vec![
         started(IDS[0], "item-1", TaskStatus::Running, None),
         started(IDS[1], "item-2", TaskStatus::Running, None),
@@ -208,7 +210,8 @@ fn given_inherited_and_item_load_skills_when_background_items_start_then_each_re
 }
 
 #[test]
-fn given_every_background_start_fails_when_results_are_aggregated_then_status_is_error_instead_of_running() {
+fn given_every_background_start_fails_when_results_are_aggregated_then_status_is_error_instead_of_running()
+ {
     let start_item = scripted_starts(
         IDS.iter()
             .enumerate()

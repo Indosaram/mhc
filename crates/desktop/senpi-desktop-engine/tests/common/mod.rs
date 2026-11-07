@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub mod scenario;
 

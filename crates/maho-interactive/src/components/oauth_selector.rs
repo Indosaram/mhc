@@ -150,7 +150,9 @@ impl OAuthSelectorComponent {
                 )
             })
         };
-        self.selected_index = self.selected_index.min(self.filtered_providers.len().saturating_sub(1));
+        self.selected_index = self
+            .selected_index
+            .min(self.filtered_providers.len().saturating_sub(1));
         self.update_list();
     }
 
@@ -206,15 +208,17 @@ fn is_env_var_list(source: &str) -> bool {
 
 impl Component for OAuthSelectorComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![dynamic_border(&self.theme, ThemeColor::Border, width), String::new()];
+        let mut lines = vec![
+            dynamic_border(&self.theme, ThemeColor::Border, width),
+            String::new(),
+        ];
         let title = match self.mode {
             AuthSelectorMode::Login => "Select provider to configure:",
             AuthSelectorMode::Logout => "Select provider to logout:",
         };
         lines.extend(
             TruncatedText::with_padding(
-                self.theme
-                    .fg(ThemeColor::Accent, &self.theme.bold(title)),
+                self.theme.fg(ThemeColor::Accent, &self.theme.bold(title)),
                 1,
                 0,
             )
@@ -238,7 +242,10 @@ impl Component for OAuthSelectorComponent {
             let auth_type_label = if self.show_auth_type_labels {
                 self.theme.fg(
                     ThemeColor::Muted,
-                    &format!(" [{}]", format_auth_selector_provider_type(provider.auth_type)),
+                    &format!(
+                        " [{}]",
+                        format_auth_selector_provider_type(provider.auth_type)
+                    ),
                 )
             } else {
                 String::new()
@@ -265,7 +272,11 @@ impl Component for OAuthSelectorComponent {
         if start_index > 0 || end_index < self.filtered_providers.len() {
             let scroll_info = self.theme.fg(
                 ThemeColor::Muted,
-                &format!("  ({}/{})", self.selected_index + 1, self.filtered_providers.len()),
+                &format!(
+                    "  ({}/{})",
+                    self.selected_index + 1,
+                    self.filtered_providers.len()
+                ),
             );
             lines.extend(TruncatedText::with_padding(scroll_info, 1, 0).render(width));
         }

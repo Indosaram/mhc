@@ -33,8 +33,7 @@ pub struct PalaceExecOutcome {
     pub stderr: String,
 }
 
-pub type PalaceExecFuture =
-    Pin<Box<dyn Future<Output = Result<PalaceExecOutcome, String>> + Send>>;
+pub type PalaceExecFuture = Pin<Box<dyn Future<Output = Result<PalaceExecOutcome, String>> + Send>>;
 pub type PalaceExec = Arc<dyn Fn(&str, Vec<String>) -> PalaceExecFuture + Send + Sync>;
 pub type PalaceOutput = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -141,9 +140,11 @@ pub async fn run_palace_command(
 }
 
 pub fn is_remote_session(env: &BTreeMap<String, String>) -> bool {
-    REMOTE_ENV_KEYS
-        .iter()
-        .any(|key| env.get(*key).map(|value| !value.is_empty()).unwrap_or(false))
+    REMOTE_ENV_KEYS.iter().any(|key| {
+        env.get(*key)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+    })
 }
 
 fn opener_for(platform: &str) -> (String, Vec<String>) {
@@ -254,19 +255,21 @@ mod tests {
                 output: Some(Arc::new(move |text: &str| {
                     outputs_for_output.lock().unwrap().push(text.to_string());
                 })),
-                exec: Some(Arc::new(move |command: &str, args: Vec<String>| -> PalaceExecFuture {
-                    exec_calls_for_exec
-                        .lock()
-                        .unwrap()
-                        .push((command.to_string(), args));
-                    Box::pin(async {
-                        Ok(PalaceExecOutcome {
-                            code: 0,
-                            stdout: String::new(),
-                            stderr: String::new(),
+                exec: Some(Arc::new(
+                    move |command: &str, args: Vec<String>| -> PalaceExecFuture {
+                        exec_calls_for_exec
+                            .lock()
+                            .unwrap()
+                            .push((command.to_string(), args));
+                        Box::pin(async {
+                            Ok(PalaceExecOutcome {
+                                code: 0,
+                                stdout: String::new(),
+                                stderr: String::new(),
+                            })
                         })
-                    })
-                })),
+                    },
+                )),
             },
         }
     }
@@ -278,13 +281,21 @@ mod tests {
     #[test]
     fn registration_exposes_description_and_handler() {
         let mut api = ExtensionApi::new(
-            maho_ext_api::LoadedExtension::new("memory-palace", Default::default(), Default::default()),
+            maho_ext_api::LoadedExtension::new(
+                "memory-palace",
+                Default::default(),
+                Default::default(),
+            ),
             Default::default(),
             Default::default(),
             Default::default(),
         );
 
-        register_palace_command(&mut api, Arc::new(|_: &ExtensionContext| None::<MemoryIdentityContext>), None);
+        register_palace_command(
+            &mut api,
+            Arc::new(|_: &ExtensionContext| None::<MemoryIdentityContext>),
+            None,
+        );
 
         let registration = api
             .registered
@@ -301,7 +312,9 @@ mod tests {
         let surface = harness(true, "darwin", Vec::new());
 
         let resolve = resolver(fixture.context.clone());
-        run_palace_command(&resolve, &surface.context, None).await.unwrap();
+        run_palace_command(&resolve, &surface.context, None)
+            .await
+            .unwrap();
 
         let calls = surface.exec_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
@@ -316,8 +329,12 @@ mod tests {
         let windows = harness(true, "win32", Vec::new());
 
         let resolve = resolver(fixture.context.clone());
-        run_palace_command(&resolve, &linux.context, None).await.unwrap();
-        run_palace_command(&resolve, &windows.context, None).await.unwrap();
+        run_palace_command(&resolve, &linux.context, None)
+            .await
+            .unwrap();
+        run_palace_command(&resolve, &windows.context, None)
+            .await
+            .unwrap();
 
         assert_eq!(linux.exec_calls.lock().unwrap()[0].0, "xdg-open");
         assert_eq!(windows.exec_calls.lock().unwrap()[0].0, "start");
@@ -327,11 +344,19 @@ mod tests {
     async fn remote_session_prints_the_path() {
         let fixture = create_palace_fixture(false);
         let tmux = harness(true, "darwin", vec![("TMUX", "/tmp/tmux-1000/default,1,0")]);
-        let ssh = harness(true, "darwin", vec![("SSH_CONNECTION", "10.0.0.2 22 10.0.0.1 22")]);
+        let ssh = harness(
+            true,
+            "darwin",
+            vec![("SSH_CONNECTION", "10.0.0.2 22 10.0.0.1 22")],
+        );
 
         let resolve = resolver(fixture.context.clone());
-        run_palace_command(&resolve, &tmux.context, None).await.unwrap();
-        run_palace_command(&resolve, &ssh.context, None).await.unwrap();
+        run_palace_command(&resolve, &tmux.context, None)
+            .await
+            .unwrap();
+        run_palace_command(&resolve, &ssh.context, None)
+            .await
+            .unwrap();
 
         assert!(tmux.exec_calls.lock().unwrap().is_empty());
         assert!(ssh.exec_calls.lock().unwrap().is_empty());
@@ -346,7 +371,9 @@ mod tests {
         let surface = harness(false, "darwin", Vec::new());
 
         let resolve = resolver(fixture.context.clone());
-        run_palace_command(&resolve, &surface.context, None).await.unwrap();
+        run_palace_command(&resolve, &surface.context, None)
+            .await
+            .unwrap();
 
         assert!(surface.exec_calls.lock().unwrap().is_empty());
         assert!(surface.notifications.lock().unwrap().is_empty());
@@ -360,7 +387,9 @@ mod tests {
         let surface = harness(true, "darwin", Vec::new());
         let resolve: PalaceContextResolver = Arc::new(|_: &PalaceCommandContext| None);
 
-        run_palace_command(&resolve, &surface.context, None).await.unwrap();
+        run_palace_command(&resolve, &surface.context, None)
+            .await
+            .unwrap();
 
         assert!(surface.exec_calls.lock().unwrap().is_empty());
         let notifications = surface.notifications.lock().unwrap();

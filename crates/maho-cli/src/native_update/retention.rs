@@ -32,7 +32,10 @@ fn remove_abandoned_staging(root: &Path, warnings: &mut Vec<String>) {
                 if entry.file_name().to_string_lossy().starts_with(".staging-")
                     && let Err(error) = fs::remove_dir_all(entry.path())
                 {
-                    warnings.push(format!("cannot remove stale staging {}: {error}", entry.path().display()));
+                    warnings.push(format!(
+                        "cannot remove stale staging {}: {error}",
+                        entry.path().display()
+                    ));
                 }
             }
         }
@@ -40,8 +43,16 @@ fn remove_abandoned_staging(root: &Path, warnings: &mut Vec<String>) {
     }
 }
 
-fn protected_versions(root: &Path, keep: &[&str], warnings: &mut Vec<String>) -> Option<BTreeSet<String>> {
-    let mut protected: BTreeSet<String> = keep.iter().copied().map(|version| version.to_owned()).collect();
+fn protected_versions(
+    root: &Path,
+    keep: &[&str],
+    warnings: &mut Vec<String>,
+) -> Option<BTreeSet<String>> {
+    let mut protected: BTreeSet<String> = keep
+        .iter()
+        .copied()
+        .map(|version| version.to_owned())
+        .collect();
     let pointer_path = root.join(super::pointer::FILE_NAME);
     if !pointer_path.is_file() {
         return Some(protected);
@@ -82,7 +93,9 @@ fn remove_unused_versions(root: &Path, protected: &BTreeSet<String>, warnings: &
                 continue;
             }
         };
-        let Ok(name) = entry.file_name().into_string() else { continue };
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
         if !super::pointer::is_valid_version(&name) || protected.contains(&name) {
             continue;
         }
@@ -99,13 +112,18 @@ fn remove_unused_versions(root: &Path, protected: &BTreeSet<String>, warnings: &
                 if let Err(error) = fs::remove_dir_all(&directory)
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
-                    warnings.push(format!("cannot remove version {}: {error}", directory.display()));
+                    warnings.push(format!(
+                        "cannot remove version {}: {error}",
+                        directory.display()
+                    ));
                 }
                 drop(lock);
             }
             Ok(None) => {}
             Err(error) => {
-                warnings.push(format!("cannot check whether version {name} is in use: {error}"));
+                warnings.push(format!(
+                    "cannot check whether version {name} is in use: {error}"
+                ));
             }
         }
     }
@@ -124,19 +142,32 @@ mod tests {
         fs::create_dir(root.path().join(".staging-abandoned"))?;
         let session = crate::native_update::install::SessionLease::acquire(root.path(), "1.0.0")?;
         assert!(run(root.path(), &["1.2.0"]).is_empty());
-        assert!(root.path().join("versions/1.0.0").is_dir(), "live lease defers cleanup");
-        assert!(!root.path().join("versions/1.1.0").exists(), "unheld version is removed");
-        assert!(root.path().join("versions/1.2.0").is_dir(), "kept version stays");
+        assert!(
+            root.path().join("versions/1.0.0").is_dir(),
+            "live lease defers cleanup"
+        );
+        assert!(
+            !root.path().join("versions/1.1.0").exists(),
+            "unheld version is removed"
+        );
+        assert!(
+            root.path().join("versions/1.2.0").is_dir(),
+            "kept version stays"
+        );
         assert!(!root.path().join(".staging-abandoned").exists());
         drop(session);
         assert!(run(root.path(), &["1.2.0"]).is_empty());
-        assert!(!root.path().join("versions/1.0.0").exists(), "released version is removed on the next update");
+        assert!(
+            !root.path().join("versions/1.0.0").exists(),
+            "released version is removed on the next update"
+        );
         assert!(root.path().join("versions/1.2.0").is_dir());
         Ok(())
     }
 
     #[test]
-    fn keeps_pointer_versions_and_skips_removal_when_the_pointer_is_unreadable() -> Result<(), Box<dyn std::error::Error>> {
+    fn keeps_pointer_versions_and_skips_removal_when_the_pointer_is_unreadable()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         for version in ["1.0.0", "1.1.0", "1.2.0"] {
             fs::create_dir_all(root.path().join("versions").join(version))?;
@@ -147,14 +178,28 @@ mod tests {
         )?;
         assert!(run(root.path(), &[]).is_empty());
         assert!(root.path().join("versions/1.2.0").is_dir(), "current stays");
-        assert!(root.path().join("versions/1.1.0").is_dir(), "previous stays");
+        assert!(
+            root.path().join("versions/1.1.0").is_dir(),
+            "previous stays"
+        );
         assert!(!root.path().join("versions/1.0.0").exists());
 
         fs::create_dir_all(root.path().join("versions/1.0.0"))?;
-        fs::write(root.path().join(super::super::pointer::FILE_NAME), b"not json")?;
+        fs::write(
+            root.path().join(super::super::pointer::FILE_NAME),
+            b"not json",
+        )?;
         let warnings = run(root.path(), &[]);
-        assert!(warnings.iter().any(|warning| warning.contains("version pointer")), "{warnings:?}");
-        assert!(root.path().join("versions/1.0.0").is_dir(), "unreadable pointer blocks version removal");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("version pointer")),
+            "{warnings:?}"
+        );
+        assert!(
+            root.path().join("versions/1.0.0").is_dir(),
+            "unreadable pointer blocks version removal"
+        );
         assert!(root.path().join("versions/1.2.0").is_dir());
         Ok(())
     }

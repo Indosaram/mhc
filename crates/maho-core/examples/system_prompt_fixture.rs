@@ -25,7 +25,10 @@ fn tool_snippets(tools: &[String]) -> HashMap<String, String> {
     tools
         .iter()
         .filter_map(|tool| {
-            known.iter().find(|(name, _)| name == tool).map(|(name, snippet)| ((*name).to_string(), (*snippet).to_string()))
+            known
+                .iter()
+                .find(|(name, _)| name == tool)
+                .map(|(name, snippet)| ((*name).to_string(), (*snippet).to_string()))
         })
         .collect()
 }
@@ -42,8 +45,16 @@ fn main() {
         .map(str::to_string)
         .collect();
 
-    let skills = load_skills(&LoadSkillsOptions { cwd: cwd.clone(), agent_dir: agent_dir.clone(), skill_paths: Vec::new(), include_defaults: false });
-    let prompt = build_dynamic_system_prompt(&BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None,
+    let skills = load_skills(&LoadSkillsOptions {
+        cwd: cwd.clone(),
+        agent_dir: agent_dir.clone(),
+        skill_paths: Vec::new(),
+        include_defaults: false,
+    });
+    let prompt = build_dynamic_system_prompt(&BuildDynamicSystemPromptOptions {
+        custom_prompt: None,
+        append_system_prompt: None,
+        on_parts: None,
         cwd: cwd.clone(),
         selected_tools: tools.clone(),
         tool_snippets: tool_snippets(&tools),

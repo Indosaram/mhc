@@ -4,7 +4,9 @@ use crate::auth::oauth::device_code::{
     OAuthDeviceCodePollOptions, OAuthDeviceCodePollResult, poll_oauth_device_code_flow,
 };
 use crate::auth::oauth::transport::{OAuthTransport, default_transport};
-use crate::auth::types::{AuthEvent, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction};
+use crate::auth::types::{
+    AuthEvent, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction,
+};
 use crate::utils::abort::AbortSignal;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
@@ -52,7 +54,8 @@ fn positive_number(body: &Map<String, Value>, field: &str) -> anyhow::Result<f64
 }
 
 fn validate_verification_uri(raw: &str) -> anyhow::Result<String> {
-    let url = Url::parse(raw).map_err(|_| anyhow::anyhow!("Untrusted verification URI in xAI OAuth response"))?;
+    let url = Url::parse(raw)
+        .map_err(|_| anyhow::anyhow!("Untrusted verification URI in xAI OAuth response"))?;
     if url.scheme() != "https" {
         anyhow::bail!("Untrusted verification URI in xAI OAuth response");
     }
@@ -78,7 +81,10 @@ async fn post_form(
         url: url.to_string(),
         headers: vec![
             ("Accept".into(), "application/json".into()),
-            ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
+            (
+                "Content-Type".into(),
+                "application/x-www-form-urlencoded".into(),
+            ),
         ],
         body: Some(form_body(fields)),
         timeout_ms: None,
@@ -105,15 +111,33 @@ async fn post_form(
         }
     };
 
-    Ok(OAuthHttpResponse { ok: response.ok(), status: response.status, body })
+    Ok(OAuthHttpResponse {
+        ok: response.ok(),
+        status: response.status,
+        body,
+    })
 }
 
 fn request_failure(action: &str, response: &OAuthHttpResponse) -> anyhow::Error {
     let error = response.body.get("error").and_then(Value::as_str);
-    let description = response.body.get("error_description").and_then(Value::as_str);
-    let detail = [error, description].into_iter().flatten().collect::<Vec<_>>().join(": ");
-    let suffix = if detail.is_empty() { String::new() } else { format!(": {detail}") };
-    anyhow::anyhow!("xAI OAuth {action} failed (HTTP {}){suffix}", response.status)
+    let description = response
+        .body
+        .get("error_description")
+        .and_then(Value::as_str);
+    let detail = [error, description]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(": ");
+    let suffix = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    };
+    anyhow::anyhow!(
+        "xAI OAuth {action} failed (HTTP {}){suffix}",
+        response.status
+    )
 }
 
 fn parse_device_code(body: &Map<String, Value>) -> anyhow::Result<XaiDeviceCode> {
@@ -160,7 +184,11 @@ fn credentials_from_token_response(
         None | Some(Value::Null) => DEFAULT_TOKEN_LIFETIME_SECONDS,
         Some(_) => positive_number(body, "expires_in")?,
     };
-    Ok(OAuthCredential::new(access, refresh, now_ms + expires_in_seconds * 1000.0 - REFRESH_SKEW_MS))
+    Ok(OAuthCredential::new(
+        access,
+        refresh,
+        now_ms + expires_in_seconds * 1000.0 - REFRESH_SKEW_MS,
+    ))
 }
 
 async fn request_device_code(
@@ -206,7 +234,10 @@ async fn poll_for_tokens(
                     transport.as_ref(),
                     XAI_TOKEN_URL,
                     &[
-                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code".to_string()),
+                        (
+                            "grant_type",
+                            "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+                        ),
                         ("client_id", XAI_CLIENT_ID.to_string()),
                         ("device_code", device.device_code.clone()),
                     ],
@@ -215,11 +246,9 @@ async fn poll_for_tokens(
                 .await?;
 
                 if response.ok {
-                    return Ok(OAuthDeviceCodePollResult::Complete(credentials_from_token_response(
-                        &response.body,
-                        None,
-                        now_ms,
-                    )?));
+                    return Ok(OAuthDeviceCodePollResult::Complete(
+                        credentials_from_token_response(&response.body, None, now_ms)?,
+                    ));
                 }
 
                 match response.body.get("error").and_then(Value::as_str) {
@@ -227,12 +256,14 @@ async fn poll_for_tokens(
                     Some("slow_down") => Ok(OAuthDeviceCodePollResult::SlowDown {
                         interval_seconds: response.body.get("interval").and_then(Value::as_f64),
                     }),
-                    Some("access_denied" | "authorization_denied") => Ok(OAuthDeviceCodePollResult::Failed {
-                        message: "xAI device authorization was denied".into(),
-                    }),
-                    Some("expired_token") => {
-                        Ok(OAuthDeviceCodePollResult::Failed { message: "xAI device code expired".into() })
+                    Some("access_denied" | "authorization_denied") => {
+                        Ok(OAuthDeviceCodePollResult::Failed {
+                            message: "xAI device authorization was denied".into(),
+                        })
                     }
+                    Some("expired_token") => Ok(OAuthDeviceCodePollResult::Failed {
+                        message: "xAI device code expired".into(),
+                    }),
                     _ => Ok(OAuthDeviceCodePollResult::Failed {
                         message: request_failure("device token polling", &response).to_string(),
                     }),
@@ -276,7 +307,10 @@ impl OAuthAuth for XaiOAuth {
         Some("Sign in with SuperGrok or X Premium")
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         let device = request_device_code(self.transport.as_ref(), &interaction.signal).await?;
         interaction.notify(AuthEvent::DeviceCode {
             user_code: device.user_code.clone(),
@@ -290,7 +324,11 @@ impl OAuthAuth for XaiOAuth {
         poll_for_tokens(self.transport.clone(), &device, &interaction.signal).await
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
         let response = post_form(
             self.transport.as_ref(),
             XAI_TOKEN_URL,
@@ -305,11 +343,18 @@ impl OAuthAuth for XaiOAuth {
         if !response.ok {
             return Err(request_failure("token refresh", &response));
         }
-        credentials_from_token_response(&response.body, Some(&credential.refresh), self.transport.now_ms())
+        credentials_from_token_response(
+            &response.body,
+            Some(&credential.refresh),
+            self.transport.now_ms(),
+        )
     }
 
     async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        Ok(ModelAuth {
+            api_key: Some(credential.access.clone()),
+            ..Default::default()
+        })
     }
 }
 
@@ -341,7 +386,9 @@ mod tests {
             if value.is_null() {
                 body.as_object_mut().expect("object").remove(*key);
             } else {
-                body.as_object_mut().expect("object").insert((*key).to_string(), value.clone());
+                body.as_object_mut()
+                    .expect("object")
+                    .insert((*key).to_string(), value.clone());
             }
         }
         body
@@ -358,7 +405,9 @@ mod tests {
             if value.is_null() {
                 body.as_object_mut().expect("object").remove(*key);
             } else {
-                body.as_object_mut().expect("object").insert((*key).to_string(), value.clone());
+                body.as_object_mut()
+                    .expect("object")
+                    .insert((*key).to_string(), value.clone());
             }
         }
         body
@@ -371,7 +420,10 @@ mod tests {
     }
 
     fn form_value(request: &HttpRequest, key: &str) -> Option<String> {
-        form_of(request).into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        form_of(request)
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
     }
 
     struct RecordingInteraction {
@@ -391,7 +443,10 @@ mod tests {
         }
         fn notify(&self, event: AuthEvent) {
             if let AuthEvent::DeviceCode { .. } = &event {
-                self.device_codes.lock().unwrap_or_else(|p| p.into_inner()).push(event.clone());
+                self.device_codes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(event.clone());
                 if let Some(callback) = &self.on_device_code {
                     callback();
                 }
@@ -434,8 +489,17 @@ mod tests {
     async fn uses_the_device_grant_delays_polling_and_handles_pending_and_slow_down() {
         let transport = Arc::new(ScriptedTransport::new(vec![
             (Some("device/code"), json(200, device_code_response(&[]))),
-            (Some("oauth2/token"), json(400, serde_json::json!({"error": "authorization_pending"}))),
-            (Some("oauth2/token"), json(400, serde_json::json!({"error": "slow_down", "interval": 10}))),
+            (
+                Some("oauth2/token"),
+                json(400, serde_json::json!({"error": "authorization_pending"})),
+            ),
+            (
+                Some("oauth2/token"),
+                json(
+                    400,
+                    serde_json::json!({"error": "slow_down", "interval": 10}),
+                ),
+            ),
             (Some("oauth2/token"), json(200, token_response(&[]))),
         ]));
         transport.set_now_ms(START_MS);
@@ -449,7 +513,11 @@ mod tests {
         });
 
         advance(&transport, 0).await;
-        let codes = device_codes.lock().unwrap_or_else(|p| p.into_inner()).clone();        assert_eq!(codes.len(), 1);
+        let codes = device_codes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert_eq!(codes.len(), 1);
         assert_eq!(
             codes[0],
             AuthEvent::DeviceCode {
@@ -466,9 +534,18 @@ mod tests {
         assert_eq!(transport.requests().len(), 2);
         let first_poll = &transport.requests()[1];
         assert_eq!(first_poll.url, XAI_TOKEN_URL);
-        assert_eq!(form_value(first_poll, "grant_type").as_deref(), Some("urn:ietf:params:oauth:grant-type:device_code"));
-        assert_eq!(form_value(first_poll, "client_id").as_deref(), Some(XAI_CLIENT_ID));
-        assert_eq!(form_value(first_poll, "device_code").as_deref(), Some("device-code"));
+        assert_eq!(
+            form_value(first_poll, "grant_type").as_deref(),
+            Some("urn:ietf:params:oauth:grant-type:device_code")
+        );
+        assert_eq!(
+            form_value(first_poll, "client_id").as_deref(),
+            Some(XAI_CLIENT_ID)
+        );
+        assert_eq!(
+            form_value(first_poll, "device_code").as_deref(),
+            Some("device-code")
+        );
 
         advance(&transport, 5000).await;
         assert_eq!(transport.requests().len(), 3);
@@ -478,20 +555,38 @@ mod tests {
 
         let device_request = &transport.requests()[0];
         assert_eq!(device_request.url, XAI_DEVICE_CODE_URL);
-        assert_eq!(form_value(device_request, "client_id").as_deref(), Some(XAI_CLIENT_ID));
-        assert_eq!(form_value(device_request, "scope").as_deref(), Some(XAI_SCOPE));
-        assert_eq!(form_value(device_request, "referrer").as_deref(), Some("pi"));
+        assert_eq!(
+            form_value(device_request, "client_id").as_deref(),
+            Some(XAI_CLIENT_ID)
+        );
+        assert_eq!(
+            form_value(device_request, "scope").as_deref(),
+            Some(XAI_SCOPE)
+        );
+        assert_eq!(
+            form_value(device_request, "referrer").as_deref(),
+            Some("pi")
+        );
 
         assert_eq!(credential.access, "access-token");
         assert_eq!(credential.refresh, "refresh-token");
         let _ = start;
-        assert_eq!(credential.expires, START_MS + 20_000.0 + 21_600_000.0 - 300_000.0);
+        assert_eq!(
+            credential.expires,
+            START_MS + 20_000.0 + 21_600_000.0 - 300_000.0
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn falls_back_to_the_default_poll_interval_when_the_response_reports_interval_zero() {
         let transport = Arc::new(ScriptedTransport::new(vec![
-            (Some("device/code"), json(200, device_code_response(&[("interval", serde_json::json!(0))]))),
+            (
+                Some("device/code"),
+                json(
+                    200,
+                    device_code_response(&[("interval", serde_json::json!(0))]),
+                ),
+            ),
             (Some("oauth2/token"), json(200, token_response(&[]))),
         ]));
         transport.set_now_ms(START_MS);
@@ -518,7 +613,9 @@ mod tests {
                     200,
                     device_code_response(&[(
                         "verification_uri_complete",
-                        serde_json::json!("https://accounts.x.ai/oauth2/device?user_code=ABCD-1234"),
+                        serde_json::json!(
+                            "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234"
+                        ),
                     )]),
                 ),
             ),
@@ -534,7 +631,10 @@ mod tests {
 
         advance(&transport, 5000).await;
         login.await.unwrap().unwrap();
-        let codes = device_codes.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let codes = device_codes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         assert_eq!(
             codes,
             vec![AuthEvent::DeviceCode {
@@ -562,21 +662,34 @@ mod tests {
         let oauth = XaiOAuth::new(transport);
         let (interaction, _) = interaction(AbortController::new().signal());
         let error = oauth.login(&interaction).await.unwrap_err();
-        assert!(error.to_string().contains("Untrusted verification URI"), "{error}");
+        assert!(
+            error.to_string().contains("Untrusted verification URI"),
+            "{error}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn rejects_non_https_and_malformed_verification_uris() {
-        for uri in ["http://accounts.x.ai/oauth2/device", "file:///etc/passwd", "not a url"] {
+        for uri in [
+            "http://accounts.x.ai/oauth2/device",
+            "file:///etc/passwd",
+            "not a url",
+        ] {
             let transport = Arc::new(ScriptedTransport::new(vec![(
                 Some("device/code"),
-                json(200, device_code_response(&[("verification_uri", serde_json::json!(uri))])),
+                json(
+                    200,
+                    device_code_response(&[("verification_uri", serde_json::json!(uri))]),
+                ),
             )]));
             transport.set_now_ms(START_MS);
             let oauth = XaiOAuth::new(transport);
             let (interaction, _) = interaction(AbortController::new().signal());
             let error = oauth.login(&interaction).await.unwrap_err();
-            assert!(error.to_string().contains("Untrusted verification URI"), "{uri}: {error}");
+            assert!(
+                error.to_string().contains("Untrusted verification URI"),
+                "{uri}: {error}"
+            );
         }
     }
 
@@ -584,8 +697,17 @@ mod tests {
     async fn fails_when_device_authorization_is_denied() {
         for code in ["access_denied", "authorization_denied"] {
             let transport = Arc::new(ScriptedTransport::new(vec![
-                (Some("device/code"), json(200, device_code_response(&[("interval", serde_json::json!(1))]))),
-                (Some("oauth2/token"), json(400, serde_json::json!({ "error": code }))),
+                (
+                    Some("device/code"),
+                    json(
+                        200,
+                        device_code_response(&[("interval", serde_json::json!(1))]),
+                    ),
+                ),
+                (
+                    Some("oauth2/token"),
+                    json(400, serde_json::json!({ "error": code })),
+                ),
             ]));
             transport.set_now_ms(START_MS);
             let oauth = XaiOAuth::new(transport.clone());
@@ -611,8 +733,10 @@ mod tests {
         let controller = AbortController::new();
         let signal = controller.signal();
         let aborting = controller.clone();
-        let (interaction, _) =
-            interaction_with_hook(signal, Arc::new(move || aborting.abort(Some(AbortReason::new("AbortError", "aborted")))));
+        let (interaction, _) = interaction_with_hook(
+            signal,
+            Arc::new(move || aborting.abort(Some(AbortReason::new("AbortError", "aborted")))),
+        );
         let error = oauth.login(&interaction).await.unwrap_err();
         assert_eq!(error.to_string(), "Login cancelled");
         assert_eq!(transport.requests().len(), 1);
@@ -623,11 +747,23 @@ mod tests {
         let transport = Arc::new(ScriptedTransport::new(vec![
             (
                 Some("oauth2/token"),
-                json(200, token_response(&[("access_token", serde_json::json!("new-access")), ("refresh_token", serde_json::json!("new-refresh"))])),
+                json(
+                    200,
+                    token_response(&[
+                        ("access_token", serde_json::json!("new-access")),
+                        ("refresh_token", serde_json::json!("new-refresh")),
+                    ]),
+                ),
             ),
             (
                 Some("oauth2/token"),
-                json(200, token_response(&[("access_token", serde_json::json!("newer-access")), ("refresh_token", Value::Null)])),
+                json(
+                    200,
+                    token_response(&[
+                        ("access_token", serde_json::json!("newer-access")),
+                        ("refresh_token", Value::Null),
+                    ]),
+                ),
             ),
         ]));
         transport.set_now_ms(START_MS);
@@ -635,11 +771,17 @@ mod tests {
         let signal = AbortController::new().signal();
 
         let rotated = oauth
-            .refresh(&OAuthCredential::new("old-access", "old-refresh", 0.0), &signal)
+            .refresh(
+                &OAuthCredential::new("old-access", "old-refresh", 0.0),
+                &signal,
+            )
             .await
             .unwrap();
         let preserved = oauth
-            .refresh(&OAuthCredential::new("old-access", "keep-refresh", 0.0), &signal)
+            .refresh(
+                &OAuthCredential::new("old-access", "keep-refresh", 0.0),
+                &signal,
+            )
             .await
             .unwrap();
 
@@ -648,14 +790,29 @@ mod tests {
         assert_eq!(preserved.access, "newer-access");
         assert_eq!(preserved.refresh, "keep-refresh");
         assert_eq!(oauth.name(), "xAI (Grok/X subscription)");
-        assert_eq!(oauth.to_auth(&preserved).await.unwrap().api_key.as_deref(), Some("newer-access"));
+        assert_eq!(
+            oauth.to_auth(&preserved).await.unwrap().api_key.as_deref(),
+            Some("newer-access")
+        );
 
         let requests = transport.requests();
         assert_eq!(requests[0].url, XAI_TOKEN_URL);
-        assert_eq!(form_value(&requests[0], "grant_type").as_deref(), Some("refresh_token"));
-        assert_eq!(form_value(&requests[0], "client_id").as_deref(), Some(XAI_CLIENT_ID));
-        assert_eq!(form_value(&requests[0], "refresh_token").as_deref(), Some("old-refresh"));
-        assert_eq!(form_value(&requests[1], "refresh_token").as_deref(), Some("keep-refresh"));
+        assert_eq!(
+            form_value(&requests[0], "grant_type").as_deref(),
+            Some("refresh_token")
+        );
+        assert_eq!(
+            form_value(&requests[0], "client_id").as_deref(),
+            Some(XAI_CLIENT_ID)
+        );
+        assert_eq!(
+            form_value(&requests[0], "refresh_token").as_deref(),
+            Some("old-refresh")
+        );
+        assert_eq!(
+            form_value(&requests[1], "refresh_token").as_deref(),
+            Some("keep-refresh")
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -667,7 +824,10 @@ mod tests {
         transport.set_now_ms(START_MS);
         let oauth = XaiOAuth::new(transport);
         let credential = oauth
-            .refresh(&OAuthCredential::new("old-access", "old-refresh", 0.0), &AbortController::new().signal())
+            .refresh(
+                &OAuthCredential::new("old-access", "old-refresh", 0.0),
+                &AbortController::new().signal(),
+            )
             .await
             .unwrap();
         assert_eq!(credential.expires, START_MS + 3_600_000.0 - 300_000.0);
@@ -682,24 +842,39 @@ mod tests {
         transport.set_now_ms(START_MS);
         let oauth = XaiOAuth::new(transport);
         let error = oauth
-            .refresh(&OAuthCredential::new("old-access", "old-refresh", 0.0), &AbortController::new().signal())
+            .refresh(
+                &OAuthCredential::new("old-access", "old-refresh", 0.0),
+                &AbortController::new().signal(),
+            )
             .await
             .unwrap_err();
-        assert_eq!(error.to_string(), "Invalid xAI OAuth response field: access_token");
+        assert_eq!(
+            error.to_string(),
+            "Invalid xAI OAuth response field: access_token"
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn surfaces_the_upstream_error_code_and_description_on_refresh_failure() {
         let transport = Arc::new(ScriptedTransport::new(vec![(
             Some("oauth2/token"),
-            json(400, serde_json::json!({"error": "invalid_grant", "error_description": "refresh token revoked"})),
+            json(
+                400,
+                serde_json::json!({"error": "invalid_grant", "error_description": "refresh token revoked"}),
+            ),
         )]));
         transport.set_now_ms(START_MS);
         let oauth = XaiOAuth::new(transport);
         let error = oauth
-            .refresh(&OAuthCredential::new("old-access", "old-refresh", 0.0), &AbortController::new().signal())
+            .refresh(
+                &OAuthCredential::new("old-access", "old-refresh", 0.0),
+                &AbortController::new().signal(),
+            )
             .await
             .unwrap_err();
-        assert_eq!(error.to_string(), "xAI OAuth token refresh failed (HTTP 400): invalid_grant: refresh token revoked");
+        assert_eq!(
+            error.to_string(),
+            "xAI OAuth token refresh failed (HTTP 400): invalid_grant: refresh token revoked"
+        );
     }
 }

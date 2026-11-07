@@ -1,22 +1,25 @@
 //! Subcommand execution handlers for ulw-loop CLI.
 
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
-use serde_json::Value;
 
 use crate::checkpoint_continuation::checkpoint_and_continue;
 use crate::checkpoint_template::checkpoint_template;
 use crate::cli_arg_parser::{
-    has_flag, parse_codex_goal_json, parse_record_evidence_args, positional_text, read_stdin, read_value,
+    has_flag, parse_codex_goal_json, parse_record_evidence_args, positional_text, read_stdin,
+    read_value,
 };
-use crate::cli_output::{blocked_decision_handoff, normalize_codex_goal_mode, print_json, print_status};
+use crate::cli_output::{
+    blocked_decision_handoff, normalize_codex_goal_mode, print_json, print_status,
+};
 use crate::cli_steering::{parse_steering_proposals, print_steer_batch_result, print_steer_result};
-use crate::codex_goal_instruction::{build_codex_goal_instruction, BuildCodexGoalInstructionArgs};
+use crate::codex_goal_instruction::{BuildCodexGoalInstructionArgs, build_codex_goal_instruction};
 use crate::command_types::{AddGoalOptions, CreateGoalsOptions, RecordFinalReviewBlockersOptions};
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
 use crate::goal_status::is_essential_criterion;
 use crate::paths::UlwLoopScope;
-use crate::plan_crud::{summarize_ulw_loop_plan, StartNextResult};
+use crate::plan_crud::{StartNextResult, summarize_ulw_loop_plan};
 use crate::plan_io::read_ulw_loop_plan;
 use crate::runtime::UlwLoopError;
 use crate::sdk::factory::{AgentToolkit, AgentToolkitDependencies};
@@ -31,13 +34,25 @@ fn required(argv: &[String], flag: &str) -> Result<String, UlwLoopError> {
             return Ok(trimmed);
         }
     }
-    Err(UlwLoopError::new(format!("Missing {flag}."), "ULW_LOOP_ARGUMENT_MISSING"))
+    Err(UlwLoopError::new(
+        format!("Missing {flag}."),
+        "ULW_LOOP_ARGUMENT_MISSING",
+    ))
 }
 
-fn toolkit_for(repo_root: &Path, scope: Option<&UlwLoopScope>) -> Result<AgentToolkit, UlwLoopError> {
-    let session_id = scope.and_then(|s| s.session_id.as_deref()).map(|s| s.trim()).filter(|s| !s.is_empty());
+fn toolkit_for(
+    repo_root: &Path,
+    scope: Option<&UlwLoopScope>,
+) -> Result<AgentToolkit, UlwLoopError> {
+    let session_id = scope
+        .and_then(|s| s.session_id.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let Some(sid) = session_id else {
-        return Err(UlwLoopError::new("Missing --session-id.", "ULW_LOOP_SESSION_ID_REQUIRED"));
+        return Err(UlwLoopError::new(
+            "Missing --session-id.",
+            "ULW_LOOP_SESSION_ID_REQUIRED",
+        ));
     };
     AgentToolkit::new(
         ToolkitContext {
@@ -59,9 +74,16 @@ pub fn create_goals(
     let brief = if let Some(b) = read_value(argv, "--brief") {
         Some(b)
     } else if let Some(bf) = brief_file {
-        Some(fs::read_to_string(&bf).map_err(|e| UlwLoopError::new(format!("Cannot read brief file: {e}"), "ULW_LOOP_BRIEF_FILE_ERROR"))?)
+        Some(fs::read_to_string(&bf).map_err(|e| {
+            UlwLoopError::new(
+                format!("Cannot read brief file: {e}"),
+                "ULW_LOOP_BRIEF_FILE_ERROR",
+            )
+        })?)
     } else if has_flag(argv, "--from-stdin") {
-        Some(read_stdin().map_err(|e| UlwLoopError::new(format!("Cannot read stdin: {e}"), "ULW_LOOP_STDIN_ERROR"))?)
+        Some(read_stdin().map_err(|e| {
+            UlwLoopError::new(format!("Cannot read stdin: {e}"), "ULW_LOOP_STDIN_ERROR")
+        })?)
     } else {
         let pos = positional_text(argv);
         if pos.is_empty() { None } else { Some(pos) }
@@ -75,7 +97,8 @@ pub fn create_goals(
     };
 
     let validation_batches_json = read_value(argv, "--validation-batch-json");
-    let codex_goal_mode = normalize_codex_goal_mode(read_value(argv, "--codex-goal-mode").as_deref())?;
+    let codex_goal_mode =
+        normalize_codex_goal_mode(read_value(argv, "--codex-goal-mode").as_deref())?;
 
     let opts = CreateGoalsOptions {
         brief: brief_str,
@@ -115,9 +138,16 @@ pub fn create_goals(
     }
 }
 
-pub fn status(repo_root: &Path, json: bool, scope: Option<&UlwLoopScope>) -> Result<i32, UlwLoopError> {
+pub fn status(
+    repo_root: &Path,
+    json: bool,
+    scope: Option<&UlwLoopScope>,
+) -> Result<i32, UlwLoopError> {
     if scope.and_then(|s| s.session_id.as_deref()).is_none() {
-        return Err(UlwLoopError::new("Missing --session-id.", "ULW_LOOP_SESSION_ID_REQUIRED"));
+        return Err(UlwLoopError::new(
+            "Missing --session-id.",
+            "ULW_LOOP_SESSION_ID_REQUIRED",
+        ));
     }
     read_ulw_loop_plan(repo_root, scope)?;
     let toolkit = toolkit_for(repo_root, scope)?;
@@ -157,49 +187,59 @@ pub fn complete_goals(
     let toolkit = toolkit_for(repo_root, scope)?;
     let resp = toolkit.complete_goals(Some(&crate::sdk::types::CompleteGoalsArgs { retry_failed }));
     match resp {
-        crate::sdk::types::ToolkitResponse::Success { result, .. } => {
-            match result {
-                StartNextResult::Done { plan } => {
-                    let handoff = blocked_decision_handoff(&plan);
-                    if json {
-                        let summary = summarize_ulw_loop_plan(&plan);
-                        let out = serde_json::json!({
-                            "ok": true,
-                            "done": true,
-                            "blocked": !handoff.is_empty(),
-                            "handoff": handoff,
-                            "summary": summary,
-                            "plan": plan,
-                        });
-                        print_json(&out);
-                    } else {
-                        println!("{}", if handoff.is_empty() { "ulw-loop: all goals complete" } else { &handoff });
-                    }
-                    Ok(0)
-                }
-                StartNextResult::Started { plan, goal, resumed, .. } => {
-                    let instruction = build_codex_goal_instruction(BuildCodexGoalInstructionArgs {
-                        plan: &plan,
-                        goal: &goal,
-                        is_final: None,
-                        surface: None,
+        crate::sdk::types::ToolkitResponse::Success { result, .. } => match result {
+            StartNextResult::Done { plan } => {
+                let handoff = blocked_decision_handoff(&plan);
+                if json {
+                    let summary = summarize_ulw_loop_plan(&plan);
+                    let out = serde_json::json!({
+                        "ok": true,
+                        "done": true,
+                        "blocked": !handoff.is_empty(),
+                        "handoff": handoff,
+                        "summary": summary,
+                        "plan": plan,
                     });
-                    if json {
-                        let out = serde_json::json!({
-                            "ok": true,
-                            "resumed": resumed,
-                            "goal": goal,
-                            "instruction": instruction,
-                            "plan": plan,
-                        });
-                        print_json(&out);
-                    } else {
-                        println!("{}", instruction.text);
-                    }
-                    Ok(0)
+                    print_json(&out);
+                } else {
+                    println!(
+                        "{}",
+                        if handoff.is_empty() {
+                            "ulw-loop: all goals complete"
+                        } else {
+                            &handoff
+                        }
+                    );
                 }
+                Ok(0)
             }
-        }
+            StartNextResult::Started {
+                plan,
+                goal,
+                resumed,
+                ..
+            } => {
+                let instruction = build_codex_goal_instruction(BuildCodexGoalInstructionArgs {
+                    plan: &plan,
+                    goal: &goal,
+                    is_final: None,
+                    surface: None,
+                });
+                if json {
+                    let out = serde_json::json!({
+                        "ok": true,
+                        "resumed": resumed,
+                        "goal": goal,
+                        "instruction": instruction,
+                        "plan": plan,
+                    });
+                    print_json(&out);
+                } else {
+                    println!("{}", instruction.text);
+                }
+                Ok(0)
+            }
+        },
         crate::sdk::types::ToolkitResponse::Failure { error, .. } => {
             Err(UlwLoopError::new(error.message, error.code))
         }
@@ -306,7 +346,11 @@ pub fn criteria(
                 });
                 print_json(&out);
             } else {
-                let lines: Vec<String> = result.criteria.iter().map(format_criterion_for_cli).collect();
+                let lines: Vec<String> = result
+                    .criteria
+                    .iter()
+                    .map(format_criterion_for_cli)
+                    .collect();
                 println!("criteria for {}:\n{}", result.goal_id, lines.join("\n"));
             }
             Ok(0)
@@ -478,14 +522,26 @@ pub fn checkpoint_cli(
         });
         print_json(&out);
     } else {
-        println!("ulw-loop checkpoint: {} -> {}", result.checkpoint.goal.id, result.checkpoint.goal.status);
+        println!(
+            "ulw-loop checkpoint: {} -> {}",
+            result.checkpoint.goal.id, result.checkpoint.goal.status
+        );
         if let Some(next) = &result.next {
             match next {
-                crate::checkpoint_continuation::ContinuationNext::Resumed { instruction, .. } => {
+                crate::checkpoint_continuation::ContinuationNext::Resumed {
+                    instruction, ..
+                } => {
                     println!("{}", instruction.text);
                 }
                 crate::checkpoint_continuation::ContinuationNext::Done { handoff, .. } => {
-                    println!("{}", if handoff.is_empty() { "ulw-loop: all goals complete" } else { handoff });
+                    println!(
+                        "{}",
+                        if handoff.is_empty() {
+                            "ulw-loop: all goals complete"
+                        } else {
+                            handoff
+                        }
+                    );
                 }
             }
         }

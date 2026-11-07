@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::oneshot::METHOD_PREFIX;
 

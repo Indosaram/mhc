@@ -89,7 +89,11 @@ impl ChaosNotifier {
 }
 
 impl ParentNotifier for ChaosNotifier {
-    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: crate::completion::DeliveryCallbacks) -> Result<(), crate::host::HostError> {
+    fn enqueue_with_callbacks(
+        &self,
+        message: &ParentNotifierMessage,
+        callbacks: crate::completion::DeliveryCallbacks,
+    ) -> Result<(), crate::host::HostError> {
         let tagged: Vec<(String, i64)> = message
             .details
             .iter()
@@ -150,7 +154,8 @@ impl InstrumentedNotifier {
         request: &crate::completion::CompletionRequest,
     ) -> Result<NotifyResult, crate::store::StoreError> {
         let task_id = request.record.task_id.clone();
-        lock(&self.epochs.active_by_task).insert(task_id.clone(), request.record.notification.run_epoch);
+        lock(&self.epochs.active_by_task)
+            .insert(task_id.clone(), request.record.notification.run_epoch);
         let result = self.inner.notify_terminal(request);
         if let Ok(NotifyResult::Buffered(_)) = result {
             self.epochs
@@ -202,7 +207,11 @@ pub fn instrument_completion_notifier(
     store: Arc<TaskRecordStore>,
     epochs: Arc<NotificationEpochTracker>,
 ) -> InstrumentedNotifier {
-    InstrumentedNotifier { inner, store, epochs }
+    InstrumentedNotifier {
+        inner,
+        store,
+        epochs,
+    }
 }
 
 pub type InvariantId = u8;
@@ -287,7 +296,12 @@ fn check_no_slot_leak(state: &ChaosState) -> Vec<Violation> {
                     .harness
                     .engines
                     .iter()
-                    .filter(|engine| engine.manager.get_resident_handle(&record.task_id).is_some())
+                    .filter(|engine| {
+                        engine
+                            .manager
+                            .get_resident_handle(&record.task_id)
+                            .is_some()
+                    })
                     .map(|engine| engine.id.as_str())
                     .collect();
                 format!(
@@ -295,7 +309,9 @@ fn check_no_slot_leak(state: &ChaosState) -> Vec<Violation> {
                     record.task_id,
                     record.status.as_str(),
                     record.residency_state.as_str(),
-                    record.host_pid.map_or("none".to_string(), |pid| pid.to_string()),
+                    record
+                        .host_pid
+                        .map_or("none".to_string(), |pid| pid.to_string()),
                     if owners.is_empty() {
                         "none".to_string()
                     } else {
@@ -314,15 +330,20 @@ fn check_no_slot_leak(state: &ChaosState) -> Vec<Violation> {
     let mut probe_ids = Vec::new();
     let mut queued = 0;
     for _ in 0..state.harness.limit {
-        let result = state.harness.probe_engine().manager.start(&crate::manager::types::ManagerStartSpec {
-            prompt: "slot probe".to_string(),
-            parent_session_id: state.harness.session_id.clone(),
-            root_session_id: Some(state.harness.session_id.clone()),
-            depth: 1,
-            category: Some("quick".to_string()),
-            model: Some(state.harness.model.clone()),
-            ..Default::default()
-        });
+        let result =
+            state
+                .harness
+                .probe_engine()
+                .manager
+                .start(&crate::manager::types::ManagerStartSpec {
+                    prompt: "slot probe".to_string(),
+                    parent_session_id: state.harness.session_id.clone(),
+                    root_session_id: Some(state.harness.session_id.clone()),
+                    depth: 1,
+                    category: Some("quick".to_string()),
+                    model: Some(state.harness.model.clone()),
+                    ..Default::default()
+                });
         let crate::manager::types::StartResult::Started(started) = result else {
             continue;
         };
@@ -414,7 +435,13 @@ fn check_lifecycle_invariants(state: &ChaosState) -> Vec<Violation> {
         .harness
         .store
         .list()
-        .map(|listed| listed.records.iter().filter_map(|record| record.pid).collect())
+        .map(|listed| {
+            listed
+                .records
+                .iter()
+                .filter_map(|record| record.pid)
+                .collect()
+        })
         .unwrap_or_default();
     for pid in lock(&state.harness.processes.alive).iter() {
         if *pid >= 20_000 && !referenced_pids.contains(pid) {

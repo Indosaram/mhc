@@ -6,7 +6,7 @@ use image::RgbaImage;
 use senpi_desktop_core::frame::FrameGeometry;
 
 use super::screencast::MonitorStream;
-use super::{Geometry, composite};
+use super::{composite, Geometry};
 use crate::capture::layout::EisRegion;
 
 const fn monitor(node: u32, position: (i32, i32), size: Option<(i32, i32)>) -> MonitorStream {

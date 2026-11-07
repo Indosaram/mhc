@@ -95,9 +95,10 @@ impl InProcessSessionContextProvider for ParentRegistrySessionContext {
             .map(|model| format!("{}/{}", model.provider, model.model_id))
             .or_else(|| spec.model.clone());
         if let Some(model) = selected.as_deref()
-            && is_excluded_model(model, &(self.exclude_models)()) {
-                return Err(format!("model_unavailable: excluded model {model}"));
-            }
+            && is_excluded_model(model, &(self.exclude_models)())
+        {
+            return Err(format!("model_unavailable: excluded model {model}"));
+        }
         Ok(())
     }
     fn provide(&self, spec: &ManagedStartSpec) -> InProcessSessionContext {

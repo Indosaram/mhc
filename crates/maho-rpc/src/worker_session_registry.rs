@@ -337,7 +337,9 @@ impl WorkerSessionRegistry {
                 return Err(RpcSessionRegistryError::new(
                     crate::rpc_types::RPC_ERROR_SESSION_NOT_HELD,
                     None,
-                    Some(serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"})),
+                    Some(
+                        serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"}),
+                    ),
                 ));
             }
             if state.entries.len() >= crate::session_worker_protocol::SESSION_WORKER_LIMITS.workers

@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use maho_interactive::theme::{ColorMode, Theme};
-use maho_interactive::tools::renderers::{ToolRenderContext, ToolRenderResultOptions, create_all_tool_renderers};
+use maho_interactive::tools::renderers::{
+    ToolRenderContext, ToolRenderResultOptions, create_all_tool_renderers,
+};
 use maho_tools::definition::ToolResult;
 use maho_tui::tui::Component;
 use serde_json::Value;
@@ -12,7 +14,8 @@ fn theme() -> Theme {
 }
 
 fn fixtures() -> Vec<Value> {
-    serde_json::from_str(include_str!("golden/components32-renderers.json")).expect("pinned fixture")
+    serde_json::from_str(include_str!("golden/components32-renderers.json"))
+        .expect("pinned fixture")
 }
 
 fn result_from(value: &Value) -> ToolResult {
@@ -20,7 +23,12 @@ fn result_from(value: &Value) -> ToolResult {
 }
 
 fn render_lines(component: &Rc<RefCell<dyn Component>>) -> Vec<String> {
-    component.borrow_mut().render(80).into_iter().map(|line| line.trim_end().to_owned()).collect()
+    component
+        .borrow_mut()
+        .render(80)
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -31,7 +39,11 @@ fn strip_ansi(text: &str) -> String {
 /// grammar classifies `echo` differently from senpi's highlight.js; the layout this renderer owns
 /// is what is compared here.
 fn normalize(name: &str, lines: Vec<String>) -> Vec<String> {
-    if name == "bash" { lines.into_iter().map(|line| strip_ansi(&line)).collect() } else { lines }
+    if name == "bash" {
+        lines.into_iter().map(|line| strip_ansi(&line)).collect()
+    } else {
+        lines
+    }
 }
 
 #[test]
@@ -48,10 +60,17 @@ fn built_in_renderers_match_pinned_senpi_calls_and_results() {
             .iter()
             .map(|line| {
                 let line = line.as_str().expect("line").to_owned();
-                if name == "bash" { strip_ansi(&line) } else { line }
+                if name == "bash" {
+                    strip_ansi(&line)
+                } else {
+                    line
+                }
             })
             .collect();
-        let renderer = renderers.get(name).unwrap_or_else(|| panic!("renderer {name}")).clone();
+        let renderer = renderers
+            .get(name)
+            .unwrap_or_else(|| panic!("renderer {name}"))
+            .clone();
         let invalidate: Rc<dyn Fn()> = Rc::new(|| {});
         let mut context = ToolRenderContext {
             args,
@@ -71,16 +90,27 @@ fn built_in_renderers_match_pinned_senpi_calls_and_results() {
         let call = renderer.borrow_mut().render_call(&theme, &context);
         if case["kind"] == "call" {
             let component = call.unwrap_or_else(|| panic!("{name} produced no call component"));
-            assert_eq!(normalize(name, render_lines(&component)), expected, "{name} call");
+            assert_eq!(
+                normalize(name, render_lines(&component)),
+                expected,
+                "{name} call"
+            );
             continue;
         }
         context.args = args;
         let result = result_from(&case["result"]);
-        let options = ToolRenderResultOptions { expanded, is_partial: false };
+        let options = ToolRenderResultOptions {
+            expanded,
+            is_partial: false,
+        };
         let component = renderer
             .borrow_mut()
             .render_result(&result, options, &theme, &context)
             .unwrap_or_else(|| panic!("{name} produced no result component"));
-        assert_eq!(normalize(name, render_lines(&component)), expected, "{name} result");
+        assert_eq!(
+            normalize(name, render_lines(&component)),
+            expected,
+            "{name} result"
+        );
     }
 }

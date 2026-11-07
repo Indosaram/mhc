@@ -1,36 +1,85 @@
-use std::{collections::{HashMap, HashSet}, future::Future, pin::Pin, sync::{Arc, Mutex}, time::Duration};
+use super::{protocol::ServiceToken, transport::JsonConnection};
 use maho_ai::utils::abort::{AbortController, AbortReason, AbortSignal};
+use maho_chord::types::JsString;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use maho_chord::types::JsString;
-use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, sync::{mpsc, oneshot}};
-use super::{protocol::ServiceToken, transport::JsonConnection};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    sync::{mpsc, oneshot},
+};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
-    Call { id: u64, method: String, args: Vec<Value> },
-    Result { id: u64, result: Value },
-    Error { id: u64, error: String },
-    Cancel { id: u64 },
-    Event { service: JsString, payload: Value, #[serde(skip_serializing_if = "Option::is_none")] to: Option<String> },
-    Announce { services: Vec<JsString> },
+    Call {
+        id: u64,
+        method: String,
+        args: Vec<Value>,
+    },
+    Result {
+        id: u64,
+        result: Value,
+    },
+    Error {
+        id: u64,
+        error: String,
+    },
+    Cancel {
+        id: u64,
+    },
+    Event {
+        service: JsString,
+        payload: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+    },
+    Announce {
+        services: Vec<JsString>,
+    },
     Ping,
 }
 impl<'de> Deserialize<'de> for Frame {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = maho_chord::types::JsonValue::deserialize(deserializer)?;
-        fn field<T: serde::de::DeserializeOwned, E: serde::de::Error>(value: &maho_chord::types::JsonValue, key: &str) -> Result<T, E> {
+        fn field<T: serde::de::DeserializeOwned, E: serde::de::Error>(
+            value: &maho_chord::types::JsonValue,
+            key: &str,
+        ) -> Result<T, E> {
             let text = serde_json::to_string(&value[key]).map_err(E::custom)?;
             serde_json::from_str(&text).map_err(E::custom)
         }
         match value["kind"].as_str() {
-            Some("call") => Ok(Self::Call { id: field(&value, "id")?, method: field(&value, "method")?, args: field(&value, "args")? }),
-            Some("result") => Ok(Self::Result { id: field(&value, "id")?, result: field(&value, "result")? }),
-            Some("error") => Ok(Self::Error { id: field(&value, "id")?, error: field(&value, "error")? }),
-            Some("cancel") => Ok(Self::Cancel { id: field(&value, "id")? }),
-            Some("event") => Ok(Self::Event { service: field(&value, "service")?, payload: field(&value, "payload")?, to: field(&value, "to")? }),
-            Some("announce") => Ok(Self::Announce { services: field(&value, "services")? }),
+            Some("call") => Ok(Self::Call {
+                id: field(&value, "id")?,
+                method: field(&value, "method")?,
+                args: field(&value, "args")?,
+            }),
+            Some("result") => Ok(Self::Result {
+                id: field(&value, "id")?,
+                result: field(&value, "result")?,
+            }),
+            Some("error") => Ok(Self::Error {
+                id: field(&value, "id")?,
+                error: field(&value, "error")?,
+            }),
+            Some("cancel") => Ok(Self::Cancel {
+                id: field(&value, "id")?,
+            }),
+            Some("event") => Ok(Self::Event {
+                service: field(&value, "service")?,
+                payload: field(&value, "payload")?,
+                to: field(&value, "to")?,
+            }),
+            Some("announce") => Ok(Self::Announce {
+                services: field(&value, "services")?,
+            }),
             Some("ping") => Ok(Self::Ping),
             _ => Err(serde::de::Error::custom("invalid RPC frame kind")),
         }
@@ -41,65 +90,185 @@ pub type Handler = Arc<dyn Fn(Vec<Value>, AbortSignal) -> HandlerFuture + Send +
 pub type Forward = Arc<dyn Fn(String, Vec<Value>) -> HandlerFuture + Send + Sync>;
 pub type EventHandler = Arc<dyn Fn(&JsString, &Value, Option<&str>) + Send + Sync>;
 #[derive(Default)]
-pub struct CallOptions { pub signal: Option<AbortSignal>, pub timeout_ms: Option<u64> }
-pub struct PeerOptions { pub forward: Option<Forward>, pub dead_ms: u64 }
-impl Default for PeerOptions { fn default() -> Self { Self { forward: None, dead_ms: 15_000 } } }
-struct State {
-    services: HashMap<JsString, HashMap<String, Handler>>, provided: Vec<JsString>, announced: HashSet<JsString>,
-    pending: HashMap<u64, oneshot::Sender<Result<Value, String>>>, inflight: HashMap<u64, AbortController>,
-    events: Vec<EventHandler>, close_handlers: Vec<Arc<dyn Fn() + Send + Sync>>, next_id: u64, closed: bool,
+pub struct CallOptions {
+    pub signal: Option<AbortSignal>,
+    pub timeout_ms: Option<u64>,
 }
-pub struct RpcPeer { state: Arc<Mutex<State>>, outgoing: mpsc::UnboundedSender<Frame>, close: AbortController }
+pub struct PeerOptions {
+    pub forward: Option<Forward>,
+    pub dead_ms: u64,
+}
+impl Default for PeerOptions {
+    fn default() -> Self {
+        Self {
+            forward: None,
+            dead_ms: 15_000,
+        }
+    }
+}
+struct State {
+    services: HashMap<JsString, HashMap<String, Handler>>,
+    provided: Vec<JsString>,
+    announced: HashSet<JsString>,
+    pending: HashMap<u64, oneshot::Sender<Result<Value, String>>>,
+    inflight: HashMap<u64, AbortController>,
+    events: Vec<EventHandler>,
+    close_handlers: Vec<Arc<dyn Fn() + Send + Sync>>,
+    next_id: u64,
+    closed: bool,
+}
+pub struct RpcPeer {
+    state: Arc<Mutex<State>>,
+    outgoing: mpsc::UnboundedSender<Frame>,
+    close: AbortController,
+}
 impl RpcPeer {
     pub fn provide(&self, token: &ServiceToken, implementation: HashMap<String, Handler>) {
         let services = {
             let mut state = self.state.lock().expect("RPC state lock");
             state.services.insert(token.id.clone(), implementation);
-            if !state.provided.iter().any(|name| name == &token.id) { state.provided.push(token.id.clone()); }
+            if !state.provided.iter().any(|name| name == &token.id) {
+                state.provided.push(token.id.clone());
+            }
             state.provided.clone()
         };
         self.send(Frame::Announce { services });
     }
-    pub fn provided(&self) -> Vec<JsString> { self.state.lock().expect("RPC state lock").provided.clone() }
-    pub fn announced(&self) -> HashSet<JsString> { self.state.lock().expect("RPC state lock").announced.clone() }
-    pub fn emit(&self, token: &ServiceToken, payload: Value) { self.emit_raw(&token.id, payload, None); }
-    pub fn emit_to(&self, token: &ServiceToken, payload: Value, to: &str) { self.emit_raw(&token.id, payload, Some(to)); }
-    pub fn emit_raw(&self, service: &JsString, payload: Value, to: Option<&str>) { self.send(Frame::Event { service: service.clone(), payload, to: to.map(str::to_owned) }); }
+    pub fn provided(&self) -> Vec<JsString> {
+        self.state.lock().expect("RPC state lock").provided.clone()
+    }
+    pub fn announced(&self) -> HashSet<JsString> {
+        self.state.lock().expect("RPC state lock").announced.clone()
+    }
+    pub fn emit(&self, token: &ServiceToken, payload: Value) {
+        self.emit_raw(&token.id, payload, None);
+    }
+    pub fn emit_to(&self, token: &ServiceToken, payload: Value, to: &str) {
+        self.emit_raw(&token.id, payload, Some(to));
+    }
+    pub fn emit_raw(&self, service: &JsString, payload: Value, to: Option<&str>) {
+        self.send(Frame::Event {
+            service: service.clone(),
+            payload,
+            to: to.map(str::to_owned),
+        });
+    }
     pub fn on(&self, token: &ServiceToken, handler: impl Fn(&Value) + Send + Sync + 'static) {
         let id = token.id.clone();
-        self.on_event(move |name, payload, _| { if name == &id { handler(payload); } });
+        self.on_event(move |name, payload, _| {
+            if name == &id {
+                handler(payload);
+            }
+        });
     }
-    pub fn on_event(&self, handler: impl Fn(&JsString, &Value, Option<&str>) + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").events.push(Arc::new(handler)); }
-    pub fn on_close(&self, handler: impl Fn() + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").close_handlers.push(Arc::new(handler)); }
-    pub fn close(&self) { self.close.abort(None); }
-    pub fn is_closed(&self) -> bool { self.state.lock().expect("RPC state lock").closed }
-    fn send(&self, frame: Frame) { if self.outgoing.send(frame).is_err() { self.close(); } }
-    pub async fn call(&self, method: &str, args: Vec<Value>) -> Result<Value, String> { self.call_with(CallOptions::default(), method, args).await }
-    pub async fn call_with(&self, options: CallOptions, method: &str, args: Vec<Value>) -> Result<Value, String> {
-        if options.signal.as_ref().is_some_and(AbortSignal::aborted) { return Err("Call cancelled".to_owned()); }
+    pub fn on_event(
+        &self,
+        handler: impl Fn(&JsString, &Value, Option<&str>) + Send + Sync + 'static,
+    ) {
+        self.state
+            .lock()
+            .expect("RPC state lock")
+            .events
+            .push(Arc::new(handler));
+    }
+    pub fn on_close(&self, handler: impl Fn() + Send + Sync + 'static) {
+        self.state
+            .lock()
+            .expect("RPC state lock")
+            .close_handlers
+            .push(Arc::new(handler));
+    }
+    pub fn close(&self) {
+        self.close.abort(None);
+    }
+    pub fn is_closed(&self) -> bool {
+        self.state.lock().expect("RPC state lock").closed
+    }
+    fn send(&self, frame: Frame) {
+        if self.outgoing.send(frame).is_err() {
+            self.close();
+        }
+    }
+    pub async fn call(&self, method: &str, args: Vec<Value>) -> Result<Value, String> {
+        self.call_with(CallOptions::default(), method, args).await
+    }
+    pub async fn call_with(
+        &self,
+        options: CallOptions,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, String> {
+        if options.signal.as_ref().is_some_and(AbortSignal::aborted) {
+            return Err("Call cancelled".to_owned());
+        }
         let (sender, receiver) = oneshot::channel();
         let id = {
             let mut state = self.state.lock().expect("RPC state lock");
-            if state.closed { return Err("Connection closed".to_owned()); }
-            let id = state.next_id; state.next_id += 1; state.pending.insert(id, sender); id
+            if state.closed {
+                return Err("Connection closed".to_owned());
+            }
+            let id = state.next_id;
+            state.next_id += 1;
+            state.pending.insert(id, sender);
+            id
         };
-        self.send(Frame::Call { id, method: method.to_owned(), args });
-        let timeout = async { match options.timeout_ms { Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await, None => std::future::pending().await } };
-        let abort = async { match &options.signal { Some(signal) => signal.cancelled().await, None => std::future::pending().await } };
+        self.send(Frame::Call {
+            id,
+            method: method.to_owned(),
+            args,
+        });
+        let timeout = async {
+            match options.timeout_ms {
+                Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
+                None => std::future::pending().await,
+            }
+        };
+        let abort = async {
+            match &options.signal {
+                Some(signal) => signal.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
         let result = tokio::select! {
             result = receiver => return result.unwrap_or_else(|_| Err("Connection closed".to_owned())),
             _ = abort => Err("Call cancelled".to_owned()),
             _ = timeout => Err(format!("{method} timed out after {}ms", options.timeout_ms.unwrap_or_default())),
         };
-        if self.state.lock().expect("RPC state lock").pending.remove(&id).is_some() { self.send(Frame::Cancel { id }); }
+        if self
+            .state
+            .lock()
+            .expect("RPC state lock")
+            .pending
+            .remove(&id)
+            .is_some()
+        {
+            self.send(Frame::Cancel { id });
+        }
         result
     }
 }
-impl Drop for RpcPeer { fn drop(&mut self) { self.close(); } }
+impl Drop for RpcPeer {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
 
 pub fn create_peer<R, W>(input: R, output: W, options: PeerOptions) -> RpcPeer
-where R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'static {
-    let state = Arc::new(Mutex::new(State { services: HashMap::new(), provided: Vec::new(), announced: HashSet::new(), pending: HashMap::new(), inflight: HashMap::new(), events: Vec::new(), close_handlers: Vec::new(), next_id: 1, closed: false }));
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let state = Arc::new(Mutex::new(State {
+        services: HashMap::new(),
+        provided: Vec::new(),
+        announced: HashSet::new(),
+        pending: HashMap::new(),
+        inflight: HashMap::new(),
+        events: Vec::new(),
+        close_handlers: Vec::new(),
+        next_id: 1,
+        closed: false,
+    }));
     let (outgoing, mut messages) = mpsc::unbounded_channel::<Frame>();
     let close = AbortController::new();
     let signal = close.signal();
@@ -109,9 +278,17 @@ where R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'sta
         let mut output = output;
         loop {
             let frame = tokio::select! { biased; _ = write_signal.cancelled() => break, frame = messages.recv() => match frame { Some(frame) => frame, None => break } };
-            let line = match serde_json::to_vec(&frame) { Ok(mut line) => { line.push(b'\n'); line }, Err(_) => break };
+            let line = match serde_json::to_vec(&frame) {
+                Ok(mut line) => {
+                    line.push(b'\n');
+                    line
+                }
+                Err(_) => break,
+            };
             let written = tokio::select! { biased; _ = write_signal.cancelled() => break, written = output.write_all(&line) => written };
-            if written.is_err() { break; }
+            if written.is_err() {
+                break;
+            }
         }
         writer_close.abort(None);
     });
@@ -137,38 +314,81 @@ where R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'sta
             last_frame = tokio::time::Instant::now();
             let frame = value;
             match frame {
-                Frame::Event { service, payload, to } => {
+                Frame::Event {
+                    service,
+                    payload,
+                    to,
+                } => {
                     let handlers = reader_state.lock().expect("RPC state lock").events.clone();
-                    for handler in handlers { handler(&service, &payload, to.as_deref()); }
+                    for handler in handlers {
+                        handler(&service, &payload, to.as_deref());
+                    }
                 }
-                Frame::Announce { services } => { reader_state.lock().expect("RPC state lock").announced = services.into_iter().collect(); }
-                Frame::Ping => {},
+                Frame::Announce { services } => {
+                    reader_state.lock().expect("RPC state lock").announced =
+                        services.into_iter().collect();
+                }
+                Frame::Ping => {}
                 Frame::Result { id, result } => {
-                    if let Some(waiter) = reader_state.lock().expect("RPC state lock").pending.remove(&id) { let _ = waiter.send(Ok(result)); }
+                    if let Some(waiter) = reader_state
+                        .lock()
+                        .expect("RPC state lock")
+                        .pending
+                        .remove(&id)
+                    {
+                        let _ = waiter.send(Ok(result));
+                    }
                 }
                 Frame::Error { id, error } => {
-                    if let Some(waiter) = reader_state.lock().expect("RPC state lock").pending.remove(&id) { let _ = waiter.send(Err(error)); }
+                    if let Some(waiter) = reader_state
+                        .lock()
+                        .expect("RPC state lock")
+                        .pending
+                        .remove(&id)
+                    {
+                        let _ = waiter.send(Err(error));
+                    }
                 }
                 Frame::Cancel { id } => {
-                    if let Some(controller) = reader_state.lock().expect("RPC state lock").inflight.remove(&id) { controller.abort(Some(AbortReason::new("Error", "Cancelled by caller"))); }
+                    if let Some(controller) = reader_state
+                        .lock()
+                        .expect("RPC state lock")
+                        .inflight
+                        .remove(&id)
+                    {
+                        controller.abort(Some(AbortReason::new("Error", "Cancelled by caller")));
+                    }
                 }
                 Frame::Call { id, method, args } => {
                     let controller = AbortController::new();
                     let (local, handler) = {
                         let mut state = reader_state.lock().expect("RPC state lock");
                         state.inflight.insert(id, controller.clone());
-                        let service = method.split_once('.').and_then(|(name, _)| state.services.get(&JsString::from(name)));
-                        let handler = method.split_once('.').and_then(|(_, name)| service.and_then(|service| service.get(name))).cloned();
+                        let service = method
+                            .split_once('.')
+                            .and_then(|(name, _)| state.services.get(&JsString::from(name)));
+                        let handler = method
+                            .split_once('.')
+                            .and_then(|(_, name)| service.and_then(|service| service.get(name)))
+                            .cloned();
                         (service.is_some(), handler)
                     };
-                    let forward = options.forward.clone(); let outgoing = reader_outgoing.clone(); let state = reader_state.clone();
+                    let forward = options.forward.clone();
+                    let outgoing = reader_outgoing.clone();
+                    let state = reader_state.clone();
                     tokio::spawn(async move {
                         let result = match handler {
                             Some(handler) => handler(args, controller.signal()).await,
                             None if local => Err(format!("Unknown method: {method}")),
-                            None => match forward { Some(forward) => forward(method, args).await, None => Err(format!("No service provides {method}")) },
+                            None => match forward {
+                                Some(forward) => forward(method, args).await,
+                                None => Err(format!("No service provides {method}")),
+                            },
                         };
-                        let frame = match result { Ok(result) => Frame::Result { id, result }, Err(error) => Frame::Error { id, error } };
+                        let frame = match result {
+                            Ok(result) => Frame::Result { id, result },
+                            Err(error) => Frame::Error { id, error },
+                        };
                         let _ = outgoing.send(frame);
                         state.lock().expect("RPC state lock").inflight.remove(&id);
                     });
@@ -177,12 +397,27 @@ where R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'sta
         }
         reader_close.abort(None);
         let (pending, inflight, handlers) = {
-            let mut state = reader_state.lock().expect("RPC state lock"); state.closed = true;
-            (std::mem::take(&mut state.pending), std::mem::take(&mut state.inflight), state.close_handlers.clone())
+            let mut state = reader_state.lock().expect("RPC state lock");
+            state.closed = true;
+            (
+                std::mem::take(&mut state.pending),
+                std::mem::take(&mut state.inflight),
+                state.close_handlers.clone(),
+            )
         };
-        for (_, waiter) in pending { let _ = waiter.send(Err("Connection closed".to_owned())); }
-        for (_, controller) in inflight { controller.abort(Some(AbortReason::new("Error", "Connection closed"))); }
-        for handler in handlers { handler(); }
+        for (_, waiter) in pending {
+            let _ = waiter.send(Err("Connection closed".to_owned()));
+        }
+        for (_, controller) in inflight {
+            controller.abort(Some(AbortReason::new("Error", "Connection closed")));
+        }
+        for handler in handlers {
+            handler();
+        }
     });
-    RpcPeer { state, outgoing, close }
+    RpcPeer {
+        state,
+        outgoing,
+        close,
+    }
 }

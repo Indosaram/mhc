@@ -1,6 +1,6 @@
 use std::fs;
 
-use ulw_loop_core::checkpoint::{checkpoint_ulw_loop, CheckpointUlwLoopArgs};
+use ulw_loop_core::checkpoint::{CheckpointUlwLoopArgs, checkpoint_ulw_loop};
 use ulw_loop_core::domain_types::*;
 use ulw_loop_core::goal_status::aggregate_codex_objective_for_scope;
 use ulw_loop_core::plan_io::{read_ulw_loop_plan, write_plan};
@@ -50,7 +50,10 @@ fn goal(id: &str, status: &str, criteria: Vec<UlwLoopSuccessCriterion>) -> UlwLo
 }
 
 fn plan(goals: Vec<UlwLoopItem>, members: Vec<&str>) -> UlwLoopPlan {
-    let active_goal_id = goals.iter().find(|g| g.status == "in_progress").map(|g| g.id.clone());
+    let active_goal_id = goals
+        .iter()
+        .find(|g| g.status == "in_progress")
+        .map(|g| g.id.clone());
     UlwLoopPlan {
         version: 1,
         revision: Some(1),
@@ -80,7 +83,10 @@ fn plan(goals: Vec<UlwLoopItem>, members: Vec<&str>) -> UlwLoopPlan {
 fn repo_with(seed: UlwLoopPlan) -> tempfile::TempDir {
     let repo = tempfile::tempdir().expect("tempdir");
     fs::create_dir_all(repo.path().join(".omo/ulw-loop")).expect("loop directory");
-    let scope = ulw_loop_core::paths::UlwLoopScope { session_id: Some("s1".into()), ..Default::default() };
+    let scope = ulw_loop_core::paths::UlwLoopScope {
+        session_id: Some("s1".into()),
+        ..Default::default()
+    };
     write_plan(repo.path(), seed, Some(&scope)).expect("write plan");
     repo
 }
@@ -90,8 +96,12 @@ fn snapshot(status: &str) -> String {
 }
 
 fn expect_code(repo: &tempfile::TempDir, args: CheckpointUlwLoopArgs, code: &str) {
-    let scope = ulw_loop_core::paths::UlwLoopScope { session_id: Some("s1".into()), ..Default::default() };
-    let error = checkpoint_ulw_loop(repo.path(), &args, Some(&scope), None).expect_err("expected error");
+    let scope = ulw_loop_core::paths::UlwLoopScope {
+        session_id: Some("s1".into()),
+        ..Default::default()
+    };
+    let error =
+        checkpoint_ulw_loop(repo.path(), &args, Some(&scope), None).expect_err("expected error");
     assert_eq!(error.code, code);
 }
 
@@ -112,44 +122,184 @@ fn gate_json(repo: &tempfile::TempDir, total: usize, pass: usize) -> String {
 
 #[test]
 fn rejects_open_batch_member_when_completing_final_goal() {
-    let repo = repo_with(plan(vec![goal("G001", "pending", vec![criterion("C001", "pass")]), goal("G002", "in_progress", vec![criterion("C001", "pass")]), goal("G003", "pending", vec![])], vec!["G001", "G002"]));
-    expect_code(&repo, CheckpointUlwLoopArgs { goal_id: "G002".into(), status: "complete".into(), evidence: "batch final implementation done".into(), codex_goal_json: Some(snapshot("active")), quality_gate_json: Some("{}".into()) }, "ULW_LOOP_VALIDATION_BATCH_OPEN");
+    let repo = repo_with(plan(
+        vec![
+            goal("G001", "pending", vec![criterion("C001", "pass")]),
+            goal("G002", "in_progress", vec![criterion("C001", "pass")]),
+            goal("G003", "pending", vec![]),
+        ],
+        vec!["G001", "G002"],
+    ));
+    expect_code(
+        &repo,
+        CheckpointUlwLoopArgs {
+            goal_id: "G002".into(),
+            status: "complete".into(),
+            evidence: "batch final implementation done".into(),
+            codex_goal_json: Some(snapshot("active")),
+            quality_gate_json: Some("{}".into()),
+        },
+        "ULW_LOOP_VALIDATION_BATCH_OPEN",
+    );
 }
 
 #[test]
 fn requires_batch_gate_when_members_complete() {
-    let repo = repo_with(plan(vec![goal("G001", "complete", vec![criterion("C001", "pass")]), goal("G002", "in_progress", vec![criterion("C001", "pass")]), goal("G003", "pending", vec![])], vec!["G001", "G002"]));
-    expect_code(&repo, CheckpointUlwLoopArgs { goal_id: "G002".into(), status: "complete".into(), evidence: "batch final implementation done".into(), codex_goal_json: Some(snapshot("active")), quality_gate_json: None }, "ULW_LOOP_VALIDATION_BATCH_GATE_REQUIRED");
+    let repo = repo_with(plan(
+        vec![
+            goal("G001", "complete", vec![criterion("C001", "pass")]),
+            goal("G002", "in_progress", vec![criterion("C001", "pass")]),
+            goal("G003", "pending", vec![]),
+        ],
+        vec!["G001", "G002"],
+    ));
+    expect_code(
+        &repo,
+        CheckpointUlwLoopArgs {
+            goal_id: "G002".into(),
+            status: "complete".into(),
+            evidence: "batch final implementation done".into(),
+            codex_goal_json: Some(snapshot("active")),
+            quality_gate_json: None,
+        },
+        "ULW_LOOP_VALIDATION_BATCH_GATE_REQUIRED",
+    );
 }
 
 #[test]
 fn rejects_pending_member_criteria_with_gate() {
-    let repo = repo_with(plan(vec![goal("G001", "complete", vec![criterion("C001", "pass"), criterion("C002", "pending")]), goal("G002", "in_progress", vec![criterion("C001", "pass"), criterion("C002", "pass")]), goal("G003", "pending", vec![])], vec!["G001", "G002"]));
-    expect_code(&repo, CheckpointUlwLoopArgs { goal_id: "G002".into(), status: "complete".into(), evidence: "batch final implementation done".into(), codex_goal_json: Some(snapshot("active")), quality_gate_json: Some(gate_json(&repo, 4, 4)) }, "ULW_LOOP_VALIDATION_BATCH_CRITERIA_PENDING");
+    let repo = repo_with(plan(
+        vec![
+            goal(
+                "G001",
+                "complete",
+                vec![criterion("C001", "pass"), criterion("C002", "pending")],
+            ),
+            goal(
+                "G002",
+                "in_progress",
+                vec![criterion("C001", "pass"), criterion("C002", "pass")],
+            ),
+            goal("G003", "pending", vec![]),
+        ],
+        vec!["G001", "G002"],
+    ));
+    expect_code(
+        &repo,
+        CheckpointUlwLoopArgs {
+            goal_id: "G002".into(),
+            status: "complete".into(),
+            evidence: "batch final implementation done".into(),
+            codex_goal_json: Some(snapshot("active")),
+            quality_gate_json: Some(gate_json(&repo, 4, 4)),
+        },
+        "ULW_LOOP_VALIDATION_BATCH_CRITERIA_PENDING",
+    );
 }
 
 #[test]
 fn rejects_mismatched_batch_gate_coverage() {
-    let repo = repo_with(plan(vec![goal("G001", "complete", vec![criterion("C001", "pass"), criterion("C002", "pass")]), goal("G002", "in_progress", vec![criterion("C001", "pass"), criterion("C002", "pass")]), goal("G003", "pending", vec![])], vec!["G001", "G002"]));
-    expect_code(&repo, CheckpointUlwLoopArgs { goal_id: "G002".into(), status: "complete".into(), evidence: "batch final implementation done".into(), codex_goal_json: Some(snapshot("active")), quality_gate_json: Some(gate_json(&repo, 3, 3)) }, "ULW_LOOP_VALIDATION_BATCH_GATE_MISMATCH");
+    let repo = repo_with(plan(
+        vec![
+            goal(
+                "G001",
+                "complete",
+                vec![criterion("C001", "pass"), criterion("C002", "pass")],
+            ),
+            goal(
+                "G002",
+                "in_progress",
+                vec![criterion("C001", "pass"), criterion("C002", "pass")],
+            ),
+            goal("G003", "pending", vec![]),
+        ],
+        vec!["G001", "G002"],
+    ));
+    expect_code(
+        &repo,
+        CheckpointUlwLoopArgs {
+            goal_id: "G002".into(),
+            status: "complete".into(),
+            evidence: "batch final implementation done".into(),
+            codex_goal_json: Some(snapshot("active")),
+            quality_gate_json: Some(gate_json(&repo, 3, 3)),
+        },
+        "ULW_LOOP_VALIDATION_BATCH_GATE_MISMATCH",
+    );
 }
 
 #[test]
 fn closes_batch_and_aggregate_when_final_goal_is_both() {
-    let repo = repo_with(plan(vec![goal("G001", "complete", vec![criterion("C001", "pass")]), goal("G002", "complete", vec![criterion("C001", "pass")]), goal("G003", "in_progress", vec![criterion("C001", "pass")])], vec!["G002", "G003"]));
-    let scope = ulw_loop_core::paths::UlwLoopScope { session_id: Some("s1".into()), ..Default::default() };
-    let result = checkpoint_ulw_loop(repo.path(), &CheckpointUlwLoopArgs { goal_id: "G003".into(), status: "complete".into(), evidence: "batch final is also aggregate final".into(), codex_goal_json: Some(snapshot("complete")), quality_gate_json: Some(gate_json(&repo, 2, 2)) }, Some(&scope), None).expect("checkpoint");
-    assert_eq!(result.aggregate_completion.expect("aggregate").status, "complete");
-    assert_eq!(read_ulw_loop_plan(repo.path(), Some(&scope)).expect("read plan").goals.iter().find(|g| g.id == "G003").expect("G003").status, "complete");
+    let repo = repo_with(plan(
+        vec![
+            goal("G001", "complete", vec![criterion("C001", "pass")]),
+            goal("G002", "complete", vec![criterion("C001", "pass")]),
+            goal("G003", "in_progress", vec![criterion("C001", "pass")]),
+        ],
+        vec!["G002", "G003"],
+    ));
+    let scope = ulw_loop_core::paths::UlwLoopScope {
+        session_id: Some("s1".into()),
+        ..Default::default()
+    };
+    let result = checkpoint_ulw_loop(
+        repo.path(),
+        &CheckpointUlwLoopArgs {
+            goal_id: "G003".into(),
+            status: "complete".into(),
+            evidence: "batch final is also aggregate final".into(),
+            codex_goal_json: Some(snapshot("complete")),
+            quality_gate_json: Some(gate_json(&repo, 2, 2)),
+        },
+        Some(&scope),
+        None,
+    )
+    .expect("checkpoint");
+    assert_eq!(
+        result.aggregate_completion.expect("aggregate").status,
+        "complete"
+    );
+    assert_eq!(
+        read_ulw_loop_plan(repo.path(), Some(&scope))
+            .expect("read plan")
+            .goals
+            .iter()
+            .find(|g| g.id == "G003")
+            .expect("G003")
+            .status,
+        "complete"
+    );
 }
 
 #[test]
 fn appends_batch_closed_when_final_member_completes() {
-    let repo = repo_with(plan(vec![goal("G001", "complete", vec![criterion("C001", "pass")]), goal("G002", "in_progress", vec![criterion("C001", "pass")]), goal("G003", "pending", vec![])], vec!["G001", "G002"]));
-    let scope = ulw_loop_core::paths::UlwLoopScope { session_id: Some("s1".into()), ..Default::default() };
-    let result = checkpoint_ulw_loop(repo.path(), &CheckpointUlwLoopArgs { goal_id: "G002".into(), status: "complete".into(), evidence: "batch final implementation done".into(), codex_goal_json: Some(snapshot("active")), quality_gate_json: Some(gate_json(&repo, 2, 2)) }, Some(&scope), None).expect("checkpoint");
+    let repo = repo_with(plan(
+        vec![
+            goal("G001", "complete", vec![criterion("C001", "pass")]),
+            goal("G002", "in_progress", vec![criterion("C001", "pass")]),
+            goal("G003", "pending", vec![]),
+        ],
+        vec!["G001", "G002"],
+    ));
+    let scope = ulw_loop_core::paths::UlwLoopScope {
+        session_id: Some("s1".into()),
+        ..Default::default()
+    };
+    let result = checkpoint_ulw_loop(
+        repo.path(),
+        &CheckpointUlwLoopArgs {
+            goal_id: "G002".into(),
+            status: "complete".into(),
+            evidence: "batch final implementation done".into(),
+            codex_goal_json: Some(snapshot("active")),
+            quality_gate_json: Some(gate_json(&repo, 2, 2)),
+        },
+        Some(&scope),
+        None,
+    )
+    .expect("checkpoint");
     assert_eq!(result.goal.status, "complete");
-    let ledger = fs::read_to_string(repo.path().join(".omo/ulw-loop/s1/ledger.jsonl")).expect("ledger");
+    let ledger =
+        fs::read_to_string(repo.path().join(".omo/ulw-loop/s1/ledger.jsonl")).expect("ledger");
     assert!(ledger.contains("batch_closed"));
 }
-

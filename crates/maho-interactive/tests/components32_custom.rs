@@ -8,8 +8,8 @@ use maho_interactive::components::tool_execution::{
 use maho_interactive::components::tool_execution_types::ToolExecutionResult;
 use maho_interactive::theme::{ColorMode, Theme};
 use maho_interactive::tools::renderers::{
-    RenderedComponent, ToolRenderContext, ToolRenderResultOptions, ToolRenderers, create_all_tool_renderers,
-    with_built_in_renderers,
+    RenderedComponent, ToolRenderContext, ToolRenderResultOptions, ToolRenderers,
+    create_all_tool_renderers, with_built_in_renderers,
 };
 use maho_tools::definition::{ToolContent, ToolResult};
 use maho_tui::components::text::Text;
@@ -25,15 +25,26 @@ fn fixtures() -> Value {
 }
 
 fn trim(lines: Vec<String>) -> Vec<String> {
-    lines.into_iter().map(|line| line.trim_end().to_owned()).collect()
+    lines
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
 #[derive(Default)]
 struct ReplacedRenderers;
 
 impl ToolRenderers for ReplacedRenderers {
-    fn render_call(&mut self, _theme: &Theme, _context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
-        Some(Rc::new(RefCell::new(Text::with_padding("CUSTOM CALL", 0, 0))))
+    fn render_call(
+        &mut self,
+        _theme: &Theme,
+        _context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
+        Some(Rc::new(RefCell::new(Text::with_padding(
+            "CUSTOM CALL",
+            0,
+            0,
+        ))))
     }
     fn render_result(
         &mut self,
@@ -42,7 +53,11 @@ impl ToolRenderers for ReplacedRenderers {
         _theme: &Theme,
         _context: &ToolRenderContext<'_>,
     ) -> Option<RenderedComponent> {
-        Some(Rc::new(RefCell::new(Text::with_padding("CUSTOM RESULT", 0, 0))))
+        Some(Rc::new(RefCell::new(Text::with_padding(
+            "CUSTOM RESULT",
+            0,
+            0,
+        ))))
     }
 }
 
@@ -50,12 +65,20 @@ fn built_in(name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
     create_all_tool_renderers().get(name).cloned()
 }
 
-fn card(theme: &Theme, tool_name: &str, args: Value, definition: Option<Rc<RefCell<dyn ToolRenderers>>>) -> ToolExecutionComponent {
+fn card(
+    theme: &Theme,
+    tool_name: &str,
+    args: Value,
+    definition: Option<Rc<RefCell<dyn ToolRenderers>>>,
+) -> ToolExecutionComponent {
     ToolExecutionComponent::new(
         tool_name,
         "call-1",
         args,
-        ToolExecutionOptions { show_images: Some(false), image_width_cells: None },
+        ToolExecutionOptions {
+            show_images: Some(false),
+            image_width_cells: None,
+        },
         definition,
         "/tmp/project",
         ToolExecutionPresentation::Classic,
@@ -89,10 +112,26 @@ fn exploration_calls_match_pinned_senpi_including_replaced_renderers() {
                     ExplorationAction::Search => "Search",
                     ExplorationAction::List => "List",
                 };
-                assert_eq!(action, wanted["action"].as_str().expect("action"), "{name} action");
-                assert_eq!(call.label, wanted["label"].as_str().expect("label"), "{name} label");
-                assert_eq!(call.pending, wanted["pending"].as_bool().expect("pending"), "{name} pending");
-                assert_eq!(call.failed, wanted["failed"].as_bool().expect("failed"), "{name} failed");
+                assert_eq!(
+                    action,
+                    wanted["action"].as_str().expect("action"),
+                    "{name} action"
+                );
+                assert_eq!(
+                    call.label,
+                    wanted["label"].as_str().expect("label"),
+                    "{name} label"
+                );
+                assert_eq!(
+                    call.pending,
+                    wanted["pending"].as_bool().expect("pending"),
+                    "{name} pending"
+                );
+                assert_eq!(
+                    call.failed,
+                    wanted["failed"].as_bool().expect("failed"),
+                    "{name} failed"
+                );
             }
             (actual, _) => panic!("{name}: expected {wanted}, got {actual:?}"),
         }
@@ -112,12 +151,24 @@ fn a_card_with_replaced_renderers_matches_pinned_senpi() {
         );
         component.set_args_complete();
         component.update_result(
-            ToolExecutionResult { content: vec![ToolContent::text("x")], details: None, is_error: false },
+            ToolExecutionResult {
+                content: vec![ToolContent::text("x")],
+                details: None,
+                is_error: false,
+            },
             false,
         );
         component.stop_animation();
-        let expected: Vec<String> =
-            case["lines"].as_array().expect("lines").iter().map(|line| line.as_str().expect("line").to_owned()).collect();
-        assert_eq!(trim(component.render(width)), expected, "custom render at {width}");
+        let expected: Vec<String> = case["lines"]
+            .as_array()
+            .expect("lines")
+            .iter()
+            .map(|line| line.as_str().expect("line").to_owned())
+            .collect();
+        assert_eq!(
+            trim(component.render(width)),
+            expected,
+            "custom render at {width}"
+        );
     }
 }

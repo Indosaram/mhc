@@ -8,9 +8,7 @@ use omo_config_core::{
 };
 use serde_json::{Map, Value};
 
-use crate::category_deep_split::{
-    CATEGORY_DEEP_SPLIT_MIGRATION_ID, transform_category_deep_split,
-};
+use crate::category_deep_split::{CATEGORY_DEEP_SPLIT_MIGRATION_ID, transform_category_deep_split};
 use crate::discovery::{
     CONFIG_JSONC_MIGRATION_ID, OPENCODE_CONFIG_MIGRATION_ID, discover_legacy_config_groups,
 };
@@ -424,8 +422,18 @@ pub fn create_legacy_config_migration_plans(
         .map(|(_, target_path)| target_path)
         .collect();
     plans.extend(in_place_targets.iter().cloned().map(reasoning_plan));
-    plans.extend(in_place_targets.iter().cloned().map(category_deep_split_plan));
-    plans.extend(in_place_targets.iter().cloned().map(harness_native_rename_plan));
+    plans.extend(
+        in_place_targets
+            .iter()
+            .cloned()
+            .map(category_deep_split_plan),
+    );
+    plans.extend(
+        in_place_targets
+            .iter()
+            .cloned()
+            .map(harness_native_rename_plan),
+    );
     plans.extend(
         in_place_targets
             .into_iter()

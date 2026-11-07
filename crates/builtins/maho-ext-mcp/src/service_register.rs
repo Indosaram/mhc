@@ -1,5 +1,9 @@
+use crate::{
+    catalog::McpCatalogCallback, catalog_cache::McpCachedServerCatalog,
+    config_schema::ResolvedMcpConfig, connection::ServerConnection, log::McpLogger,
+    service_types::McpConnectionEntry,
+};
 use std::sync::{Arc, Mutex};
-use crate::{catalog::McpCatalogCallback, catalog_cache::McpCachedServerCatalog, config_schema::ResolvedMcpConfig, connection::ServerConnection, log::McpLogger, service_types::McpConnectionEntry};
 
 pub struct McpServiceRegistrationEntry {
     pub name: String,
@@ -37,32 +41,58 @@ pub async fn prepare_mcp_service_registration_entries_with(
     let mut prepared = Vec::with_capacity(entries.len());
     for entry in entries {
         let snapshot = entry.lock().await;
-        let server_config = config.servers.get(&snapshot.name).and_then(|server| server.config.clone());
+        let server_config = config
+            .servers
+            .get(&snapshot.name)
+            .and_then(|server| server.config.clone());
         let refresh_entry = entry.clone();
         let auth_entry = entry.clone();
         let origin = binding.clone().map(|binding| {
-            let name = snapshot.name.clone(); let connection = snapshot.connection.clone();
-            Arc::new(move || Some(binding.upgrade()?.request_origin(&name, &connection))) as crate::request_origin::McpRequestOriginFactory
+            let name = snapshot.name.clone();
+            let connection = snapshot.connection.clone();
+            Arc::new(move || Some(binding.upgrade()?.request_origin(&name, &connection)))
+                as crate::request_origin::McpRequestOriginFactory
         });
         let bind_presentation = binding.clone().map(|binding| {
-            Arc::new(move |ui: &Arc<dyn maho_ext_api::ExtensionUi>| if let Some(binding) = binding.upgrade() {binding.bind_presentation(ui);}) as McpBindPresentation
+            Arc::new(move |ui: &Arc<dyn maho_ext_api::ExtensionUi>| {
+                if let Some(binding) = binding.upgrade() {
+                    binding.bind_presentation(ui);
+                }
+            }) as McpBindPresentation
         });
-        let invocation = Some(Arc::new(invocation_resolver(config, entry, &snapshot, binding.clone(), origin.clone(), tools.clone())));
+        let invocation = Some(Arc::new(invocation_resolver(
+            config,
+            entry,
+            &snapshot,
+            binding.clone(),
+            origin.clone(),
+            tools.clone(),
+        )));
         prepared.push(McpServiceRegistrationEntry {
-            request_origin: origin, bind_presentation, invocation,
-            name: snapshot.name.clone(), connection: snapshot.connection.clone(), logger: snapshot.logger.clone(),
-            agent_dir: snapshot.agent_dir.clone(), cached_catalog: snapshot.cached_catalog.clone(),
+            request_origin: origin,
+            bind_presentation,
+            invocation,
+            name: snapshot.name.clone(),
+            connection: snapshot.connection.clone(),
+            logger: snapshot.logger.clone(),
+            agent_dir: snapshot.agent_dir.clone(),
+            cached_catalog: snapshot.cached_catalog.clone(),
             artifacts: snapshot.artifacts.clone(),
             ensure_fresh: Arc::new(move || {
                 let entry = auth_entry.clone();
-                Box::pin(async move {
-                    entry.lock().await.auth_plan.ensure_fresh().await
-                })
+                Box::pin(async move { entry.lock().await.auth_plan.ensure_fresh().await })
             }),
             ensure_cached_tool_connected: Arc::new(move || {
-                let entry = refresh_entry.clone(); let config = server_config.clone();
+                let entry = refresh_entry.clone();
+                let config = server_config.clone();
                 Box::pin(async move {
-                    if let Some(config) = config {crate::startup_race::connect_and_refresh_mcp_catalog(&mut *entry.lock().await, &config).await?;}
+                    if let Some(config) = config {
+                        crate::startup_race::connect_and_refresh_mcp_catalog(
+                            &mut *entry.lock().await,
+                            &config,
+                        )
+                        .await?;
+                    }
                     Ok(())
                 })
             }),
@@ -88,42 +118,76 @@ fn invocation_resolver(
 ) -> crate::invocation::McpInvocationResolver {
     let name = snapshot.name.clone();
     let connection = snapshot.connection.clone();
-    let server_config = config.servers.get(&name).and_then(|server| server.config.clone());
+    let server_config = config
+        .servers
+        .get(&name)
+        .and_then(|server| server.config.clone());
     let settings = config.settings.clone();
     let weak_entry = Arc::downgrade(handle);
     let is_current: Arc<dyn Fn() -> bool + Send + Sync> = {
         let (binding, name, connection) = (binding.clone(), name.clone(), connection.clone());
         Arc::new(move || match &binding {
-            Some(binding) => binding.upgrade().is_some_and(|binding| binding.offers(&name, &connection)),
+            Some(binding) => binding
+                .upgrade()
+                .is_some_and(|binding| binding.offers(&name, &connection)),
             None => true,
         })
     };
     let ready: McpCatalogCallback = {
-        let (weak_entry, server_config, connection) = (weak_entry.clone(), server_config.clone(), connection.clone());
+        let (weak_entry, server_config, connection) = (
+            weak_entry.clone(),
+            server_config.clone(),
+            connection.clone(),
+        );
         Arc::new(move || {
-            let (weak_entry, server_config, connection) = (weak_entry.clone(), server_config.clone(), connection.clone());
+            let (weak_entry, server_config, connection) = (
+                weak_entry.clone(),
+                server_config.clone(),
+                connection.clone(),
+            );
             Box::pin(async move {
-                let Some(handle) = weak_entry.upgrade() else { return Ok(()) };
+                let Some(handle) = weak_entry.upgrade() else {
+                    return Ok(());
+                };
                 let ensure_fresh: McpCatalogCallback = {
                     let handle = Arc::downgrade(&handle);
                     Arc::new(move || {
                         let handle = handle.clone();
                         Box::pin(async move {
-                            let Some(handle) = handle.upgrade() else { return Ok(()) };
-                            let plan = { let entry = handle.lock().await; crate::auth::context::ServerAuthPlan {mode: entry.auth_plan.mode, provider: entry.auth_plan.provider.clone(), refresh: entry.auth_plan.refresh.clone()} };
+                            let Some(handle) = handle.upgrade() else {
+                                return Ok(());
+                            };
+                            let plan = {
+                                let entry = handle.lock().await;
+                                crate::auth::context::ServerAuthPlan {
+                                    mode: entry.auth_plan.mode,
+                                    provider: entry.auth_plan.provider.clone(),
+                                    refresh: entry.auth_plan.refresh.clone(),
+                                }
+                            };
                             plan.ensure_fresh().await
                         })
                     })
                 };
-                crate::health::ensure_mcp_tool_call_connection(&connection, Some(&ensure_fresh)).await?;
+                crate::health::ensure_mcp_tool_call_connection(&connection, Some(&ensure_fresh))
+                    .await?;
                 if let Some(server_config) = &server_config {
-                    crate::startup_race::connect_and_refresh_mcp_catalog_unlocked(&handle, server_config).await?;
+                    crate::startup_race::connect_and_refresh_mcp_catalog_unlocked(
+                        &handle,
+                        server_config,
+                    )
+                    .await?;
                 }
                 Ok(())
             })
         })
     };
-    let catalog = Arc::new(CurrentLookup {server_config, settings, is_current: is_current.clone(), request_origin});
+    let catalog = Arc::new(CurrentLookup {
+        server_config,
+        settings,
+        is_current: is_current.clone(),
+        request_origin,
+    });
     let current: crate::invocation::McpInvocationCurrent = {
         let (weak_entry, catalog) = (weak_entry.clone(), catalog.clone());
         Arc::new(move |tool: String| {
@@ -145,7 +209,10 @@ fn invocation_resolver(
         owner: snapshot.dispatch_owner.clone(),
         configuration: snapshot.config_hash.clone(),
         context_required: binding.is_some(),
-        session_id: binding.as_ref().and_then(std::sync::Weak::upgrade).and_then(|binding| binding.session_id()),
+        session_id: binding
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|binding| binding.session_id()),
         is_current,
         ready,
         current,
@@ -163,7 +230,11 @@ struct CurrentLookup {
     request_origin: Option<crate::request_origin::McpRequestOriginFactory>,
 }
 impl CurrentLookup {
-    fn find(&self, entry: &McpConnectionEntry, tool: &str) -> Option<crate::catalog::McpToolCatalogEntry> {
+    fn find(
+        &self,
+        entry: &McpConnectionEntry,
+        tool: &str,
+    ) -> Option<crate::catalog::McpToolCatalogEntry> {
         let server_config = self.server_config.as_ref()?;
         if !(self.is_current)()
             || !entry.cache_refreshed_after_connect
@@ -174,9 +245,19 @@ impl CurrentLookup {
         let catalog = entry.cached_catalog.as_ref()?;
         let client = entry.connection.client().ok()?;
         let modern = catalog.modern || crate::modern::request::is_modern_mcp_client(&client);
-        let timeout = std::time::Duration::from_secs_f64(server_config.request_timeout_ms.unwrap_or(30000.0) / 1000.0);
-        let tools = catalog.tools.iter().filter(|tool| !modern || crate::modern::tool_schema::has_supported_modern_tool_schemas(tool)).cloned().collect::<Vec<_>>();
-        let mut entries = crate::catalog::cached_tools_to_catalog_entries(&entry.name, &tools, client, timeout);
+        let timeout = std::time::Duration::from_secs_f64(
+            server_config.request_timeout_ms.unwrap_or(30000.0) / 1000.0,
+        );
+        let tools = catalog
+            .tools
+            .iter()
+            .filter(|tool| {
+                !modern || crate::modern::tool_schema::has_supported_modern_tool_schemas(tool)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut entries =
+            crate::catalog::cached_tools_to_catalog_entries(&entry.name, &tools, client, timeout);
         for candidate in &mut entries {
             candidate.modern = modern;
             candidate.connection = Some(entry.connection.clone());
@@ -200,13 +281,23 @@ pub async fn register_mcp_service_direct_tools(
     registry: &mut crate::expose::tier_b::McpTierBRegistry,
     refresh_active_set_when_empty: bool,
     binding: Option<&Arc<crate::service::McpSessionBinding>>,
-) -> Result<Option<crate::expose::session::McpSessionRegistration>, maho_ext_api::ExtensionFailure> {
+) -> Result<Option<crate::expose::session::McpSessionRegistration>, maho_ext_api::ExtensionFailure>
+{
     // senpi `ctx.tools`: the registrar's live definitions decide which operation a tool name dispatches.
     // Held weakly: the registered definitions carry this resolver, so a strong registrar would cycle.
     let tools: crate::invocation::McpToolLookup = {
         let registrar = Arc::downgrade(&registrar);
         Arc::new(move |name: &str| registrar.upgrade()?.live_tool_definition(name))
     };
-    let prepared = prepare_mcp_service_registration_entries_with(config, entries, binding, Some(tools)).await;
-    crate::expose::session::register_direct_mcp_tools(registrar, config, prepared, tool_search, registry, refresh_active_set_when_empty).await
+    let prepared =
+        prepare_mcp_service_registration_entries_with(config, entries, binding, Some(tools)).await;
+    crate::expose::session::register_direct_mcp_tools(
+        registrar,
+        config,
+        prepared,
+        tool_search,
+        registry,
+        refresh_active_set_when_empty,
+    )
+    .await
 }

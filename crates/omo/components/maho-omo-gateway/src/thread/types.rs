@@ -339,16 +339,26 @@ pub struct StoreRefusal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnqueueOutcome {
-    Inserted { row: Box<DeliveryRow>, queue_position: i64 },
-    Replay { result: Value },
-    Refused { code: super::errors::ThreadErrorCode, message: String, details: Option<Value> },
+    Inserted {
+        row: Box<DeliveryRow>,
+        queue_position: i64,
+    },
+    Replay {
+        result: Value,
+    },
+    Refused {
+        code: super::errors::ThreadErrorCode,
+        message: String,
+        details: Option<Value>,
+    },
     Busy,
 }
 
 impl EnqueueOutcome {
     pub fn refused(code: &str, message: impl Into<String>) -> Self {
         Self::Refused {
-            code: super::errors::ThreadErrorCode::parse(code).unwrap_or_else(|| panic!("unknown thread error code: {code}")),
+            code: super::errors::ThreadErrorCode::parse(code)
+                .unwrap_or_else(|| panic!("unknown thread error code: {code}")),
             message: message.into(),
             details: None,
         }
@@ -402,10 +412,18 @@ pub enum ClaimOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OutcomeRecord {
-    Admitted { admission_kind: String, turn_epoch: i64 },
-    Applied { admission_kind: String, turn_epoch: i64 },
+    Admitted {
+        admission_kind: String,
+        turn_epoch: i64,
+    },
+    Applied {
+        admission_kind: String,
+        turn_epoch: i64,
+    },
     Requeue,
-    Refused { reason: RefusalReason },
+    Refused {
+        reason: RefusalReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,7 +466,9 @@ pub enum GatewayDeliveryResult {
         endpoint_kind: Option<GatewayEndpointKind>,
         deduplicated: bool,
     },
-    Error { error: ThreadToolFailure },
+    Error {
+        error: ThreadToolFailure,
+    },
 }
 
 /// A legacy mailbox item that can never be delivered; it is reported, not imported.
@@ -462,14 +482,36 @@ pub struct LegacyMailboxSkip {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GatewayStoreEvent {
-    ExtensionError { extension: String, phase: String, error: String },
-    Busy { op: String },
-    LockWaitExceeded { op: String, waited_ms: i64 },
-    CompletionsEmitted { session_durable_id: String, cursors: Vec<i64> },
-    Paused { hook: String },
-    Barrier { op: String },
-    LegacyMailboxInvalid { directory: String, error: String },
-    LegacyMailboxSkipped { directory: String, items: Vec<LegacyMailboxSkip> },
+    ExtensionError {
+        extension: String,
+        phase: String,
+        error: String,
+    },
+    Busy {
+        op: String,
+    },
+    LockWaitExceeded {
+        op: String,
+        waited_ms: i64,
+    },
+    CompletionsEmitted {
+        session_durable_id: String,
+        cursors: Vec<i64>,
+    },
+    Paused {
+        hook: String,
+    },
+    Barrier {
+        op: String,
+    },
+    LegacyMailboxInvalid {
+        directory: String,
+        error: String,
+    },
+    LegacyMailboxSkipped {
+        directory: String,
+        items: Vec<LegacyMailboxSkip>,
+    },
     StoreClosed,
 }
 

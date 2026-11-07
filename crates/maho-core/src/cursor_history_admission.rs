@@ -39,35 +39,44 @@ fn cap_tool_result_bodies(messages: &[Value], max_chars: usize) -> (Vec<Value>, 
     let mut result = messages.to_vec();
     let mut changed = false;
     for message_index in (0..result.len()).rev() {
-        let Some(message) = result[message_index].as_object() else { continue };
+        let Some(message) = result[message_index].as_object() else {
+            continue;
+        };
         if message.get("role").and_then(Value::as_str) != Some("toolResult") {
             continue;
         }
-        let Some(content) = message.get("content").and_then(Value::as_array) else { continue };
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
         let mut content = content.clone();
         let mut content_changed = false;
         for part_index in (0..content.len()).rev() {
-            let Some(part) = content[part_index].as_object() else { continue };
+            let Some(part) = content[part_index].as_object() else {
+                continue;
+            };
             match part.get("type").and_then(Value::as_str) {
                 Some("image") if part.get("data").and_then(Value::as_str).is_some() => continue,
                 Some("text") => {}
                 _ => continue,
             }
-            let Some(text) = part.get("text").and_then(Value::as_str) else { continue };
+            let Some(text) = part.get("text").and_then(Value::as_str) else {
+                continue;
+            };
             if grapheme_count(text) <= max_chars {
                 continue;
             }
             let keep = max_chars.saturating_sub(marker_chars);
             let kept: String = text.chars().take(keep).collect();
             let mut updated = part.clone();
-            updated.insert("text".into(), Value::String(format!("{kept}{CURSOR_TRUNCATION_MARKER}")));
+            updated.insert(
+                "text".into(),
+                Value::String(format!("{kept}{CURSOR_TRUNCATION_MARKER}")),
+            );
             content[part_index] = Value::Object(updated);
             content_changed = true;
             changed = true;
         }
-        if content_changed
-            && let Some(object) = result[message_index].as_object_mut()
-        {
+        if content_changed && let Some(object) = result[message_index].as_object_mut() {
             object.insert("content".into(), Value::Array(content));
         }
     }
@@ -75,11 +84,15 @@ fn cap_tool_result_bodies(messages: &[Value], max_chars: usize) -> (Vec<Value>, 
 }
 
 fn empty_tool_result(message: &Value) -> Value {
-    let Some(object) = message.as_object() else { return message.clone() };
+    let Some(object) = message.as_object() else {
+        return message.clone();
+    };
     if object.get("role").and_then(Value::as_str) != Some("toolResult") {
         return message.clone();
     }
-    let Some(content) = object.get("content").and_then(Value::as_array) else { return message.clone() };
+    let Some(content) = object.get("content").and_then(Value::as_array) else {
+        return message.clone();
+    };
     let emptied: Vec<Value> = content
         .iter()
         .map(|part| match part.get("type").and_then(Value::as_str) {
@@ -118,8 +131,16 @@ fn empty_tool_result(message: &Value) -> Value {
 
 fn part_is_empty(part: &Value) -> bool {
     match part.get("type").and_then(Value::as_str) {
-        Some("text") => part.get("text").and_then(Value::as_str).map(str::is_empty).unwrap_or(false),
-        Some("image") => part.get("data").and_then(Value::as_str).map(str::is_empty).unwrap_or(false),
+        Some("text") => part
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::is_empty)
+            .unwrap_or(false),
+        Some("image") => part
+            .get("data")
+            .and_then(Value::as_str)
+            .map(str::is_empty)
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -155,7 +176,14 @@ fn blank_oldest_tool_results(
         }
     }
     let count = (low + 1).min(tool_result_indexes.len());
-    (if count > 0 { with_empty_prefix(count) } else { messages.to_vec() }, count)
+    (
+        if count > 0 {
+            with_empty_prefix(count)
+        } else {
+            messages.to_vec()
+        },
+        count,
+    )
 }
 
 fn measure(converted: &[Value]) -> usize {
@@ -163,14 +191,23 @@ fn measure(converted: &[Value]) -> usize {
         .last()
         .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
         .map(|_| converted.len() - 1);
-    let messages: Vec<maho_ai::types::Message> =
-        converted.iter().filter_map(|value| serde_json::from_value(value.clone()).ok()).collect();
-    maho_ai::api::cursor_agent::measure::measure_cursor_model_input_serialized_bytes(&messages, active_user_message_index)
+    let messages: Vec<maho_ai::types::Message> = converted
+        .iter()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
+    maho_ai::api::cursor_agent::measure::measure_cursor_model_input_serialized_bytes(
+        &messages,
+        active_user_message_index,
+    )
 }
 
 /// Bounds one Cursor request: per-result caps first, then blanking the oldest tool result bodies
 /// while the model input exceeds budgetBytes. Conversation turns are never removed.
-pub fn admit_cursor_history(messages: Option<&[Value]>, budget_bytes: usize, max_chars: Option<usize>) -> CursorAdmissionResult {
+pub fn admit_cursor_history(
+    messages: Option<&[Value]>,
+    budget_bytes: usize,
+    max_chars: Option<usize>,
+) -> CursorAdmissionResult {
     let Some(messages) = messages.filter(|messages| !messages.is_empty()) else {
         return CursorAdmissionResult {
             messages: messages.map(<[Value]>::to_vec),
@@ -181,13 +218,18 @@ pub fn admit_cursor_history(messages: Option<&[Value]>, budget_bytes: usize, max
             over_budget: false,
         };
     };
-    let (capped, capped_changed) = cap_tool_result_bodies(messages, max_chars.unwrap_or(CURSOR_TOOL_RESULT_MAX_CHARS));
+    let (capped, capped_changed) =
+        cap_tool_result_bodies(messages, max_chars.unwrap_or(CURSOR_TOOL_RESULT_MAX_CHARS));
     let measure_candidate = |candidate: &[Value]| measure(&convert_to_llm(candidate));
 
     let bytes_before = measure_candidate(&capped);
     if bytes_before <= budget_bytes {
         return CursorAdmissionResult {
-            messages: Some(if capped_changed { capped } else { messages.to_vec() }),
+            messages: Some(if capped_changed {
+                capped
+            } else {
+                messages.to_vec()
+            }),
             changed: capped_changed,
             blanked_tool_results: 0,
             bytes_before,
@@ -196,8 +238,14 @@ pub fn admit_cursor_history(messages: Option<&[Value]>, budget_bytes: usize, max
         };
     }
 
-    let (blanked, count) = blank_oldest_tool_results(&capped, |candidate| measure_candidate(candidate) <= budget_bytes);
-    let bytes_after = if count > 0 { measure_candidate(&blanked) } else { bytes_before };
+    let (blanked, count) = blank_oldest_tool_results(&capped, |candidate| {
+        measure_candidate(candidate) <= budget_bytes
+    });
+    let bytes_after = if count > 0 {
+        measure_candidate(&blanked)
+    } else {
+        bytes_before
+    };
     let changed = capped_changed || count > 0;
     CursorAdmissionResult {
         messages: Some(if changed { blanked } else { messages.to_vec() }),
@@ -211,7 +259,11 @@ pub fn admit_cursor_history(messages: Option<&[Value]>, budget_bytes: usize, max
 
 /// Positional entry point kept for existing callers: an omitted maxBytes applies the per-result cap
 /// only.
-pub fn truncate_tool_result_bodies(messages: Option<&[Value]>, max_chars: Option<usize>, max_bytes: Option<usize>) -> (Option<Vec<Value>>, bool) {
+pub fn truncate_tool_result_bodies(
+    messages: Option<&[Value]>,
+    max_chars: Option<usize>,
+    max_bytes: Option<usize>,
+) -> (Option<Vec<Value>>, bool) {
     let admission = admit_cursor_history(messages, max_bytes.unwrap_or(usize::MAX), max_chars);
     (admission.messages, admission.changed)
 }
@@ -247,7 +299,10 @@ mod tests {
         let messages = vec![tool_result(&long)];
         let result = admit_cursor_history(Some(&messages), usize::MAX, Some(2000));
         assert!(result.changed);
-        let text = result.messages.expect("messages")[0]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+        let text = result.messages.expect("messages")[0]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         assert!(text.ends_with("...[truncated]"));
         assert!(grapheme_count(&text) <= 2000);
     }

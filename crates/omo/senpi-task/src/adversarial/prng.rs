@@ -143,8 +143,14 @@ mod tests {
     fn weighted_honours_zero_weights() {
         let mut source = RandomSource::new(5);
         let choices = [
-            WeightedChoice { value: "a", weight: 0.0 },
-            WeightedChoice { value: "b", weight: 1.0 },
+            WeightedChoice {
+                value: "a",
+                weight: 0.0,
+            },
+            WeightedChoice {
+                value: "b",
+                weight: 1.0,
+            },
         ];
         assert_eq!(source.weighted(&choices), Some(&"b"));
         let none: [WeightedChoice<&str>; 0] = [];

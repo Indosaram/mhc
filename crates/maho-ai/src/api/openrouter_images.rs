@@ -97,7 +97,8 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         .get("completion_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let mut usage = Usage { context_usage: None,
+    let mut usage = Usage {
+        context_usage: None,
         input,
         output,
         cache_read: cache_read_tokens,

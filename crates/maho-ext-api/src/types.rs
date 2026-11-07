@@ -1083,7 +1083,8 @@ impl BackgroundTaskStatus {
         self.total == 0
     }
     pub fn is_cleared(&self) -> bool {
-        self.total == 0 || (self.running == 0 && self.queued == 0 && self.paused == 0 && self.failed == 0)
+        self.total == 0
+            || (self.running == 0 && self.queued == 0 && self.paused == 0 && self.failed == 0)
     }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

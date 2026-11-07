@@ -889,7 +889,10 @@ fn plain_string_user_content_renders_in_native_transcript() {
         serde_json::json!({"role":"user","content":"string-user-message","timestamp":0}),
     )
     .expect("user message");
-    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message, streaming: None });
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart {
+        message,
+        streaming: None,
+    });
     assert!(mode.render(80).join("\n").contains("string-user-message"));
 }
 
@@ -1414,11 +1417,19 @@ async fn new_command_drops_the_previous_sessions_prompt_history() {
     mode.editor.editor.add_to_history("old-session prompt");
     mode.submit("/new", Default::default()).await.expect("new");
     mode.handle_input("\x1b[A");
-    assert_eq!(mode.editor.editor.get_text(), "", "Up recalls nothing from the replaced session");
+    assert_eq!(
+        mode.editor.editor.get_text(),
+        "",
+        "Up recalls nothing from the replaced session"
+    );
     mode.editor.editor.add_to_history("new-session prompt");
     mode.rebuild_history();
     mode.handle_input("\x1b[A");
-    assert_eq!(mode.editor.editor.get_text(), "new-session prompt", "a same-session rebuild keeps history");
+    assert_eq!(
+        mode.editor.editor.get_text(),
+        "new-session prompt",
+        "a same-session rebuild keeps history"
+    );
 }
 
 #[tokio::test]
@@ -1664,17 +1675,40 @@ async fn idle_mode_skips_frame_rebuilds_until_a_state_change() {
     // The host loop renders every frame that asks for a rebuild; transcript warm-up advances on paint.
     let frame = |mode: &mut maho_interactive::interactive_mode::InteractiveMode, now_ms: f64| {
         let rebuild = mode.take_frame_rebuild(now_ms);
-        if rebuild { mode.render(120); }
+        if rebuild {
+            mode.render(120);
+        }
         rebuild
     };
     assert!(frame(&mut mode, 0.0), "the first frame is rebuilt");
-    assert!(!frame(&mut mode, 16.0), "an idle mode with no change asks for no rebuild");
-    mode.handle_session_event(&AgentSessionEvent::AutoRetryStart { attempt: 1, max_attempts: 3, delay_ms: 2000, error_message: "boom".into() });
+    assert!(
+        !frame(&mut mode, 16.0),
+        "an idle mode with no change asks for no rebuild"
+    );
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryStart {
+        attempt: 1,
+        max_attempts: 3,
+        delay_ms: 2000,
+        error_message: "boom".into(),
+    });
     assert!(frame(&mut mode, 32.0), "a session event asks for a rebuild");
-    assert!(frame(&mut mode, 48.0), "the running retry countdown keeps animating");
-    mode.handle_session_event(&AgentSessionEvent::AutoRetryEnd { success: true, attempt: 1, final_error: None });
-    assert!(frame(&mut mode, 64.0), "the end event repaints the cleared indicator");
-    assert!(!frame(&mut mode, 80.0), "idle again once the indicator is gone");
+    assert!(
+        frame(&mut mode, 48.0),
+        "the running retry countdown keeps animating"
+    );
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryEnd {
+        success: true,
+        attempt: 1,
+        final_error: None,
+    });
+    assert!(
+        frame(&mut mode, 64.0),
+        "the end event repaints the cleared indicator"
+    );
+    assert!(
+        !frame(&mut mode, 80.0),
+        "idle again once the indicator is gone"
+    );
 }
 
 #[tokio::test]
@@ -1697,17 +1731,24 @@ fn background_footer_keeps_idle_host_animating_until_status_clears() {
     mode.render(120);
     mode.take_frame_rebuild(0.0);
     assert!(!mode.take_frame_rebuild(16.0));
-    let status = serde_json::to_string(&BackgroundTaskStatus { running: 1, total: 1, ..Default::default() }).unwrap();
+    let status = serde_json::to_string(&BackgroundTaskStatus {
+        running: 1,
+        total: 1,
+        ..Default::default()
+    })
+    .unwrap();
     mode.extension_ui.set_status("omo-task", Some(&status));
     mode.render(120);
     mode.take_frame_rebuild(32.0);
     assert!(mode.take_frame_rebuild(48.0));
     mode.extension_ui.set_status("omo-task", None);
-    mode.extension_ui.set_status("monitors", Some("◉ 1 monitor watching"));
+    mode.extension_ui
+        .set_status("monitors", Some("◉ 1 monitor watching"));
     mode.render(120);
     mode.take_frame_rebuild(64.0);
     assert!(mode.take_frame_rebuild(80.0));
-    mode.extension_ui.set_status("monitors", Some("◉ 1 monitor muted"));
+    mode.extension_ui
+        .set_status("monitors", Some("◉ 1 monitor muted"));
     mode.render(120);
     mode.take_frame_rebuild(96.0);
     assert!(!mode.take_frame_rebuild(112.0));
@@ -2043,7 +2084,9 @@ async fn empty_enter_opens_pending_question_and_submits_selection() {
     mode.handle_input_at("\x1b[13;5u", 2);
 
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
-        .await.expect("bounded answer").expect("answer");
+        .await
+        .expect("bounded answer")
+        .expect("answer");
     assert_eq!(response.status, maho_ext_api::QuestionStatus::Answered);
     assert_eq!(response.answers["item"].selected, ["A"]);
 }
@@ -2055,7 +2098,10 @@ async fn question_shortcuts_preserve_existing_composer_text() {
     let (mut mode, _directory) = native_mode();
     mode.editor.editor.set_text("draft");
     let ui = mode.extension_ui.clone();
-    let answer = ui.question(retained_question("existing-draft", false), Default::default());
+    let answer = ui.question(
+        retained_question("existing-draft", false),
+        Default::default(),
+    );
     mode.render(80);
 
     mode.handle_input_at("1", 0);
@@ -2063,13 +2109,17 @@ async fn question_shortcuts_preserve_existing_composer_text() {
     assert_eq!(mode.editor.editor.get_text(), "draft1x");
     mode.handle_input_at("\r", 2);
 
-    assert_eq!(mode.submit_editor().await.expect("chat submission"),
-        Some(maho_core::agent_session::PromptDisposition::Started));
+    assert_eq!(
+        mode.submit_editor().await.expect("chat submission"),
+        Some(maho_core::agent_session::PromptDisposition::Started)
+    );
     mode.handle_input_at("\x1ba", 3);
     mode.handle_input_at("1", 4);
     mode.handle_input_at("\x1b[13;5u", 5);
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
-        .await.expect("bounded answer").expect("answer");
+        .await
+        .expect("bounded answer")
+        .expect("answer");
     assert_eq!(response.status, maho_ext_api::QuestionStatus::Answered);
     assert_eq!(response.answers["item"].selected, ["A"]);
 }
@@ -2088,10 +2138,14 @@ async fn cycling_pending_questions_does_not_retarget_a_draft_reply() {
     mode.handle_input_at("\x1b[1;3B", 1);
     mode.handle_input_at("y", 2);
     mode.handle_input_at("\r", 3);
-    mode.dispatch_submission().await.expect("comment submission");
+    mode.dispatch_submission()
+        .await
+        .expect("comment submission");
 
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), first)
-        .await.expect("bounded first answer").expect("first answer");
+        .await
+        .expect("bounded first answer")
+        .expect("first answer");
     assert_eq!(response.comment.as_deref(), Some("xy"));
     drop(second);
 }
@@ -2113,12 +2167,21 @@ async fn question_comment_accepts_batched_pasted_and_kitty_input() {
 
         mode.handle_input_at(input, 0);
         mode.handle_input_at("\r", 1);
-        assert_eq!(mode.dispatch_submission().await.expect("comment submission"),
-            Some(maho_core::agent_session::PromptDisposition::Handled));
+        assert_eq!(
+            mode.dispatch_submission()
+                .await
+                .expect("comment submission"),
+            Some(maho_core::agent_session::PromptDisposition::Handled)
+        );
 
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
-            .await.expect("bounded answer").expect("answer");
-        assert_eq!(response.status, maho_ext_api::QuestionStatus::CommentSubmitted);
+            .await
+            .expect("bounded answer")
+            .expect("answer");
+        assert_eq!(
+            response.status,
+            maho_ext_api::QuestionStatus::CommentSubmitted
+        );
         assert_eq!(response.comment.as_deref(), Some(expected));
     }
 }
@@ -2129,15 +2192,23 @@ async fn pending_question_does_not_capture_dialog_digits() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     let ui = mode.extension_ui.clone();
-    let answer = ui.question(retained_question("dialog-pending", false), Default::default());
+    let answer = ui.question(
+        retained_question("dialog-pending", false),
+        Default::default(),
+    );
     let input = ui.input("Value", None, Default::default());
     mode.render(80);
 
     mode.handle_input_at("1", 0);
     mode.handle_input_at("\r", 1);
 
-    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), input)
-        .await.expect("bounded input").as_deref(), Some("1"));
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), input)
+            .await
+            .expect("bounded input")
+            .as_deref(),
+        Some("1")
+    );
     drop(answer);
 }
 
@@ -2158,11 +2229,15 @@ async fn blocking_and_async_questions_resolve_in_arrival_order() {
 
         mode.handle_input_at("1", 0);
         let first_response = tokio::time::timeout(std::time::Duration::from_secs(5), first)
-            .await.expect("bounded first answer").expect("first answer");
+            .await
+            .expect("bounded first answer")
+            .expect("first answer");
         mode.render(80);
         mode.handle_input_at("2", 1);
         let second_response = tokio::time::timeout(std::time::Duration::from_secs(5), second)
-            .await.expect("bounded second answer").expect("second answer");
+            .await
+            .expect("bounded second answer")
+            .expect("second answer");
 
         assert_eq!(first_response.answers["item"].selected, ["A"]);
         assert_eq!(second_response.answers["item"].selected, ["B"]);
@@ -3074,7 +3149,8 @@ fn assert_footer_divergent_screen_matches(
 ) {
     let footer = actual.cells.len() - 1;
     assert_eq!(
-        actual.cells[..footer], expected.cells[..footer],
+        actual.cells[..footer],
+        expected.cells[..footer],
         "native viewport: {:?}",
         actual.viewport
     );
@@ -6511,14 +6587,34 @@ async fn r16_tree_and_fork_open_mount_on_a_later_frame() {
 async fn consent_selector_mounts_before_login_dialog_and_cancel_skips_login() {
     use maho_tui::tui::Component;
     let (mut mode, directory) = native_mode_with_provider(None, "github-copilot", "faux-1", false);
-    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider github-copilot api_key"), None);
-    assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    mode.enqueue_submission(
+        &maho_interactive::interactive_mode::internal_command(
+            "/login-provider github-copilot api_key",
+        ),
+        None,
+    );
+    assert_eq!(
+        mode.dispatch_submission().await.expect("login"),
+        Some(maho_core::agent_session::PromptDisposition::Handled)
+    );
     let rendered = mode.render(100).join("\n");
     assert!(rendered.contains("Account risk"), "{rendered}");
-    assert!(rendered.contains("I understand the risk - continue"), "{rendered}");
-    assert!(!rendered.to_lowercase().contains("enter api key") && !rendered.contains("Paste"), "login dialog must not mount before consent: {rendered}");
-    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-consent-cancel"), None);
-    assert_eq!(mode.dispatch_submission().await.expect("cancel"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert!(
+        rendered.contains("I understand the risk - continue"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.to_lowercase().contains("enter api key") && !rendered.contains("Paste"),
+        "login dialog must not mount before consent: {rendered}"
+    );
+    mode.enqueue_submission(
+        &maho_interactive::interactive_mode::internal_command("/login-consent-cancel"),
+        None,
+    );
+    assert_eq!(
+        mode.dispatch_submission().await.expect("cancel"),
+        Some(maho_core::agent_session::PromptDisposition::Handled)
+    );
     assert!(!directory.path().join("settings.json").exists());
 }
 
@@ -6526,12 +6622,38 @@ async fn consent_selector_mounts_before_login_dialog_and_cancel_skips_login() {
 async fn consent_continue_records_consent_then_queues_the_login() {
     use maho_tui::tui::Component;
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
-        None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "github-copilot", "faux-1", false);
-    assert!(!session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(s, "github-copilot")));
-    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-consent github-copilot api_key"), None);
-    assert_eq!(mode.dispatch_submission().await.expect("continue"), Some(maho_core::agent_session::PromptDisposition::Handled));
-    assert!(session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(s, "github-copilot")));
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "github-copilot",
+        "faux-1",
+        false,
+    );
+    assert!(
+        !session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(
+            s,
+            "github-copilot"
+        ))
+    );
+    mode.enqueue_submission(
+        &maho_interactive::interactive_mode::internal_command(
+            "/login-consent github-copilot api_key",
+        ),
+        None,
+    );
+    assert_eq!(
+        mode.dispatch_submission().await.expect("continue"),
+        Some(maho_core::agent_session::PromptDisposition::Handled)
+    );
+    assert!(
+        session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(
+            s,
+            "github-copilot"
+        ))
+    );
     // The resumed `/login-provider` no longer shows the selector.
-    assert_eq!(mode.dispatch_submission().await.expect("resume"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert_eq!(
+        mode.dispatch_submission().await.expect("resume"),
+        Some(maho_core::agent_session::PromptDisposition::Handled)
+    );
     assert!(!mode.render(100).join("\n").contains("Account risk"));
 }

@@ -7,9 +7,9 @@ use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::Target;
 use x11rb::protocol::xproto::Window;
 
-use super::X11Input;
 use super::fake::{Call, FakeInputServer, KEY_A, KEY_C, KEY_CONTROL_L, KEY_SHIFT_L};
 use super::server::{FakeInput, SentEvent, Spot};
+use super::X11Input;
 
 const TERMINAL: Window = 0x40_0001;
 const GTK_APP: Window = 0x60_0001;

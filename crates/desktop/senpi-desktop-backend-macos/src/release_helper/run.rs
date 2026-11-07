@@ -32,8 +32,13 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Spawner, String> {
     if parent_flag != "--parent" || token_flag != "--token" {
         return Err("refusing to run: expected --parent <pid> --token <hex>".to_owned());
     }
-    let parent = parent.parse().map_err(|_| format!("refusing to run: bad parent pid '{parent}'"))?;
-    Ok(Spawner { parent, token: decode_token(token).ok_or("refusing to run: bad spawn token")? })
+    let parent = parent
+        .parse()
+        .map_err(|_| format!("refusing to run: bad parent pid '{parent}'"))?;
+    Ok(Spawner {
+        parent,
+        token: decode_token(token).ok_or("refusing to run: bad spawn token")?,
+    })
 }
 
 pub(crate) fn encode_token(token: &[u8; TOKEN_LEN]) -> String {
@@ -67,7 +72,10 @@ pub(crate) fn run() -> Result<(), String> {
     // SAFETY: [FFI] getppid takes no arguments and cannot fail.
     let parent = unsafe { libc::getppid() };
     if parent != spawner.parent {
-        return Err(format!("refusing to run: started by pid {parent}, not by the engine (pid {})", spawner.parent));
+        return Err(format!(
+            "refusing to run: started by pid {parent}, not by the engine (pid {})",
+            spawner.parent
+        ));
     }
     // SAFETY: [FFI] setsid has no preconditions. Its own session keeps a
     // hangup or group kill of the engine's terminal session from reaching it.
@@ -76,10 +84,18 @@ pub(crate) fn run() -> Result<(), String> {
     let _tap = ClosesTap;
     // SAFETY: [double free] the engine passes its end of a socket pair as
     // standard input, which nothing else in this process owns.
-    let mut records = Records { socket: unsafe { UnixStream::from_raw_fd(0) }, pending: Vec::new() };
+    let mut records = Records {
+        socket: unsafe { UnixStream::from_raw_fd(0) },
+        pending: Vec::new(),
+    };
     match records.next() {
         Some(Record::Hello { version, token }) if version == VERSION && token == spawner.token => {}
-        _ => return Err("refusing to run: the stream does not open with this helper's spawn token".to_owned()),
+        _ => {
+            return Err(
+                "refusing to run: the stream does not open with this helper's spawn token"
+                    .to_owned(),
+            )
+        }
     }
     let seam = Seam::from_env()?;
     let observation = Arc::new(Observation::default());

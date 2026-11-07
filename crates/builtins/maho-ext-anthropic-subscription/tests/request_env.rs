@@ -1,10 +1,7 @@
 #![cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use maho_ai::{
     auth::types::*,
@@ -105,7 +102,12 @@ async fn turn_with_request_env(request: BTreeMap<String, String>) -> String {
         .await
         .expect("bounded native turn")
         .expect("output");
-    assert_eq!(output.stop_reason, StopReason::Stop, "{:?}", output.error_message);
+    assert_eq!(
+        output.stop_reason,
+        StopReason::Stop,
+        "{:?}",
+        output.error_message
+    );
     assert!(matches!(&output.content[0], ContentBlock::Text(text) if text.text == "ok"));
     registry.lock().await.close_all().await.expect("cleanup");
     std::fs::read_to_string(&observed).expect("observed environment")
@@ -114,8 +116,14 @@ async fn turn_with_request_env(request: BTreeMap<String, String>) -> String {
 #[tokio::test]
 async fn request_oauth_token_is_forwarded_and_subprocess_controls_are_dropped() {
     let request = BTreeMap::from([
-        ("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "request-token".to_owned()),
-        ("CLAUDE_CONFIG_DIR".to_owned(), "/tmp/request-config".to_owned()),
+        (
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            "request-token".to_owned(),
+        ),
+        (
+            "CLAUDE_CONFIG_DIR".to_owned(),
+            "/tmp/request-config".to_owned(),
+        ),
         (
             "NODE_OPTIONS".to_owned(),
             "--require=/tmp/request-hook.js".to_owned(),
@@ -126,8 +134,7 @@ async fn request_oauth_token_is_forwarded_and_subprocess_controls_are_dropped() 
         serde_json::from_str(&turn_with_request_env(request).await).expect("observed json");
     assert_eq!(observed["token"], "request-token");
     assert_eq!(
-        observed["path"],
-        "/usr/bin",
+        observed["path"], "/usr/bin",
         "the host PATH must win over the request PATH"
     );
     assert_eq!(

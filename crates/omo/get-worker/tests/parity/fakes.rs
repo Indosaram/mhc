@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use get_worker::{
-    Body, CacheKey, CachePopulation, DataPoint, DbError, DeferredWork, DownloadDatabase,
-    EdgeCache, Env, FetchError, FetchRequest, FetchResponse, HttpFetcher, HttpMetadata, ObjectMeta,
+    Body, CacheKey, CachePopulation, DataPoint, DbError, DeferredWork, DownloadDatabase, EdgeCache,
+    Env, FetchError, FetchRequest, FetchResponse, HttpFetcher, HttpMetadata, ObjectMeta,
     ReleaseStore, RequestContext, Response, Row, Statement, StoreError, StoredObject, Value,
 };
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params_from_iter, Connection, Error as SqlError};
+use rusqlite::{Connection, Error as SqlError, params_from_iter};
 
 /// One stored object: its bytes plus the `R2HTTPMetadata` an `R2Bucket.put` would attach.
 #[derive(Clone, Default)]
@@ -131,7 +131,6 @@ impl MemoryEdgeCache {
     pub fn new() -> Self {
         Self::default()
     }
-
 }
 
 impl EdgeCache for MemoryEdgeCache {
@@ -195,7 +194,6 @@ impl StaticFetcher {
         self.responses = Rc::new(table);
         self
     }
-
 }
 
 impl HttpFetcher for StaticFetcher {
@@ -234,7 +232,10 @@ impl SqliteDatabase {
 
 impl DownloadDatabase for SqliteDatabase {
     fn batch(&self, statements: Vec<Statement>) -> Result<Vec<Vec<Row>>, DbError> {
-        statements.iter().map(|statement| self.run(statement)).collect()
+        statements
+            .iter()
+            .map(|statement| self.run(statement))
+            .collect()
     }
 }
 
@@ -244,7 +245,9 @@ impl SqliteDatabase {
         let params: Vec<SqlValue> = statement.params.iter().map(to_sql).collect();
         let column_count = prepared.column_count();
         if column_count == 0 {
-            prepared.execute(params_from_iter(params)).map_err(db_error)?;
+            prepared
+                .execute(params_from_iter(params))
+                .map_err(db_error)?;
             return Ok(Vec::new());
         }
         let names: Vec<String> = prepared

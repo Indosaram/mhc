@@ -2196,7 +2196,8 @@ async fn streams_through_the_provider() {
 async fn applies_request_wide_pricing_tiers_above_the_configured_input_threshold() {
     let title = "applies request-wide pricing tiers above the configured input threshold";
     let mut model = with_provider(&builtin("openai", "gpt-6-astra"), "openai");
-    model.cost = ModelCost { unknown: None,
+    model.cost = ModelCost {
+        unknown: None,
         effective_rates: None,
         input: 5.0,
         output: 30.0,
@@ -2210,7 +2211,8 @@ async fn applies_request_wide_pricing_tiers_above_the_configured_input_threshold
             input_tokens_above: 272_000,
         }]),
     };
-    let usage = |cache_write: u64| Usage { context_usage: None,
+    let usage = |cache_write: u64| Usage {
+        context_usage: None,
         input: 200_000,
         output: 100_000,
         cache_read: 72_000,

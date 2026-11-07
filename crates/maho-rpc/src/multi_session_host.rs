@@ -1312,14 +1312,15 @@ impl HostCore {
             } else {
                 None
             };
-            let record = self.park_record(
-                entry.close.retain_on_disconnect,
-                entry.session_path.as_deref(),
-                entry.durable_session_id.as_deref(),
-                &entry.profile,
-                entry.context_overlay.as_ref(),
-            )
-            .filter(|_| parking);
+            let record = self
+                .park_record(
+                    entry.close.retain_on_disconnect,
+                    entry.session_path.as_deref(),
+                    entry.durable_session_id.as_deref(),
+                    &entry.profile,
+                    entry.context_overlay.as_ref(),
+                )
+                .filter(|_| parking);
             entry.close.attachments = 0;
             entry.close.state = crate::session_registry::RpcSessionState::Closing;
             (retained, record)
@@ -1358,8 +1359,12 @@ impl HostCore {
             .iter()
             .filter_map(|row| row["sessionId"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
-        futures::future::join_all(handles.iter().map(|handle| self.end_session(handle, reason)))
-            .await;
+        futures::future::join_all(
+            handles
+                .iter()
+                .map(|handle| self.end_session(handle, reason)),
+        )
+        .await;
     }
     /// Releases the RETAINED sessions a dropped connection still owned (senpi `releaseConnection`
     /// -> `releaseOwnedSession` for `retainOnDisconnect` entries): a retained session is never closed
@@ -2563,7 +2568,10 @@ impl HostCore {
         }
         if let Some(err) = crate::rpc_input_validation::session_context_error(context.as_ref()) {
             return Err(OpenRefusal {
-                message: format!("{}: {err}", crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT),
+                message: format!(
+                    "{}: {err}",
+                    crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+                ),
                 code: Some(crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT.to_owned()),
                 data: None,
             });
@@ -2609,7 +2617,9 @@ impl HostCore {
             })
         });
         // Session-role policy shape errors are typed `invalid_session_context` before any admission.
-        if let Some(error) = crate::rpc_input_validation::session_policy_error(parsed_context.as_ref()) {
+        if let Some(error) =
+            crate::rpc_input_validation::session_policy_error(parsed_context.as_ref())
+        {
             return Err(OpenRefusal::plain(format!(
                 "{}: {error}",
                 crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
@@ -5459,53 +5469,55 @@ mod handoff_tests {
                     .build()
                     .unwrap()
                     .block_on(async {
-        let temp = tempfile::tempdir().unwrap();
-        let (core, gate, mut calls, mut disposed) = gated_core(temp.path());
-        let mut client = peer(&core, "c");
-        let cwd = temp.path().to_string_lossy().into_owned();
-        core.handle(
-            Some("c"),
-            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
-        )
-        .await
-        .unwrap();
-        let opened = reply_to(&mut client, "o").await;
-        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
-        let prompt =
+                        let temp = tempfile::tempdir().unwrap();
+                        let (core, gate, mut calls, mut disposed) = gated_core(temp.path());
+                        let mut client = peer(&core, "c");
+                        let cwd = temp.path().to_string_lossy().into_owned();
+                        core.handle(
+                            Some("c"),
+                            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd})
+                                .to_string(),
+                        )
+                        .await
+                        .unwrap();
+                        let opened = reply_to(&mut client, "o").await;
+                        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
+                        let prompt =
             serde_json::json!({"id":"p","type":"prompt","sessionId":session_id,"message":"hi"})
                 .to_string();
-        let prompting = std::sync::Arc::clone(&core);
-        let turn = tokio::spawn(async move { prompting.handle(Some("c"), &prompt).await });
-        tokio::time::timeout(std::time::Duration::from_secs(10), calls.recv())
-            .await
-            .expect("the turn reaches the provider")
-            .expect("the provider stays alive");
-        let in_flight = core.active_request_count(&session_id);
-        let release =
+                        let prompting = std::sync::Arc::clone(&core);
+                        let turn =
+                            tokio::spawn(async move { prompting.handle(Some("c"), &prompt).await });
+                        tokio::time::timeout(std::time::Duration::from_secs(10), calls.recv())
+                            .await
+                            .expect("the turn reaches the provider")
+                            .expect("the provider stays alive");
+                        let in_flight = core.active_request_count(&session_id);
+                        let release =
             serde_json::json!({"id":"r","type":"release_attachment","sessionId":session_id})
                 .to_string();
-        // The command answers and completes without waiting for the turn: a disconnect can no longer cancel the
-        // deferred release, and its request guard is gone before the wait.
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            core.handle(Some("c"), &release),
-        )
-        .await
-        .expect("release_attachment completes while the turn is still running")
-        .unwrap();
-        let reply = reply_to(&mut client, "r").await;
-        assert_eq!(reply["data"]["deferred"], true);
-        assert_eq!(core.active_request_count(&session_id), in_flight);
-        assert!(
-            core.has_session(&session_id).await,
-            "the release waits for the turn"
-        );
-        gate.send(true).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), disposed.recv())
-            .await
-            .expect("the deferred release ends the session once its turn settles")
-            .expect("the runtime reports its disposal");
-        let _ = turn.await.unwrap();
+                        // The command answers and completes without waiting for the turn: a disconnect can no longer cancel the
+                        // deferred release, and its request guard is gone before the wait.
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            core.handle(Some("c"), &release),
+                        )
+                        .await
+                        .expect("release_attachment completes while the turn is still running")
+                        .unwrap();
+                        let reply = reply_to(&mut client, "r").await;
+                        assert_eq!(reply["data"]["deferred"], true);
+                        assert_eq!(core.active_request_count(&session_id), in_flight);
+                        assert!(
+                            core.has_session(&session_id).await,
+                            "the release waits for the turn"
+                        );
+                        gate.send(true).unwrap();
+                        tokio::time::timeout(std::time::Duration::from_secs(10), disposed.recv())
+                            .await
+                            .expect("the deferred release ends the session once its turn settles")
+                            .expect("the runtime reports its disposal");
+                        let _ = turn.await.unwrap();
                     });
             })
             .unwrap()
@@ -5599,9 +5611,10 @@ mod handoff_tests {
         };
         // senpi session-registry-open.ts keys and records the file by `canonicalSessionPath`: the host's spelling,
         // not the requested one (macOS /var -> /private/var, Windows 8.3 short names).
-        let canonical = crate::session_path_key::canonical_session_path(std::path::Path::new(&path))
-            .to_string_lossy()
-            .into_owned();
+        let canonical =
+            crate::session_path_key::canonical_session_path(std::path::Path::new(&path))
+                .to_string_lossy()
+                .into_owned();
         assert_eq!(answer["data"]["outcome"], "unloaded", "{answer}");
         assert_eq!(answer["data"]["sessionPath"], canonical.as_str());
         let parked = parked.expect("the park is sealed before the answer");
@@ -6831,7 +6844,11 @@ async fn serve_socket_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn test_core() -> (std::sync::Arc<HostCore>, tokio::io::DuplexStream, tempfile::TempDir) {
+    fn test_core() -> (
+        std::sync::Arc<HostCore>,
+        tokio::io::DuplexStream,
+        tempfile::TempDir,
+    ) {
         let directory = tempfile::tempdir().unwrap();
         let (client_read, host_write) = tokio::io::duplex(8192);
         let writer = std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
@@ -6880,9 +6897,17 @@ mod tests {
         let (core, _, _directory) = test_core();
         let command: crate::rpc_types::RpcCommand = serde_json::from_value(
             serde_json::json!({"type":"open_session","expectedHostInstance":null}),
-        ).unwrap();
-        let refusal = core.open_session_inner(None, &command.body, None).await.err().unwrap();
-        assert_eq!(refusal.data.unwrap()["reason"], "invalid_expected_host_instance");
+        )
+        .unwrap();
+        let refusal = core
+            .open_session_inner(None, &command.body, None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            refusal.data.unwrap()["reason"],
+            "invalid_expected_host_instance"
+        );
         assert!(core.registry.lock().await.list_sessions(true).is_empty());
     }
     #[tokio::test]
@@ -6898,7 +6923,13 @@ mod tests {
         .await
         .unwrap();
         let mut line = String::new();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r1");
         assert_eq!(resp["success"], false);
@@ -6923,7 +6954,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r2");
         assert_eq!(resp["success"], false);
@@ -6946,7 +6983,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r3");
         assert_eq!(resp["success"], false);
@@ -6963,7 +7006,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r4");
         assert_eq!(resp["success"], false);
@@ -6976,7 +7025,13 @@ mod tests {
             .await
             .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r5");
         assert_eq!(resp["success"], false);
@@ -6992,7 +7047,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r6");
         assert_eq!(resp["success"], false);
@@ -7009,7 +7070,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r7");
         assert_eq!(resp["success"], false);
@@ -7025,7 +7092,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r8");
         assert_eq!(resp["success"], false);
@@ -7041,7 +7114,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "policy");
         assert_eq!(resp["success"], false);
@@ -7055,7 +7134,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r9");
         assert_eq!(resp["success"], false);
@@ -7071,7 +7156,13 @@ mod tests {
         .await
         .unwrap();
         line.clear();
-        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lines.read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["id"], "r10");
         assert_eq!(resp["success"], false);

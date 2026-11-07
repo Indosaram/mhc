@@ -48,10 +48,17 @@ pub(crate) fn coverage(owner: Option<PointOwner>, pid: libc::pid_t, wid: u32) ->
 /// The points a pointer event hits first and last.
 pub(crate) fn event_points(event: &PointerEvent) -> Vec<(f64, f64)> {
     match event {
-        PointerEvent::Click { x, y, .. } | PointerEvent::Move { x, y } | PointerEvent::Scroll { x, y, .. } => {
+        PointerEvent::Click { x, y, .. }
+        | PointerEvent::Move { x, y }
+        | PointerEvent::Scroll { x, y, .. } => {
             vec![(*x, *y)]
         }
-        PointerEvent::Drag { path, .. } => path.first().into_iter().chain(path.last()).copied().collect(),
+        PointerEvent::Drag { path, .. } => path
+            .first()
+            .into_iter()
+            .chain(path.last())
+            .copied()
+            .collect(),
     }
 }
 
@@ -112,7 +119,9 @@ pub(crate) fn ensure_points_owned(
                 )));
             }
             ((x, y), Coverage::Covered(owner)) if started.elapsed() >= UNCOVER_DEADLINE => {
-                let by = owner.window.map_or_else(String::new, |id| format!(" window {id} of"));
+                let by = owner
+                    .window
+                    .map_or_else(String::new, |id| format!(" window {id} of"));
                 return Err(DesktopError::input_failed(format!(
                     "point ({x}, {y}) of window {wid} is covered by{by} process {}, so foreground \
                      input would land there; nothing was posted. Move or close the covering window, \

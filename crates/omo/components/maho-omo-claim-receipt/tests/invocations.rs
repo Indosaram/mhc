@@ -1,6 +1,6 @@
 //! Port of `claim-receipt/invocations.test.ts`.
 
-use maho_omo_claim_receipt::invocations::{invoked_kinds, InvokedKind};
+use maho_omo_claim_receipt::invocations::{InvokedKind, invoked_kinds};
 
 const PREVIOUSLY_RECOGNISED: &[(&str, InvokedKind)] = &[
     ("bun test", InvokedKind::Test),
@@ -74,7 +74,10 @@ fn vp_check_covers_both_typecheck_and_lint() {
 #[test]
 fn the_remote_command_of_ssh_is_parsed() {
     assert_eq!(
-        invoked_kinds("ssh -o BatchMode=yes -p 22 mengmota 'cd w && bun test x'", 0),
+        invoked_kinds(
+            "ssh -o BatchMode=yes -p 22 mengmota 'cd w && bun test x'",
+            0
+        ),
         vec![InvokedKind::Test]
     );
     assert_eq!(
@@ -117,10 +120,7 @@ fn value_taking_wrapper_flags_ssh_separators_backticks_and_here_strings_do_not_h
         invoked_kinds("ssh host -- bun test x", 0),
         vec![InvokedKind::Test]
     );
-    assert_eq!(
-        invoked_kinds("x=`bun test x`", 0),
-        vec![InvokedKind::Test]
-    );
+    assert_eq!(invoked_kinds("x=`bun test x`", 0), vec![InvokedKind::Test]);
     assert_eq!(
         invoked_kinds("read a <<< foo\nbun test x", 0),
         vec![InvokedKind::Test]

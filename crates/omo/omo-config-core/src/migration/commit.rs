@@ -8,12 +8,12 @@ use crate::internal::posix_path::{posix_dirname, posix_join, posix_resolve, to_p
 use crate::internal::validate::safe_parse;
 use crate::issue::PathSegment;
 use crate::loader::paths::resolve_home_dir;
-use crate::migration::merge::{collect_migration_edits, merge_without_clobber};
 use crate::migration::diff_edits::{diff_edits, without_marker};
+use crate::migration::merge::{collect_migration_edits, merge_without_clobber};
 use crate::migration::predicate::has_migration_marker;
 use crate::migration::types::{
-    MigrationEnvironment, MigrationError, MigrationFileSystem, MigrationTargetWriter,
-    MigrationTargetWriterInput, MigrationTargetWriteResult,
+    MigrationEnvironment, MigrationError, MigrationFileSystem, MigrationTargetWriteResult,
+    MigrationTargetWriter, MigrationTargetWriterInput,
 };
 use crate::schema::config::omo_config_schema;
 use crate::schema::harness::{
@@ -192,7 +192,9 @@ fn write_omo_migration_target_with_options(
             result.path, input.target_path
         )));
     }
-    Ok(MigrationTargetWriteResult { backup_path: result.backup_path })
+    Ok(MigrationTargetWriteResult {
+        backup_path: result.backup_path,
+    })
 }
 
 #[derive(Debug, Clone)]

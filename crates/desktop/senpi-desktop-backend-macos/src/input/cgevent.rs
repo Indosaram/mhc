@@ -156,7 +156,11 @@ unsafe extern "C" {
     #[link_name = "CGEventSourceSetLocalEventsSuppressionInterval"]
     fn set_local_events_suppression_interval(source: CGEventSourceRef, seconds: f64);
     #[link_name = "CGEventSourceSetLocalEventsFilterDuringSuppressionState"]
-    fn set_local_events_filter_during_suppression_state(source: CGEventSourceRef, filter: u32, state: u32);
+    fn set_local_events_filter_during_suppression_state(
+        source: CGEventSourceRef,
+        filter: u32,
+        state: u32,
+    );
     #[cfg(test)]
     #[link_name = "CGEventSourceGetLocalEventsSuppressionInterval"]
     pub(super) fn get_local_events_suppression_interval(source: CGEventSourceRef) -> f64;

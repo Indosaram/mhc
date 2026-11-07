@@ -87,7 +87,8 @@ pub enum KibitzerGrepError {
 impl std::fmt::Display for KibitzerGrepError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RootUnresolved { path, message } | Self::DirectoryUnreadable { path, message } => {
+            Self::RootUnresolved { path, message }
+            | Self::DirectoryUnreadable { path, message } => {
                 write!(formatter, "{message}: {path}")
             }
         }
@@ -121,7 +122,10 @@ struct GrepFileOutcome {
     capped: bool,
 }
 
-const SKIPPED_FILE: GrepFileOutcome = GrepFileOutcome { bytes: 0, capped: false };
+const SKIPPED_FILE: GrepFileOutcome = GrepFileOutcome {
+    bytes: 0,
+    capped: false,
+};
 
 /// Searches `workspace_root` (or one explicitly named file) for `pattern`, bounded by `caps`.
 ///
@@ -143,13 +147,28 @@ pub fn execute_grep(
     signal: Option<&AbortSignal>,
 ) -> Result<KibitzerToolResult, KibitzerGrepError> {
     let Some(pattern_text) = params.get("pattern").and_then(Value::as_str) else {
-        return Ok(rejection(KibitzerRejectionCode::MissingArgument, "grep requires a pattern.", None));
+        return Ok(rejection(
+            KibitzerRejectionCode::MissingArgument,
+            "grep requires a pattern.",
+            None,
+        ));
     };
-    let flags = if params.get("ignore_case").and_then(Value::as_bool) == Some(true) { "i" } else { "" };
-    let pattern = match regress::Regex::from_unicode(pattern_text.encode_utf16().map(u32::from), flags) {
-        Ok(pattern) => pattern,
-        Err(error) => return Ok(rejection(KibitzerRejectionCode::InvalidPattern, &error.to_string(), None)),
+    let flags = if params.get("ignore_case").and_then(Value::as_bool) == Some(true) {
+        "i"
+    } else {
+        ""
     };
+    let pattern =
+        match regress::Regex::from_unicode(pattern_text.encode_utf16().map(u32::from), flags) {
+            Ok(pattern) => pattern,
+            Err(error) => {
+                return Ok(rejection(
+                    KibitzerRejectionCode::InvalidPattern,
+                    &error.to_string(),
+                    None,
+                ));
+            }
+        };
     let requested = params.get("path").and_then(Value::as_str);
     let input = requested.unwrap_or(".");
     let resolved = match resolve_workspace_path(workspace_root, input) {
@@ -157,17 +176,31 @@ pub fn execute_grep(
         PathCheck::Rejected { code, message } => return Ok(rejection(code, &message, requested)),
     };
     let Ok(info) = std::fs::metadata(&resolved) else {
-        return Ok(rejection(KibitzerRejectionCode::NotFound, &format!("\"{input}\" does not exist."), requested));
+        return Ok(rejection(
+            KibitzerRejectionCode::NotFound,
+            &format!("\"{input}\" does not exist."),
+            requested,
+        ));
     };
     // `await realpath(input.workspaceRoot)`: uncaught upstream, so a failure is a call error.
-    let root = std::fs::canonicalize(workspace_root).map_err(|error| KibitzerGrepError::RootUnresolved {
-        path: workspace_root.to_string_lossy().into_owned(),
-        message: error.to_string(),
+    let root = std::fs::canonicalize(workspace_root).map_err(|error| {
+        KibitzerGrepError::RootUnresolved {
+            path: workspace_root.to_string_lossy().into_owned(),
+            message: error.to_string(),
+        }
     })?;
     let root = strip_verbatim_prefix(&root);
-    let context = ScanContext { caps, now, deadline: now() + caps.grep_scan_ms, signal };
+    let context = ScanContext {
+        caps,
+        now,
+        deadline: now() + caps.grep_scan_ms,
+        signal,
+    };
     let candidates = if info.is_file() {
-        Candidates { files: vec![resolved.clone()], stopped: None }
+        Candidates {
+            files: vec![resolved.clone()],
+            stopped: None,
+        }
     } else {
         collect_candidates(&root, Path::new(&resolved), git, &context)?
     };
@@ -187,7 +220,13 @@ pub fn execute_grep(
             stopped = stopped.or(Some(KibitzerGrepStopReason::Time));
             break;
         }
-        let outcome = grep_file(Path::new(file), &display_path(&root, file), &pattern, &mut matches, caps);
+        let outcome = grep_file(
+            Path::new(file),
+            &display_path(&root, file),
+            &pattern,
+            &mut matches,
+            caps,
+        );
         bytes += outcome.bytes;
         if outcome.capped {
             stopped = stopped.or(Some(KibitzerGrepStopReason::Matches));
@@ -196,7 +235,9 @@ pub fn execute_grep(
     }
     Ok(match stopped {
         None => ok_json(&json!({ "matches": matches, "truncated": false })),
-        Some(reason) => ok_json(&json!({ "matches": matches, "truncated": true, "stopped": reason.as_str() })),
+        Some(reason) => {
+            ok_json(&json!({ "matches": matches, "truncated": true, "stopped": reason.as_str() }))
+        }
     })
 }
 
@@ -208,7 +249,10 @@ fn collect_candidates(
     context: &ScanContext<'_>,
 ) -> Result<Candidates, KibitzerGrepError> {
     if is_aborted(context.signal) {
-        return Ok(Candidates { files: Vec::new(), stopped: Some(KibitzerGrepStopReason::Aborted) });
+        return Ok(Candidates {
+            files: Vec::new(),
+            stopped: Some(KibitzerGrepStopReason::Aborted),
+        });
     }
     // `input.git ?? createNodeGitExec()`: an omitted injectable runner defaults to the system git,
     // NOT to the plain walk. A SUPPLIED runner is always honored as given.
@@ -232,14 +276,32 @@ fn git_candidates(
     git: &Arc<dyn GitExec>,
     context: &ScanContext<'_>,
 ) -> Option<Candidates> {
-    let options = GitExecOptions { cwd: root.to_path_buf(), timeout_ms: GIT_LIST_TIMEOUT_MS, ..GitExecOptions::default() };
-    let toplevel = git.run(&argv(&["rev-parse", "--show-toplevel"]), &options).ok()?;
+    let options = GitExecOptions {
+        cwd: root.to_path_buf(),
+        timeout_ms: GIT_LIST_TIMEOUT_MS,
+        ..GitExecOptions::default()
+    };
+    let toplevel = git
+        .run(&argv(&["rev-parse", "--show-toplevel"]), &options)
+        .ok()?;
     if toplevel.code != 0 {
         return None;
     }
     let pathspec = relative_path(root, target);
-    let pathspec = if pathspec.is_empty() { "." } else { pathspec.as_str() };
-    let list_argv = argv(&["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", pathspec]);
+    let pathspec = if pathspec.is_empty() {
+        "."
+    } else {
+        pathspec.as_str()
+    };
+    let list_argv = argv(&[
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        pathspec,
+    ]);
     let listed = git.run(&list_argv, &options).ok()?;
     if listed.code != 0 {
         return None;
@@ -248,7 +310,11 @@ fn git_candidates(
     let mut files: Vec<String> = Vec::new();
     for entry in listed.stdout.split('\0') {
         // Merge conflicts list a path once per stage, so the set also deduplicates.
-        if entry.is_empty() || entry.split('/').any(|segment| SKIPPED_DIRECTORIES.contains(&segment)) {
+        if entry.is_empty()
+            || entry
+                .split('/')
+                .any(|segment| SKIPPED_DIRECTORIES.contains(&segment))
+        {
             continue;
         }
         let full = root.join(entry).to_string_lossy().into_owned();
@@ -276,9 +342,13 @@ fn walk(directory: &Path, context: &ScanContext<'_>) -> Result<Candidates, Kibit
             break;
         }
         let mut entries: Vec<(String, std::fs::FileType)> = Vec::new();
-        for entry in std::fs::read_dir(&current).map_err(|error| directory_unreadable(&current, error))? {
+        for entry in
+            std::fs::read_dir(&current).map_err(|error| directory_unreadable(&current, error))?
+        {
             let entry = entry.map_err(|error| directory_unreadable(&current, error))?;
-            let file_type = entry.file_type().map_err(|error| directory_unreadable(&current, error))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| directory_unreadable(&current, error))?;
             entries.push((entry.file_name().to_string_lossy().into_owned(), file_type));
         }
         let collator = locale_collator();
@@ -309,7 +379,10 @@ fn walk(directory: &Path, context: &ScanContext<'_>) -> Result<Candidates, Kibit
     let result = bounded(files, context.caps.grep_scan_files);
     Ok(match stopped {
         None => result,
-        Some(reason) => Candidates { files: result.files, stopped: Some(reason) },
+        Some(reason) => Candidates {
+            files: result.files,
+            stopped: Some(reason),
+        },
     })
 }
 
@@ -318,10 +391,16 @@ fn bounded(mut files: Vec<String>, limit: usize) -> Candidates {
     let collator = locale_collator();
     files.sort_by(|left, right| collator.compare(left, right));
     if files.len() <= limit {
-        return Candidates { files, stopped: None };
+        return Candidates {
+            files,
+            stopped: None,
+        };
     }
     files.truncate(limit);
-    Candidates { files, stopped: Some(KibitzerGrepStopReason::Files) }
+    Candidates {
+        files,
+        stopped: Some(KibitzerGrepStopReason::Files),
+    }
 }
 
 /// Scans one file: skips a non-regular, oversize, unreadable or binary file, counts the bytes it
@@ -344,7 +423,10 @@ fn grep_file(
     let Ok(buffer) = std::fs::read(file) else {
         return SKIPPED_FILE;
     };
-    let outcome = GrepFileOutcome { bytes: buffer.len(), capped: false };
+    let outcome = GrepFileOutcome {
+        bytes: buffer.len(),
+        capped: false,
+    };
     if buffer.iter().take(8192).any(|byte| *byte == 0) {
         return outcome;
     }
@@ -354,7 +436,10 @@ fn grep_file(
             continue;
         }
         if matches.len() >= caps.grep_matches {
-            return GrepFileOutcome { bytes: outcome.bytes, capped: true };
+            return GrepFileOutcome {
+                bytes: outcome.bytes,
+                capped: true,
+            };
         }
         matches.push(KibitzerGrepMatch {
             path: display_path.to_string(),
@@ -398,9 +483,10 @@ fn is_aborted(signal: Option<&AbortSignal>) -> bool {
 fn relative_path(root: &Path, path: &Path) -> String {
     let clean_root = strip_verbatim_prefix(root);
     let clean_path = strip_verbatim_prefix(path);
-    clean_path
-        .strip_prefix(&clean_root)
-        .map_or_else(|_| clean_path.to_string_lossy().into_owned(), |relative| relative.to_string_lossy().into_owned())
+    clean_path.strip_prefix(&clean_root).map_or_else(
+        |_| clean_path.to_string_lossy().into_owned(),
+        |relative| relative.to_string_lossy().into_owned(),
+    )
 }
 
 /// The path reported for a match: relative to the root, with `\` folded to `/` as upstream does.
@@ -419,8 +505,8 @@ mod tests {
     use std::io;
     use std::sync::Arc;
 
-    use memory_core::git::exec::GitExecResult;
     use crate::kibitzer_tools_caps::DEFAULT_KIBITZER_TOOL_CAPS;
+    use memory_core::git::exec::GitExecResult;
 
     /// The exact upstream fixture output (`grep.test.ts::SMALL_TREE_JSON`), byte for byte.
     const SMALL_TREE_JSON: &str = r#"{"matches":[{"path":"a.txt","line":1,"text":"alpha needle"},{"path":"src/app.ts","line":3,"text":"needle here"}],"truncated":false}"#;
@@ -449,7 +535,11 @@ mod tests {
     /// Two files, one nested, both matching `needle` exactly once (`grep.test.ts::smallTree`).
     fn small_tree(root: &Path) {
         write(root, "a.txt", "alpha needle\nbeta\n");
-        write(root, "src/app.ts", "export const token = 'value'\nexport const other = 1\nneedle here\n");
+        write(
+            root,
+            "src/app.ts",
+            "export const token = 'value'\nexport const other = 1\nneedle here\n",
+        );
     }
 
     /// `count` sibling files named a.txt, b.txt, ... each holding one matching line.
@@ -462,12 +552,19 @@ mod tests {
 
     /// `git init` through the system git, the same runner the scan defaults to.
     fn git_init(root: &Path) {
-        let result = system_git_exec().run_in(root, &["init"]).expect("git init spawn");
+        let result = system_git_exec()
+            .run_in(root, &["init"])
+            .expect("git init spawn");
         assert_eq!(result.code, 0, "git init failed: {}", result.stderr);
     }
 
     /// The pure-executor call with a zero clock and no signal.
-    fn run(root: &Path, caps: KibitzerToolCaps, git: Option<&Arc<dyn GitExec>>, params: &Value) -> KibitzerToolResult {
+    fn run(
+        root: &Path,
+        caps: KibitzerToolCaps,
+        git: Option<&Arc<dyn GitExec>>,
+        params: &Value,
+    ) -> KibitzerToolResult {
         let now = || 0i64;
         execute_grep(root, caps, &now, git, params, None).expect("execute_grep returns Ok")
     }
@@ -483,7 +580,13 @@ mod tests {
             .map(|matches| {
                 matches
                     .iter()
-                    .map(|entry| entry.get("path").and_then(Value::as_str).unwrap_or_default().to_string())
+                    .map(|entry| {
+                        entry
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -496,18 +599,30 @@ mod tests {
             .map(|matches| {
                 matches
                     .iter()
-                    .map(|entry| entry.get("text").and_then(Value::as_str).unwrap_or_default().to_string())
+                    .map(|entry| {
+                        entry
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    })
                     .collect()
             })
             .unwrap_or_default()
     }
 
     fn stopped(result: &KibitzerToolResult) -> Option<String> {
-        json_of(result).get("stopped").and_then(Value::as_str).map(str::to_string)
+        json_of(result)
+            .get("stopped")
+            .and_then(Value::as_str)
+            .map(str::to_string)
     }
 
     fn is_truncated(result: &KibitzerToolResult) -> bool {
-        json_of(result).get("truncated").and_then(Value::as_bool).unwrap_or(false)
+        json_of(result)
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// A runner that always reports the given exit code with empty stdout, so the candidate list
@@ -529,29 +644,45 @@ mod tests {
     // ---- the ten upstream `grep.test.ts` cases ------------------------------------------------
 
     #[test]
-    fn given_a_tree_inside_every_budget_when_grep_runs_then_the_result_is_byte_identical_to_the_pre_change_output() {
+    fn given_a_tree_inside_every_budget_when_grep_runs_then_the_result_is_byte_identical_to_the_pre_change_output()
+     {
         let root = temp_root();
         small_tree(root.path());
         // No runner: a non-repo root falls back to the walk, the pre-change path.
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle" }),
+        );
         assert_eq!(result.text, SMALL_TREE_JSON);
     }
 
     #[test]
-    fn given_a_git_workspace_with_nothing_ignored_when_grep_runs_then_the_result_is_byte_identical_to_the_walk_output() {
+    fn given_a_git_workspace_with_nothing_ignored_when_grep_runs_then_the_result_is_byte_identical_to_the_walk_output()
+     {
         let root = temp_root();
         small_tree(root.path());
         git_init(root.path());
         // The runner is OMITTED, so this exercises the fixed default (`input.git ?? createNodeGitExec`).
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle" }),
+        );
         assert_eq!(result.text, SMALL_TREE_JSON);
     }
 
     #[test]
-    fn given_more_files_than_the_file_budget_when_grep_runs_then_it_stops_at_files_and_keeps_the_matches_scanned_so_far() {
+    fn given_more_files_than_the_file_budget_when_grep_runs_then_it_stops_at_files_and_keeps_the_matches_scanned_so_far()
+     {
         let root = temp_root();
         flat_tree(root.path(), 3, "needle\n");
-        let caps = KibitzerToolCaps { grep_scan_files: 2, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_scan_files: 2,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
         assert_eq!(match_paths(&result), vec!["a.txt", "b.txt"]);
         assert!(is_truncated(&result));
@@ -559,10 +690,14 @@ mod tests {
     }
 
     #[test]
-    fn given_a_byte_budget_smaller_than_the_tree_when_grep_runs_then_it_stops_at_bytes_after_the_file_it_already_read() {
+    fn given_a_byte_budget_smaller_than_the_tree_when_grep_runs_then_it_stops_at_bytes_after_the_file_it_already_read()
+     {
         let root = temp_root();
         flat_tree(root.path(), 3, "needle\n");
-        let caps = KibitzerToolCaps { grep_scan_bytes: 1, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_scan_bytes: 1,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
         assert_eq!(match_paths(&result), vec!["a.txt"]);
         assert!(is_truncated(&result));
@@ -570,7 +705,8 @@ mod tests {
     }
 
     #[test]
-    fn given_a_clock_past_the_time_budget_when_grep_runs_then_it_stops_at_time_with_the_matches_found_so_far() {
+    fn given_a_clock_past_the_time_budget_when_grep_runs_then_it_stops_at_time_with_the_matches_found_so_far()
+     {
         // Every budget check reads the clock once; a 400ms step trips the 1000ms budget after the
         // first file (the deadline read plus the walk's per-directory read precede the loop).
         let root = temp_root();
@@ -580,26 +716,50 @@ mod tests {
             elapsed.set(elapsed.get() + 400);
             elapsed.get()
         };
-        let caps = KibitzerToolCaps { grep_scan_ms: 1000, ..DEFAULT_KIBITZER_TOOL_CAPS };
-        let result = execute_grep(root.path(), caps, &now, None, &json!({ "pattern": "needle" }), None).expect("ok");
+        let caps = KibitzerToolCaps {
+            grep_scan_ms: 1000,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
+        let result = execute_grep(
+            root.path(),
+            caps,
+            &now,
+            None,
+            &json!({ "pattern": "needle" }),
+            None,
+        )
+        .expect("ok");
         assert_eq!(match_paths(&result), vec!["a.txt"]);
         assert!(is_truncated(&result));
         assert_eq!(stopped(&result).as_deref(), Some("time"));
     }
 
     #[test]
-    fn given_an_already_aborted_turn_when_grep_runs_then_it_stops_at_aborted_without_reading_a_file() {
+    fn given_an_already_aborted_turn_when_grep_runs_then_it_stops_at_aborted_without_reading_a_file()
+     {
         let root = temp_root();
         flat_tree(root.path(), 3, "needle\n");
         let signal = AbortSignal::default();
         signal.abort();
         let now = || 0i64;
-        let result = execute_grep(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, &now, None, &json!({ "pattern": "needle" }), Some(&signal)).expect("ok");
-        assert_eq!(json_of(&result), json!({ "matches": [], "truncated": true, "stopped": "aborted" }));
+        let result = execute_grep(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            &now,
+            None,
+            &json!({ "pattern": "needle" }),
+            Some(&signal),
+        )
+        .expect("ok");
+        assert_eq!(
+            json_of(&result),
+            json!({ "matches": [], "truncated": true, "stopped": "aborted" })
+        );
     }
 
     #[test]
-    fn given_a_turn_aborted_mid_scan_when_grep_runs_then_it_stops_at_aborted_and_keeps_the_matches_found_so_far() {
+    fn given_a_turn_aborted_mid_scan_when_grep_runs_then_it_stops_at_aborted_and_keeps_the_matches_found_so_far()
+     {
         // The clock is read once per file before it is scanned; aborting on the third read lands
         // between the first and the second file, preserving the executor's clock/check order.
         let root = temp_root();
@@ -613,7 +773,15 @@ mod tests {
             }
             0i64
         };
-        let result = execute_grep(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, &now, None, &json!({ "pattern": "needle" }), Some(&signal)).expect("ok");
+        let result = execute_grep(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            &now,
+            None,
+            &json!({ "pattern": "needle" }),
+            Some(&signal),
+        )
+        .expect("ok");
         assert_eq!(match_paths(&result), vec!["a.txt"]);
         assert!(is_truncated(&result));
         assert_eq!(stopped(&result).as_deref(), Some("aborted"));
@@ -623,7 +791,10 @@ mod tests {
     fn given_more_matches_than_the_match_cap_when_grep_runs_then_it_stops_at_matches() {
         let root = temp_root();
         flat_tree(root.path(), 3, "needle\n");
-        let caps = KibitzerToolCaps { grep_matches: 2, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_matches: 2,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
         assert_eq!(match_paths(&result), vec!["a.txt", "b.txt"]);
         assert!(is_truncated(&result));
@@ -637,7 +808,12 @@ mod tests {
         write(root.path(), "ignored/secret.txt", "needle\n");
         write(root.path(), ".gitignore", "ignored/\n");
         git_init(root.path());
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle" }),
+        );
         assert_eq!(match_paths(&result), vec!["a.txt", "b.txt"]);
         assert!(!is_truncated(&result));
     }
@@ -650,8 +826,16 @@ mod tests {
         write(root.path(), ".gitignore", "ignored/\n");
         git_init(root.path());
         let failing: Arc<dyn GitExec> = Arc::new(FailingGit { code: 128 });
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, Some(&failing), &json!({ "pattern": "needle" }));
-        assert_eq!(match_paths(&result), vec!["a.txt", "b.txt", "ignored/secret.txt"]);
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            Some(&failing),
+            &json!({ "pattern": "needle" }),
+        );
+        assert_eq!(
+            match_paths(&result),
+            vec!["a.txt", "b.txt", "ignored/secret.txt"]
+        );
         assert!(!is_truncated(&result));
     }
 
@@ -661,7 +845,10 @@ mod tests {
     fn given_exactly_the_match_cap_when_grep_runs_then_the_result_is_not_truncated() {
         let root = temp_root();
         flat_tree(root.path(), 2, "needle\n");
-        let caps = KibitzerToolCaps { grep_matches: 2, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_matches: 2,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
         assert_eq!(match_paths(&result), vec!["a.txt", "b.txt"]);
         assert!(!is_truncated(&result));
@@ -669,10 +856,14 @@ mod tests {
     }
 
     #[test]
-    fn given_more_matching_lines_in_one_file_than_the_cap_when_grep_runs_then_it_reports_matches_at_the_next_line() {
+    fn given_more_matching_lines_in_one_file_than_the_cap_when_grep_runs_then_it_reports_matches_at_the_next_line()
+     {
         let root = temp_root();
         write(root.path(), "a.txt", "needle\nneedle\nneedle\n");
-        let caps = KibitzerToolCaps { grep_matches: 2, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_matches: 2,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
         assert_eq!(match_paths(&result), vec!["a.txt", "a.txt"]);
         assert_eq!(stopped(&result).as_deref(), Some("matches"));
@@ -686,7 +877,12 @@ mod tests {
         write(root.path(), ".gitignore", "ignored/\n");
         git_init(root.path());
         // Directory enumeration omits the ignored path; naming it directly scans it as given.
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle", "path": "ignored/secret.txt" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle", "path": "ignored/secret.txt" }),
+        );
         assert_eq!(match_paths(&result), vec!["ignored/secret.txt"]);
         assert!(!is_truncated(&result));
     }
@@ -696,8 +892,14 @@ mod tests {
     fn given_a_directory_symlink_when_grep_runs_then_the_walk_never_traverses_it() {
         let root = temp_root();
         write(root.path(), "real/inside.txt", "needle\n");
-        std::os::unix::fs::symlink(root.path().join("real"), root.path().join("link")).expect("symlink");
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle" }));
+        std::os::unix::fs::symlink(root.path().join("real"), root.path().join("link"))
+            .expect("symlink");
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle" }),
+        );
         // Only the real directory's file is reported; the symlink is never entered.
         assert_eq!(match_paths(&result), vec!["real/inside.txt"]);
     }
@@ -707,9 +909,15 @@ mod tests {
     fn given_a_git_listed_file_symlink_when_grep_runs_then_it_is_skipped() {
         let root = temp_root();
         write(root.path(), "target.txt", "needle\n");
-        std::os::unix::fs::symlink(root.path().join("target.txt"), root.path().join("link.txt")).expect("symlink");
+        std::os::unix::fs::symlink(root.path().join("target.txt"), root.path().join("link.txt"))
+            .expect("symlink");
         git_init(root.path());
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle" }),
+        );
         // The symlink is listed by git but dropped by lstat; only the real file matches.
         assert_eq!(match_paths(&result), vec!["target.txt"]);
     }
@@ -729,14 +937,21 @@ mod tests {
         write_bytes(root.path(), "a.txt", &binary);
         write(root.path(), "b.txt", "needle\n");
         // A byte budget equal to the binary read length stops at `bytes` before the next file.
-        let caps = KibitzerToolCaps { grep_scan_bytes: cap, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_scan_bytes: cap,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
-        assert!(match_paths(&result).is_empty(), "a NUL in the first 8192 bytes yields no match");
+        assert!(
+            match_paths(&result).is_empty(),
+            "a NUL in the first 8192 bytes yields no match"
+        );
         assert_eq!(stopped(&result).as_deref(), Some("bytes"));
     }
 
     #[test]
-    fn given_a_file_over_one_mib_when_grep_runs_then_it_is_skipped_without_contributing_read_bytes() {
+    fn given_a_file_over_one_mib_when_grep_runs_then_it_is_skipped_without_contributing_read_bytes()
+    {
         let root = temp_root();
         let oversize: Vec<u8> = {
             let mut bytes = b"needle\n".to_vec();
@@ -746,26 +961,43 @@ mod tests {
         write_bytes(root.path(), "a.txt", &oversize);
         write(root.path(), "b.txt", "needle\n");
         // A one-byte budget: if the oversize file were read it would trip `bytes` before b.txt.
-        let caps = KibitzerToolCaps { grep_scan_bytes: 1, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_scan_bytes: 1,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
         assert_eq!(match_paths(&result), vec!["b.txt"]);
         assert!(!is_truncated(&result));
     }
 
     #[test]
-    fn given_a_candidate_enumeration_stop_when_the_scan_also_hits_a_later_limit_then_the_earlier_reason_survives() {
+    fn given_a_candidate_enumeration_stop_when_the_scan_also_hits_a_later_limit_then_the_earlier_reason_survives()
+     {
         let root = temp_root();
         flat_tree(root.path(), 3, "needle\n");
-        let caps = KibitzerToolCaps { grep_scan_files: 2, grep_scan_bytes: 1, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            grep_scan_files: 2,
+            grep_scan_bytes: 1,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
         let result = run(root.path(), caps, None, &json!({ "pattern": "needle" }));
-        assert_eq!(stopped(&result).as_deref(), Some("files"), "the enumeration stop reason is not overwritten by the later byte limit");
+        assert_eq!(
+            stopped(&result).as_deref(),
+            Some("files"),
+            "the enumeration stop reason is not overwritten by the later byte limit"
+        );
     }
 
     #[test]
     fn given_a_backreference_pattern_when_grep_runs_then_it_matches_like_javascript() {
         let root = temp_root();
         write(root.path(), "a.txt", "abab\nab\n");
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "(ab)\\1" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "(ab)\\1" }),
+        );
         assert_eq!(match_texts(&result), vec!["abab"]);
     }
 
@@ -773,7 +1005,12 @@ mod tests {
     fn given_a_lookaround_pattern_when_grep_runs_then_it_matches_like_javascript() {
         let root = temp_root();
         write(root.path(), "a.txt", "price 100\nprice xyz\n");
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "price (?=\\d+)" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "price (?=\\d+)" }),
+        );
         assert_eq!(match_texts(&result), vec!["price 100"]);
     }
 
@@ -782,10 +1019,23 @@ mod tests {
         let root = temp_root();
         write(root.path(), "a.txt", "a\u{1f600}b\n");
         // No `u` flag: `.` is one UTF-16 code unit, so `a.b` cannot span the surrogate pair.
-        let single = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "a.b" }));
-        assert!(match_texts(&single).is_empty(), "a single dot cannot span the two UTF-16 units of an astral character");
+        let single = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "a.b" }),
+        );
+        assert!(
+            match_texts(&single).is_empty(),
+            "a single dot cannot span the two UTF-16 units of an astral character"
+        );
         // Two dots cover the surrogate pair, matching JavaScript's code-unit semantics.
-        let double = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "a..b" }));
+        let double = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "a..b" }),
+        );
         assert_eq!(match_texts(&double), vec!["a\u{1f600}b"]);
     }
 
@@ -793,9 +1043,19 @@ mod tests {
     fn given_ignore_case_when_grep_runs_then_matching_folds_case() {
         let root = temp_root();
         write(root.path(), "a.txt", "NEEDLE\n");
-        let insensitive = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle", "ignore_case": true }));
+        let insensitive = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle", "ignore_case": true }),
+        );
         assert_eq!(match_texts(&insensitive), vec!["NEEDLE"]);
-        let sensitive = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "needle" }));
+        let sensitive = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "needle" }),
+        );
         assert!(match_texts(&sensitive).is_empty());
     }
 
@@ -803,10 +1063,21 @@ mod tests {
     fn given_an_invalid_pattern_when_grep_runs_then_it_rejects_with_invalid_pattern() {
         let root = temp_root();
         write(root.path(), "a.txt", "needle\n");
-        let result = run(root.path(), DEFAULT_KIBITZER_TOOL_CAPS, None, &json!({ "pattern": "(" }));
+        let result = run(
+            root.path(),
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            None,
+            &json!({ "pattern": "(" }),
+        );
         assert!(result.is_error);
         let body = json_of(&result);
-        assert_eq!(body.get("rejected").and_then(Value::as_str), Some("invalid_pattern"));
-        assert!(body.get("path").is_none(), "the invalid-pattern rejection carries no path");
+        assert_eq!(
+            body.get("rejected").and_then(Value::as_str),
+            Some("invalid_pattern")
+        );
+        assert!(
+            body.get("path").is_none(),
+            "the invalid-pattern rejection carries no path"
+        );
     }
 }

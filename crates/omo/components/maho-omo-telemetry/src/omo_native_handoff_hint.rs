@@ -29,7 +29,9 @@ pub struct HandoffHintPayload {
 }
 
 fn finite(value: Option<&Value>) -> Option<f64> {
-    value.and_then(Value::as_f64).filter(|value| value.is_finite())
+    value
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
 }
 
 pub fn parse_payload(value: &Value) -> Option<HandoffHintPayload> {
@@ -112,9 +114,7 @@ pub fn register_omo_native_handoff_hint_telemetry(
 }
 
 /// The default hasher, which needs the native state dir.
-pub fn session_hasher(
-    state_dir: std::path::PathBuf,
-) -> Arc<dyn Fn(&str) -> String + Send + Sync> {
+pub fn session_hasher(state_dir: std::path::PathBuf) -> Arc<dyn Fn(&str) -> String + Send + Sync> {
     Arc::new(move |session_id: &str| {
         hash_session_id(session_id, &state_dir).unwrap_or_else(|error| {
             maho_ext_api::diagnostic(&format!("omo-native session identity failed: {error}"));
@@ -152,7 +152,12 @@ mod tests {
     #[test]
     fn exact_allowlist_and_hashed_session() {
         let properties = handoff_hint_properties(&payload(), &hasher()).expect("valid payload");
-        let mut keys: Vec<&str> = properties.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = properties
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         let mut expected: Vec<&str> =
             crate::event_schemas::OMO_NATIVE_PROPERTY_ALLOWLISTS["handoff_hint"]
@@ -215,7 +220,10 @@ mod tests {
         ] {
             let mut value = payload();
             value[key] = replacement;
-            assert!(handoff_hint_properties(&value, &hasher()).is_none(), "{key}");
+            assert!(
+                handoff_hint_properties(&value, &hasher()).is_none(),
+                "{key}"
+            );
         }
         let mut value = payload();
         value["savingUsd"] = json!("1.5");

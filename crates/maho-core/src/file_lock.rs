@@ -30,11 +30,7 @@ pub struct HeldFileLock {
     on_lost: OnLostCallbackState,
 }
 impl HeldFileLock {
-    pub fn new(
-        path: &Path,
-        lock_dir: &Path,
-        on_lost: OnLostCallback,
-    ) -> std::io::Result<Self> {
+    pub fn new(path: &Path, lock_dir: &Path, on_lost: OnLostCallback) -> std::io::Result<Self> {
         let token = uuid::Uuid::new_v4().to_string();
         let token_path = lock_dir.join("owner-token");
         std::fs::write(&token_path, &token)?;
@@ -61,9 +57,10 @@ impl HeldFileLock {
                     break;
                 }
                 if let Some(dir) = held.token_path.parent()
-                    && let Err(error) = filetime::set_file_mtime(dir, filetime::FileTime::now()) {
-                        held.report_compromised(error.to_string());
-                    }
+                    && let Err(error) = filetime::set_file_mtime(dir, filetime::FileTime::now())
+                {
+                    held.report_compromised(error.to_string());
+                }
             }
         });
     }
@@ -103,9 +100,9 @@ impl HeldFileLock {
             .clone();
         if let Some(callback) = callback
             && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&error))).is_err()
-            {
-                eprintln!("file_lock_on_lost_threw");
-            }
+        {
+            eprintln!("file_lock_on_lost_threw");
+        }
     }
     pub fn lost(&self) -> bool {
         self.loss

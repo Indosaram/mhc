@@ -42,7 +42,10 @@ impl KibitzerWakeLease {
 /// The admission verdict.
 pub enum KibitzerWakeAdmission {
     /// A lease was taken.
-    Acquired { lease: KibitzerWakeLease, waited_ms: i64 },
+    Acquired {
+        lease: KibitzerWakeLease,
+        waited_ms: i64,
+    },
     /// Every slot stayed with a live owner for the whole bounded wait.
     Busy { waited_ms: i64 },
     /// The caller's signal fired while waiting.
@@ -78,7 +81,9 @@ impl KibitzerWakeSlot {
         Ok(Self {
             locks_directory: options.locks_directory,
             max_concurrent: options.max_concurrent,
-            wait_timeout_ms: options.wait_timeout_ms.unwrap_or(KIBITZER_WAKE_SLOT_WAIT_MS),
+            wait_timeout_ms: options
+                .wait_timeout_ms
+                .unwrap_or(KIBITZER_WAKE_SLOT_WAIT_MS),
             poll_ms: options.poll_ms.unwrap_or(KIBITZER_WAKE_SLOT_POLL_MS),
             now: options.now,
         })
@@ -98,7 +103,10 @@ impl KibitzerWakeSlot {
         };
         match acquire_recall_wake_lease(&self.locks_directory, &options) {
             Ok(lease) => Ok(KibitzerWakeAdmission::Acquired {
-                lease: KibitzerWakeLease { slot: lease.slot, inner: lease },
+                lease: KibitzerWakeLease {
+                    slot: lease.slot,
+                    inner: lease,
+                },
                 waited_ms: ((self.now)() - started).max(0),
             }),
             Err(RecallWakeError::Busy(_)) => Ok(KibitzerWakeAdmission::Busy {

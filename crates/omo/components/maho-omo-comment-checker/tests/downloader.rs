@@ -4,9 +4,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
-use comment_checker_core::{
-    COMMENT_CHECKER_RELEASE_VERSION, COMMENT_CHECKER_VERSION_MARKER,
-};
+use comment_checker_core::{COMMENT_CHECKER_RELEASE_VERSION, COMMENT_CHECKER_VERSION_MARKER};
 use maho_ext_api::ComponentLogger;
 use maho_omo_comment_checker::constants::COMMENT_CHECKER_CACHE_DIR_NAME;
 use maho_omo_comment_checker::downloader::download_senpi_comment_checker_binary;
@@ -41,16 +39,16 @@ impl ComponentLogger for RecordingLogger {
 
 async fn serve_archive(
     status: u16,
-) -> (
-    String,
-    Arc<Mutex<usize>>,
-    tokio::sync::oneshot::Sender<()>,
-) {
+) -> (String, Arc<Mutex<usize>>, tokio::sync::oneshot::Sender<()>) {
     let stage = tempdir().expect("stage");
     let script = stage.path().join("comment-checker");
-    fs::write(&script, "#!/bin/sh
+    fs::write(
+        &script,
+        "#!/bin/sh
 echo fixture-checker
-").expect("write script");
+",
+    )
+    .expect("write script");
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
 
     let archive = stage.path().join("fixture.tar.gz");
@@ -101,7 +99,11 @@ echo fixture-checker
         }
     });
 
-    (format!("http://127.0.0.1:{port}/asset.tar.gz"), requests, tx)
+    (
+        format!("http://127.0.0.1:{port}/asset.tar.gz"),
+        requests,
+        tx,
+    )
 }
 
 #[test]
@@ -111,7 +113,7 @@ fn downloader_cache_dir_name_is_oh_my_opencode() {
 
 #[tokio::test]
 async fn given_empty_cache_and_reachable_release_when_downloading_then_binary_lands_executable_and_archive_removed()
-{
+ {
     let temp = tempdir().expect("temp");
     let cache_dir = temp.path().join("bin");
     let logger = Arc::new(RecordingLogger::default());
@@ -135,7 +137,12 @@ async fn given_empty_cache_and_reachable_release_when_downloading_then_binary_la
 
     let mut entries: Vec<String> = fs::read_dir(&cache_dir)
         .expect("test assertion")
-        .map(|e| e.expect("test assertion").file_name().to_string_lossy().into_owned())
+        .map(|e| {
+            e.expect("test assertion")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     entries.sort();
     assert_eq!(
@@ -158,18 +165,24 @@ async fn given_empty_cache_and_reachable_release_when_downloading_then_binary_la
 
 #[tokio::test]
 async fn given_cached_binary_recorded_at_pinned_release_when_downloading_again_then_cache_answers_without_request()
-{
+ {
     let temp = tempdir().expect("temp");
     let cache_dir = temp.path().join("bin");
     fs::create_dir_all(&cache_dir).expect("test assertion");
     let bin = cache_dir.join("comment-checker");
-    fs::write(&bin, "#!/bin/sh
-").expect("test assertion");
+    fs::write(
+        &bin,
+        "#!/bin/sh
+",
+    )
+    .expect("test assertion");
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("test assertion");
     fs::write(
         cache_dir.join(COMMENT_CHECKER_VERSION_MARKER),
-        format!("{COMMENT_CHECKER_RELEASE_VERSION}
-"),
+        format!(
+            "{COMMENT_CHECKER_RELEASE_VERSION}
+"
+        ),
     )
     .expect("test assertion");
 
@@ -192,7 +205,7 @@ async fn given_cached_binary_recorded_at_pinned_release_when_downloading_again_t
 
 #[tokio::test]
 async fn given_release_endpoint_fails_when_downloading_then_returns_none_with_warning_and_no_partial_files()
-{
+ {
     let temp = tempdir().expect("temp");
     let cache_dir = temp.path().join("bin");
     let logger = Arc::new(RecordingLogger::default());
@@ -223,7 +236,8 @@ async fn given_release_endpoint_fails_when_downloading_then_returns_none_with_wa
 }
 
 #[tokio::test]
-async fn given_unsupported_platform_when_downloading_then_returns_none_without_contacting_network() {
+async fn given_unsupported_platform_when_downloading_then_returns_none_without_contacting_network()
+{
     let temp = tempdir().expect("temp");
     let cache_dir = temp.path().join("bin");
     let logger = Arc::new(RecordingLogger::default());

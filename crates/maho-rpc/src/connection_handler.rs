@@ -485,8 +485,14 @@ async fn handle_input_line_with_login_state(
         }
     };
     // Boxed: this command future is very large and would otherwise sit on the caller's stack.
-    let dispatch =
-        dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source);
+    let dispatch = dispatch_session_command(
+        session,
+        &command,
+        sink,
+        active_logins,
+        ui,
+        last_abort_source,
+    );
     // senpi client-input-handler.ts `clientInputContext.run(clientMessageIdentity(command), ...)`: the records a
     // client input produces (`skill_invocation`, `command_invocation`) name the input that caused them.
     let response = match client_input_identity(&value) {
@@ -1018,36 +1024,110 @@ async fn run_prompt_command(
     command: &RpcCommand,
     sink: Option<RpcRecordSink>,
 ) -> Option<RpcResponse> {
-    let RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=&command.body else{unreachable!("only prompt commands are routed here")};
+    let RpcCommandBody::Prompt {
+        message,
+        images,
+        streaming_behavior,
+        thinking_level,
+        session_title_prompt,
+        expand_prompt_templates,
+    } = &command.body
+    else {
+        unreachable!("only prompt commands are routed here")
+    };
     {
-            let options=(||{
-                if thinking_level.is_some()&&session.is_streaming()&&streaming_behavior.is_some(){return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned());}
-                let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose().map_err(|error|error.to_string())?;
-                let thinking_level=thinking_level.as_ref().map(|level|serde_json::from_value(level.clone().into())).transpose().map_err(|error|error.to_string())?;
-                let session_title_prompt=match session_title_prompt{Some(crate::rpc_types::SessionTitlePrompt::Text(text))=>Some(maho_core::agent_session::SessionTitlePrompt::Text(text.clone())),Some(crate::rpc_types::SessionTitlePrompt::Enabled(false))=>Some(maho_core::agent_session::SessionTitlePrompt::Disabled),None=>None,Some(crate::rpc_types::SessionTitlePrompt::Enabled(true))=>return Err("sessionTitlePrompt must be a string or false".into())};
-                Ok(maho_core::agent_session::PromptOptions{images,thinking_level,session_title_prompt,expand_prompt_templates:*expand_prompt_templates,streaming_behavior:streaming_behavior.map(|behavior|match behavior{crate::rpc_types::StreamingBehavior::Steer=>maho_ext_api::StreamingBehavior::Steer,crate::rpc_types::StreamingBehavior::FollowUp=>maho_ext_api::StreamingBehavior::FollowUp}),source:Some(maho_ext_api::InputSource::Rpc),..Default::default()})
-            })();
-            let admitted=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let result=match options{Err(error)=>Err(error),Ok(mut options)=>{
-                if let Some(sink)=sink{
-                    let admitted=admitted.clone();let id=command.id.clone();let session_id=command.session_id.clone();
-                    options.prompt_admitted=Some(std::sync::Arc::new(move|disposition|{
-                        if admitted.swap(true,std::sync::atomic::Ordering::SeqCst){return;}
-                        let disposition=match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"};
-                        let mut record=serde_json::json!({"type":"response","command":"prompt","success":true,"data":{"disposition":disposition}});
-                        if let Some(id)=&id{record["id"]=id.clone().into();}
-                        if let Some(session_id)=&session_id{record["sessionId"]=session_id.clone().into();}
+        let options = (|| {
+            if thinking_level.is_some() && session.is_streaming() && streaming_behavior.is_some() {
+                return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned());
+            }
+            let images = images
+                .as_ref()
+                .map(|images| {
+                    images
+                        .iter()
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .collect::<Result<Vec<maho_ai::types::ImageContent>, _>>()
+                })
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            let thinking_level = thinking_level
+                .as_ref()
+                .map(|level| serde_json::from_value(level.clone().into()))
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            let session_title_prompt = match session_title_prompt {
+                Some(crate::rpc_types::SessionTitlePrompt::Text(text)) => Some(
+                    maho_core::agent_session::SessionTitlePrompt::Text(text.clone()),
+                ),
+                Some(crate::rpc_types::SessionTitlePrompt::Enabled(false)) => {
+                    Some(maho_core::agent_session::SessionTitlePrompt::Disabled)
+                }
+                None => None,
+                Some(crate::rpc_types::SessionTitlePrompt::Enabled(true)) => {
+                    return Err("sessionTitlePrompt must be a string or false".into());
+                }
+            };
+            Ok(maho_core::agent_session::PromptOptions {
+                images,
+                thinking_level,
+                session_title_prompt,
+                expand_prompt_templates: *expand_prompt_templates,
+                streaming_behavior: streaming_behavior.map(|behavior| match behavior {
+                    crate::rpc_types::StreamingBehavior::Steer => {
+                        maho_ext_api::StreamingBehavior::Steer
+                    }
+                    crate::rpc_types::StreamingBehavior::FollowUp => {
+                        maho_ext_api::StreamingBehavior::FollowUp
+                    }
+                }),
+                source: Some(maho_ext_api::InputSource::Rpc),
+                ..Default::default()
+            })
+        })();
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = match options {
+            Err(error) => Err(error),
+            Ok(mut options) => {
+                if let Some(sink) = sink {
+                    let admitted = admitted.clone();
+                    let id = command.id.clone();
+                    let session_id = command.session_id.clone();
+                    options.prompt_admitted = Some(std::sync::Arc::new(move |disposition| {
+                        if admitted.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            return;
+                        }
+                        let disposition = match disposition {
+                            maho_core::agent_session::PromptDisposition::Started => "started",
+                            maho_core::agent_session::PromptDisposition::Queued => "queued",
+                            maho_core::agent_session::PromptDisposition::Handled => "handled",
+                        };
+                        let mut record = serde_json::json!({"type":"response","command":"prompt","success":true,"data":{"disposition":disposition}});
+                        if let Some(id) = &id {
+                            record["id"] = id.clone().into();
+                        }
+                        if let Some(session_id) = &session_id {
+                            record["sessionId"] = session_id.clone().into();
+                        }
                         sink(record);
                     }));
                 }
                 // Boxed: the prompt future is large and would otherwise be inlined into this command future's stack frame.
                 Box::pin(session.prompt(message,options)).await.map(|disposition|Some(serde_json::json!({"disposition":match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"}})))
-            }};
-            if admitted.load(std::sync::atomic::Ordering::SeqCst){return None;}
-            Some(command_response(session,command,"prompt",result))
+            }
+        };
+        if admitted.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        Some(command_response(session, command, "prompt", result))
     }
 }
-fn command_response(session: &AgentSession, command: &RpcCommand, kind: &str, result: Result<Option<serde_json::Value>,String>) -> RpcResponse {
+fn command_response(
+    session: &AgentSession,
+    command: &RpcCommand,
+    kind: &str,
+    result: Result<Option<serde_json::Value>, String>,
+) -> RpcResponse {
     RpcResponse {
         id: command.id.clone(),
         record_type: ResponseRecordType::Response,
@@ -2344,7 +2424,10 @@ impl RpcConnectionHandler {
     }
     /// senpi `uiRequestChanged` for a hosted session: every dialog registration and settlement is reported as a
     /// `ui_request_pending`/`ui_request_settled` observation record on `out` (dialog observers, senpi#4266).
-    pub fn report_ui_request_changes(&self, out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>) {
+    pub fn report_ui_request_changes(
+        &self,
+        out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    ) {
         let dialogs = out.clone();
         self.pending
             .lock()
@@ -2382,9 +2465,7 @@ impl RpcConnectionHandler {
                 Some("extension_ui_response" | "extension_ui_progress")
             )
         {
-            let reply_to = || {
-                serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response"})
-            };
+            let reply_to = || serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response"});
             // A named answer (`answerId`) asks for a receipt (senpi `settleExtensionUiResponse`).
             let is_response = value["type"] == "extension_ui_response";
             let answer_id = if is_response {
@@ -2403,7 +2484,8 @@ impl RpcConnectionHandler {
             let request_id = crate::extension_ui_response::answered_ui_request_id(value)
                 .unwrap_or_default()
                 .to_owned();
-            let ledger = crate::ui_answer_ledger::session_ui_answer_ledger(&self.session.session_id());
+            let ledger =
+                crate::ui_answer_ledger::session_ui_answer_ledger(&self.session.session_id());
             if answer_id.is_some() {
                 let receipt = ledger
                     .lock()
@@ -4122,16 +4204,18 @@ mod new_session_tests {
         use maho_core::credential_accounts::{
             CredentialAccountBlockedReason, CredentialAccountSource, CredentialAccountSummary,
         };
-        let account = |blocked_reason: Option<CredentialAccountBlockedReason>, blocked_until| CredentialAccountSummary {
-            name: "work".into(),
-            display_name: None,
-            source: CredentialAccountSource::Login,
-            blocked: blocked_reason.is_some(),
-            blocked_reason,
-            blocked_until,
-            pinned: false,
-            blocked_models: Vec::new(),
-            unused: false,
+        let account = |blocked_reason: Option<CredentialAccountBlockedReason>, blocked_until| {
+            CredentialAccountSummary {
+                name: "work".into(),
+                display_name: None,
+                source: CredentialAccountSource::Login,
+                blocked: blocked_reason.is_some(),
+                blocked_reason,
+                blocked_until,
+                pinned: false,
+                blocked_models: Vec::new(),
+                unused: false,
+            }
         };
         assert_eq!(
             credential_account_json(account(
@@ -4543,11 +4627,8 @@ mod connection_events_tests {
     #[tokio::test]
     async fn test_extension_ui_progress_does_not_settle_question() {
         let session = session();
-        let (capable, records) = handler(
-            &session,
-            &[crate::custom_capability::QUESTION_CAPABILITY],
-        )
-        .await;
+        let (capable, records) =
+            handler(&session, &[crate::custom_capability::QUESTION_CAPABILITY]).await;
         let ui = capable.ui().clone();
         let question_task = tokio::spawn(async move {
             maho_ext_api::ExtensionUi::question(
@@ -4571,7 +4652,10 @@ mod connection_events_tests {
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let requests = of_type(&records, "extension_ui_request");
-                if let Some(first) = requests.iter().find(|record| record["method"] == "question") {
+                if let Some(first) = requests
+                    .iter()
+                    .find(|record| record["method"] == "question")
+                {
                     return first["id"].as_str().expect("id").to_owned();
                 }
                 tokio::task::yield_now().await;
@@ -4586,7 +4670,10 @@ mod connection_events_tests {
             "answers": {"q1": {"selected": ["A"]}}
         })
         .to_string();
-        let outcome = capable.handle_input_line(&progress_line).await.expect("handle line");
+        let outcome = capable
+            .handle_input_line(&progress_line)
+            .await
+            .expect("handle line");
         assert!(outcome.is_none());
 
         assert!(!question_task.is_finished());
@@ -4600,21 +4687,27 @@ mod connection_events_tests {
             "answers": {"q1": {"selected": ["B"]}}
         })
         .to_string();
-        capable.handle_input_line(&response_line).await.expect("handle line");
+        capable
+            .handle_input_line(&response_line)
+            .await
+            .expect("handle line");
 
-        let response = question_task.await.expect("task join").expect("response ok");
-        assert_eq!(response.answers.get("q1").unwrap().selected, vec!["B".to_string()]);
+        let response = question_task
+            .await
+            .expect("task join")
+            .expect("response ok");
+        assert_eq!(
+            response.answers.get("q1").unwrap().selected,
+            vec!["B".to_string()]
+        );
         capable.release().await;
     }
 
     #[tokio::test]
     async fn test_question_timeout_emits_question_resolved_event() {
         let session = session();
-        let (capable, records) = handler(
-            &session,
-            &[crate::custom_capability::QUESTION_CAPABILITY],
-        )
-        .await;
+        let (capable, records) =
+            handler(&session, &[crate::custom_capability::QUESTION_CAPABILITY]).await;
         let response = maho_ext_api::ExtensionUi::question(
             capable.ui().as_ref(),
             maho_ext_api::QuestionRequest {

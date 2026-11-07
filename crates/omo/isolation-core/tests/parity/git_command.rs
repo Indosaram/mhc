@@ -1,23 +1,21 @@
 #[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
-use std::sync::atomic::{AtomicU32, Ordering};
-#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(unix)]
 use std::time::Duration;
 
 use isolation_core::test_support::fixture;
-use isolation_core::{run_git, str_args, GitOptions};
+use isolation_core::{GitOptions, run_git, str_args};
 #[cfg(unix)]
 use isolation_core::{IsolationError, SpawnObserver};
 
 #[cfg(unix)]
 fn kill_on_spawn(signal: i32) -> SpawnObserver {
-    Arc::new(move |pid| {
-        unsafe {
-            libc::kill(pid as libc::pid_t, signal);
-        }
+    Arc::new(move |pid| unsafe {
+        libc::kill(pid as libc::pid_t, signal);
     })
 }
 
@@ -132,8 +130,8 @@ fn a_budget_breach_on_a_still_streaming_child_preserves_the_typed_limit_error() 
     options.on_spawn = Some(Arc::new(move |pid| {
         sink.store(pid, Ordering::SeqCst);
     }));
-    let error = run_git(&str_args(&["-c", "alias.spam=!yes x", "spam"]), &options)
-        .expect_err("must fail");
+    let error =
+        run_git(&str_args(&["-c", "alias.spam=!yes x", "spam"]), &options).expect_err("must fail");
     assert!(error.to_string().contains("budget breach"));
     let pgid = pgid.load(Ordering::SeqCst);
     if !cfg!(windows) && pgid != 0 {
@@ -153,8 +151,11 @@ fn a_budget_breach_tears_down_the_writer_even_when_the_alias_shell_survives_its_
     options.on_spawn = Some(Arc::new(move |pid| {
         sink.store(pid, Ordering::SeqCst);
     }));
-    let error = run_git(&str_args(&["-c", "alias.spam=!sh -c 'yes x'", "spam"]), &options)
-        .expect_err("must fail");
+    let error = run_git(
+        &str_args(&["-c", "alias.spam=!sh -c 'yes x'", "spam"]),
+        &options,
+    )
+    .expect_err("must fail");
     assert!(error.to_string().contains("budget breach"));
     let pgid = pgid.load(Ordering::SeqCst);
     if !cfg!(windows) && pgid != 0 {

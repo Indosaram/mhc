@@ -40,7 +40,10 @@ pub fn otel_host_arch(arch: &str) -> &'static str {
 
 pub fn create_telemetry_resource(attribution: &TelemetryResourceAttribution) -> ResourceAttributes {
     let mut resource = ResourceAttributes::new();
-    resource.insert("service.name".into(), attribution.service_name.clone().into());
+    resource.insert(
+        "service.name".into(),
+        attribution.service_name.clone().into(),
+    );
     resource.insert(
         "service.version".into(),
         attribution.service_version.clone().into(),
@@ -60,10 +63,7 @@ pub fn create_telemetry_resource(attribution: &TelemetryResourceAttribution) -> 
     }
     resource.insert("host.arch".into(), otel_host_arch(&attribution.arch).into());
     resource.insert("telemetry.sdk.name".into(), OTEL_SDK_NAME.into());
-    resource.insert(
-        "telemetry.sdk.language".into(),
-        OTEL_SDK_LANGUAGE.into(),
-    );
+    resource.insert("telemetry.sdk.language".into(), OTEL_SDK_LANGUAGE.into());
     resource.insert("telemetry.sdk.version".into(), OTEL_SDK_VERSION.into());
     resource.insert(
         "omo.schema.version".into(),

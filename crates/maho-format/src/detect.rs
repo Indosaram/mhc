@@ -191,7 +191,12 @@ pub async fn bun_formats(host: &Host, cwd: &Path) -> bool {
     };
     let args = |list: &[&str]| -> Vec<OsString> { list.iter().map(OsString::from).collect() };
     if host
-        .run(&bun, &args(&["format", "--help"]), dir.path(), PROBE_TIMEOUT)
+        .run(
+            &bun,
+            &args(&["format", "--help"]),
+            dir.path(),
+            PROBE_TIMEOUT,
+        )
         .await
         != Exit::Success
     {

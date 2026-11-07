@@ -3,8 +3,10 @@
 //! `host_response` counts, and an accepted move is announced to it with `relocation_due` once the run that asked for
 //! it settles. The engine never interrupts that run and never moves anything itself: the host runs the existing
 //! `release_session` reason `move` and `move_session` steps.
-use crate::session_relocation_channel::{HostResponseOutcome, RelocationChannel, RelocationRecordKind};
 use crate::session_release_interrupt::{BoxFuture, SubscriptionGuard};
+use crate::session_relocation_channel::{
+    HostResponseOutcome, RelocationChannel, RelocationRecordKind,
+};
 use maho_core::session_move::bundle::is_plain_id;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -69,7 +71,10 @@ pub enum RelocationTargetsResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelocationRequestResult {
     /// The host accepted; the move starts when the current turn ends, never before.
-    Scheduled { target: String, move_id: String },
+    Scheduled {
+        target: String,
+        move_id: String,
+    },
     Unavailable(RelocationUnavailable),
     Refused(RelocationRefused),
 }
@@ -366,9 +371,9 @@ impl RpcSessionRelocation {
 
     /// The connection `connection_id` left the session: what it accepted or was asked ends here, never later.
     pub fn connection_detached(&self, connection_id: &str) {
-        let accepted_by_it = lock(&self.scheduled).as_ref().is_some_and(|due| {
-            due.connection == connection_id && due.drop_reason.is_none()
-        });
+        let accepted_by_it = lock(&self.scheduled)
+            .as_ref()
+            .is_some_and(|due| due.connection == connection_id && due.drop_reason.is_none());
         if accepted_by_it {
             self.drop_scheduled(DropReason::Disconnected);
         }
@@ -395,7 +400,9 @@ impl RpcSessionRelocation {
     pub fn dispose(&self) {
         drop(lock(&self.unsubscribe).take());
         *lock(&self.scheduled) = None;
-        let waiting: Vec<Pending> = std::mem::take(&mut *lock(&self.pending)).into_values().collect();
+        let waiting: Vec<Pending> = std::mem::take(&mut *lock(&self.pending))
+            .into_values()
+            .collect();
         for pending in waiting {
             let _ = pending.finish.send(Answer::Refused(refused(
                 "session_closed",
@@ -560,9 +567,11 @@ impl RpcSessionRelocation {
                     finish,
                 },
             );
-            self.deps
-                .channel
-                .send(&connection, fields.into_record(&id), RelocationRecordKind::Request);
+            self.deps.channel.send(
+                &connection,
+                fields.into_record(&id),
+                RelocationRecordKind::Request,
+            );
             let answer = tokio::select! {
                 biased;
                 answer = answered => answer.unwrap_or_else(|_| Answer::Refused(refused("session_closed", "this session was closed"))),
@@ -635,18 +644,22 @@ impl RelocationSession for AgentSessionRelocation {
     }
 
     fn subscribe(&self, listener: RunListener) -> SubscriptionGuard {
-        let subscription = self
-            .session
-            .subscribe(Arc::new(move |event: &maho_ext_api::AgentSessionEvent| {
-                let run = match event {
-                    maho_ext_api::AgentSessionEvent::AgentEnd { .. } => RelocationRunEvent::AgentEnd,
-                    maho_ext_api::AgentSessionEvent::AgentSettled => RelocationRunEvent::AgentSettled,
-                    _ => RelocationRunEvent::Other,
-                };
-                if run != RelocationRunEvent::Other {
-                    listener(run);
-                }
-            }));
+        let subscription =
+            self.session
+                .subscribe(Arc::new(move |event: &maho_ext_api::AgentSessionEvent| {
+                    let run = match event {
+                        maho_ext_api::AgentSessionEvent::AgentEnd { .. } => {
+                            RelocationRunEvent::AgentEnd
+                        }
+                        maho_ext_api::AgentSessionEvent::AgentSettled => {
+                            RelocationRunEvent::AgentSettled
+                        }
+                        _ => RelocationRunEvent::Other,
+                    };
+                    if run != RelocationRunEvent::Other {
+                        listener(run);
+                    }
+                }));
         Box::new(subscription)
     }
 }
@@ -655,7 +668,8 @@ impl RelocationSession for AgentSessionRelocation {
 mod tests {
     use super::*;
     use crate::session_relocation_channel::{
-        OutputLane, RelocationChannelOptions, RelocationClientInfo, SOLE_CONNECTION, relocation_channel,
+        OutputLane, RelocationChannelOptions, RelocationClientInfo, SOLE_CONNECTION,
+        relocation_channel,
     };
     use std::sync::atomic::AtomicUsize;
 
@@ -697,7 +711,11 @@ mod tests {
             self.stopped_by_user.load(Ordering::SeqCst)
         }
 
-        fn send_custom_message(&self, message: Value, trigger_turn: bool) -> BoxFuture<'static, ()> {
+        fn send_custom_message(
+            &self,
+            message: Value,
+            trigger_turn: bool,
+        ) -> BoxFuture<'static, ()> {
             assert!(!trigger_turn, "a dropped move never starts a turn");
             self.messages.lock().unwrap().push(message);
             self.messaged.notify_one();
@@ -747,10 +765,9 @@ mod tests {
             self.answered.fetch_add(1, Ordering::SeqCst);
             let reply = {
                 let answer = self.answer.lock().unwrap();
-                answer
-                    .as_ref()
-                    .and_then(|answer| answer(&record))
-                    .map(|data| json!({"type":"host_response","id":record["id"].clone(),"data":data}))
+                answer.as_ref().and_then(|answer| answer(&record)).map(
+                    |data| json!({"type":"host_response","id":record["id"].clone(),"data":data}),
+                )
             };
             let Some(reply) = reply else {
                 return;
@@ -773,7 +790,10 @@ mod tests {
     }
 
     /// A classic single-connection handler: its own capabilities decide whether it offers relocation.
-    fn setup(session: Arc<FakeSession>, capabilities: Option<Vec<String>>) -> (Arc<RpcSessionRelocation>, Arc<Wire>) {
+    fn setup(
+        session: Arc<FakeSession>,
+        capabilities: Option<Vec<String>>,
+    ) -> (Arc<RpcSessionRelocation>, Arc<Wire>) {
         let wire = Arc::new(Wire::default());
         let requests = Arc::clone(&wire);
         let output: OutputLane = Arc::new(move |record| requests.deliver(record));
@@ -867,7 +887,11 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["type"], json!("host_request"));
         assert_eq!(requests[0]["method"], json!("list_relocation_targets"));
-        assert!(requests[0]["id"].as_str().is_some_and(|id| id.starts_with("hr_")));
+        assert!(
+            requests[0]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("hr_"))
+        );
     }
 
     #[tokio::test]
@@ -994,9 +1018,12 @@ mod tests {
         session.stopped_by_user.store(true, Ordering::SeqCst);
         session.publish(RelocationRunEvent::AgentEnd);
         session.publish(RelocationRunEvent::AgentSettled);
-        tokio::time::timeout(std::time::Duration::from_secs(5), session.messaged.notified())
-            .await
-            .expect("the dropped move is written to the session");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.messaged.notified(),
+        )
+        .await
+        .expect("the dropped move is written to the session");
         assert!(wire.events.lock().unwrap().is_empty());
         let messages = session.messages.lock().unwrap().clone();
         assert_eq!(messages.len(), 1);
@@ -1072,7 +1099,9 @@ mod tests {
             client_info: Some(RelocationClientInfo {
                 connection_id: Arc::new(|| Some("peer-b".to_owned())),
                 relocation_connection: Some(Arc::new(|| Some("peer-a".to_owned()))),
-                deliver_to: Some(Arc::new(|_: &str, deliver: &(dyn Fn() + Send + Sync)| deliver())),
+                deliver_to: Some(Arc::new(|_: &str, deliver: &(dyn Fn() + Send + Sync)| {
+                    deliver()
+                })),
             }),
             output,
             output_event,
@@ -1090,7 +1119,10 @@ mod tests {
         assert!(futures::poll!(&mut asking).is_pending());
         let asked = wire.requests.lock().unwrap()[0].clone();
         let frame = json!({"type":"host_response","id":asked["id"].clone(),"data":{"accepted":true,"moveId":"m-1"}});
-        assert_eq!(host.respond(&frame), HostResponseOutcome::NotOfferingConnection);
+        assert_eq!(
+            host.respond(&frame),
+            HostResponseOutcome::NotOfferingConnection
+        );
         // The request stays open for the connection it went to, and the close refuses it.
         host.dispose();
         assert_eq!(
@@ -1149,9 +1181,12 @@ mod tests {
         ));
         *offered.lock().unwrap() = None;
         session.publish(RelocationRunEvent::AgentSettled);
-        tokio::time::timeout(std::time::Duration::from_secs(5), session.messaged.notified())
-            .await
-            .expect("the withdrawn move is written to the session");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.messaged.notified(),
+        )
+        .await
+        .expect("the withdrawn move is written to the session");
         assert_eq!(
             session.messages.lock().unwrap()[0]["details"]["reason"],
             json!("withdrawn")

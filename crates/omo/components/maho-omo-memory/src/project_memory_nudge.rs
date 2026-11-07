@@ -150,15 +150,14 @@ impl ProjectMemoryScope {
                     maho_ext_api::ExtensionEvent::SessionCompact(
                         maho_ext_api::SessionCompactEvent::Accepted { .. }
                     )
-                )
-                    && let Some(state) = scope
-                        .sessions
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get_mut(ctx.session_manager.session_id())
-                    {
-                        state.nudged.clear();
-                    }
+                ) && let Some(state) = scope
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(ctx.session_manager.session_id())
+                {
+                    state.nudged.clear();
+                }
                 Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }),
         );

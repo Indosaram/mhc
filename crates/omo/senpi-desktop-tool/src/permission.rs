@@ -1,9 +1,7 @@
 //! Permission parsing and tier classification matching upstream `src/permission.ts`.
 
 use maho_tools::ToolPermissionRequest;
-use senpi_desktop_protocol::{
-    is_read_only_computer_call, ComputerCallPolicy, ComputerCallStep,
-};
+use senpi_desktop_protocol::{ComputerCallPolicy, ComputerCallStep, is_read_only_computer_call};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

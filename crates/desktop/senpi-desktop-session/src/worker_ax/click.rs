@@ -31,12 +31,9 @@ impl Worker {
     fn ax_click_now(&mut self, params: &AxClickParams) -> CoreResult<Response> {
         let options = ParsedPointerOptions::parse(params.opts.as_ref())?;
         let handle: AxHandle = self.registry.resolve(&params.ref_)?;
-        let bounds = self
-            .ax_parts()?
-            .0
-            .props(&handle)?
-            .bounds
-            .ok_or_else(|| DesktopError::ax_failed(format!("{} has no clickable bounds", params.ref_)))?;
+        let bounds = self.ax_parts()?.0.props(&handle)?.bounds.ok_or_else(|| {
+            DesktopError::ax_failed(format!("{} has no clickable bounds", params.ref_))
+        })?;
         let x = bounds.x + bounds.width / 2.0;
         let y = bounds.y + bounds.height / 2.0;
         let window = self.owner_window(&params.ref_, &handle, x, y)?;
@@ -58,7 +55,13 @@ impl Worker {
 
     /// The id of the window that owns `handle`, named in the live window
     /// list: it must be listed and still contain (`x`, `y`).
-    fn owner_window(&mut self, reference: &str, handle: &AxHandle, x: f64, y: f64) -> CoreResult<String> {
+    fn owner_window(
+        &mut self,
+        reference: &str,
+        handle: &AxHandle,
+        x: f64,
+        y: f64,
+    ) -> CoreResult<String> {
         let windows = self.backend()?.windows()?;
         let AxOwner::Window(id) = self.ax_parts()?.0.owner(handle, &windows)? else {
             return Err(refuse_unknown_owner(reference));
@@ -93,5 +96,6 @@ fn refuse_unknown_owner(reference: &str) -> DesktopError {
 
 fn contains(window: &DesktopWindow, x: f64, y: f64) -> bool {
     let (left, top) = (f64::from(window.x), f64::from(window.y));
-    (left..left + f64::from(window.width)).contains(&x) && (top..top + f64::from(window.height)).contains(&y)
+    (left..left + f64::from(window.width)).contains(&x)
+        && (top..top + f64::from(window.height)).contains(&y)
 }

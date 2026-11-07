@@ -272,9 +272,15 @@ mod cancellation_tests {
     use super::*;
     use maho_ai::{
         types::{AssistantMessage, AssistantMessageEvent, DoneReason},
-        utils::{abort::AbortController, event_stream::{StreamError, create_assistant_message_event_stream}},
+        utils::{
+            abort::AbortController,
+            event_stream::{StreamError, create_assistant_message_event_stream},
+        },
     };
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use std::time::Duration;
 
     #[tokio::test]
@@ -285,12 +291,14 @@ mod cancellation_tests {
             let (started, cleanup_started) = tokio::sync::oneshot::channel();
             let (release, cleanup_release) = tokio::sync::oneshot::channel();
             let (stop_relay, relay_stopped) = tokio::sync::oneshot::channel();
-            stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                started.send(()).expect("cleanup observed");
-                cleanup_release.await.expect("cleanup release");
-                stop_relay.send(()).expect("relay still owned");
-                Ok(())
-            })));
+            stream.set_cancellation_handler(Box::new(move || {
+                Box::pin(async move {
+                    started.send(()).expect("cleanup observed");
+                    cleanup_release.await.expect("cleanup release");
+                    stop_relay.send(()).expect("relay still owned");
+                    Ok(())
+                })
+            }));
             let released = Arc::new(AtomicBool::new(false));
             let observed = Arc::clone(&released);
             stream.set_cancellation_task(tokio::spawn(async move {
@@ -305,8 +313,12 @@ mod cancellation_tests {
                         "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
                             "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
                         "stopReason":"stop","timestamp":0
-                    })).expect("assistant fixture");
-                    stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: response });
+                    }))
+                    .expect("assistant fixture");
+                    stream.push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message: response,
+                    });
                 }
                 "error" => stream.fail(StreamError::new("provider failed")),
                 "abort" => caller.abort(None),
@@ -315,17 +327,28 @@ mod cancellation_tests {
 
             // When the consumer reaches its abandonment boundary.
             let consumer = tokio::spawn(async move {
-                consume_summary_stream(&stream, &AbortController::new(), Some(&caller.signal()),
-                    Duration::from_secs(30), Duration::from_secs(30), &|_| {}).await
+                consume_summary_stream(
+                    &stream,
+                    &AbortController::new(),
+                    Some(&caller.signal()),
+                    Duration::from_secs(30),
+                    Duration::from_secs(30),
+                    &|_| {},
+                )
+                .await
             });
-            tokio::time::timeout(Duration::from_secs(5), cleanup_started).await
-                .expect("cleanup starts").expect("cleanup notification");
+            tokio::time::timeout(Duration::from_secs(5), cleanup_started)
+                .await
+                .expect("cleanup starts")
+                .expect("cleanup notification");
 
             // Then no result escapes before both cleanup and the relay have finished.
             assert!(!consumer.is_finished());
             release.send(()).expect("release cleanup");
-            let result = tokio::time::timeout(Duration::from_secs(5), consumer).await
-                .expect("consumer settles").expect("consumer task");
+            let result = tokio::time::timeout(Duration::from_secs(5), consumer)
+                .await
+                .expect("consumer settles")
+                .expect("consumer task");
             assert!(released.load(Ordering::SeqCst));
             match exit {
                 "done" => assert!(result.expect("summary").is_some()),

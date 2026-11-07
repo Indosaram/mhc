@@ -48,7 +48,11 @@ pub struct TeamMemberRespawnLaunchError {
 impl TeamMemberRespawnLaunchError {
     pub fn new(code: TeamMemberRespawnLaunchErrorCode, identity: &TeamMemberTaskIdentity) -> Self {
         Self {
-            message: format!("Cannot respawn team member '{}': {}", identity.member_name, code.as_str()),
+            message: format!(
+                "Cannot respawn team member '{}': {}",
+                identity.member_name,
+                code.as_str()
+            ),
             code,
         }
     }
@@ -100,7 +104,11 @@ pub fn parse_team_member_task_name(name: Option<&str>) -> Option<TeamMemberTaskI
 }
 
 /// `JSON.stringify({ ...config, stateDir, members })`.
-pub fn build_team_config_json(config: &TeamCoreConfig, state_dir: &StateDirConfig, members: &[String]) -> String {
+pub fn build_team_config_json(
+    config: &TeamCoreConfig,
+    state_dir: &StateDirConfig,
+    members: &[String],
+) -> String {
     let mut object = match serde_json::to_value(config) {
         Ok(Value::Object(object)) => object,
         _ => Map::new(),
@@ -128,10 +136,19 @@ fn dedupe(values: &[String]) -> Vec<String> {
 pub fn create_team_member_respawn_launch_resolver(
     options: TeamMemberRespawnLaunchResolverOptions,
 ) -> Result<TeamMemberRespawnLaunchResolver, String> {
-    let base_dir = team_storage_base_dir(&options.state_dir).to_string_lossy().into_owned();
+    let base_dir = team_storage_base_dir(&options.state_dir)
+        .to_string_lossy()
+        .into_owned();
     let config = to_team_core_config(&options.team_bounds, &base_dir)?;
-    let inherited_extensions = dedupe(options.member_extension.inherited_extensions.as_deref().unwrap_or(&[]));
-    let extensions = assemble_member_extensions(&options.member_extension.entry_path, &inherited_extensions);
+    let inherited_extensions = dedupe(
+        options
+            .member_extension
+            .inherited_extensions
+            .as_deref()
+            .unwrap_or(&[]),
+    );
+    let extensions =
+        assemble_member_extensions(&options.member_extension.entry_path, &inherited_extensions);
     Ok(TeamMemberRespawnLaunchResolver {
         config,
         state_dir: options.state_dir,
@@ -159,25 +176,41 @@ impl TeamMemberRespawnLaunchResolver {
             .map_err(|_| TeamMemberRespawnLaunchError::new(Code::RuntimeUnavailable, &identity))?;
         let status = runtime.status.as_str();
         if status != "active" && status != "shutdown_requested" {
-            return Err(TeamMemberRespawnLaunchError::new(Code::RuntimeInactive, &identity));
+            return Err(TeamMemberRespawnLaunchError::new(
+                Code::RuntimeInactive,
+                &identity,
+            ));
         }
-        let member = runtime.members.iter().find(|entry| entry.name == identity.member_name);
+        let member = runtime
+            .members
+            .iter()
+            .find(|entry| entry.name == identity.member_name);
         let shutdown_approved = member.is_some_and(|member| {
             serde_json::to_value(member.status)
                 .ok()
                 .is_some_and(|value| value.as_str() == Some("shutdown_approved"))
         });
         if member.is_none() || shutdown_approved {
-            return Err(TeamMemberRespawnLaunchError::new(Code::MemberMissing, &identity));
+            return Err(TeamMemberRespawnLaunchError::new(
+                Code::MemberMissing,
+                &identity,
+            ));
         }
         let runtime_dir = resolve_team_runtime_dirs(&self.state_dir, &identity.team_run_id)
             .map_err(|_| TeamMemberRespawnLaunchError::new(Code::RuntimeUnavailable, &identity))?
             .runtime_dir;
         let map = read_member_task_map(&runtime_dir);
         if map.get(&identity.member_name).map(String::as_str) != Some(task_id) {
-            return Err(TeamMemberRespawnLaunchError::new(Code::TaskMappingMismatch, &identity));
+            return Err(TeamMemberRespawnLaunchError::new(
+                Code::TaskMappingMismatch,
+                &identity,
+            ));
         }
-        let members: Vec<String> = runtime.members.iter().map(|member| member.name.clone()).collect();
+        let members: Vec<String> = runtime
+            .members
+            .iter()
+            .map(|member| member.name.clone())
+            .collect();
         let mut member_env = BTreeMap::new();
         member_env.insert(
             "SENPI_TASK_MEMBER".to_string(),

@@ -72,10 +72,11 @@ pub fn list_reflection_leftovers(
 ) -> Result<ReflectionLeftovers, String> {
     let root = resolve(worktrees_dir);
     let listed = git(exec, &repo.dir, &["worktree", "list", "--porcelain"])?;
-    let registered_worktrees: Vec<RegisteredReflectionWorktree> = parse_registered_worktrees(&listed)
-        .into_iter()
-        .filter(|worktree| is_inside(&root, &worktree.dir))
-        .collect();
+    let registered_worktrees: Vec<RegisteredReflectionWorktree> =
+        parse_registered_worktrees(&listed)
+            .into_iter()
+            .filter(|worktree| is_inside(&root, &worktree.dir))
+            .collect();
     let registered: BTreeSet<PathBuf> = registered_worktrees
         .iter()
         .map(|worktree| worktree.dir.clone())
@@ -129,15 +130,15 @@ pub fn select_reflection_orphans(
         if !present {
             return true;
         }
-        owner.epoch.is_none_or(|epoch| epoch <= selection.now_ms - grace_ms)
+        owner
+            .epoch
+            .is_none_or(|epoch| epoch <= selection.now_ms - grace_ms)
     };
     ReflectionLeftovers {
         registered_worktrees: leftovers
             .registered_worktrees
             .iter()
-            .filter(|worktree| {
-                is_orphan(&basename(&worktree.dir), worktree.present)
-            })
+            .filter(|worktree| is_orphan(&basename(&worktree.dir), worktree.present))
             .cloned()
             .collect(),
         stray_dirs: leftovers
@@ -175,7 +176,8 @@ pub fn sweep_reflection_orphans(
         now_ms: options.now_ms,
         grace_ms: options.grace_ms,
     };
-    let orphans = select_reflection_orphans(&list_reflection_leftovers(repo, &root, exec)?, &selection);
+    let orphans =
+        select_reflection_orphans(&list_reflection_leftovers(repo, &root, exec)?, &selection);
     let mut receipts = Vec::new();
     let mut discarded: BTreeSet<String> = BTreeSet::new();
 
@@ -245,9 +247,7 @@ fn parse_reflection_owner(name: &str) -> Option<ReflectionOwner> {
             epoch: None,
         });
     }
-    let suffix = name
-        .strip_prefix(REFLECTION_BRANCH_PREFIX)
-        .unwrap_or(name);
+    let suffix = name.strip_prefix(REFLECTION_BRANCH_PREFIX).unwrap_or(name);
     let (epoch, run_id) = suffix.split_once('-')?;
     if epoch.is_empty() || run_id.is_empty() || !epoch.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -315,9 +315,7 @@ fn attempt(
 }
 
 fn git(exec: &dyn GitExec, cwd: &Path, argv: &[&str]) -> Result<String, String> {
-    let result = exec
-        .run_in(cwd, argv)
-        .map_err(|error| error.to_string())?;
+    let result = exec.run_in(cwd, argv).map_err(|error| error.to_string())?;
     if result.code != 0 {
         let stderr = result.stderr.trim();
         return Err(if stderr.is_empty() {
@@ -342,7 +340,9 @@ fn basename(path: &Path) -> String {
 
 fn is_epoch_prefixed(name: &str) -> bool {
     match name.split_once('-') {
-        Some((epoch, rest)) => !epoch.is_empty() && !rest.is_empty() && epoch.bytes().all(|byte| byte.is_ascii_digit()),
+        Some((epoch, rest)) => {
+            !epoch.is_empty() && !rest.is_empty() && epoch.bytes().all(|byte| byte.is_ascii_digit())
+        }
         None => false,
     }
 }

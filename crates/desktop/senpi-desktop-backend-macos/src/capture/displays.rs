@@ -45,7 +45,9 @@ pub(crate) fn enumerate(selector: &DisplaySelector) -> CoreResult<Vec<DesktopDis
     }
     if displays.is_empty() {
         return Err(match selector {
-            DisplaySelector::All => DesktopError::capture_failed("Quartz reported no active displays"),
+            DisplaySelector::All => {
+                DesktopError::capture_failed("Quartz reported no active displays")
+            }
             DisplaySelector::Id(id) => {
                 DesktopError::invalid_target(format!("selected display id '{id}' is not active"))
             }
@@ -57,16 +59,21 @@ pub(crate) fn enumerate(selector: &DisplaySelector) -> CoreResult<Vec<DesktopDis
 
 /// Composites per-display captures into one image at the highest observed
 /// render scale and records each display's pixel rect in the composite.
-pub(crate) fn composite(regions: Vec<(DesktopDisplay, RgbaImage)>) -> CoreResult<(RgbaImage, FrameGeometry)> {
+pub(crate) fn composite(
+    regions: Vec<(DesktopDisplay, RgbaImage)>,
+) -> CoreResult<(RgbaImage, FrameGeometry)> {
     let render_scale = regions.iter().fold(1.0f64, |scale, (display, image)| {
         scale
             .max(f64::from(image.width()) / f64::from(display.width.max(1)))
             .max(f64::from(image.height()) / f64::from(display.height.max(1)))
     });
-    let bounds = |edge: fn(&DesktopDisplay) -> i64| regions.iter().map(move |(display, _)| edge(display));
+    let bounds =
+        |edge: fn(&DesktopDisplay) -> i64| regions.iter().map(move |(display, _)| edge(display));
     let min_x = bounds(|d| i64::from(d.x)).min().unwrap_or(0);
     let min_y = bounds(|d| i64::from(d.y)).min().unwrap_or(0);
-    let max_x = bounds(|d| i64::from(d.x) + i64::from(d.width)).max().unwrap_or(0);
+    let max_x = bounds(|d| i64::from(d.x) + i64::from(d.width))
+        .max()
+        .unwrap_or(0);
     let max_y = bounds(|d| i64::from(d.y) + i64::from(d.height))
         .max()
         .unwrap_or(0);
@@ -92,16 +99,17 @@ pub(crate) fn composite(regions: Vec<(DesktopDisplay, RgbaImage)>) -> CoreResult
         display.pixel_y = scaled_edge(offset_y, render_scale);
         display.pixel_width = scaled_edge(display.width, render_scale).max(1);
         display.pixel_height = scaled_edge(display.height, render_scale).max(1);
-        let rendered = if image.width() == display.pixel_width && image.height() == display.pixel_height {
-            image
-        } else {
-            image::imageops::resize(
-                &image,
-                display.pixel_width,
-                display.pixel_height,
-                FilterType::Triangle,
-            )
-        };
+        let rendered =
+            if image.width() == display.pixel_width && image.height() == display.pixel_height {
+                image
+            } else {
+                image::imageops::resize(
+                    &image,
+                    display.pixel_width,
+                    display.pixel_height,
+                    FilterType::Triangle,
+                )
+            };
         image::imageops::replace(
             &mut canvas,
             &rendered,

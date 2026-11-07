@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::io;
 
 use senpi_desktop_core::protocol::MethodRejection;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{answer, translate};
 use crate::rpc::Failure;

@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 const ANSI_COLORS: [&str; 16] = [
-    "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0", "#808080",
-    "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
+    "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
+    "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
 ];
 
 fn color256_to_hex(index: i64) -> String {
@@ -71,7 +71,12 @@ fn style_to_inline_css(style: &TextStyle) -> String {
 }
 
 fn has_style(style: &TextStyle) -> bool {
-    style.fg.is_some() || style.bg.is_some() || style.bold || style.dim || style.italic || style.underline
+    style.fg.is_some()
+        || style.bg.is_some()
+        || style.bold
+        || style.dim
+        || style.italic
+        || style.underline
 }
 
 fn apply_sgr_code(params: &[i64], style: &mut TextStyle) {
@@ -102,7 +107,12 @@ fn apply_sgr_code(params: &[i64], style: &mut TextStyle) {
                 style.fg = Some(color256_to_hex(params[i + 2]));
                 i += 2;
             } else if params.get(i + 1) == Some(&2) && params.len() > i + 4 {
-                style.fg = Some(format!("rgb({},{},{})", params[i + 2], params[i + 3], params[i + 4]));
+                style.fg = Some(format!(
+                    "rgb({},{},{})",
+                    params[i + 2],
+                    params[i + 3],
+                    params[i + 4]
+                ));
                 i += 4;
             }
         } else if code == 39 {
@@ -114,7 +124,12 @@ fn apply_sgr_code(params: &[i64], style: &mut TextStyle) {
                 style.bg = Some(color256_to_hex(params[i + 2]));
                 i += 2;
             } else if params.get(i + 1) == Some(&2) && params.len() > i + 4 {
-                style.bg = Some(format!("rgb({},{},{})", params[i + 2], params[i + 3], params[i + 4]));
+                style.bg = Some(format!(
+                    "rgb({},{},{})",
+                    params[i + 2],
+                    params[i + 3],
+                    params[i + 4]
+                ));
                 i += 4;
             }
         } else if code == 49 {
@@ -151,7 +166,10 @@ pub fn ansi_to_html(text: &str) -> String {
         let params: Vec<i64> = if param_str.is_empty() {
             vec![0]
         } else {
-            param_str.split(';').map(|part| part.parse::<i64>().unwrap_or(0)).collect()
+            param_str
+                .split(';')
+                .map(|part| part.parse::<i64>().unwrap_or(0))
+                .collect()
         };
 
         if in_span {
@@ -185,7 +203,11 @@ pub fn ansi_lines_to_html(lines: &[String]) -> String {
         .iter()
         .map(|line| {
             let converted = ansi_to_html(line);
-            let body = if converted.is_empty() { "&nbsp;".to_owned() } else { converted };
+            let body = if converted.is_empty() {
+                "&nbsp;".to_owned()
+            } else {
+                converted
+            };
             format!("<div class=\"ansi-line\">{body}</div>")
         })
         .collect()
@@ -214,22 +236,34 @@ mod tests {
 
     #[test]
     fn a_bold_sgr_wraps_the_text_in_a_styled_span() {
-        assert_eq!(ansi_to_html("\x1b[1mhi\x1b[0m"), "<span style=\"font-weight:bold\">hi</span>");
+        assert_eq!(
+            ansi_to_html("\x1b[1mhi\x1b[0m"),
+            "<span style=\"font-weight:bold\">hi</span>"
+        );
     }
 
     #[test]
     fn a_standard_foreground_color_maps_to_the_palette() {
-        assert_eq!(ansi_to_html("\x1b[31mx\x1b[39m"), "<span style=\"color:#800000\">x</span>");
+        assert_eq!(
+            ansi_to_html("\x1b[31mx\x1b[39m"),
+            "<span style=\"color:#800000\">x</span>"
+        );
     }
 
     #[test]
     fn an_rgb_sgr_emits_an_rgb_color() {
-        assert_eq!(ansi_to_html("\x1b[38;2;1;2;3mx\x1b[0m"), "<span style=\"color:rgb(1,2,3)\">x</span>");
+        assert_eq!(
+            ansi_to_html("\x1b[38;2;1;2;3mx\x1b[0m"),
+            "<span style=\"color:rgb(1,2,3)\">x</span>"
+        );
     }
 
     #[test]
     fn a_256_color_sgr_emits_a_hex_color() {
-        assert_eq!(ansi_to_html("\x1b[38;5;9mx\x1b[0m"), "<span style=\"color:#ff0000\">x</span>");
+        assert_eq!(
+            ansi_to_html("\x1b[38;5;9mx\x1b[0m"),
+            "<span style=\"color:#ff0000\">x</span>"
+        );
     }
 
     #[test]

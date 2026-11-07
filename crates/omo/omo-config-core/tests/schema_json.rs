@@ -44,10 +44,7 @@ fn schema_keys(node: &Node) -> BTreeSet<String> {
 fn assert_properties_match(path: &[&str], node: &Node) {
     let document = document();
     let properties = if path.is_empty() {
-        document
-            .get("properties")
-            .expect("root properties")
-            .clone()
+        document.get("properties").expect("root properties").clone()
     } else {
         property_schema(&document, path)
             .get("properties")
@@ -64,7 +61,10 @@ fn assert_properties_match(path: &[&str], node: &Node) {
 #[test]
 fn published_schema_identifies_itself_as_the_omo_document() {
     let document = document();
-    assert_eq!(document["$schema"], "http://json-schema.org/draft-07/schema#");
+    assert_eq!(
+        document["$schema"],
+        "http://json-schema.org/draft-07/schema#"
+    );
     assert_eq!(
         document["$id"],
         "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json"
@@ -106,8 +106,14 @@ fn published_layer_profile_and_harness_properties_equal_their_schema_fields() {
 
 #[test]
 fn published_section_properties_equal_their_schema_fields() {
-    assert_properties_match(&["computer"], &omo_config_core::omo_computer_settings_schema());
-    assert_properties_match(&["git_master"], &omo_config_core::omo_git_master_settings_schema());
+    assert_properties_match(
+        &["computer"],
+        &omo_config_core::omo_computer_settings_schema(),
+    );
+    assert_properties_match(
+        &["git_master"],
+        &omo_config_core::omo_git_master_settings_schema(),
+    );
     assert_properties_match(
         &["formatOnMutation"],
         &omo_config_core::omo_format_on_mutation_schema(),
@@ -146,7 +152,10 @@ fn published_schema_marks_every_defaulted_property_optional() {
                         _ => BTreeSet::new(),
                     };
                     for (key, property) in properties {
-                        if property.get("default").is_some_and(|value| !value.is_null()) {
+                        if property
+                            .get("default")
+                            .is_some_and(|value| !value.is_null())
+                        {
                             assert!(
                                 !required.contains(key),
                                 "{path}.{key} carries a default and must not be required"

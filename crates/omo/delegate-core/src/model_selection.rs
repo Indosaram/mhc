@@ -86,9 +86,7 @@ fn get_explicit_high_base_model(model: &str) -> Option<&str> {
 }
 
 fn model_id_for_provider<'a>(provider: &str, model: &'a str) -> &'a str {
-    model
-        .strip_prefix(&format!("{provider}/"))
-        .unwrap_or(model)
+    model.strip_prefix(&format!("{provider}/")).unwrap_or(model)
 }
 
 fn parse_user_fallback_model(fallback_model: &str) -> Option<ParsedUserFallback> {
@@ -377,7 +375,7 @@ fn resolve_warm_fallback_chain(
         for provider in &entry.providers {
             let entry_model_id = model_id_for_provider(provider, &entry.model);
             let transformed_model_id = transform_model_for_provider(provider, entry_model_id);
-    let mut matched = fuzzy_match_model(
+            let mut matched = fuzzy_match_model(
                 &format!("{provider}/{transformed_model_id}"),
                 available_models,
                 Some(std::slice::from_ref(provider)),
@@ -462,12 +460,14 @@ mod tests {
             // Then only the matching provider prefix is stripped before transformation.
             assert_eq!(
                 result,
-                Some(DelegateModelResolutionResult::Resolved(ResolvedDelegateModel {
-                    model: expected.to_string(),
-                    variant: selected_entry.variant.clone(),
-                    fallback_entry: Some(selected_entry),
-                    matched_fallback: true,
-                })),
+                Some(DelegateModelResolutionResult::Resolved(
+                    ResolvedDelegateModel {
+                        model: expected.to_string(),
+                        variant: selected_entry.variant.clone(),
+                        fallback_entry: Some(selected_entry),
+                        matched_fallback: true,
+                    }
+                )),
                 "provider={provider}, model={model}",
             );
         }

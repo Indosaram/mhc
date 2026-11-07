@@ -30,7 +30,8 @@ pub trait KibitzerPendingPort: Send + Sync {
 }
 
 /// The pending-nudge port for one identity (`options.pendingFor`).
-pub type KibitzerPendingFor = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>;
+pub type KibitzerPendingFor =
+    Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>;
 /// Append one visible session entry (`options.appendEntry`).
 pub type AppendEntry = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
@@ -64,11 +65,19 @@ pub struct KibitzerSteerMessage {
 
 /// Delivery provenance recorded on the `nudged` entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KibitzerDeliveryVia { Steer, Wake, Prompt }
+pub enum KibitzerDeliveryVia {
+    Steer,
+    Wake,
+    Prompt,
+}
 
 impl KibitzerDeliveryVia {
     fn as_str(self) -> &'static str {
-        match self { KibitzerDeliveryVia::Steer => "steer", KibitzerDeliveryVia::Wake => "wake", KibitzerDeliveryVia::Prompt => "prompt" }
+        match self {
+            KibitzerDeliveryVia::Steer => "steer",
+            KibitzerDeliveryVia::Wake => "wake",
+            KibitzerDeliveryVia::Prompt => "prompt",
+        }
     }
 }
 
@@ -113,26 +122,46 @@ impl KibitzerDelivery {
         })
     }
 
-    fn coordinator_key(path: &str) -> String { format!("kibitzer:{path}") }
+    fn coordinator_key(path: &str) -> String {
+        format!("kibitzer:{path}")
+    }
 
     /// The per-session state, created on first use. The global map is held only for this lookup.
     fn state_for(&self, session_id: &str) -> Arc<Mutex<DeliveryState>> {
-        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(sessions.entry(session_id.to_string()).or_insert_with(|| Arc::new(Mutex::new(DeliveryState::default()))))
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            sessions
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(DeliveryState::default()))),
+        )
     }
 
     fn existing_state(&self, session_id: &str) -> Option<Arc<Mutex<DeliveryState>>> {
-        self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).map(Arc::clone)
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .map(Arc::clone)
     }
 
     /// Remove the session only when it is STILL the same `Arc` and STILL empty. Holding the global
     /// map while locking the per-session state follows the map-then-state order used by
     /// `state_for`; no path holds state-then-map, so this cannot deadlock.
     fn remove_if_empty(&self, session_id: &str, state: &Arc<Mutex<DeliveryState>>) {
-        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(existing) = sessions.get(session_id)
             && Arc::ptr_eq(existing, state)
-            && state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).nudges.is_empty()
+            && state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .nudges
+                .is_empty()
         {
             sessions.remove(session_id);
         }
@@ -140,32 +169,63 @@ impl KibitzerDelivery {
 
     /// `writePending(sessionId, context, state)`: empty deletes, otherwise writes the full map. Must
     /// be called while the caller holds the session state lock so per-session ordering is preserved.
-    fn write_pending(&self, session_id: &str, context: &MemoryIdentityContext, nudges: &[RecallNudge]) {
+    fn write_pending(
+        &self,
+        session_id: &str,
+        context: &MemoryIdentityContext,
+        nudges: &[RecallNudge],
+    ) {
         let pending = (self.options.pending_for)(context);
-        if nudges.is_empty() { pending.delete(session_id); return; }
+        if nudges.is_empty() {
+            pending.delete(session_id);
+            return;
+        }
         if let Err(error) = pending.write(session_id, nudges) {
-            (self.options.warn)(&format!("omo-senpi kibitzer pending write skipped: {error}"));
+            (self.options.warn)(&format!(
+                "omo-senpi kibitzer pending write skipped: {error}"
+            ));
         }
     }
 
-    pub fn accept(self: &Arc<Self>, session_id: &str, context: &MemoryIdentityContext, nudges: &[RecallNudge]) {
+    pub fn accept(
+        self: &Arc<Self>,
+        session_id: &str,
+        context: &MemoryIdentityContext,
+        nudges: &[RecallNudge],
+    ) {
         // A nudge restating owner-forgotten or corrected content is never delivered.
-        let kept = crate::owner_memory::drop_suppressed_nudges(context, "kibitzer", nudges, &*self.options.warn);
-        if !nudges.is_empty() && kept.is_empty() { return; }
+        let kept = crate::owner_memory::drop_suppressed_nudges(
+            context,
+            "kibitzer",
+            nudges,
+            &*self.options.warn,
+        );
+        if !nudges.is_empty() && kept.is_empty() {
+            return;
+        }
         let nudges = kept.as_slice();
         // The ledger mark is per-batch and outside every lock.
         let ledger = (self.options.ledger_for)(context);
-        let entries: Vec<memory_core::recall::RecallSurfacedEntry> =
-            nudges.iter().map(|nudge| memory_core::recall::RecallSurfacedEntry { path: nudge.path.clone(), hash: GATE_SURFACE_HASH.to_string() }).collect();
+        let entries: Vec<memory_core::recall::RecallSurfacedEntry> = nudges
+            .iter()
+            .map(|nudge| memory_core::recall::RecallSurfacedEntry {
+                path: nudge.path.clone(),
+                hash: GATE_SURFACE_HASH.to_string(),
+            })
+            .collect();
         if let Err(error) = ledger.mark_surfaced(session_id, &entries) {
-            (self.options.warn)(&format!("omo-senpi kibitzer delivery ledger mark skipped: {error}"));
+            (self.options.warn)(&format!(
+                "omo-senpi kibitzer delivery ledger mark skipped: {error}"
+            ));
         }
 
         let state = self.state_for(session_id);
         // Merge + persist the FULL map under the session lock; collect coordinator work for later.
         // A coordinator key is NOT tracked here: it is tracked only after a SUCCESSFUL enqueue.
         let (snapshot_len, steering, to_enqueue) = {
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut to_enqueue: Vec<(String, RecallNudge)> = Vec::new();
             for accepted in nudges {
                 let nudge = if let Some(resolve) = &self.options.resolve_source {
@@ -209,63 +269,118 @@ impl KibitzerDelivery {
                     custom_type: NUDGED_ENTRY_TYPE.to_string(),
                     content: render_nudge_block(&nudge),
                     details: serde_json::json!({ "path": path }),
-                    on_flushed: Arc::new(move || { me.mark_delivered(&session, &context, std::slice::from_ref(&flush_path), KibitzerDeliveryVia::Wake); }),
+                    on_flushed: Arc::new(move || {
+                        me.mark_delivered(
+                            &session,
+                            &context,
+                            std::slice::from_ref(&flush_path),
+                            KibitzerDeliveryVia::Wake,
+                        );
+                    }),
                 });
                 if !accepted {
-                    (self.options.warn)(&format!("omo-senpi kibitzer coordinator enqueue skipped: {key}"));
+                    (self.options.warn)(&format!(
+                        "omo-senpi kibitzer coordinator enqueue skipped: {key}"
+                    ));
                     continue;
                 }
-                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if state.nudges.contains_key(&check_path) { state.coordinator_keys.insert(key); }
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.nudges.contains_key(&check_path) {
+                    state.coordinator_keys.insert(key);
+                }
             }
         }
 
         // Immediate steer only while running AND a tool call is in flight.
-        let running = self.running_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(session_id);
-        let in_flight = self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).map(|calls| calls.len()).unwrap_or(0);
+        let running = self
+            .running_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(session_id);
+        let in_flight = self
+            .tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .map(|calls| calls.len())
+            .unwrap_or(0);
         if running && in_flight > 0 && !steering && snapshot_len > 0 {
             self.steer(session_id, context);
         }
     }
 
-    pub fn on_tool_result(self: &Arc<Self>, session_id: &str, context: &MemoryIdentityContext, gate: &KibitzerToolResultGate) {
+    pub fn on_tool_result(
+        self: &Arc<Self>,
+        session_id: &str,
+        context: &MemoryIdentityContext,
+        gate: &KibitzerToolResultGate,
+    ) {
         let (held, steering) = match self.existing_state(session_id) {
             Some(state) => {
-                let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 (state.nudges.len(), state.steering)
             }
             None => (0, false),
         };
-        if held == 0 || steering || gate.has_pending_messages || gate.is_idle { return; }
+        if held == 0 || steering || gate.has_pending_messages || gate.is_idle {
+            return;
+        }
         self.steer(session_id, context);
     }
 
     fn steer(self: &Arc<Self>, session_id: &str, context: &MemoryIdentityContext) {
-        let Some(state) = self.existing_state(session_id) else { return; };
+        let Some(state) = self.existing_state(session_id) else {
+            return;
+        };
         let nudges = {
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.nudges.is_empty() || state.steering { return; }
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.nudges.is_empty() || state.steering {
+                return;
+            }
             state.steering = true;
             state.nudges.values().cloned().collect::<Vec<_>>()
         };
-        let content = nudges.iter().map(render_nudge_block).collect::<Vec<_>>().join("\n");
-        match (self.options.send_message)(KibitzerSteerMessage { custom_type: RECALL_CUSTOM_TYPE.to_string(), content, display: false }) {
+        let content = nudges
+            .iter()
+            .map(render_nudge_block)
+            .collect::<Vec<_>>()
+            .join("\n");
+        match (self.options.send_message)(KibitzerSteerMessage {
+            custom_type: RECALL_CUSTOM_TYPE.to_string(),
+            content,
+            display: false,
+        }) {
             Ok(()) => {
                 let paths: Vec<String> = nudges.iter().map(|nudge| nudge.path.clone()).collect();
                 self.mark_delivered(session_id, context, &paths, KibitzerDeliveryVia::Steer);
             }
-            Err(error) => (self.options.warn)(&format!("omo-senpi kibitzer steer delivery failed: {error}")),
+            Err(error) => (self.options.warn)(&format!(
+                "omo-senpi kibitzer steer delivery failed: {error}"
+            )),
         }
         // Clear steering under the lock (the state may have been emptied by mark_delivered).
         if let Some(state) = self.existing_state(session_id) {
-            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).steering = false;
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .steering = false;
         }
     }
 
     pub fn drain_for_prompt(&self, session_id: &str) -> Vec<RecallNudge> {
-        let Some(state) = self.existing_state(session_id) else { return Vec::new(); };
+        let Some(state) = self.existing_state(session_id) else {
+            return Vec::new();
+        };
         let (nudges, to_remove) = {
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let nudges: Vec<RecallNudge> = state.nudges.values().cloned().collect();
             state.nudges.clear();
             let to_remove: Vec<String> = state.coordinator_keys.iter().cloned().collect();
@@ -274,37 +389,61 @@ impl KibitzerDelivery {
         };
         // Coordinator removal OUTSIDE the state lock.
         if let Some(coordinator) = &self.options.coordinator {
-            for key in &to_remove { coordinator.remove(key); }
+            for key in &to_remove {
+                coordinator.remove(key);
+            }
         }
         self.remove_if_empty(session_id, &state);
         nudges
     }
 
     pub fn on_compaction_accepted(&self, session_id: &str, context: &MemoryIdentityContext) {
-        self.running_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
-        self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.running_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
+        self.tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         let to_remove = self.clear_session(session_id);
         if let Some(coordinator) = &self.options.coordinator {
-            for key in &to_remove { coordinator.remove(key); }
+            for key in &to_remove {
+                coordinator.remove(key);
+            }
         }
         (self.options.pending_for)(context).delete(session_id);
     }
 
     pub fn on_session_shutdown(&self, session_id: &str) {
-        self.running_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
-        self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.running_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
+        self.tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         let to_remove = self.clear_session(session_id);
         if let Some(coordinator) = &self.options.coordinator {
-            for key in &to_remove { coordinator.remove(key); }
+            for key in &to_remove {
+                coordinator.remove(key);
+            }
         }
     }
 
     /// Drop the session from the map and return its coordinator keys (called under no state lock).
     fn clear_session(&self, session_id: &str) -> Vec<String> {
-        let removed = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        let removed = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         match removed {
             Some(state) => {
-                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.nudges.clear();
                 state.coordinator_keys.iter().cloned().collect::<Vec<_>>()
             }
@@ -312,20 +451,34 @@ impl KibitzerDelivery {
         }
     }
 
-    pub fn mark_delivered(self: &Arc<Self>, session_id: &str, context: &MemoryIdentityContext, paths: &[String], via: KibitzerDeliveryVia) {
-        let Some(state) = self.existing_state(session_id) else { return; };
+    pub fn mark_delivered(
+        self: &Arc<Self>,
+        session_id: &str,
+        context: &MemoryIdentityContext,
+        paths: &[String],
+        via: KibitzerDeliveryVia,
+    ) {
+        let Some(state) = self.existing_state(session_id) else {
+            return;
+        };
         let (delivered, emptied, to_remove) = {
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut delivered: Vec<RecallNudge> = Vec::new();
             let mut to_remove: Vec<String> = Vec::new();
             for path in paths {
-                let Some(nudge) = state.nudges.remove(path) else { continue; };
+                let Some(nudge) = state.nudges.remove(path) else {
+                    continue;
+                };
                 delivered.push(nudge);
                 let key = Self::coordinator_key(path);
                 state.coordinator_keys.remove(&key);
                 to_remove.push(key);
             }
-            if delivered.is_empty() { return; }
+            if delivered.is_empty() {
+                return;
+            }
             let remaining: Vec<RecallNudge> = state.nudges.values().cloned().collect();
             // Rewrite pending under the SAME lock so a later accept cannot be overwritten by this.
             self.write_pending(session_id, context, &remaining);
@@ -333,38 +486,68 @@ impl KibitzerDelivery {
         };
         // Coordinator removal + trace OUTSIDE the state lock.
         if let Some(coordinator) = &self.options.coordinator {
-            for key in &to_remove { coordinator.remove(key); }
+            for key in &to_remove {
+                coordinator.remove(key);
+            }
         }
-        (self.options.append_entry)(NUDGED_ENTRY_TYPE, serde_json::json!({ "version": 1, "nudges": delivered, "via": via.as_str() }));
+        (self.options.append_entry)(
+            NUDGED_ENTRY_TYPE,
+            serde_json::json!({ "version": 1, "nudges": delivered, "via": via.as_str() }),
+        );
         if emptied {
             self.remove_if_empty(session_id, &state);
         }
     }
 
     pub fn mark_running(&self, session_id: &str) {
-        self.running_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_string());
-        self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.running_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.to_string());
+        self.tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
     }
 
     pub fn mark_settled(&self, session_id: &str) {
-        self.running_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
-        self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.running_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
+        self.tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
     }
 
     pub fn mark_tool_started(&self, session_id: &str, tool_call_id: &str) {
-        self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(session_id.to_string()).or_default().insert(tool_call_id.to_string());
+        self.tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(tool_call_id.to_string());
     }
 
     pub fn mark_tool_finished(&self, session_id: &str, tool_call_id: &str) {
-        let mut tools = self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tools = self
+            .tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(calls) = tools.get_mut(session_id) {
             calls.remove(tool_call_id);
-            if calls.is_empty() { tools.remove(session_id); }
+            if calls.is_empty() {
+                tools.remove(session_id);
+            }
         }
     }
 
     pub fn mark_turn_ended(&self, session_id: &str) {
-        self.tools_in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.tools_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
     }
 }
 
@@ -422,7 +605,13 @@ impl crate::recall_drain::PendingNudgesPort for RecallPendingTake {
 /// `executor`, `resolve_context`, `env` and `warn` are accepted for the mount's call shape; the
 /// closures below read the identity off each `MemoryIdentityContext` instead.
 pub fn mount_recall_ports(input: MountRecallPortsInput) -> MountRecallPorts {
-    let MountRecallPortsInput { actions, executor: _, resolve_context: _, env: _, warn: _ } = input;
+    let MountRecallPortsInput {
+        actions,
+        executor: _,
+        resolve_context: _,
+        env: _,
+        warn: _,
+    } = input;
     let send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync> = {
         let actions = Arc::clone(&actions);
         Arc::new(move |message| {
@@ -434,18 +623,24 @@ pub fn mount_recall_ports(input: MountRecallPortsInput) -> MountRecallPorts {
                         display: message.display,
                         details: None,
                     },
-                    maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: Some(maho_ext_api::DeliverAs::Steer) },
+                    maho_ext_api::SendMessageOptions {
+                        trigger_turn: false,
+                        deliver_as: Some(maho_ext_api::DeliverAs::Steer),
+                    },
                 )
                 .map_err(|error| error.to_string())
         })
     };
-    let pending_for: KibitzerPendingFor =
-        Arc::new(|identity: &MemoryIdentityContext| {
-            Arc::new(RecallPendingWrite(memory_core::recall::PendingNudges::new(identity.identity_paths.recall_pending.clone()))) as Arc<dyn KibitzerPendingPort>
-        });
+    let pending_for: KibitzerPendingFor = Arc::new(|identity: &MemoryIdentityContext| {
+        Arc::new(RecallPendingWrite(memory_core::recall::PendingNudges::new(
+            identity.identity_paths.recall_pending.clone(),
+        ))) as Arc<dyn KibitzerPendingPort>
+    });
     let drain_pending_for: crate::recall_drain::DrainPendingFor =
         Arc::new(|identity: &MemoryIdentityContext| {
-            Arc::new(RecallPendingTake(memory_core::recall::PendingNudges::new(identity.identity_paths.recall_pending.clone()))) as Arc<dyn crate::recall_drain::PendingNudgesPort>
+            Arc::new(RecallPendingTake(memory_core::recall::PendingNudges::new(
+                identity.identity_paths.recall_pending.clone(),
+            ))) as Arc<dyn crate::recall_drain::PendingNudgesPort>
         });
     MountRecallPorts {
         caps: crate::kibitzer_events::KibitzerEventCaps::default(),

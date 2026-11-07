@@ -61,7 +61,10 @@ impl SettleObservers {
 
     /// Aborts every observer owned by `session_id`, or all of them when it is unknown.
     pub fn retire(&self, session_id: Option<&str>) {
-        let controllers: Vec<_> = self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+        let controllers: Vec<_> = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .values()
             .filter(|(_, owner)| session_id.is_none() || owner.as_deref() == session_id)
             .map(|(controller, _)| controller.clone())
@@ -78,7 +81,9 @@ impl SettleObservers {
     }
 
     pub fn is_cancellation(&self, failure: &ExtensionFailure) -> bool {
-        failure.abort_reason.as_deref()
+        failure
+            .abort_reason
+            .as_deref()
             .and_then(AbortReason::payload::<CancellationOwner>)
             .is_some_and(|owner| Arc::ptr_eq(&owner.0, &self.cancellation_owner))
     }

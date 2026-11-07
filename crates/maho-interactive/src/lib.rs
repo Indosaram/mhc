@@ -63,7 +63,7 @@ pub mod widget_clock;
 pub mod working_status;
 
 // ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
+pub mod composer_user_activity;
 pub mod model_change_notice;
 pub mod session_failure_info;
 pub mod unknown_command_feedback;
-pub mod composer_user_activity;

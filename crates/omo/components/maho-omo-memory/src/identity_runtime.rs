@@ -140,7 +140,10 @@ pub fn create_identity_runtime(
 }
 impl MemoryIdentityRuntime {
     /// A runtime over an existing reservation store (the CLI worker shares one store per identity).
-    pub fn with_store(identity: MemoryIdentityContext, store: Arc<ReflectionReservationStore>) -> Self {
+    pub fn with_store(
+        identity: MemoryIdentityContext,
+        store: Arc<ReflectionReservationStore>,
+    ) -> Self {
         Self {
             identity,
             store,

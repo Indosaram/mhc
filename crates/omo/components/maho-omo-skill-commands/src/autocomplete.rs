@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 
 use maho_omo_bundled_skills::HostCommands;
 use maho_tui::autocomplete::{
-    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSignal, AutocompleteSuggestions,
-    MentionRange, SuggestionRequest,
+    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSignal,
+    AutocompleteSuggestions, MentionRange, SuggestionRequest,
 };
 
 use crate::bare_skill_command::{
@@ -22,8 +22,16 @@ pub struct BareSkillCommandsProvider {
 }
 
 impl BareSkillCommandsProvider {
-    pub fn new(inner: Box<dyn AutocompleteProvider>, bundled_skill_names: BTreeSet<String>, host_commands: HostCommands) -> Self {
-        Self { inner, bundled_skill_names, host_commands }
+    pub fn new(
+        inner: Box<dyn AutocompleteProvider>,
+        bundled_skill_names: BTreeSet<String>,
+        host_commands: HostCommands,
+    ) -> Self {
+        Self {
+            inner,
+            bundled_skill_names,
+            host_commands,
+        }
     }
 }
 
@@ -32,7 +40,11 @@ pub fn wrap_with_bare_skill_commands(
     bundled_skill_names: BTreeSet<String>,
     host_commands: HostCommands,
 ) -> Box<dyn AutocompleteProvider> {
-    Box::new(BareSkillCommandsProvider::new(current, bundled_skill_names, host_commands))
+    Box::new(BareSkillCommandsProvider::new(
+        current,
+        bundled_skill_names,
+        host_commands,
+    ))
 }
 
 impl AutocompleteProvider for BareSkillCommandsProvider {
@@ -47,23 +59,41 @@ impl AutocompleteProvider for BareSkillCommandsProvider {
         cursor_col: usize,
         force: bool,
     ) -> Option<AutocompleteSuggestions> {
-        let base = self.inner.get_suggestions(lines, cursor_line, cursor_col, force);
+        let base = self
+            .inner
+            .get_suggestions(lines, cursor_line, cursor_col, force);
         if force || cursor_line != 0 {
             return base;
         }
-        let Some(typed) = leading_command_token(lines.first().map(String::as_str).unwrap_or(""), cursor_col) else {
+        let Some(typed) =
+            leading_command_token(lines.first().map(String::as_str).unwrap_or(""), cursor_col)
+        else {
             return base;
         };
-        let items = base.as_ref().map(|page| page.items.clone()).unwrap_or_default();
+        let items = base
+            .as_ref()
+            .map(|page| page.items.clone())
+            .unwrap_or_default();
         // Upstream's host-command lookup is a throwing `pi.getCommands?.()`; the native provider
         // trait has no error channel, so a failing lookup degrades to the "no API" case.
         let commands = (self.host_commands)().ok().flatten();
-        let aliases = bare_skill_items(&typed, &self.bundled_skill_names, commands.as_deref(), &items);
+        let aliases = bare_skill_items(
+            &typed,
+            &self.bundled_skill_names,
+            commands.as_deref(),
+            &items,
+        );
         if aliases.is_empty() {
             return base;
         }
-        let prefix = base.as_ref().map(|page| page.prefix.clone()).unwrap_or_else(|| format!("/{typed}"));
-        Some(AutocompleteSuggestions { prefix, items: merge_before_skill_entries(&items, &aliases) })
+        let prefix = base
+            .as_ref()
+            .map(|page| page.prefix.clone())
+            .unwrap_or_else(|| format!("/{typed}"));
+        Some(AutocompleteSuggestions {
+            prefix,
+            items: merge_before_skill_entries(&items, &aliases),
+        })
     }
 
     /// Only a leading `/command` token is merged with aliases (synchronously); every other request,
@@ -76,8 +106,14 @@ impl AutocompleteProvider for BareSkillCommandsProvider {
         force: bool,
         signal: &AutocompleteSignal,
     ) -> SuggestionRequest {
-        if force || cursor_line != 0 || leading_command_token(lines.first().map(String::as_str).unwrap_or(""), cursor_col).is_none() {
-            return self.inner.request_suggestions(lines, cursor_line, cursor_col, force, signal);
+        if force
+            || cursor_line != 0
+            || leading_command_token(lines.first().map(String::as_str).unwrap_or(""), cursor_col)
+                .is_none()
+        {
+            return self
+                .inner
+                .request_suggestions(lines, cursor_line, cursor_col, force, signal);
         }
         SuggestionRequest::Ready(self.get_suggestions(lines, cursor_line, cursor_col, force))
     }
@@ -90,11 +126,18 @@ impl AutocompleteProvider for BareSkillCommandsProvider {
         item: &AutocompleteItem,
         prefix: &str,
     ) -> ApplyCompletionResult {
-        self.inner.apply_completion(lines, cursor_line, cursor_col, item, prefix)
+        self.inner
+            .apply_completion(lines, cursor_line, cursor_col, item, prefix)
     }
 
-    fn should_trigger_file_completion(&self, lines: &[String], cursor_line: usize, cursor_col: usize) -> bool {
-        self.inner.should_trigger_file_completion(lines, cursor_line, cursor_col)
+    fn should_trigger_file_completion(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+    ) -> bool {
+        self.inner
+            .should_trigger_file_completion(lines, cursor_line, cursor_col)
     }
 
     fn get_mention_ranges(&self, line: &str) -> Vec<MentionRange> {
@@ -106,7 +149,11 @@ impl AutocompleteProvider for BareSkillCommandsProvider {
 /// JS `slice` clamps past the end of the line, so the length is clamped before slicing.
 fn leading_command_token(line: &str, cursor_col: usize) -> Option<String> {
     let rest = line.get(..cursor_col.min(line.len()))?.strip_prefix('/')?;
-    if rest.is_empty() || !rest.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-') {
+    if rest.is_empty()
+        || !rest.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
         return None;
     }
     Some(rest.to_owned())
@@ -122,7 +169,12 @@ fn bare_skill_items(
     bundled_skill_names
         .iter()
         .filter(|name| name.starts_with(typed))
-        .filter(|name| matches!(resolve_bare_skill_command(&format!("/{name}"), bundled_skill_names, commands), BareSkillCommandResolution::Expand { .. }))
+        .filter(|name| {
+            matches!(
+                resolve_bare_skill_command(&format!("/{name}"), bundled_skill_names, commands),
+                BareSkillCommandResolution::Expand { .. }
+            )
+        })
         .map(|name| {
             // The alias mirrors its own `skill:<name>` row: senpi puts the skill's argument hint in
             // that row's description. The native `AutocompleteItem` has no `awaitsArguments` field,
@@ -131,17 +183,35 @@ fn bare_skill_items(
             let skill_row = page_items.iter().find(|item| item.value == skill_command);
             let description = skill_row
                 .and_then(|row| row.description.clone())
-                .or_else(|| commands.and_then(|commands| commands.iter().find(|entry| entry.name == skill_command).and_then(|entry| entry.description.clone())));
-            AutocompleteItem { value: name.clone(), label: name.clone(), description }
+                .or_else(|| {
+                    commands.and_then(|commands| {
+                        commands
+                            .iter()
+                            .find(|entry| entry.name == skill_command)
+                            .and_then(|entry| entry.description.clone())
+                    })
+                });
+            AutocompleteItem {
+                value: name.clone(),
+                label: name.clone(),
+                description,
+            }
         })
         .collect()
 }
 
 /// Each alias sits directly above its own `skill:<name>` row, so senpi's ranking of everything else
 /// is untouched; an alias whose skill row is absent from this page goes last.
-fn merge_before_skill_entries(items: &[AutocompleteItem], aliases: &[AutocompleteItem]) -> Vec<AutocompleteItem> {
+fn merge_before_skill_entries(
+    items: &[AutocompleteItem],
+    aliases: &[AutocompleteItem],
+) -> Vec<AutocompleteItem> {
     let taken: BTreeSet<&str> = items.iter().map(|item| item.value.as_str()).collect();
-    let mut pending: Vec<AutocompleteItem> = aliases.iter().filter(|alias| !taken.contains(alias.value.as_str())).cloned().collect();
+    let mut pending: Vec<AutocompleteItem> = aliases
+        .iter()
+        .filter(|alias| !taken.contains(alias.value.as_str()))
+        .cloned()
+        .collect();
     let mut merged = Vec::with_capacity(items.len() + pending.len());
     for item in items {
         if let Some(name) = item.value.strip_prefix(SKILL_COMMAND_PREFIX)

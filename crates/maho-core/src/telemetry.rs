@@ -7,13 +7,18 @@ use crate::settings_manager::SettingsManager;
 fn is_truthy_env_flag(value: Option<&str>) -> bool {
     match value {
         None => false,
-        Some(value) => value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes"),
+        Some(value) => {
+            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+        }
     }
 }
 
 /// Resolves install telemetry: an explicit value (or the brand TELEMETRY env var) wins, else the
 /// enableInstallTelemetry setting, which defaults to false.
-pub fn is_install_telemetry_enabled(settings_manager: &SettingsManager, telemetry_env: Option<&str>) -> bool {
+pub fn is_install_telemetry_enabled(
+    settings_manager: &SettingsManager,
+    telemetry_env: Option<&str>,
+) -> bool {
     let value = match telemetry_env {
         Some(value) => Some(value.to_owned()),
         None => env_value("TELEMETRY", &current_env()),
@@ -21,7 +26,9 @@ pub fn is_install_telemetry_enabled(settings_manager: &SettingsManager, telemetr
     match value {
         Some(value) => is_truthy_env_flag(Some(&value)),
         // SAFETY-DIVERGENCE(senpi packages/coding-agent/src/core/telemetry.ts): enableInstallTelemetry defaults to true; mhc defaults to false (opt-in).
-        None => settings_manager.get_bool("enableInstallTelemetry").unwrap_or(false),
+        None => settings_manager
+            .get_bool("enableInstallTelemetry")
+            .unwrap_or(false),
     }
 }
 

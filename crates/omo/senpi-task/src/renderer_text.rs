@@ -22,7 +22,11 @@ pub fn renderer_visible_width(value: &str) -> usize {
             index += length;
             continue;
         }
-        width += if chars[index] == '\t' { 3 } else { char_width(chars[index]) };
+        width += if chars[index] == '\t' {
+            3
+        } else {
+            char_width(chars[index])
+        };
         index += 1;
     }
     width

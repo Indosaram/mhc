@@ -21,8 +21,8 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use self::psn::{
-    FocusMarker, ProcessSerialNumber, SET_FRONT_NO_WINDOWS, front_process, post_focus_record,
-    process_psn,
+    front_process, post_focus_record, process_psn, FocusMarker, ProcessSerialNumber,
+    SET_FRONT_NO_WINDOWS,
 };
 use self::spi::required;
 pub(crate) use self::spi::{front_pid, is_available};

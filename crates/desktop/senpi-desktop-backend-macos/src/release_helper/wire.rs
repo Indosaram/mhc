@@ -62,7 +62,12 @@ pub(crate) enum Record {
     /// user physically holds, then answer [`READY`].
     Observe,
     /// `input` went down on `route`; a typed key carries its character.
-    Press { id: u32, route: Route, input: Input, text: Option<String> },
+    Press {
+        id: u32,
+        route: Route,
+        input: Input,
+        text: Option<String>,
+    },
     /// The release of press `id` moved, as a drag does.
     Update { id: u32, route: Route },
     /// Press `id` was released.
@@ -84,7 +89,12 @@ impl Record {
                 out.extend_from_slice(token);
             }
             Self::Observe => out.push(OBSERVE),
-            Self::Press { id, route, input, text } => {
+            Self::Press {
+                id,
+                route,
+                input,
+                text,
+            } => {
                 out.push(PRESS);
                 out.extend_from_slice(&id.to_le_bytes());
                 put_route(out, *route);
@@ -97,7 +107,9 @@ impl Record {
                 match text {
                     Some(text) => {
                         out.push(1);
-                        out.extend_from_slice(&u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes());
+                        out.extend_from_slice(
+                            &u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes(),
+                        );
                         out.extend_from_slice(text.as_bytes());
                     }
                     None => out.push(0),
@@ -128,26 +140,38 @@ impl Record {
 
     fn read(reader: &mut Reader<'_>) -> Result<Self, Fault> {
         Ok(match reader.u8()? {
-            HELLO => Self::Hello { version: reader.u8()?, token: reader.take()? },
+            HELLO => Self::Hello {
+                version: reader.u8()?,
+                token: reader.take()?,
+            },
             OBSERVE => Self::Observe,
             PRESS => {
                 let id = reader.u32()?;
                 let route = reader.route()?;
-                let input = match (reader.u8()?, u16::from_le_bytes(reader.take()?)) {
-                    (0, code) => Input::Key(code),
-                    (1, number) => Input::Button(u8::try_from(number).map_err(|_| {
-                        Fault::Malformed(format!("button {number} out of range"))
-                    })?),
-                    (kind, _) => return Err(Fault::Malformed(format!("unknown input {kind}"))),
-                };
+                let input =
+                    match (reader.u8()?, u16::from_le_bytes(reader.take()?)) {
+                        (0, code) => Input::Key(code),
+                        (1, number) => Input::Button(u8::try_from(number).map_err(|_| {
+                            Fault::Malformed(format!("button {number} out of range"))
+                        })?),
+                        (kind, _) => return Err(Fault::Malformed(format!("unknown input {kind}"))),
+                    };
                 let text = match reader.u8()? {
                     0 => None,
                     1 => Some(reader.text()?),
                     flag => return Err(Fault::Malformed(format!("unknown text flag {flag}"))),
                 };
-                Self::Press { id, route, input, text }
+                Self::Press {
+                    id,
+                    route,
+                    input,
+                    text,
+                }
             }
-            UPDATE => Self::Update { id: reader.u32()?, route: reader.route()? },
+            UPDATE => Self::Update {
+                id: reader.u32()?,
+                route: reader.route()?,
+            },
             RELEASE => Self::Release { id: reader.u32()? },
             tag => return Err(Fault::Malformed(format!("unknown record {tag}"))),
         })
@@ -212,7 +236,12 @@ impl Reader<'_> {
         match self.u8()? {
             0 => Ok(Route::Hid),
             1 => Ok(Route::Keyboard(self.i32()?)),
-            2 => Ok(Route::Window { pid: self.i32()?, wid: self.u32()?, x: self.f64()?, y: self.f64()? }),
+            2 => Ok(Route::Window {
+                pid: self.i32()?,
+                wid: self.u32()?,
+                x: self.f64()?,
+                y: self.f64()?,
+            }),
             kind => Err(Fault::Malformed(format!("unknown route {kind}"))),
         }
     }
@@ -220,9 +249,14 @@ impl Reader<'_> {
     fn text(&mut self) -> Result<String, Fault> {
         let length = usize::try_from(self.u32()?).unwrap_or(usize::MAX);
         if length > MAX_TEXT {
-            return Err(Fault::Malformed(format!("text of {length} bytes is too long")));
+            return Err(Fault::Malformed(format!(
+                "text of {length} bytes is too long"
+            )));
         }
-        let bytes = self.bytes.get(self.at..self.at + length).ok_or(Fault::Incomplete)?;
+        let bytes = self
+            .bytes
+            .get(self.at..self.at + length)
+            .ok_or(Fault::Incomplete)?;
         let text = String::from_utf8(bytes.to_vec())
             .map_err(|_| Fault::Malformed("text is not UTF-8".to_owned()))?;
         self.at += length;

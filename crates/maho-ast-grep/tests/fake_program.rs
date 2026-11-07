@@ -60,7 +60,12 @@ async fn t11_file_outside_workdir_keeps_its_absolute_path() {
 #[tokio::test]
 async fn t16_garbage_after_a_record_is_salvaged_garbage_alone_fails_and_long_lines_fail() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let server = printing(dir.path(), &[record("a.js", 0)], "echo 'not json at all'", 0);
+    let server = printing(
+        dir.path(),
+        &[record("a.js", 0)],
+        "echo 'not json at all'",
+        0,
+    );
     let (value, is_error) = call(&server, "search", search_args(dir.path())).await;
     assert!(!is_error, "{value}");
     assert_eq!(value["matches"].as_array().map(Vec::len), Some(1));
@@ -147,7 +152,10 @@ async fn t18_a_hanging_program_times_out_and_the_child_is_gone() {
 async fn t19_parent_exit_aborts_the_running_call_and_the_next_call_has_a_fresh_signal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fifo = dir.path().join("started");
-    let made = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
     assert!(made.success());
     let program = fake::program(
         dir.path(),
@@ -192,7 +200,9 @@ async fn t19_parent_exit_aborts_the_running_call_and_the_next_call_has_a_fresh_s
         .expect("read")
         .expect("a reply line");
     let reply: Value = serde_json::from_str(&line).expect("json");
-    let text = reply["result"]["content"][0]["text"].as_str().expect("text");
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
     let value: Value = serde_json::from_str(text).expect("result json");
     assert_eq!(code_of(&value), "ABORTED");
     assert_eq!(value["error"]["retryable"], true);
@@ -212,8 +222,12 @@ async fn t19_parent_exit_aborts_the_running_call_and_the_next_call_has_a_fresh_s
     assert!(!fresh.is_aborted());
     let request = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": { "name": "search", "arguments": search_args(dir.path()) } });
-    let reply = handle_message(&server, &request.to_string(), &mut fresh).await.expect("reply");
-    let text = reply["result"]["content"][0]["text"].as_str().expect("text");
+    let reply = handle_message(&server, &request.to_string(), &mut fresh)
+        .await
+        .expect("reply");
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
     let value: Value = serde_json::from_str(text).expect("json");
     assert_eq!(value["ok"], true, "{value}");
 }

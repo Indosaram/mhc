@@ -21,7 +21,10 @@ pub const IMPERSONATING_PROVIDERS: &[(&str, &str)] = &[
         "Claude Code CLI identity via the Claude subscription lane",
     ),
     ("chatgpt-subscription", "the OpenAI Codex client"),
-    ("github-copilot", "the VS Code GitHub Copilot Chat extension"),
+    (
+        "github-copilot",
+        "the VS Code GitHub Copilot Chat extension",
+    ),
     ("kimi-coding", "the Kimi CLI"),
     ("devin", "Cognition's internal Go client"),
     ("cursor", "the Cursor desktop/CLI client"),
@@ -128,14 +131,20 @@ pub fn rotation_consented(provider: &str) -> bool {
     rotation_consented_in_agent_dir(&agent_dir, provider)
 }
 
-pub fn record_rotation_consent(settings: &mut SettingsManager, provider: &str) -> Result<(), String> {
+pub fn record_rotation_consent(
+    settings: &mut SettingsManager,
+    provider: &str,
+) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let mut nested = Settings::new();
     nested.insert(rotation_key(provider), Value::String(now));
     settings.set_nested(SettingsScope::Global, CONSENT_SETTINGS_KEY, &nested)
 }
 
-pub fn revoke_rotation_consent(settings: &mut SettingsManager, provider: &str) -> Result<(), String> {
+pub fn revoke_rotation_consent(
+    settings: &mut SettingsManager,
+    provider: &str,
+) -> Result<(), String> {
     let mut nested = Settings::new();
     nested.insert(rotation_key(provider), Value::Null);
     settings.set_nested(SettingsScope::Global, CONSENT_SETTINGS_KEY, &nested)
@@ -143,7 +152,9 @@ pub fn revoke_rotation_consent(settings: &mut SettingsManager, provider: &str) -
 
 pub fn rotation_disabled_notice(provider: &str, count: usize) -> String {
     let provider = canonical_provider(provider);
-    format!("Automatic rotation across {count} accounts is off. Enable it with `mhc auth consent {provider} --rotation`.")
+    format!(
+        "Automatic rotation across {count} accounts is off. Enable it with `mhc auth consent {provider} --rotation`."
+    )
 }
 
 pub fn append_rotation_notice(original: &str, provider: &str, count: usize) -> String {
@@ -283,13 +294,22 @@ mod tests {
     #[test]
     fn rotation_consent_records_and_revokes_independently() {
         let mut settings = manager();
-        assert!(!rotation_consent_recorded(&settings, "anthropic-subscription"));
+        assert!(!rotation_consent_recorded(
+            &settings,
+            "anthropic-subscription"
+        ));
         record_rotation_consent(&mut settings, "anthropic-subscription").expect("record");
-        assert!(rotation_consent_recorded(&settings, "anthropic-subscription"));
+        assert!(rotation_consent_recorded(
+            &settings,
+            "anthropic-subscription"
+        ));
         // Base consent is not automatically granted by rotation consent.
         assert!(!consent_recorded(&settings, "anthropic-subscription"));
         revoke_rotation_consent(&mut settings, "anthropic-subscription").expect("revoke");
-        assert!(!rotation_consent_recorded(&settings, "anthropic-subscription"));
+        assert!(!rotation_consent_recorded(
+            &settings,
+            "anthropic-subscription"
+        ));
     }
 
     #[test]

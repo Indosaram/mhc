@@ -22,12 +22,12 @@ use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
 use senpi_desktop_safety::{
-    Chord, HEARTBEAT_INTERVAL_MS, StopPathError, StopPathId, StopPathListener, StopSource,
-    Supervisor,
+    Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor,
+    HEARTBEAT_INTERVAL_MS,
 };
 
-pub use chord::DEFAULT_STOP_CHORD;
 use chord::Hotkey;
+pub use chord::DEFAULT_STOP_CHORD;
 
 const THREAD_NAME: &str = "senpi-desktop-killswitch";
 const THREAD_UNAVAILABLE: &str = "killswitch-thread-unavailable";

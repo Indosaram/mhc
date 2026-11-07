@@ -930,13 +930,17 @@ mod tests {
         let (first, records) = advance(&pins, &repo, &[], SESSION);
         // The forget's removal commit lands, then its purge bumps the generation.
         commit_as(&repo, "owner-forget", "system/persona.md", "scrubbed");
-        let generation = memory_core::receipts::owner::record_purge(&runtime, "rcpt_a", "forget-a").expect("purge");
+        let generation = memory_core::receipts::owner::record_purge(&runtime, "rcpt_a", "forget-a")
+            .expect("purge");
 
         let (live, live_records) = advance(&pins, &repo, &[], SESSION);
         assert_ne!(live.revision, first.revision);
         assert_eq!(live.revision, repo.head().expect("head"));
         assert_eq!(live.repinned, Some(ProjectionRepinReason::Suppression));
-        assert_eq!(live_records[0].suppression_generation.as_deref(), Some(generation.as_str()));
+        assert_eq!(
+            live_records[0].suppression_generation.as_deref(),
+            Some(generation.as_str())
+        );
         let (settled, _) = advance(&pins, &repo, &[], SESSION);
         assert_eq!(settled.repinned, None);
         assert_eq!(settled.revision, live.revision);
@@ -945,7 +949,10 @@ mod tests {
         let resumed = NativeProjectionPins::with_now(Box::new(|| 2.0));
         let (after_resume, _) = advance(&resumed, &repo, &[pin_entry(&records[0])], SESSION);
         assert_eq!(after_resume.revision, repo.head().expect("head"));
-        assert_eq!(after_resume.repinned, Some(ProjectionRepinReason::Suppression));
+        assert_eq!(
+            after_resume.repinned,
+            Some(ProjectionRepinReason::Suppression)
+        );
         // A pin persisted under the current generation keeps its bytes.
         let restarted = NativeProjectionPins::with_now(Box::new(|| 3.0));
         let (kept, _) = advance(&restarted, &repo, &[pin_entry(&live_records[0])], SESSION);
@@ -958,7 +965,12 @@ mod tests {
         let (dir, repo) = fixture();
         let pins = NativeProjectionPins::with_now(Box::new(|| 1.0));
         advance(&pins, &repo, &[], SESSION);
-        std::fs::create_dir_all(dir.path().join("runtime").join(memory_core::receipts::owner::SUPPRESSIONS_FILE)).expect("directory in place of the store");
+        std::fs::create_dir_all(
+            dir.path()
+                .join("runtime")
+                .join(memory_core::receipts::owner::SUPPRESSIONS_FILE),
+        )
+        .expect("directory in place of the store");
         for _ in 0..2 {
             let (turn, _) = advance(&pins, &repo, &[], SESSION);
             assert_eq!(turn.repinned, Some(ProjectionRepinReason::Suppression));

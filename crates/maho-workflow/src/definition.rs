@@ -110,7 +110,10 @@ fn target_issues(nodes: &[WorkflowNode]) -> Vec<ValidationIssue> {
         match (category, agent) {
             (true, true) => issues.push(ValidationIssue::new(
                 INVALID_TARGET,
-                format!("node \"{}\" names both a category and a subagent_type; pick one", node.id),
+                format!(
+                    "node \"{}\" names both a category and a subagent_type; pick one",
+                    node.id
+                ),
                 id,
             )),
             (false, false) => issues.push(ValidationIssue::new(
@@ -144,7 +147,10 @@ fn find_cycle(nodes: &[WorkflowNode]) -> Option<Vec<String>> {
     for node in nodes {
         for dep in &node.depends_on {
             if dep != &node.id && graph.contains_key(dep.as_str()) {
-                graph.entry(node.id.as_str()).or_default().insert(dep.as_str());
+                graph
+                    .entry(node.id.as_str())
+                    .or_default()
+                    .insert(dep.as_str());
             }
         }
     }
@@ -163,8 +169,10 @@ fn find_cycle(nodes: &[WorkflowNode]) -> Option<Vec<String>> {
             match mark.get(next).copied().unwrap_or(0) {
                 1 => {
                     let start = stack.iter().position(|item| item == next).unwrap_or(0);
-                    let mut path: Vec<String> =
-                        stack[start..].iter().map(|item| (*item).to_owned()).collect();
+                    let mut path: Vec<String> = stack[start..]
+                        .iter()
+                        .map(|item| (*item).to_owned())
+                        .collect();
                     path.push((*next).to_owned());
                     return Some(path);
                 }
@@ -233,7 +241,9 @@ pub fn validate(definition: &WorkflowDefinition, limits: Limits) -> Vec<Validati
     }
     let mut reported = BTreeSet::new();
     for node in nodes {
-        if counts.get(node.id.as_str()).copied().unwrap_or(0) > 1 && reported.insert(node.id.as_str()) {
+        if counts.get(node.id.as_str()).copied().unwrap_or(0) > 1
+            && reported.insert(node.id.as_str())
+        {
             issues.push(ValidationIssue::new(
                 "duplicate_node_id",
                 format!("node id \"{}\" is used more than once", node.id),
@@ -284,7 +294,10 @@ pub fn validate(definition: &WorkflowDefinition, limits: Limits) -> Vec<Validati
             if !counts.contains_key(dep.as_str()) && seen.insert(dep.as_str()) {
                 issues.push(ValidationIssue::new(
                     "unknown_dependency",
-                    format!("node \"{}\" depends on \"{dep}\", which is not in the workflow", node.id),
+                    format!(
+                        "node \"{}\" depends on \"{dep}\", which is not in the workflow",
+                        node.id
+                    ),
                     Some(node.id.as_str()),
                 ));
             }
@@ -361,7 +374,10 @@ mod tests {
     fn acceptance_03_each_rule_yields_its_code() {
         assert_eq!(codes(&validate(&def(vec![]), LIMITS)), ["empty_graph"]);
         let many = (0..5).map(|i| node(&format!("n{i}"), &[])).collect();
-        assert_eq!(codes(&validate(&def(many), LIMITS)), ["node_count_exceeded"]);
+        assert_eq!(
+            codes(&validate(&def(many), LIMITS)),
+            ["node_count_exceeded"]
+        );
         for bad in ["", ".", "..", "a/b", "a\\b", "a:b", "a\0b"] {
             assert_eq!(
                 codes(&validate(&def(vec![node(bad, &[])]), LIMITS)),
@@ -373,12 +389,15 @@ mod tests {
         assert_eq!(codes(&validate(&dup, LIMITS)), ["duplicate_node_id"]);
         let mut long = node("a", &[]);
         long.prompt = "x".repeat(11);
-        assert_eq!(codes(&validate(&def(vec![long]), LIMITS)), ["prompt_bytes_exceeded"]);
-        let fan = def(vec![
-            node("a", &[]),
-            node("b", &["a", "a", "a", "a", "a"]),
-        ]);
-        assert_eq!(codes(&validate(&fan, LIMITS)), ["dependency_fanout_exceeded"]);
+        assert_eq!(
+            codes(&validate(&def(vec![long]), LIMITS)),
+            ["prompt_bytes_exceeded"]
+        );
+        let fan = def(vec![node("a", &[]), node("b", &["a", "a", "a", "a", "a"])]);
+        assert_eq!(
+            codes(&validate(&fan, LIMITS)),
+            ["dependency_fanout_exceeded"]
+        );
         assert_eq!(
             codes(&validate(&def(vec![node("a", &["a"])]), LIMITS)),
             ["self_dependency"]
@@ -421,10 +440,16 @@ mod tests {
         assert_eq!(codes(&validate(&def(vec![both]), LIMITS)), [INVALID_TARGET]);
         let mut model = node("a", &[]);
         model.model = Some("p/m".into());
-        assert_eq!(codes(&validate(&def(vec![model]), LIMITS)), [INVALID_TARGET]);
+        assert_eq!(
+            codes(&validate(&def(vec![model]), LIMITS)),
+            [INVALID_TARGET]
+        );
         let mut neither = node("a", &[]);
         neither.category = None;
-        assert_eq!(codes(&validate(&def(vec![neither]), LIMITS)), [INVALID_TARGET]);
+        assert_eq!(
+            codes(&validate(&def(vec![neither]), LIMITS)),
+            [INVALID_TARGET]
+        );
         let mut agent = node("a", &[]);
         agent.category = None;
         agent.subagent_type = Some("task".into());
@@ -434,8 +459,16 @@ mod tests {
 
     #[test]
     fn fingerprint_ignores_node_and_dependency_order() {
-        let a = def(vec![node("a", &[]), node("b", &["a"]), node("c", &["a", "b"])]);
-        let b = def(vec![node("c", &["b", "a"]), node("a", &[]), node("b", &["a"])]);
+        let a = def(vec![
+            node("a", &[]),
+            node("b", &["a"]),
+            node("c", &["a", "b"]),
+        ]);
+        let b = def(vec![
+            node("c", &["b", "a"]),
+            node("a", &[]),
+            node("b", &["a"]),
+        ]);
         assert_eq!(fingerprint(&a), fingerprint(&b));
         let mut changed = a.clone();
         changed.nodes[0].prompt = "other".into();

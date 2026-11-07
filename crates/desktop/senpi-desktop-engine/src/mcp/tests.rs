@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::Server;
 
@@ -171,11 +171,9 @@ fn an_engine_error_is_an_error_tool_result_carrying_the_engine_error_unchanged()
 #[test]
 fn notifications_get_no_reply_and_unknown_methods_are_rejected() {
     let (mut server, _) = server(false, json!({}));
-    assert!(
-        server
-            .answer(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
-            .is_none()
-    );
+    assert!(server
+        .answer(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+        .is_none());
     let reply = ask(
         &mut server,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "resources/list" }),
@@ -218,13 +216,11 @@ fn modern_discovery_and_lists_work_without_initialize_and_include_cache_hints() 
     assert_modern(&list["result"]);
     assert_eq!(list["result"]["ttlMs"], 0);
     assert_eq!(list["result"]["cacheScope"], "public");
-    assert!(
-        list["result"]["tools"]
-            .as_array()
-            .expect("tools")
-            .iter()
-            .any(|tool| tool["name"] == "desktop_capture")
-    );
+    assert!(list["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .any(|tool| tool["name"] == "desktop_capture"));
     assert!(sent.borrow().is_empty());
 }
 

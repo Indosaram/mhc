@@ -64,9 +64,27 @@ fn make_plan() -> UlwLoopPlan {
 fn make_multi_criterion_plan() -> UlwLoopPlan {
     let mut plan = make_plan();
     plan.goals[0].success_criteria = vec![
-        UlwLoopSuccessCriterion { id: "C001".into(), status: "pass".into(), captured_evidence: Some("old".into()), captured_at: Some("old".into()), ..plan.goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C002".into(), status: "fail".into(), captured_evidence: Some("older".into()), captured_at: Some("older".into()), ..plan.goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C003".into(), status: "blocked".into(), captured_evidence: Some("oldest".into()), captured_at: Some("oldest".into()), ..plan.goals[0].success_criteria[0].clone() },
+        UlwLoopSuccessCriterion {
+            id: "C001".into(),
+            status: "pass".into(),
+            captured_evidence: Some("old".into()),
+            captured_at: Some("old".into()),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C002".into(),
+            status: "fail".into(),
+            captured_evidence: Some("older".into()),
+            captured_at: Some("older".into()),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C003".into(),
+            status: "blocked".into(),
+            captured_evidence: Some("oldest".into()),
+            captured_at: Some("oldest".into()),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
     ];
     plan
 }
@@ -89,7 +107,10 @@ fn test_record_evidence_pass() -> Result<(), Box<dyn std::error::Error>> {
 
     let res = record_evidence(tmp.path(), &args, None)?;
     assert_eq!(res.criterion.status, "pass");
-    assert_eq!(res.criterion.captured_evidence.as_deref(), Some("observable proof"));
+    assert_eq!(
+        res.criterion.captured_evidence.as_deref(),
+        Some("observable proof")
+    );
     assert_eq!(res.ledger_entry.kind, "evidence_captured");
 
     let updated_plan = read_ulw_loop_plan(tmp.path(), None)?;
@@ -120,13 +141,33 @@ fn test_record_evidence_fail() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_record_evidence_captures_trimmed_timestamp_and_ledger_fields() -> Result<(), Box<dyn std::error::Error>> {
+fn test_record_evidence_captures_trimmed_timestamp_and_ledger_fields()
+-> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop"))?;
     write_plan(tmp.path(), make_plan(), None)?;
-    let res = record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "G001".into(), criterion_id: "C001".into(), status: "pass".into(), evidence: "  curl /login returns 200 + token verified  ".into(), notes: None, artifacts: None }, None)?;
-    assert_eq!(res.criterion.captured_evidence.as_deref(), Some("curl /login returns 200 + token verified"));
-    assert!(res.criterion.captured_at.as_deref().is_some_and(|v| v.contains('T')));
+    let res = record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "G001".into(),
+            criterion_id: "C001".into(),
+            status: "pass".into(),
+            evidence: "  curl /login returns 200 + token verified  ".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )?;
+    assert_eq!(
+        res.criterion.captured_evidence.as_deref(),
+        Some("curl /login returns 200 + token verified")
+    );
+    assert!(
+        res.criterion
+            .captured_at
+            .as_deref()
+            .is_some_and(|v| v.contains('T'))
+    );
     assert_eq!(res.ledger_entry.goal_id.as_deref(), Some("G001"));
     assert_eq!(res.ledger_entry.criterion_id.as_deref(), Some("C001"));
     Ok(())
@@ -137,7 +178,18 @@ fn test_record_evidence_blocked() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop"))?;
     write_plan(tmp.path(), make_plan(), None)?;
-    let res = record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "G001".into(), criterion_id: "C001".into(), status: "blocked".into(), evidence: "auth not in CI yet".into(), notes: None, artifacts: None }, None)?;
+    let res = record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "G001".into(),
+            criterion_id: "C001".into(),
+            status: "blocked".into(),
+            evidence: "auth not in CI yet".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )?;
     assert_eq!(res.criterion.status, "blocked");
     assert_eq!(res.ledger_entry.kind, "criterion_blocked");
     Ok(())
@@ -148,7 +200,19 @@ fn test_record_evidence_unknown_goal_errors() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop")).unwrap();
     write_plan(tmp.path(), make_plan(), None).unwrap();
-    let err = record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "GUNKNOWN".into(), criterion_id: "C001".into(), status: "pass".into(), evidence: "x".into(), notes: None, artifacts: None }, None).unwrap_err();
+    let err = record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "GUNKNOWN".into(),
+            criterion_id: "C001".into(),
+            status: "pass".into(),
+            evidence: "x".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.code, "ULW_LOOP_GOAL_NOT_FOUND");
 }
 
@@ -157,7 +221,19 @@ fn test_record_evidence_unknown_criterion_errors() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop")).unwrap();
     write_plan(tmp.path(), make_plan(), None).unwrap();
-    let err = record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "G001".into(), criterion_id: "CUNKNOWN".into(), status: "pass".into(), evidence: "x".into(), notes: None, artifacts: None }, None).unwrap_err();
+    let err = record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "G001".into(),
+            criterion_id: "CUNKNOWN".into(),
+            status: "pass".into(),
+            evidence: "x".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.code, "ULW_LOOP_CRITERION_NOT_FOUND");
 }
 
@@ -166,7 +242,19 @@ fn test_record_evidence_empty_evidence_errors() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop")).unwrap();
     write_plan(tmp.path(), make_plan(), None).unwrap();
-    let err = record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "G001".into(), criterion_id: "C001".into(), status: "pass".into(), evidence: "   ".into(), notes: None, artifacts: None }, None).unwrap_err();
+    let err = record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "G001".into(),
+            criterion_id: "C001".into(),
+            status: "pass".into(),
+            evidence: "   ".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.code, "ULW_LOOP_EVIDENCE_REQUIRED");
 }
 
@@ -182,7 +270,10 @@ fn test_mark_criteria_pending_reset_resets_all_fields() -> Result<(), Box<dyn st
         assert!(criterion.captured_evidence.is_none());
         assert!(criterion.captured_at.is_none());
     }
-    assert_eq!(read_ledger(tmp.path(), None).last().unwrap().kind, "criteria_revised");
+    assert_eq!(
+        read_ledger(tmp.path(), None).last().unwrap().kind,
+        "criteria_revised"
+    );
     Ok(())
 }
 
@@ -190,10 +281,25 @@ fn test_mark_criteria_pending_reset_resets_all_fields() -> Result<(), Box<dyn st
 fn test_criteria_summary_counts_all_statuses() {
     let mut plan = make_plan();
     plan.goals[0].success_criteria = vec![
-        UlwLoopSuccessCriterion { status: "pass".into(), ..plan.goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C002".into(), status: "pending".into(), ..plan.goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C003".into(), status: "fail".into(), ..plan.goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C004".into(), status: "blocked".into(), ..plan.goals[0].success_criteria[0].clone() },
+        UlwLoopSuccessCriterion {
+            status: "pass".into(),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C002".into(),
+            status: "pending".into(),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C003".into(),
+            status: "fail".into(),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C004".into(),
+            status: "blocked".into(),
+            ..plan.goals[0].success_criteria[0].clone()
+        },
     ];
     let summary = criteria_summary(&plan);
     assert_eq!(summary.total_criteria, 4);
@@ -213,11 +319,28 @@ fn test_criteria_summary_empty_and_unresolved_filter() {
     assert!(summary.goals_with_unresolved_criteria.is_empty());
 
     plan.goals[0].success_criteria = vec![
-        UlwLoopSuccessCriterion { status: "pass".into(), ..make_plan().goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C002".into(), status: "pending".into(), ..make_plan().goals[0].success_criteria[0].clone() },
-        UlwLoopSuccessCriterion { id: "C003".into(), status: "fail".into(), ..make_plan().goals[0].success_criteria[0].clone() },
+        UlwLoopSuccessCriterion {
+            status: "pass".into(),
+            ..make_plan().goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C002".into(),
+            status: "pending".into(),
+            ..make_plan().goals[0].success_criteria[0].clone()
+        },
+        UlwLoopSuccessCriterion {
+            id: "C003".into(),
+            status: "fail".into(),
+            ..make_plan().goals[0].success_criteria[0].clone()
+        },
     ];
-    assert_eq!(unresolved_criteria_of(&plan.goals[0]).iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["C002", "C003"]);
+    assert_eq!(
+        unresolved_criteria_of(&plan.goals[0])
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["C002", "C003"]
+    );
 }
 
 #[test]
@@ -225,13 +348,28 @@ fn test_record_evidence_persists_fresh_read() -> Result<(), Box<dyn std::error::
     let tmp = tempfile::tempdir()?;
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop"))?;
     write_plan(tmp.path(), make_plan(), None)?;
-    record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "G001".into(), criterion_id: "C001".into(), status: "pass".into(), evidence: "observable proof".into(), notes: None, artifacts: None }, None)?;
-    assert_eq!(read_ulw_loop_plan(tmp.path(), None)?.goals[0].success_criteria[0].status, "pass");
+    record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "G001".into(),
+            criterion_id: "C001".into(),
+            status: "pass".into(),
+            evidence: "observable proof".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )?;
+    assert_eq!(
+        read_ulw_loop_plan(tmp.path(), None)?.goals[0].success_criteria[0].status,
+        "pass"
+    );
     Ok(())
 }
 
 #[test]
-fn test_mark_criteria_pending_reset_emits_single_revision_event() -> Result<(), Box<dyn std::error::Error>> {
+fn test_mark_criteria_pending_reset_emits_single_revision_event()
+-> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop"))?;
     write_plan(tmp.path(), make_plan(), None)?;
@@ -246,6 +384,18 @@ fn test_record_evidence_invalid_status_errors() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop")).unwrap();
     write_plan(tmp.path(), make_plan(), None).unwrap();
-    let err = record_evidence(tmp.path(), &RecordEvidenceArgs { goal_id: "G001".into(), criterion_id: "C001".into(), status: "unknown".into(), evidence: "x".into(), notes: None, artifacts: None }, None).unwrap_err();
+    let err = record_evidence(
+        tmp.path(),
+        &RecordEvidenceArgs {
+            goal_id: "G001".into(),
+            criterion_id: "C001".into(),
+            status: "unknown".into(),
+            evidence: "x".into(),
+            notes: None,
+            artifacts: None,
+        },
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.code, "ULW_LOOP_CRITERION_STATUS_INVALID");
 }

@@ -315,7 +315,6 @@ pub enum ToolWorkspaceEffect {
     Write,
 }
 
-
 #[derive(Clone)]
 pub struct ToolDefinition {
     pub name: String,

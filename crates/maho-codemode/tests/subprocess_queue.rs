@@ -1,7 +1,15 @@
-use maho_codemode::kernels::shared::{subprocess_contract::KernelRunInput, subprocess_queue::SubprocessRunQueue, subprocess_run::*};
+use maho_codemode::kernels::shared::{
+    subprocess_contract::KernelRunInput, subprocess_queue::SubprocessRunQueue, subprocess_run::*,
+};
 use serde_json::json;
 
-fn input(id: &str) -> KernelRunInput { KernelRunInput { cell_id: id.into(), code: "1".into(), timeout_ms: None } }
+fn input(id: &str) -> KernelRunInput {
+    KernelRunInput {
+        cell_id: id.into(),
+        code: "1".into(),
+        timeout_ms: None,
+    }
+}
 
 #[tokio::test]
 async fn fifo_results_release_active_before_next_start() {
@@ -10,8 +18,14 @@ async fn fifo_results_release_active_before_next_start() {
     let second = queue.enqueue(input("second"), None, None);
     assert_eq!(queue.start_next(10.0).unwrap().input.cell_id, "first");
     assert!(queue.start_next(20.0).is_none());
-    assert!(!queue.handle_message(json!({"type":"result","cellId":"wrong","ok":true,"durationMs":0}), None));
-    assert!(queue.handle_message(json!({"type":"result","cellId":"first","ok":true,"durationMs":1}), None));
+    assert!(!queue.handle_message(
+        json!({"type":"result","cellId":"wrong","ok":true,"durationMs":0}),
+        None
+    ));
+    assert!(queue.handle_message(
+        json!({"type":"result","cellId":"first","ok":true,"durationMs":1}),
+        None
+    ));
     assert_eq!(first.await.unwrap()["ok"], true);
     assert_eq!(queue.start_next(20.0).unwrap().input.cell_id, "second");
     queue.settle_all("closed", 25.0);
@@ -37,7 +51,9 @@ async fn tool_call_waiter_and_bounded_backlog() {
     let receiver = queue.next_tool_call();
     queue.push_tool_call(json!({"callId":"direct"}));
     assert_eq!(receiver.await.unwrap()["callId"], "direct");
-    for index in 0..257 { queue.push_tool_call(json!({"index":index})); }
+    for index in 0..257 {
+        queue.push_tool_call(json!({"index":index}));
+    }
     assert_eq!(queue.next_tool_call().await.unwrap()["index"], 1);
     queue.clear_tool_calls();
 }
@@ -54,12 +70,18 @@ async fn pending_run_settles_once() {
 
 #[tokio::test]
 async fn cancelled_pull_does_not_consume_the_next_tool_frame() {
-    let mut queue=SubprocessRunQueue::default();
+    let mut queue = SubprocessRunQueue::default();
     drop(queue.next_tool_call());
-    let receiver=queue.next_tool_call();
+    let receiver = queue.next_tool_call();
     queue.push_tool_call(json!({"callId":"retained"}));
-    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1),receiver).await.expect("cancelled consumer must not discard a frame").unwrap()["callId"],"retained");
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), receiver)
+            .await
+            .expect("cancelled consumer must not discard a frame")
+            .unwrap()["callId"],
+        "retained"
+    );
     drop(queue.next_tool_call());
     queue.push_tool_call(json!({"callId":"buffered"}));
-    assert_eq!(queue.next_tool_call().await.unwrap()["callId"],"buffered");
+    assert_eq!(queue.next_tool_call().await.unwrap()["callId"], "buffered");
 }

@@ -6,7 +6,11 @@ use std::path::PathBuf;
 
 fn parse_front_matter(markdown: &str) -> BTreeMap<String, String> {
     let lines: Vec<&str> = markdown.lines().collect();
-    assert_eq!(lines.first(), Some(&"---"), "SKILL.md must open with a YAML front matter fence");
+    assert_eq!(
+        lines.first(),
+        Some(&"---"),
+        "SKILL.md must open with a YAML front matter fence"
+    );
 
     let end_idx = lines[1..]
         .iter()

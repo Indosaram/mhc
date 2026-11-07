@@ -55,13 +55,21 @@ pub fn load_native_agents(
     };
     let plugins = crate::discover_installed_plugins(&options)?;
     for error in plugins.errors {
-        crate::shared::logger::log(&format!("Claude plugin {}: {}", error.plugin_key, error.error), None);
+        crate::shared::logger::log(
+            &format!("Claude plugin {}: {}", error.plugin_key, error.error),
+            None,
+        );
     }
     let mut agents = crate::load_plugin_agents(&plugins.plugins, anthropic_provider)?;
-    for (directory, scope) in [(claude_dir.join("agents"), AgentScope::User),
-        (cwd.join(".claude/agents"), AgentScope::Project)] {
-        agents.extend(load_agents_from_dir(&directory, scope, anthropic_provider)?
-            .into_iter().map(|agent| (agent.name, agent.config)));
+    for (directory, scope) in [
+        (claude_dir.join("agents"), AgentScope::User),
+        (cwd.join(".claude/agents"), AgentScope::Project),
+    ] {
+        agents.extend(
+            load_agents_from_dir(&directory, scope, anthropic_provider)?
+                .into_iter()
+                .map(|agent| (agent.name, agent.config)),
+        );
     }
     Ok(agents)
 }
@@ -122,17 +130,30 @@ mod tests {
         let root = tempfile::tempdir()?;
         let claude = root.path().join("claude");
         let cwd = root.path().join("project");
-        for directory in [claude.join("agents"), cwd.join(".claude/agents"), cwd.join(".opencode/agents")] {
+        for directory in [
+            claude.join("agents"),
+            cwd.join(".claude/agents"),
+            cwd.join(".opencode/agents"),
+        ] {
             fs::create_dir_all(directory)?;
         }
-        fs::write(claude.join("agents/scout.md"), "---\ntools: Read\n---\nuser")?;
-        fs::write(cwd.join(".claude/agents/scout.md"), "---\ntools: Bash\n---\nproject")?;
+        fs::write(
+            claude.join("agents/scout.md"),
+            "---\ntools: Read\n---\nuser",
+        )?;
+        fs::write(
+            cwd.join(".claude/agents/scout.md"),
+            "---\ntools: Bash\n---\nproject",
+        )?;
         fs::write(cwd.join(".opencode/agents/ignored.md"), "ignored")?;
         // When
         let agents = load_native_agents(&cwd, &claude, None)?;
         // Then
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents["scout"].tools, Some(BTreeMap::from([("bash".into(), true)])));
+        assert_eq!(
+            agents["scout"].tools,
+            Some(BTreeMap::from([("bash".into(), true)]))
+        );
         Ok(())
     }
 

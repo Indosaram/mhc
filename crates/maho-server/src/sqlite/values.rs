@@ -127,15 +127,16 @@ pub fn append_list(
     value: &JsonValue,
 ) -> Result<(), ValueError> {
     // PERF-DIVERGENCE(senpi): upstream re-parses this statement per write; we use the connection's prepared-statement cache. Same SQL, same rows.
-    db.prepare_cached("INSERT INTO list_values (session_id,namespace,key,seq,value) VALUES (?1,?2,?3,?4,?5)")?.execute(
-        params![
-            session,
-            address.namespace,
-            address.key,
-            seq,
-            serde_json::to_string(value)?
-        ],
-    )?;
+    db.prepare_cached(
+        "INSERT INTO list_values (session_id,namespace,key,seq,value) VALUES (?1,?2,?3,?4,?5)",
+    )?
+    .execute(params![
+        session,
+        address.namespace,
+        address.key,
+        seq,
+        serde_json::to_string(value)?
+    ])?;
     Ok(())
 }
 pub fn delete_list(db: &Connection, session: &str, address: &ValueList) -> Result<(), ValueError> {

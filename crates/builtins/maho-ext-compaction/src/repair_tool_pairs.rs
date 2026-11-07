@@ -96,18 +96,25 @@ mod tests {
             "nestedCalls":{"calls":[{"id":"child","name":"read","arguments":{"path":"a"},
                 "argumentsBytes":12,"status":"error","durationMs":4,"error":"failed"}],"complete":false}
         })).expect("tool result fixture");
-        let Message::ToolResult(original) = &message else { panic!("tool result") };
+        let Message::ToolResult(original) = &message else {
+            panic!("tool result")
+        };
 
         // When only the orphan's visible content is replaced.
         let repaired = repair_orphaned_tool_results(std::slice::from_ref(&message), 9);
 
         // Then nested records and C133 metadata survive without fabrication.
-        let Message::ToolResult(result) = &repaired[0] else { panic!("tool result") };
+        let Message::ToolResult(result) = &repaired[0] else {
+            panic!("tool result")
+        };
         assert!(original.nested_calls.is_some());
         assert_eq!(result.nested_calls, original.nested_calls);
         assert_eq!(result.details, original.details);
         assert_eq!(result.is_error, original.is_error);
-        assert_eq!(result.content, vec![ContentBlock::text(TOOL_RESULT_PLACEHOLDER)]);
+        assert_eq!(
+            result.content,
+            vec![ContentBlock::text(TOOL_RESULT_PLACEHOLDER)]
+        );
     }
 
     #[test]
@@ -120,13 +127,16 @@ mod tests {
             "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
                 "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
             "stopReason":"toolUse","timestamp":2
-        })).expect("assistant fixture");
+        }))
+        .expect("assistant fixture");
 
         // When pair repair synthesizes the missing result.
         let repaired = repair_orphaned_tool_results(&[message], 9);
 
         // Then it remains an error with no invented execution history.
-        let Message::ToolResult(result) = &repaired[1] else { panic!("tool result") };
+        let Message::ToolResult(result) = &repaired[1] else {
+            panic!("tool result")
+        };
         assert!(result.is_error);
         assert!(result.nested_calls.is_none());
         assert_eq!(result.tool_call_id, "call");

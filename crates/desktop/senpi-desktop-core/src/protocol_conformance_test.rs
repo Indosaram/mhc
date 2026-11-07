@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
+use super::validator::{definition, Validator};
 use super::METHOD_NOT_FOUND;
-use super::validator::{Validator, definition};
 
 const REQUIRED_CASES: [&str; 9] = [
     "hello",

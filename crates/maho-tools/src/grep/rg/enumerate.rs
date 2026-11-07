@@ -70,8 +70,7 @@ pub async fn resolve_roots(
         if !seen.insert(path) {
             continue;
         }
-        let (info, canonical) =
-            tokio::join!(tokio::fs::metadata(path), realpath(path));
+        let (info, canonical) = tokio::join!(tokio::fs::metadata(path), realpath(path));
         match (info, canonical) {
             (Ok(info), Ok(canonical)) => {
                 // Anchored rg globs use the OS cwd (canonical even for /var aliases on macOS).
@@ -142,10 +141,8 @@ pub async fn enumerate_candidates(
             check(deadline, signal)?;
             let absolute = resolve(&root.cwd, &path);
             // PERF-DIVERGENCE(senpi grep): upstream uses sync fs per file; this port runs canonicalize and metadata concurrently instead of two serial blocking-pool hops. Error precedence and abort checks keep the same order, so results are identical.
-            let (canonical, metadata) = tokio::join!(
-                realpath(&absolute),
-                tokio::fs::metadata(&absolute)
-            );
+            let (canonical, metadata) =
+                tokio::join!(realpath(&absolute), tokio::fs::metadata(&absolute));
             let (canonical, metadata) = match (canonical, metadata) {
                 (Ok(canonical), Ok(metadata)) => (canonical, metadata),
                 (Err(error), _) | (_, Err(error)) => {

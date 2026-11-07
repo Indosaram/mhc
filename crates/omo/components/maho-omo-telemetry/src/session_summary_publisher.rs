@@ -22,9 +22,7 @@ use crate::session_summary_sampling::is_session_sampled;
 use crate::session_summary_store::{
     ConsentScope, PendingRecord, RecordConsent, SummaryStorage, is_record_sendable,
 };
-use crate::session_summary_window::{
-    EndedBy, SummaryMeta, SummaryWindow, summary_properties,
-};
+use crate::session_summary_window::{EndedBy, SummaryMeta, SummaryWindow, summary_properties};
 
 /// Resolves `Ok` only when the transport acknowledged the event (a 2xx answer). A rejection keeps the
 /// pending file for a later retry, unless it is a permanent `TelemetryDeliveryError`.
@@ -91,11 +89,19 @@ impl SummaryPublisher {
     }
 
     pub fn take_dropped(&self) -> u64 {
-        let transport = self.transport_dropped.as_ref().map_or(0, |dropped| dropped());
+        let transport = self
+            .transport_dropped
+            .as_ref()
+            .map_or(0, |dropped| dropped());
         self.dropped.swap(0, Ordering::SeqCst) + transport
     }
 
-    pub fn report(&self, event: TelemetryDiagnosticEvent, error: Option<TelemetryError>, count: u64) {
+    pub fn report(
+        &self,
+        event: TelemetryDiagnosticEvent,
+        error: Option<TelemetryError>,
+        count: u64,
+    ) {
         let Some(diagnostics) = &self.diagnostics else {
             return;
         };
@@ -140,7 +146,10 @@ impl SummaryPublisher {
     }
 
     fn set_in_flight(&self, uuid: &str, active: bool) -> bool {
-        let mut in_flight = self.in_flight.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let changed = if active {
             in_flight.insert(uuid.to_string())
         } else {
@@ -227,8 +236,8 @@ mod tests {
     use crate::session_summary_store::Probes;
     use futures::FutureExt;
     use serde_json::json;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicBool;
 
     fn storage(dir: &std::path::Path) -> SummaryStorage {
         crate::session_summary_store::create_summary_storage(
@@ -298,13 +307,13 @@ mod tests {
         assert_eq!(*pending_before.lock().unwrap(), 1);
         assert!(storage.pending_uuids().is_empty());
         {
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].uuid, "01234567-89ab-cdef-0123-456789abcdef");
-        assert_eq!(seen[0].timestamp_ms, 1000.0);
-        assert_eq!(seen[0].properties["summary_seq"], 2);
-        assert_eq!(seen[0].properties["ended_by"], "checkpoint");
-        assert_eq!(seen[0].properties["session_role"], "root");
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].uuid, "01234567-89ab-cdef-0123-456789abcdef");
+            assert_eq!(seen[0].timestamp_ms, 1000.0);
+            assert_eq!(seen[0].properties["summary_seq"], 2);
+            assert_eq!(seen[0].properties["ended_by"], "checkpoint");
+            assert_eq!(seen[0].properties["session_role"], "root");
         }
         publisher.settled().await;
     }
@@ -405,9 +414,11 @@ mod tests {
         let observed = Arc::clone(&transport);
         let publisher = SummaryPublisher::new(
             storage(dir.path()),
-            Arc::new(|_| -> BoxFuture<'static, Result<(), TelemetryDeliveryError>> {
-                async { Ok(()) }.boxed()
-            }),
+            Arc::new(
+                |_| -> BoxFuture<'static, Result<(), TelemetryDeliveryError>> {
+                    async { Ok(()) }.boxed()
+                },
+            ),
             None,
             Some(Arc::new(move || observed.load(Ordering::SeqCst))),
             Arc::new(|_| true),

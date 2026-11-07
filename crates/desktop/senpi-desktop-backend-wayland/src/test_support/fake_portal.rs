@@ -110,7 +110,8 @@ fn start() -> FakeBus {
         .expect("bus dir")
         .keep();
     let config = dir.join("bus.conf");
-    std::fs::write(&config, bus_config(&dir.join("bus").display().to_string())).expect("bus config");
+    std::fs::write(&config, bus_config(&dir.join("bus").display().to_string()))
+        .expect("bus config");
     // `$!` is the daemon itself; the wrapper then drops its own stdout so a
     // daemon that fails to start closes the pipe (EOF) instead of hanging.
     let script = "dbus-daemon --config-file=\"$1\" --nofork --print-address=1 & pid=$!; \
@@ -138,7 +139,10 @@ fn start() -> FakeBus {
             remote_desktop: Reply::Absent,
             global_shortcuts: Reply::Absent,
             screenshot: Shot::Absent,
-            eis: EisConfig { keymap: "", group: 0 },
+            eis: EisConfig {
+                keymap: "",
+                group: 0,
+            },
         }),
         recorded: Mutex::default(),
     });

@@ -57,7 +57,10 @@ fn reserved_path(state_dir: &StateDirConfig, recipient: &str, message_id: &str) 
 }
 
 fn set_mtime(path: &Path, time: SystemTime) {
-    let file = OpenOptions::new().write(true).open(path).expect("open reserved file");
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open reserved file");
     file.set_modified(time).expect("set mtime");
 }
 
@@ -89,12 +92,16 @@ fn reserve_one(setup: &Setup, recipient: &str, age: bool) -> String {
     )
     .expect("write unread message");
 
-    let _reservation = reserve_message_for_delivery(TEAM_RUN_ID, recipient, &message_id, &setup.config)
-        .expect("reserve message");
+    let _reservation =
+        reserve_message_for_delivery(TEAM_RUN_ID, recipient, &message_id, &setup.config)
+            .expect("reserve message");
 
     if age {
         let past = SystemTime::now() - Duration::from_millis((STALE_TTL_MS * 4) as u64);
-        set_mtime(&reserved_path(&setup.state_dir, recipient, &message_id), past);
+        set_mtime(
+            &reserved_path(&setup.state_dir, recipient, &message_id),
+            past,
+        );
     }
     message_id
 }
@@ -108,7 +115,8 @@ fn given_stale_reservation_older_than_ttl_when_reclaimed_then_restored_to_unread
 
     // when
     let reclaimed =
-        reclaim_stale_team_reservations(TEAM_RUN_ID, &["beta"], &setup.config, STALE_TTL_MS).expect("reclaim");
+        reclaim_stale_team_reservations(TEAM_RUN_ID, &["beta"], &setup.config, STALE_TTL_MS)
+            .expect("reclaim");
 
     // then
     let mut expected = ReclaimResult::new();
@@ -126,7 +134,8 @@ fn given_fresh_reservation_within_ttl_when_reclaimed_then_nothing_restored() {
 
     // when
     let reclaimed =
-        reclaim_stale_team_reservations(TEAM_RUN_ID, &["beta"], &setup.config, STALE_TTL_MS).expect("reclaim");
+        reclaim_stale_team_reservations(TEAM_RUN_ID, &["beta"], &setup.config, STALE_TTL_MS)
+            .expect("reclaim");
 
     // then
     let mut expected = ReclaimResult::new();
@@ -142,8 +151,13 @@ fn given_multiple_members_when_reclaimed_then_each_members_stale_reservations_re
     let gamma = reserve_one(&setup, "gamma", true);
 
     // when
-    let reclaimed = reclaim_stale_team_reservations(TEAM_RUN_ID, &["beta", "gamma"], &setup.config, STALE_TTL_MS)
-        .expect("reclaim");
+    let reclaimed = reclaim_stale_team_reservations(
+        TEAM_RUN_ID,
+        &["beta", "gamma"],
+        &setup.config,
+        STALE_TTL_MS,
+    )
+    .expect("reclaim");
 
     // then
     let mut expected = ReclaimResult::new();

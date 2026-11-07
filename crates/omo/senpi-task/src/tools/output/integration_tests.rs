@@ -13,7 +13,9 @@ use crate::tools::output::records_fakes::{RecordOverrides, make_record};
 use crate::tools::output::render::{RenderOptions, render_transcript};
 use crate::tools::output::transcript::event_log::read_event_log_transcript;
 use crate::tools::output::transcript::reader::default_transcript_reader;
-use crate::tools::output::transcript::session_dir::{child_session_dir, read_session_dir_transcript};
+use crate::tools::output::transcript::session_dir::{
+    child_session_dir, read_session_dir_transcript,
+};
 use crate::tools::output::types::{TranscriptEntry, TranscriptMode, TranscriptReaderInput};
 
 /// Appends one event line to OUR event log (logs/<taskId>.jsonl), the same layout the store writes.
@@ -45,7 +47,7 @@ fn state_dir_of(dir: &tempfile::TempDir) -> String {
 
 #[test]
 fn given_a_committed_team_message_waited_event_when_task_output_reads_the_event_log_then_the_recovered_body_is_visible()
-{
+ {
     // given
     let dir = tempfile::tempdir().unwrap();
     let state_dir = state_dir_of(&dir);
@@ -88,19 +90,34 @@ fn given_a_committed_team_message_waited_event_when_task_output_reads_the_event_
 
 #[test]
 fn given_a_store_event_log_with_transcript_events_when_read_then_assistant_and_tool_entries_are_reconstructed_in_order()
-{
+ {
     // given
     let dir = tempfile::tempdir().unwrap();
     let state_dir = state_dir_of(&dir);
-    append_event(&state_dir, "st_000000ee", "reconcile_lost", json!({ "reason": "noise" }));
-    append_event(&state_dir, "st_000000ee", TRANSCRIPT_ASSISTANT_EVENT, json!({ "text": "hello world" }));
+    append_event(
+        &state_dir,
+        "st_000000ee",
+        "reconcile_lost",
+        json!({ "reason": "noise" }),
+    );
+    append_event(
+        &state_dir,
+        "st_000000ee",
+        TRANSCRIPT_ASSISTANT_EVENT,
+        json!({ "text": "hello world" }),
+    );
     append_event(
         &state_dir,
         "st_000000ee",
         TRANSCRIPT_TOOL_EVENT,
         json!({ "tool": "bash", "is_error": false }),
     );
-    append_event(&state_dir, "st_000000ee", TRANSCRIPT_ASSISTANT_EVENT, json!({ "text": "goodbye" }));
+    append_event(
+        &state_dir,
+        "st_000000ee",
+        TRANSCRIPT_ASSISTANT_EVENT,
+        json!({ "text": "goodbye" }),
+    );
 
     // when
     let entries = read_event_log_transcript(&state_dir, "st_000000ee").unwrap();
@@ -165,7 +182,12 @@ fn given_both_sources_present_when_read_then_the_event_log_wins_and_the_source_i
     // given
     let dir = tempfile::tempdir().unwrap();
     let state_dir = state_dir_of(&dir);
-    append_event(&state_dir, "st_000000bb", TRANSCRIPT_ASSISTANT_EVENT, json!({ "text": "event log wins" }));
+    append_event(
+        &state_dir,
+        "st_000000bb",
+        TRANSCRIPT_ASSISTANT_EVENT,
+        json!({ "text": "event log wins" }),
+    );
     write_session_file(
         &state_dir,
         "st_000000bb",

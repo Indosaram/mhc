@@ -1,10 +1,10 @@
 //! Port of `claim-receipt/evidence.test.ts`.
 
 use crate::support::{
-    custom_message, edit_result, eval_run, host_bash, tool_call, tool_result, CellFixture,
+    CellFixture, custom_message, edit_result, eval_run, host_bash, tool_call, tool_result,
 };
 use maho_omo_claim_receipt::evidence::build_timeline;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn checks(entries: &[Value]) -> Vec<(&'static str, &'static str, i64)> {
     build_timeline(entries)
@@ -53,7 +53,12 @@ fn an_eval_host_bash_call_reads_its_outcome_from_ok_and_the_result_preview() {
             output: "",
             status: None,
         },
-        vec![host_bash("bun test src", " 12 pass\n 0 fail", true, json!({}))],
+        vec![host_bash(
+            "bun test src",
+            " 12 pass\n 0 fail",
+            true,
+            json!({}),
+        )],
     );
     let failed = eval_run(
         "c2",
@@ -87,7 +92,11 @@ fn a_cell_can_support_a_claim_but_never_contradict_one() {
         )
     };
     assert_eq!(
-        checks(&cell("await sh(`bun test x`)", " 35 pass\n 0 fail", "complete")),
+        checks(&cell(
+            "await sh(`bun test x`)",
+            " 35 pass\n 0 fail",
+            "complete"
+        )),
         vec![("test", "passed", 1)]
     );
     assert_eq!(
@@ -95,7 +104,11 @@ fn a_cell_can_support_a_claim_but_never_contradict_one() {
         vec![("test", "unknown", 1)]
     );
     assert_eq!(
-        checks(&cell("await sh(`bun test x`)", " 3 pass\n 1 fail", "complete")),
+        checks(&cell(
+            "await sh(`bun test x`)",
+            " 3 pass\n 1 fail",
+            "complete"
+        )),
         vec![("test", "unknown", 1)]
     );
     assert_eq!(
@@ -295,7 +308,9 @@ fn a_monitor_that_failed_to_start_or_timed_out_is_not_a_failed_check() {
             output: "",
             status: None,
         },
-        vec![json!({ "name": "monitor", "ok": false, "args": { "command": "bun test" }, "resultPreview": "" })],
+        vec![
+            json!({ "name": "monitor", "ok": false, "args": { "command": "bun test" }, "resultPreview": "" }),
+        ],
     );
     let timed_out = [
         start("bun test", "bash_7"),
@@ -365,12 +380,18 @@ fn key_value_summaries_are_read_by_their_value_never_by_the_number_before_them()
         ]
         .concat()
     };
-    assert_eq!(checks(&settle("CI_SETTLED total=46 fail=0")), vec![("test", "passed", 2)]);
+    assert_eq!(
+        checks(&settle("CI_SETTLED total=46 fail=0")),
+        vec![("test", "passed", 2)]
+    );
     assert_eq!(
         checks(&settle("CI_SETTLED #1197 fail=[] #1198 fail=[]")),
         vec![("test", "passed", 2)]
     );
-    assert_eq!(checks(&settle("CI_SETTLED total=46 fail=2")), vec![("test", "failed", 2)]);
+    assert_eq!(
+        checks(&settle("CI_SETTLED total=46 fail=2")),
+        vec![("test", "failed", 2)]
+    );
     assert_eq!(
         checks(&settle("CI_SETTLED #1197 fail=[lint] #1198 fail=[]")),
         vec![("test", "failed", 2)]
@@ -379,17 +400,35 @@ fn key_value_summaries_are_read_by_their_value_never_by_the_number_before_them()
 
 #[test]
 fn echo_grep_rg_and_git_messages_are_not_check_runs() {
-    assert_eq!(checks(&bash("m1", "echo bun test", "bun test", false)), Vec::new());
     assert_eq!(
-        checks(&bash("m2", "grep -rn vitest packages/", "a.ts: FAIL vitest", false)),
+        checks(&bash("m1", "echo bun test", "bun test", false)),
+        Vec::new()
+    );
+    assert_eq!(
+        checks(&bash(
+            "m2",
+            "grep -rn vitest packages/",
+            "a.ts: FAIL vitest",
+            false
+        )),
         vec![("lookup", "passed", 1)]
     );
     assert_eq!(
-        checks(&bash("m3", "rg -n \"bun test\" docs/", "docs/x.md: FAIL: 2 fail", false)),
+        checks(&bash(
+            "m3",
+            "rg -n \"bun test\" docs/",
+            "docs/x.md: FAIL: 2 fail",
+            false
+        )),
         vec![("lookup", "passed", 1)]
     );
     assert_eq!(
-        checks(&bash("m4", "git commit -m \"fix lint and tsc\"", "[main 1] fix lint", false)),
+        checks(&bash(
+            "m4",
+            "git commit -m \"fix lint and tsc\"",
+            "[main 1] fix lint",
+            false
+        )),
         Vec::new()
     );
     let host = eval_run(
@@ -399,7 +438,12 @@ fn echo_grep_rg_and_git_messages_are_not_check_runs() {
             output: "",
             status: None,
         },
-        vec![host_bash("echo bun test && grep vitest x", " 1 fail", true, json!({}))],
+        vec![host_bash(
+            "echo bun test && grep vitest x",
+            " 1 fail",
+            true,
+            json!({}),
+        )],
     );
     assert_eq!(checks(&host), vec![("lookup", "passed", 1)]);
 }
@@ -407,7 +451,12 @@ fn echo_grep_rg_and_git_messages_are_not_check_runs() {
 #[test]
 fn real_invocations_behind_cd_env_timeout_bash_c_and_heavy_slot_still_count() {
     assert_eq!(
-        checks(&bash("r1", "cd pkg && CI=1 timeout -k 10 300 bun test src", " 3 pass\n 0 fail", false)),
+        checks(&bash(
+            "r1",
+            "cd pkg && CI=1 timeout -k 10 300 bun test src",
+            " 3 pass\n 0 fail",
+            false
+        )),
         vec![("test", "passed", 1)]
     );
     assert_eq!(
@@ -424,7 +473,12 @@ fn real_invocations_behind_cd_env_timeout_bash_c_and_heavy_slot_still_count() {
         vec![("test", "passed", 1)]
     );
     assert_eq!(
-        checks(&bash("r4", "npx vitest run && pnpm run lint", "Found 0 errors", false)),
+        checks(&bash(
+            "r4",
+            "npx vitest run && pnpm run lint",
+            "Found 0 errors",
+            false
+        )),
         vec![("test", "passed", 1), ("lint", "passed", 1)]
     );
 }
@@ -443,7 +497,10 @@ fn runners_task_tools_scripts_and_wrapper_flags_still_reach_the_real_check() {
     assert_eq!(kinds("python3 -m mypy src"), vec!["typecheck"]);
     assert_eq!(kinds("make test"), vec!["test"]);
     assert_eq!(kinds("just lint"), vec!["lint"]);
-    assert_eq!(kinds("bun run scripts/qa/claim-receipt-e2e.mjs out"), vec!["run"]);
+    assert_eq!(
+        kinds("bun run scripts/qa/claim-receipt-e2e.mjs out"),
+        vec!["run"]
+    );
     assert_eq!(kinds("bash packages/x/scripts/qa/run.sh"), vec!["run"]);
     assert_eq!(kinds("./scripts/qa/run.sh"), vec!["run"]);
     assert_eq!(kinds("env -i HOME=/h PATH=/p bun test x"), vec!["test"]);
@@ -453,7 +510,12 @@ fn runners_task_tools_scripts_and_wrapper_flags_still_reach_the_real_check() {
 #[test]
 fn heredoc_bodies_are_file_contents_not_commands() {
     assert_eq!(
-        checks(&bash("h", "cat > run.sh <<'EOF'\nbun test x\nEOF", "", false)),
+        checks(&bash(
+            "h",
+            "cat > run.sh <<'EOF'\nbun test x\nEOF",
+            "",
+            false
+        )),
         Vec::new()
     );
 }
@@ -476,7 +538,10 @@ fn an_eval_cell_counts_only_shell_strings_that_invoke_a_check() {
         Vec::new()
     );
     assert_eq!(
-        checks(&cell("await sh(`grep -c vitest log.txt`)", " 3 pass\n 0 fail")),
+        checks(&cell(
+            "await sh(`grep -c vitest log.txt`)",
+            " 3 pass\n 0 fail"
+        )),
         Vec::new()
     );
     assert_eq!(
@@ -494,7 +559,10 @@ fn an_eval_cell_counts_only_shell_strings_that_invoke_a_check() {
         vec![("test", "passed", 1)]
     );
     assert_eq!(
-        checks(&cell("await tool.bash({ command: 'bun test x' })", " 3 pass\n 0 fail")),
+        checks(&cell(
+            "await tool.bash({ command: 'bun test x' })",
+            " 3 pass\n 0 fail"
+        )),
         vec![("test", "passed", 1)]
     );
     assert_eq!(
@@ -543,7 +611,10 @@ fn an_eval_cell_counts_only_shell_strings_that_invoke_a_check() {
     let text_names = "summary = \"bun test x passed\"\nstatus: \"tsgo --noEmit ok\"\nshow(\"bun test passed\")\nruntime(\"bun test x\")\nx.should(\"bun test x\")\ncommand_output = \"bun test x\"\nf([\"a\"], \"bun test x\")";
     assert_eq!(checks(&cell(text_names, " 3 pass\n 0 fail")), Vec::new());
     let argv_with_message = "subprocess.run([\"git\", \"commit\", \"-m\", \"bun test x green\"])\nsh([\"gh\", \"pr\", \"comment\", \"1\", \"-b\", \"tsgo --noEmit passes\"])";
-    assert_eq!(checks(&cell(argv_with_message, " 3 pass\n 0 fail")), Vec::new());
+    assert_eq!(
+        checks(&cell(argv_with_message, " 3 pass\n 0 fail")),
+        Vec::new()
+    );
     let names: Vec<&'static str> = checks(&cell(
         "s = f\"bun test {x}\"\ncmds = [\"bun test a\"]\nsh(cmds[0])",
         " 3 pass\n 0 fail",
@@ -560,11 +631,17 @@ fn an_eval_cell_counts_only_shell_strings_that_invoke_a_check() {
         Vec::new()
     );
     assert_eq!(
-        checks(&cell("await sh(`cd ${WT} && bun test x`)", " 3 pass\n 0 fail")),
+        checks(&cell(
+            "await sh(`cd ${WT} && bun test x`)",
+            " 3 pass\n 0 fail"
+        )),
         vec![("test", "passed", 1)]
     );
     let python = "r = subprocess.run(f\"\"\"cd {W0} &&\n CI=1 bun test packages/x 2>&1 | tail -3\"\"\", shell=True)";
-    assert_eq!(checks(&cell(python, " 3 pass\n 0 fail")), vec![("test", "passed", 1)]);
+    assert_eq!(
+        checks(&cell(python, " 3 pass\n 0 fail")),
+        vec![("test", "passed", 1)]
+    );
 }
 
 #[test]
@@ -574,7 +651,11 @@ fn read_grep_and_symbol_lookups_are_recorded_as_passed_lookups() {
         tool_result("k1", "read", "export const x = 1", json!({}), false),
     ];
     let grep = vec![
-        tool_call("k2", "bash", json!({ "command": "rg -n flag src/config.ts" })),
+        tool_call(
+            "k2",
+            "bash",
+            json!({ "command": "rg -n flag src/config.ts" }),
+        ),
         tool_result("k2", "bash", "12: flag", json!({}), false),
     ];
     let missing = vec![
@@ -656,7 +737,10 @@ fn code_edits_are_relevant_and_notes_or_evidence_edits_are_not() {
         vec![
             (vec!["src/a.ts".to_owned()], true),
             (vec![".omo/evidence/run/summary.md".to_owned()], false),
-            (vec!["/Users/Shared/omo-runs/lane/rerun.sh".to_owned()], false),
+            (
+                vec!["/Users/Shared/omo-runs/lane/rerun.sh".to_owned()],
+                false
+            ),
         ]
     );
 }
@@ -674,15 +758,23 @@ fn writes_and_git_commands_inside_eval_cells_are_not_edits() {
             Vec::new(),
         )
     };
-    assert!(build_timeline(&edits(
-        "await Bun.write(`${W}/zzScratch.test.ts`, s)\nawait sh(`bun test`)"
-    ))
-    .edits
-    .is_empty());
-    assert!(build_timeline(&edits("open(p, 'w').write(brief)")).edits.is_empty());
-    assert!(build_timeline(&edits(
-        "await sh(`git merge-tree --write-tree HEAD origin/dev`)"
-    ))
-    .edits
-    .is_empty());
+    assert!(
+        build_timeline(&edits(
+            "await Bun.write(`${W}/zzScratch.test.ts`, s)\nawait sh(`bun test`)"
+        ))
+        .edits
+        .is_empty()
+    );
+    assert!(
+        build_timeline(&edits("open(p, 'w').write(brief)"))
+            .edits
+            .is_empty()
+    );
+    assert!(
+        build_timeline(&edits(
+            "await sh(`git merge-tree --write-tree HEAD origin/dev`)"
+        ))
+        .edits
+        .is_empty()
+    );
 }

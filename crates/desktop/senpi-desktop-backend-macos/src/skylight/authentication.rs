@@ -22,7 +22,8 @@ pub(super) fn attach_keyboard_authentication(pid: libc::pid_t, event: &CGEvent) 
     // exact Objective-C ABI.
     let class = unsafe { (spi.objc_get_class)(c"SLSEventAuthenticationMessage".as_ptr()) };
     // SAFETY: The selector C string is static and NUL-terminated.
-    let selector = unsafe { (spi.sel_register_name)(c"messageWithEventRecord:pid:version:".as_ptr()) };
+    let selector =
+        unsafe { (spi.sel_register_name)(c"messageWithEventRecord:pid:version:".as_ptr()) };
     if class.is_null() || selector.is_null() {
         return;
     }
@@ -36,8 +37,9 @@ pub(super) fn attach_keyboard_authentication(pid: libc::pid_t, event: &CGEvent) 
     for offset in EVENT_RECORD_OFFSETS {
         // SAFETY: Reading a pointer-sized candidate slot through
         // `read_unaligned` makes no alignment assumption about `__CGEvent`.
-        let candidate =
-            unsafe { ptr::read_unaligned(event_raw.cast::<u8>().add(offset).cast::<*mut c_void>()) };
+        let candidate = unsafe {
+            ptr::read_unaligned(event_raw.cast::<u8>().add(offset).cast::<*mut c_void>())
+        };
         if !candidate.is_null() {
             record = candidate;
             break;

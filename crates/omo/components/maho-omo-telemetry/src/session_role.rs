@@ -53,7 +53,13 @@ mod tests {
             parse_telemetry_session_role(Some("child")),
             TelemetrySessionRole::Child
         );
-        for value in [None, Some(""), Some("main"), Some("dag_child"), Some("member")] {
+        for value in [
+            None,
+            Some(""),
+            Some("main"),
+            Some("dag_child"),
+            Some("member"),
+        ] {
             assert_eq!(
                 parse_telemetry_session_role(value),
                 TelemetrySessionRole::Unknown

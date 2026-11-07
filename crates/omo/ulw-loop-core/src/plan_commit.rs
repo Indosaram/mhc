@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 
 use crate::domain_types::{UlwLoopLedgerEntry, UlwLoopPlan};
 use crate::ledger::read_ledger_from_records;
-use crate::paths::{ulw_loop_dir, ulw_loop_state_lock_path, UlwLoopScope};
-use crate::plan_log::{assert_projection_complete, read_optional, read_records, reconcile_plan, PlanCommitRecord};
+use crate::paths::{UlwLoopScope, ulw_loop_dir, ulw_loop_state_lock_path};
+use crate::plan_log::{
+    PlanCommitRecord, assert_projection_complete, read_optional, read_records, reconcile_plan,
+};
 use crate::runtime::UlwLoopError;
 
 pub struct CommitMutation<'a> {
@@ -57,20 +59,16 @@ pub fn commit(
     let target_name = format!("{:08}.json", next);
     let target_path = revisions_dir.join(&target_name);
 
-    let content = serde_json::to_string(&record).map_err(|e| {
-        UlwLoopError::new(e.to_string(), "ULW_LOOP_SERIALIZE_ERROR")
-    })?;
+    let content = serde_json::to_string(&record)
+        .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_SERIALIZE_ERROR"))?;
 
     {
-        let mut file = File::create(&temp_path).map_err(|e| {
-            UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR")
-        })?;
-        file.write_all(format!("{content}\n").as_bytes()).map_err(|e| {
-            UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR")
-        })?;
-        file.flush().map_err(|e| {
-            UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR")
-        })?;
+        let mut file = File::create(&temp_path)
+            .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR"))?;
+        file.write_all(format!("{content}\n").as_bytes())
+            .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR"))?;
+        file.flush()
+            .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR"))?;
     }
 
     let link_res = fs::hard_link(&temp_path, &target_path);
@@ -111,9 +109,8 @@ fn view_contents(dir: &Path) -> Result<Vec<(String, String)>, UlwLoopError> {
 
     let goals_content = format!(
         "{}\n",
-        serde_json::to_string_pretty(&plan).map_err(|e| {
-            UlwLoopError::new(e.to_string(), "ULW_LOOP_SERIALIZE_ERROR")
-        })?
+        serde_json::to_string_pretty(&plan)
+            .map_err(|e| { UlwLoopError::new(e.to_string(), "ULW_LOOP_SERIALIZE_ERROR") })?
     );
 
     let ledger_content = if ledger.is_empty() {
@@ -161,15 +158,12 @@ pub fn materialize_sync(dir: impl AsRef<Path>) -> Result<(), UlwLoopError> {
         let temp_name = format!("{}-{}-{}", std::process::id(), uuid::Uuid::new_v4(), name);
         let temp_path = tmp_dir.join(&temp_name);
         {
-            let mut file = File::create(&temp_path).map_err(|e| {
-                UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR")
-            })?;
-            file.write_all(content.as_bytes()).map_err(|e| {
-                UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR")
-            })?;
-            file.flush().map_err(|e| {
-                UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR")
-            })?;
+            let mut file = File::create(&temp_path)
+                .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR"))?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR"))?;
+            file.flush()
+                .map_err(|e| UlwLoopError::new(e.to_string(), "ULW_LOOP_IO_ERROR"))?;
         }
         let _ = fs::rename(&temp_path, dir.join(&name));
         let _ = fs::remove_file(&temp_path);

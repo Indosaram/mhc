@@ -90,12 +90,22 @@ struct PathRecording<'a> {
 }
 #[async_trait::async_trait]
 impl Delivery for PathRecording<'_> {
-    async fn should_defer(&self, job: &ScheduledJob, _: &dyn ProcessProbes) -> Result<Option<String>> {
+    async fn should_defer(
+        &self,
+        job: &ScheduledJob,
+        _: &dyn ProcessProbes,
+    ) -> Result<Option<String>> {
         assert_eq!(job.session_file.as_deref(), Some(self.expected_file));
         assert_eq!(job.cwd, self.expected_cwd);
         Ok(None)
     }
-    async fn deliver(&self, event: &ScheduledPromptEvent, _: &mut DeliveryLock, _: &dyn ProcessProbes, _: u64) -> std::result::Result<(), String> {
+    async fn deliver(
+        &self,
+        event: &ScheduledPromptEvent,
+        _: &mut DeliveryLock,
+        _: &dyn ProcessProbes,
+        _: u64,
+    ) -> std::result::Result<(), String> {
         self.events.lock().expect("events").push(event.clone());
         Ok(())
     }
@@ -111,34 +121,60 @@ async fn moved_paths_reach_guard_and_delivery_without_rewriting_recurring_job() 
     let new = root_path.join("new");
     ensure_dir(&old)?;
     ensure_dir(&new)?;
-    write_atomic(&old.join("omo-desktop-moved.json"), &serde_json::json!({
-        "kind":"omo-desktop-moved", "schemaVersion":1, "homeId":"schedule-fixture",
-        "movedTo":new, "moved":["sessions", "worktrees/project"]
-    }).to_string())?;
+    write_atomic(
+        &old.join("omo-desktop-moved.json"),
+        &serde_json::json!({
+            "kind":"omo-desktop-moved", "schemaVersion":1, "homeId":"schedule-fixture",
+            "movedTo":new, "moved":["sessions", "worktrees/project"]
+        })
+        .to_string(),
+    )?;
     write_atomic(&new.join("omo-desktop-home.json"), &serde_json::json!({
         "kind":"omo-desktop-data-home", "schemaVersion":1, "appId":"com.omo.desktop", "homeId":"schedule-fixture"
     }).to_string())?;
     let dir = root_path.join("schedule");
     let original_file = old.join("sessions/a.jsonl").to_string_lossy().into_owned();
     let original_cwd = old.join("worktrees/project").to_string_lossy().into_owned();
-    let job = create_scheduled_job(&dir, NewScheduledJob {
-        session_id:"a".into(), session_file:Some(original_file.clone()), cwd:original_cwd.clone(),
-        prompt:"stretch".into(), due_at:1_000_000, every_ms:Some(60_000),
-    }, 10)?;
+    let job = create_scheduled_job(
+        &dir,
+        NewScheduledJob {
+            session_id: "a".into(),
+            session_file: Some(original_file.clone()),
+            cwd: original_cwd.clone(),
+            prompt: "stretch".into(),
+            due_at: 1_000_000,
+            every_ms: Some(60_000),
+        },
+        10,
+    )?;
     let expected_file = new.join("sessions/a.jsonl").to_string_lossy().into_owned();
     let expected_cwd = new.join("worktrees/project").to_string_lossy().into_owned();
-    let delivery = PathRecording { expected_file:&expected_file, expected_cwd:&expected_cwd, events:Mutex::new(Vec::new()) };
+    let delivery = PathRecording {
+        expected_file: &expected_file,
+        expected_cwd: &expected_cwd,
+        events: Mutex::new(Vec::new()),
+    };
     // When
     let result = run_due_jobs(&options(&dir, &delivery)).await?;
     // Then
     assert_eq!(result.events[0]["outcome"], "delivered");
     let events = delivery.events.lock().expect("events");
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].session_file.as_deref(), Some(expected_file.as_str()));
+    assert_eq!(
+        events[0].session_file.as_deref(),
+        Some(expected_file.as_str())
+    );
     assert_eq!(events[0].cwd, expected_cwd);
     let listing = list_scheduled_jobs(&dir)?;
-    let pending = listing.jobs.iter().find(|record| record.job.id == job.id).expect("recurring job");
-    assert_eq!(pending.job.session_file.as_deref(), Some(original_file.as_str()));
+    let pending = listing
+        .jobs
+        .iter()
+        .find(|record| record.job.id == job.id)
+        .expect("recurring job");
+    assert_eq!(
+        pending.job.session_file.as_deref(),
+        Some(original_file.as_str())
+    );
     assert_eq!(pending.job.cwd, original_cwd);
     Ok(())
 }
@@ -148,14 +184,27 @@ async fn native_session_holder_defers_default_delivery_until_manager_disposes() 
     // Given
     let root = tempfile::tempdir()?;
     let directory = root.path().to_string_lossy();
-    let mut manager = maho_core::session_manager::SessionManager::create(&directory, Some(&directory), None);
-    manager.append_message(serde_json::json!({"role":"assistant", "content":"ready", "timestamp":1}));
-    let job = create_scheduled_job(&root.path().join("schedule"), NewScheduledJob {
-        session_id:manager.session_id().into(), session_file:manager.session_file().map(str::to_owned), cwd:directory.into_owned(),
-        prompt:"stretch".into(), due_at:1_000_000, every_ms:None,
-    }, 10)?;
+    let mut manager =
+        maho_core::session_manager::SessionManager::create(&directory, Some(&directory), None);
+    manager
+        .append_message(serde_json::json!({"role":"assistant", "content":"ready", "timestamp":1}));
+    let job = create_scheduled_job(
+        &root.path().join("schedule"),
+        NewScheduledJob {
+            session_id: manager.session_id().into(),
+            session_file: manager.session_file().map(str::to_owned),
+            cwd: directory.into_owned(),
+            prompt: "stretch".into(),
+            due_at: 1_000_000,
+            every_ms: None,
+        },
+        10,
+    )?;
     let probes = NativeProbes::new().await?;
-    let delivery = ProcessDelivery { exec:None, executable:std::env::current_exe()? };
+    let delivery = ProcessDelivery {
+        exec: None,
+        executable: std::env::current_exe()?,
+    };
     // When
     let deferred = delivery.should_defer(&job, &probes).await?;
     // Then
@@ -172,11 +221,18 @@ async fn exec_delivery_bypasses_session_holder_guard() -> Result<()> {
     let mut job = create(root.path(), "a", None)?;
     let session = root.path().join("a.jsonl");
     write_atomic(&session, "{}")?;
-    write_atomic(&root.path().join("session-holders/a/101.json"), &serde_json::json!({
-        "pid":101, "bootAtMs":100_000, "processStartedAtMs":1_000_000
-    }).to_string())?;
+    write_atomic(
+        &root.path().join("session-holders/a/101.json"),
+        &serde_json::json!({
+            "pid":101, "bootAtMs":100_000, "processStartedAtMs":1_000_000
+        })
+        .to_string(),
+    )?;
     job.session_file = Some(session.to_string_lossy().into_owned());
-    let delivery = ProcessDelivery { exec:Some("unused".into()), executable:std::env::current_exe()? };
+    let delivery = ProcessDelivery {
+        exec: Some("unused".into()),
+        executable: std::env::current_exe()?,
+    };
     // When
     let deferred = delivery.should_defer(&job, &Probes).await?;
     // Then

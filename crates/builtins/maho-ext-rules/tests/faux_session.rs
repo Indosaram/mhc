@@ -6,13 +6,26 @@ async fn faux_registered_builtin_completes_headless_turn() {
     let script = load_script("hello").unwrap();
     let expected = script.responses[0].content.clone();
     let session = FauxSession::new(script).with_native_extension(NativeExtensionFactory {
-        path: "<rules>".into(), source_info: Default::default(),
+        path: "<rules>".into(),
+        source_info: Default::default(),
         extension: Box::new(maho_ext_rules::Rules),
     });
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native()).await.unwrap().unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native())
+        .await
+        .unwrap()
+        .unwrap();
     let messages = result["messages"].as_array().unwrap();
-    let assistant = messages.iter().find(|message| message["role"] == "assistant").unwrap();
-    let text = assistant["content"].as_array().unwrap().iter().filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join("");
+    let assistant = messages
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap();
+    let text = assistant["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|block| block["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
     assert_eq!(text, expected);
     assert_eq!(result["scenario"], "hello");
 }

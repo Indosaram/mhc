@@ -19,7 +19,10 @@ pub fn is_server_id(value: &str) -> bool {
 fn strict(value: &Value, required: &[&str], optional: &[&str]) -> bool {
     value.as_object().is_some_and(|v| {
         required.iter().all(|k| value.get(k).is_some())
-            && v.iter().all(|(k, _)| k.as_str().is_some_and(|k| required.contains(&k) || optional.contains(&k)))
+            && v.iter().all(|(k, _)| {
+                k.as_str()
+                    .is_some_and(|k| required.contains(&k) || optional.contains(&k))
+            })
     })
 }
 fn id(v: &Value) -> bool {
@@ -29,7 +32,9 @@ fn server_id(v: &Value) -> bool {
     v.as_str().is_some_and(is_server_id)
 }
 fn error(v: &Value) -> bool {
-    strict(v, &["code", "message"], &[]) && id(&v["code"]) && matches!(v["message"], Value::String(_))
+    strict(v, &["code", "message"], &[])
+        && id(&v["code"])
+        && matches!(v["message"], Value::String(_))
 }
 fn session_target(v: &Value) -> bool {
     strict(v, &["serverId", "sessionId", "attachmentId"], &[])
@@ -75,7 +80,8 @@ pub fn valid_server_message(v: &Value) -> bool {
             _ => false,
         },
         Some("service_update") => {
-            strict(v, &["type", "subscriptionId", "update"], &[]) && matches!(&v["subscriptionId"], Value::String(id) if !id.is_empty())
+            strict(v, &["type", "subscriptionId", "update"], &[])
+                && matches!(&v["subscriptionId"], Value::String(id) if !id.is_empty())
         }
         Some("attachment") => {
             strict(v, &["type", "attachment"], &[])

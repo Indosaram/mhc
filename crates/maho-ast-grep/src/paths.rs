@@ -13,7 +13,11 @@ fn slashed(path: &str) -> String {
 }
 
 fn trim_trailing(path: &str) -> &str {
-    if path.len() > 1 { path.trim_end_matches('/') } else { path }
+    if path.len() > 1 {
+        path.trim_end_matches('/')
+    } else {
+        path
+    }
 }
 
 /// `file` relative to `workdir` with `/` separators; a file outside `workdir` stays absolute
@@ -34,7 +38,11 @@ pub fn relative_to(workdir: &str, file: &str) -> String {
     if f == w {
         return ".".to_owned();
     }
-    let prefix = if w.ends_with('/') { w.clone() } else { format!("{w}/") };
+    let prefix = if w.ends_with('/') {
+        w.clone()
+    } else {
+        format!("{w}/")
+    };
     if f.starts_with(&prefix) {
         return strip_dot(&file[prefix.len()..]);
     }

@@ -4,8 +4,8 @@
 //! Omitted while this device does not sync the repository (sync off, signed out, or another
 //! process holds the engine), and when the read fails.
 
-use std::path::Path;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::sync_status_surface::{SyncStatusReader, SyncSurfaceStatus};
 
@@ -80,8 +80,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_memory_rpc_sync_synced() {
-        let reader: SyncStatusReader = Arc::new(|_repo| Box::pin(async { Some(SyncSurfaceStatus::Synced) }));
-        let result = read_memory_rpc_sync(Some(&reader), Path::new("/repo")).await.unwrap();
+        let reader: SyncStatusReader =
+            Arc::new(|_repo| Box::pin(async { Some(SyncSurfaceStatus::Synced) }));
+        let result = read_memory_rpc_sync(Some(&reader), Path::new("/repo"))
+            .await
+            .unwrap();
         assert_eq!(result.state, "synced");
         assert!(result.last_synced_at_iso.is_some());
         assert!(result.failure.is_none());

@@ -8,8 +8,8 @@ use memory_core::reflection::ReflectionEvent;
 
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel, command_context_from, finish,
+    require_identity, respond,
 };
 
 fn parse_conversation_ids(value: Option<&super::args::FlagValue>) -> Option<Vec<String>> {
@@ -20,11 +20,7 @@ fn parse_conversation_ids(value: Option<&super::args::FlagValue>) -> Option<Vec<
         .map(|id| id.trim().to_owned())
         .filter(|id| !id.is_empty())
         .collect();
-    if ids.is_empty() {
-        None
-    } else {
-        Some(ids)
-    }
+    if ids.is_empty() { None } else { Some(ids) }
 }
 
 pub async fn handle_reflect(
@@ -85,7 +81,11 @@ pub async fn handle_reflect(
 
     let conversation_ids = parse_conversation_ids(parsed.flag("conversation"));
     let focus = parsed.positionals.join(" ").trim().to_owned();
-    let focus = if focus.is_empty() { None } else { Some(focus.clone()) };
+    let focus = if focus.is_empty() {
+        None
+    } else {
+        Some(focus.clone())
+    };
 
     let session_id = ctx.session_id.clone().unwrap_or_default();
     let event = ReflectionEvent::Manual {
@@ -119,13 +119,19 @@ pub async fn handle_reflect(
     let text = if receipt.disposition == super::types::ReflectionDisposition::Reserved {
         format!("reflection run {run_id} reserved{suffix}; it starts at the next idle boundary")
     } else if let Some(recovered) = receipt.recovered_run_id {
-        format!("reflection request queued as {run_id}{suffix}; the previous run {recovered} had stopped without releasing its lock, so it was settled and this request runs next")
+        format!(
+            "reflection request queued as {run_id}{suffix}; the previous run {recovered} had stopped without releasing its lock, so it was settled and this request runs next"
+        )
     } else {
-        let queued = format!("reflection request queued as {run_id}{suffix}; a run is already active and this request runs next");
+        let queued = format!(
+            "reflection request queued as {run_id}{suffix}; a run is already active and this request runs next"
+        );
         if let Some(stuck) = receipt.stuck {
             level = NotifyLevel::Warning;
             format!("{queued}. {stuck}")
-        } else { queued }
+        } else {
+            queued
+        }
     };
     respond(ctx, text, level)
 }
@@ -150,7 +156,8 @@ mod tests {
     use crate::commands::test_support::*;
 
     #[tokio::test]
-    async fn given_free_text_focus_when_invoked_then_a_manual_request_is_reserved_and_reported_with_its_run_id() {
+    async fn given_free_text_focus_when_invoked_then_a_manual_request_is_reserved_and_reported_with_its_run_id()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -168,11 +175,33 @@ mod tests {
 
     #[tokio::test]
     async fn recovered_receipt_explains_dead_holder_and_stuck_receipt_warns() {
-        let (_root,identity)=temp_identity();let mut fake=fake_deps(Some(identity),FakeDepsOverrides::default());
-        fake.deps.reflect=Some(Arc::new(|_,_|Box::pin(async{Ok(super::super::types::ReflectionRequestReceipt{disposition:super::super::types::ReflectionDisposition::Pending,run_id:"next".into(),recovered_run_id:Some("dead".into()),stuck:None})})));
-        let context=fake_command_context(FakeContextOptions::default());let response=handle_reflect(&fake.deps,&context.ctx,"").await;assert_eq!(response.level,NotifyLevel::Info);
-        fake.deps.reflect=Some(Arc::new(|_,_|Box::pin(async{Ok(super::super::types::ReflectionRequestReceipt{disposition:super::super::types::ReflectionDisposition::Pending,run_id:"next".into(),recovered_run_id:None,stuck:Some("lock liveness unknown".into())})})));
-        let response=handle_reflect(&fake.deps,&context.ctx,"").await;assert_eq!(response.level,NotifyLevel::Warning);
+        let (_root, identity) = temp_identity();
+        let mut fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        fake.deps.reflect = Some(Arc::new(|_, _| {
+            Box::pin(async {
+                Ok(super::super::types::ReflectionRequestReceipt {
+                    disposition: super::super::types::ReflectionDisposition::Pending,
+                    run_id: "next".into(),
+                    recovered_run_id: Some("dead".into()),
+                    stuck: None,
+                })
+            })
+        }));
+        let context = fake_command_context(FakeContextOptions::default());
+        let response = handle_reflect(&fake.deps, &context.ctx, "").await;
+        assert_eq!(response.level, NotifyLevel::Info);
+        fake.deps.reflect = Some(Arc::new(|_, _| {
+            Box::pin(async {
+                Ok(super::super::types::ReflectionRequestReceipt {
+                    disposition: super::super::types::ReflectionDisposition::Pending,
+                    run_id: "next".into(),
+                    recovered_run_id: None,
+                    stuck: Some("lock liveness unknown".into()),
+                })
+            })
+        }));
+        let response = handle_reflect(&fake.deps, &context.ctx, "").await;
+        assert_eq!(response.level, NotifyLevel::Warning);
     }
 
     #[tokio::test]
@@ -204,7 +233,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_active_run_when_the_sink_queues_the_request_then_the_pending_disposition_is_reported() {
+    async fn given_an_active_run_when_the_sink_queues_the_request_then_the_pending_disposition_is_reported()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         set_receipt(&fake, "pending", "run-7");
@@ -217,7 +247,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_non_numeric_recent_when_invoked_then_a_usage_error_is_returned_and_no_request_is_made() {
+    async fn given_a_non_numeric_recent_when_invoked_then_a_usage_error_is_returned_and_no_request_is_made()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -225,7 +256,11 @@ mod tests {
         let response = handle_reflect(&fake.deps, &context.ctx, "--recent soon").await;
 
         assert!(reflection_requests(&fake).is_empty());
-        assert!(response.text.contains("--recent expects a positive integer"));
+        assert!(
+            response
+                .text
+                .contains("--recent expects a positive integer")
+        );
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
     }
 
@@ -234,7 +269,10 @@ mod tests {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { reflection_sink: Some(false), ..Default::default() },
+            FakeDepsOverrides {
+                reflection_sink: Some(false),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -256,13 +294,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_reflection_disabled_when_invoked_then_an_error_is_returned_and_no_request_is_submitted() {
+    async fn given_reflection_disabled_when_invoked_then_an_error_is_returned_and_no_request_is_submitted()
+     {
         let (_root, identity) = temp_identity();
         let mut settings = memory_settings();
         settings["reflection"]["enabled"] = serde_json::json!(false);
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { settings: Some(settings), ..Default::default() },
+            FakeDepsOverrides {
+                settings: Some(settings),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -274,13 +316,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_reflection_enabled_in_base_but_disabled_by_per_agent_override_when_invoked_then_an_error_is_returned() {
+    async fn given_reflection_enabled_in_base_but_disabled_by_per_agent_override_when_invoked_then_an_error_is_returned()
+     {
         let (_root, identity) = temp_identity();
         let mut settings = memory_settings();
-        settings["agents"] = serde_json::json!({ TEST_IDENTITY: { "reflection": { "enabled": false } } });
+        settings["agents"] =
+            serde_json::json!({ TEST_IDENTITY: { "reflection": { "enabled": false } } });
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { settings: Some(settings), ..Default::default() },
+            FakeDepsOverrides {
+                settings: Some(settings),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 

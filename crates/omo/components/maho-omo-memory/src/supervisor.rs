@@ -20,9 +20,11 @@ impl MemoryModuleSupervisor {
     }
 
     pub fn release(&self) {
-        self.references.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-            Some(count.saturating_sub(1))
-        }).unwrap_or_else(|count| count);
+        self.references
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                Some(count.saturating_sub(1))
+            })
+            .unwrap_or_else(|count| count);
     }
 }
 

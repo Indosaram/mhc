@@ -1,5 +1,5 @@
-use maho_chord::{delta::*, JsonValue};
-use serde_json::{json, Value};
+use maho_chord::{JsonValue, delta::*};
+use serde_json::{Value, json};
 fn check(before: Value, after: Value, expected: Value) {
     let before: JsonValue = before.into();
     let after: JsonValue = after.into();

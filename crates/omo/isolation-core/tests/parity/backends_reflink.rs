@@ -2,9 +2,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use isolation_core::test_support::fixture;
-use isolation_core::{IsolationBackend, IsolationContext, LoadReflink, ReflinkBackend, ReflinkIoctl};
 #[cfg(unix)]
-use isolation_core::{IsolationError, FICLONE};
+use isolation_core::{FICLONE, IsolationError};
+use isolation_core::{
+    IsolationBackend, IsolationContext, LoadReflink, ReflinkBackend, ReflinkIoctl,
+};
 
 use crate::fake::FakeRuntime;
 #[cfg(unix)]
@@ -93,16 +95,14 @@ fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() 
             0,
         ),
     );
-    assert!(backend
-        .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
-        .expect("probe")
-        .available);
+    assert!(
+        backend
+            .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
+            .expect("probe")
+            .available
+    );
     backend
-        .start(
-            &f.repo_root,
-            &merged,
-            &context("walk", &f.root, None),
-        )
+        .start(&f.repo_root, &merged, &context("walk", &f.root, None))
         .expect("start");
     assert_eq!(
         *requests.lock().unwrap_or_else(|poison| poison.into_inner()),
@@ -110,7 +110,13 @@ fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() 
     );
     let mut entries: Vec<String> = std::fs::read_dir(&merged)
         .expect("readdir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     entries.sort();
     #[cfg(unix)]
@@ -123,10 +129,12 @@ fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() 
         Path::new("dir").join("data")
     );
     #[cfg(unix)]
-    assert!(std::fs::symlink_metadata(merged.join("link"))
-        .expect("lstat")
-        .file_type()
-        .is_symlink());
+    assert!(
+        std::fs::symlink_metadata(merged.join("link"))
+            .expect("lstat")
+            .file_type()
+            .is_symlink()
+    );
     let mtime = std::fs::metadata(merged.join("dir/data"))
         .expect("stat")
         .modified()
@@ -181,15 +189,20 @@ fn first_mid_walk_eopnotsupp_aborts_and_removes_all_partial_output() {
             95,
         ),
     );
-    assert!(backend
-        .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
-        .expect("probe")
-        .available);
+    assert!(
+        backend
+            .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
+            .expect("probe")
+            .available
+    );
     let error = backend
         .start(&f.repo_root, &merged, &context("walk", &f.root, None))
         .expect_err("must fail");
     assert!(error.is_unavailable());
-    assert_eq!(*clones.lock().unwrap_or_else(|poison| poison.into_inner()), 3);
+    assert_eq!(
+        *clones.lock().unwrap_or_else(|poison| poison.into_inner()),
+        3
+    );
     assert!(!merged.exists());
 }
 
@@ -212,7 +225,10 @@ fn probe_rejects_a_different_target_device_without_loading_ffi() {
         .probe(&f.repo_root, Some(&context("probe", &f.home_dir, None)))
         .expect("probe");
     assert!(!result.available);
-    assert_eq!(*loads.lock().unwrap_or_else(|poison| poison.into_inner()), 0);
+    assert_eq!(
+        *loads.lock().unwrap_or_else(|poison| poison.into_inner()),
+        0
+    );
 }
 
 #[test]
@@ -230,10 +246,12 @@ fn failed_probe_disables_direct_start_rather_than_retrying_an_unsupported_ioctl(
             95,
         ),
     );
-    assert!(!backend
-        .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
-        .expect("probe")
-        .available);
+    assert!(
+        !backend
+            .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
+            .expect("probe")
+            .available
+    );
     let error = backend
         .start(
             &f.repo_root,
@@ -242,7 +260,10 @@ fn failed_probe_disables_direct_start_rather_than_retrying_an_unsupported_ioctl(
         )
         .expect_err("must fail");
     assert!(error.is_unavailable());
-    assert_eq!(*clones.lock().unwrap_or_else(|poison| poison.into_inner()), 1);
+    assert_eq!(
+        *clones.lock().unwrap_or_else(|poison| poison.into_inner()),
+        1
+    );
 }
 
 #[test]
@@ -262,15 +283,20 @@ fn reflink_byte_ceiling_aborts_before_cloning_oversized_input() {
             0,
         ),
     );
-    assert!(backend
-        .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
-        .expect("probe")
-        .available);
+    assert!(
+        backend
+            .probe(&f.repo_root, Some(&context("probe", &f.root, None)))
+            .expect("probe")
+            .available
+    );
     let error = backend
         .start(&f.repo_root, &merged, &context("cap", &f.root, Some(5)))
         .expect_err("must fail");
     assert!(error.to_string().contains("6 bytes exceeds maxCopyBytes 5"));
-    assert_eq!(*clones.lock().unwrap_or_else(|poison| poison.into_inner()), 1);
+    assert_eq!(
+        *clones.lock().unwrap_or_else(|poison| poison.into_inner()),
+        1
+    );
     assert!(!merged.exists());
 }
 
@@ -285,7 +311,8 @@ fn reflink_walk_skips_sockets_and_fifos_rather_than_opening_them() {
         .expect("mkfifo");
     assert!(status.success());
     std::fs::write(f.repo_root.join("data"), "source").expect("data");
-    let listener = std::os::unix::net::UnixListener::bind(f.repo_root.join("sock")).expect("socket");
+    let listener =
+        std::os::unix::net::UnixListener::bind(f.repo_root.join("sock")).expect("socket");
     let clones = Arc::new(Mutex::new(0usize));
     let sink = Arc::clone(&clones);
     let backend = ReflinkBackend::new(
@@ -304,10 +331,19 @@ fn reflink_walk_skips_sockets_and_fifos_rather_than_opening_them() {
         .expect("start");
     let entries: Vec<String> = std::fs::read_dir(&merged)
         .expect("readdir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert_eq!(entries, vec!["data"]);
-    assert_eq!(*clones.lock().unwrap_or_else(|poison| poison.into_inner()), 2);
+    assert_eq!(
+        *clones.lock().unwrap_or_else(|poison| poison.into_inner()),
+        2
+    );
     drop(listener);
     record(&crate::fake::calls(), &[]);
     let _ = IsolationError::other("placeholder");

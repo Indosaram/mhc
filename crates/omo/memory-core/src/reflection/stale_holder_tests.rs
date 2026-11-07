@@ -132,7 +132,10 @@ fn lock(fields: Value) -> String {
     let mut object = serde_json::Map::new();
     object.insert("runId".to_string(), Value::String(RUN.to_string()));
     object.insert("launcherPid".to_string(), json!(LAUNCHER));
-    object.insert("launcherHostname".to_string(), Value::String(HOST.to_string()));
+    object.insert(
+        "launcherHostname".to_string(),
+        Value::String(HOST.to_string()),
+    );
     if let Some(extra) = fields.as_object() {
         for (key, value) in extra {
             object.insert(key.clone(), value.clone());
@@ -193,18 +196,14 @@ fn scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "active.lock cannot be read [rule:lock-unreadable]",
-            facts: dead_holder().with_file(
-                lock_path(),
-                Some(FileState::Error("EACCES".to_string())),
-            ),
+            facts: dead_holder()
+                .with_file(lock_path(), Some(FileState::Error("EACCES".to_string()))),
             expected: stuck("unknown", "active.lock could not be read (EACCES)"),
         },
         Scenario {
             name: "active.lock is not JSON [rule:lock-invalid]",
-            facts: dead_holder().with_file(
-                lock_path(),
-                Some(FileState::Text("{not json".to_string())),
-            ),
+            facts: dead_holder()
+                .with_file(lock_path(), Some(FileState::Text("{not json".to_string()))),
             expected: stuck("unknown", "active.lock is not valid JSON"),
         },
         Scenario {
@@ -226,7 +225,9 @@ fn scenarios() -> Vec<Scenario> {
             name: "another host owns the lock [rule:other-host]",
             facts: dead_holder().with_file(
                 lock_path(),
-                Some(FileState::Text(lock(json!({ "launcherHostname": "other-host" })))),
+                Some(FileState::Text(lock(
+                    json!({ "launcherHostname": "other-host" }),
+                ))),
             ),
             expected: stuck(
                 RUN,
@@ -305,10 +306,8 @@ fn scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "the outcome cannot be read [rule:outcome-unreadable]",
-            facts: dead_holder().with_file(
-                outcome_path(),
-                Some(FileState::Error("EIO".to_string())),
-            ),
+            facts: dead_holder()
+                .with_file(outcome_path(), Some(FileState::Error("EIO".to_string()))),
             expected: stuck(RUN, "its outcome could not be read (EIO)"),
         },
         Scenario {
@@ -333,16 +332,16 @@ fn scenarios() -> Vec<Scenario> {
             name: "the outcome names another run",
             facts: dead_holder().with_file(
                 outcome_path(),
-                Some(FileState::Text(valid_outcome().replace(RUN, "reflection-run-63"))),
+                Some(FileState::Text(
+                    valid_outcome().replace(RUN, "reflection-run-63"),
+                )),
             ),
             expected: stuck(RUN, "its outcome is not a recorded run outcome"),
         },
         Scenario {
             name: "the outcome is the JSON literal null",
-            facts: dead_holder().with_file(
-                outcome_path(),
-                Some(FileState::Text("null".to_string())),
-            ),
+            facts: dead_holder()
+                .with_file(outcome_path(), Some(FileState::Text("null".to_string()))),
             expected: stuck(RUN, "its outcome is not a recorded run outcome"),
         },
         Scenario {
@@ -364,10 +363,8 @@ fn scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "the terminal claim cannot be read [rule:claim-unreadable]",
-            facts: dead_holder().with_file(
-                claim_path(),
-                Some(FileState::Error("EACCES".to_string())),
-            ),
+            facts: dead_holder()
+                .with_file(claim_path(), Some(FileState::Error("EACCES".to_string()))),
             expected: stuck(RUN, "its terminal claim could not be read (EACCES)"),
         },
         Scenario {

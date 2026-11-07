@@ -9,18 +9,18 @@ use team_core::types::MemberStatus;
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 use crate::team::errors::{SenpiTeamSpecError, SenpiTeamSpecErrorCode};
 use crate::team::runtime_types::{
-    CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamResult, SenpiTeamRuntimeError,
-    SenpiTeamRuntimeErrorCode,
+    CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamResult,
+    SenpiTeamRuntimeError, SenpiTeamRuntimeErrorCode,
 };
 use crate::tools::control::tool_result::{AgentToolResult, ToolResultContent};
 use crate::tools::team::lifecycle::{
-    TeamCreateDetails, TeamCreateInput, TeamDeleteDetails, TeamDeleteInput, create_team_create_tool,
-    create_team_delete_tool, run_team_create, run_team_delete, runtime_error_to_service_error,
-    spec_error_to_service_error, team_create_params_schema,
+    TeamCreateDetails, TeamCreateInput, TeamDeleteDetails, TeamDeleteInput,
+    create_team_create_tool, create_team_delete_tool, run_team_create, run_team_delete,
+    runtime_error_to_service_error, spec_error_to_service_error, team_create_params_schema,
 };
 use crate::tools::team::team_tool_fakes::{
-    FakeTeamService, FakeTeamServiceOverrides, create_fake_team_service, fake_create_result, fake_created_member,
-    fake_delete_result,
+    FakeTeamService, FakeTeamServiceOverrides, create_fake_team_service, fake_create_result,
+    fake_created_member, fake_delete_result,
 };
 use crate::tools::team::types::{CreateTeamToolInput, DeleteTeamToolInput, TeamToolDeps};
 
@@ -83,10 +83,17 @@ fn schema_exposes_no_lead_session_id_override() {
 fn inline_spec_reports_created_run_and_members() {
     let service = service_returning(fake_create_result());
 
-    let result = run_team_create(&service, &inline_input(json!({ "name": "demo", "members": [] }))).unwrap();
+    let result = run_team_create(
+        &service,
+        &inline_input(json!({ "name": "demo", "members": [] })),
+    )
+    .unwrap();
 
     assert_eq!(result.details.kind(), "created");
-    let TeamCreateDetails::Created { team_name, members, .. } = &result.details else {
+    let TeamCreateDetails::Created {
+        team_name, members, ..
+    } = &result.details
+    else {
         panic!("expected created");
     };
     assert_eq!(team_name, "demo");
@@ -95,7 +102,12 @@ fn inline_spec_reports_created_run_and_members() {
     assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
     let calls = service.calls();
     assert_eq!(calls[0].method, "createTeam");
-    assert_eq!(calls[0].args, vec![expected_create_arg(json!({ "name": "demo", "members": [] }))]);
+    assert_eq!(
+        calls[0].args,
+        vec![expected_create_arg(
+            json!({ "name": "demo", "members": [] })
+        )]
+    );
 }
 
 #[test]
@@ -103,7 +115,11 @@ fn text_lists_every_member_and_keeps_first_line_stable() {
     let alpha_model = ResolvedModelRecord {
         display: "Claude Opus 4.7".to_string(),
         reasoning_effort: Some("high".to_string()),
-        ..ResolvedModelRecord::new(ResolvedModelSource::Category, "anthropic", "claude-opus-4-7")
+        ..ResolvedModelRecord::new(
+            ResolvedModelSource::Category,
+            "anthropic",
+            "claude-opus-4-7",
+        )
     };
     let service = service_returning(CreateTeamResult {
         members: vec![
@@ -130,7 +146,11 @@ fn text_lists_every_member_and_keeps_first_line_stable() {
         ..fake_create_result()
     });
 
-    let result = run_team_create(&service, &inline_input(json!({ "name": "demo", "members": [] }))).unwrap();
+    let result = run_team_create(
+        &service,
+        &inline_input(json!({ "name": "demo", "members": [] })),
+    )
+    .unwrap();
 
     let text = text_of(&result);
     let first_line = text.split('\n').next().unwrap_or_default();
@@ -138,7 +158,9 @@ fn text_lists_every_member_and_keeps_first_line_stable() {
         first_line,
         "Created team 'demo' (00000000-0000-4000-8000-000000000000) with 2 members."
     );
-    assert!(text.contains("- alpha [running] category:deep(anthropic/claude-opus-4-7:high) task:st_a"));
+    assert!(
+        text.contains("- alpha [running] category:deep(anthropic/claude-opus-4-7:high) task:st_a")
+    );
     assert!(!text.contains("Refactor the auth module"));
     assert!(text.contains("- beta [idle] agent:sisyphus task:st_b"));
     assert!(!text.contains("beta [idle] agent:sisyphus("));
@@ -149,7 +171,10 @@ fn text_lists_every_member_and_keeps_first_line_stable() {
     assert_eq!(members[0].status, "running");
     assert_eq!(members[0].role, "category:deep");
     assert_eq!(members[0].task_id, "st_a");
-    assert_eq!(members[0].prompt_excerpt.as_deref(), Some("Refactor the auth module"));
+    assert_eq!(
+        members[0].prompt_excerpt.as_deref(),
+        Some("Refactor the auth module")
+    );
     assert_eq!(members[1].name, "beta");
     assert_eq!(members[1].role, "agent:sisyphus");
     assert_eq!(members[1].task_id, "st_b");
@@ -159,8 +184,14 @@ fn text_lists_every_member_and_keeps_first_line_stable() {
 fn member_schema_task_summary_follows_prompt_with_length_limit() {
     let schema = member_schema();
     let keys: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
-    let prompt_index = keys.iter().position(|key| key.as_str() == "prompt").unwrap();
-    let summary_index = keys.iter().position(|key| key.as_str() == "task_summary").unwrap();
+    let prompt_index = keys
+        .iter()
+        .position(|key| key.as_str() == "prompt")
+        .unwrap();
+    let summary_index = keys
+        .iter()
+        .position(|key| key.as_str() == "task_summary")
+        .unwrap();
 
     assert_eq!(summary_index, prompt_index + 1);
     assert_eq!(schema["properties"]["task_summary"]["maxLength"], json!(80));
@@ -181,13 +212,20 @@ fn member_view_carries_task_summary() {
         ..fake_create_result()
     });
 
-    let result = run_team_create(&service, &inline_input(json!({ "name": "demo", "members": [] }))).unwrap();
+    let result = run_team_create(
+        &service,
+        &inline_input(json!({ "name": "demo", "members": [] })),
+    )
+    .unwrap();
 
     let TeamCreateDetails::Created { members, .. } = &result.details else {
         panic!("expected created");
     };
     assert_eq!(members[0].name, "alpha");
-    assert_eq!(members[0].task_summary.as_deref(), Some("Refactor the auth module boundary"));
+    assert_eq!(
+        members[0].task_summary.as_deref(),
+        Some("Refactor the auth module boundary")
+    );
 }
 
 #[test]
@@ -196,7 +234,11 @@ fn reasoning_is_labeled_and_reasoning_effort_wins_over_variant() {
         display: "Claude Opus 4.7".to_string(),
         reasoning_effort: Some("high".to_string()),
         variant: Some("xhigh".to_string()),
-        ..ResolvedModelRecord::new(ResolvedModelSource::Category, "anthropic", "claude-opus-4-7")
+        ..ResolvedModelRecord::new(
+            ResolvedModelSource::Category,
+            "anthropic",
+            "claude-opus-4-7",
+        )
     };
     let beta_model = ResolvedModelRecord {
         display: "gpt-5.6-luna-fast".to_string(),
@@ -227,7 +269,11 @@ fn reasoning_is_labeled_and_reasoning_effort_wins_over_variant() {
         ..fake_create_result()
     });
 
-    let result = run_team_create(&service, &inline_input(json!({ "name": "demo", "members": [] }))).unwrap();
+    let result = run_team_create(
+        &service,
+        &inline_input(json!({ "name": "demo", "members": [] })),
+    )
+    .unwrap();
 
     let text = text_of(&result);
     assert!(text.contains("category:deep(anthropic/claude-opus-4-7:high)"));
@@ -324,7 +370,10 @@ fn delete_reports_deleted_run_and_cancelled_tasks() {
     )
     .unwrap();
 
-    let TeamDeleteDetails::Deleted { cancelled_task_ids, .. } = &result.details else {
+    let TeamDeleteDetails::Deleted {
+        cancelled_task_ids, ..
+    } = &result.details
+    else {
         panic!("expected deleted");
     };
     assert_eq!(cancelled_task_ids, &vec!["st_a".to_string()]);
@@ -488,7 +537,11 @@ fn single_object_members_inline_spec_reaches_service() {
 fn malformed_json_string_inline_spec_rejects_without_calling_service() {
     let service = create_fake_team_service(FakeTeamServiceOverrides::default());
 
-    let result = run_team_create(&service, &inline_input(Value::String("{not json".to_string()))).unwrap();
+    let result = run_team_create(
+        &service,
+        &inline_input(Value::String("{not json".to_string())),
+    )
+    .unwrap();
 
     let text = text_of(&result);
     assert!(text.contains("inline_spec"));

@@ -32,7 +32,10 @@ pub fn validate_staged_toolkit(base_dir: &Path) -> bool {
     if !base_dir.is_dir() {
         return false;
     }
-    if !TOOLKIT_ARTIFACTS.iter().all(|artifact| base_dir.join(artifact).is_file()) {
+    if !TOOLKIT_ARTIFACTS
+        .iter()
+        .all(|artifact| base_dir.join(artifact).is_file())
+    {
         return false;
     }
     std::fs::read_to_string(base_dir.join("ulw-loop/surface.json"))
@@ -48,8 +51,10 @@ pub fn dag_sdk_base_dir_default() -> PathBuf {
 }
 
 fn runtime_dir(name: &str) -> PathBuf {
-    std::env::var("OMO_SENPI_PLUGIN_ROOT").map(PathBuf::from)
-        .map(|root| root.join("runtime").join(name)).unwrap_or_default()
+    std::env::var("OMO_SENPI_PLUGIN_ROOT")
+        .map(PathBuf::from)
+        .map(|root| root.join("runtime").join(name))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Default)]
@@ -80,7 +85,10 @@ impl ProvisioningOptions {
 /// Upstream `createToolkitPathProvisioning`: prepend the toolkit dir to `PATH` when present and
 /// set `OMO_AGENT_TOOLKIT_BIN` when unset. Returns the updates it would apply.
 pub fn provision_toolkit_path(options: &ProvisioningOptions) -> Vec<(String, Option<String>)> {
-    let base_dir = options.toolkit_base_dir.clone().unwrap_or_else(toolkit_base_dir_default);
+    let base_dir = options
+        .toolkit_base_dir
+        .clone()
+        .unwrap_or_else(toolkit_base_dir_default);
     let mut updates = Vec::new();
     if base_dir.as_os_str().is_empty() || !validate_staged_toolkit(&base_dir) {
         return updates;
@@ -89,12 +97,19 @@ pub fn provision_toolkit_path(options: &ProvisioningOptions) -> Vec<(String, Opt
     let current = options.read("PATH").unwrap_or_default();
     let first = current.split(path_delimiter()).next().unwrap_or_default();
     if first != base {
-        let next = if current.is_empty() { base.clone() } else { format!("{base}{}{current}", path_delimiter()) };
+        let next = if current.is_empty() {
+            base.clone()
+        } else {
+            format!("{base}{}{current}", path_delimiter())
+        };
         updates.push(("PATH".to_owned(), Some(next)));
     }
     let toolkit_bin = options.read(TOOLKIT_BIN_ENV);
     if toolkit_bin.as_deref().is_none_or(str::is_empty) {
-        updates.push((TOOLKIT_BIN_ENV.to_owned(), Some(base_dir.join("cli.js").to_string_lossy().into_owned())));
+        updates.push((
+            TOOLKIT_BIN_ENV.to_owned(),
+            Some(base_dir.join("cli.js").to_string_lossy().into_owned()),
+        ));
     }
     options.apply(updates.clone());
     updates
@@ -102,11 +117,17 @@ pub fn provision_toolkit_path(options: &ProvisioningOptions) -> Vec<(String, Opt
 
 /// Upstream `createDagSdkRootProvisioning`: publish the dag sdk directory when it exists.
 pub fn provision_dag_sdk_root(options: &ProvisioningOptions) -> Vec<(String, Option<String>)> {
-    let base_dir = options.dag_sdk_base_dir.clone().unwrap_or_else(dag_sdk_base_dir_default);
+    let base_dir = options
+        .dag_sdk_base_dir
+        .clone()
+        .unwrap_or_else(dag_sdk_base_dir_default);
     if base_dir.as_os_str().is_empty() || !base_dir.is_dir() {
         return Vec::new();
     }
-    let updates = vec![(DAG_SDK_ROOT_ENV.to_owned(), Some(base_dir.to_string_lossy().into_owned()))];
+    let updates = vec![(
+        DAG_SDK_ROOT_ENV.to_owned(),
+        Some(base_dir.to_string_lossy().into_owned()),
+    )];
     options.apply(updates.clone());
     updates
 }

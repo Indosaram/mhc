@@ -87,9 +87,17 @@ pub struct NodeResult {
 /// What a guide call does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GuideOp {
-    Add { text: String, node_id: Option<String> },
-    Edit { guidance_id: String, text: String },
-    Remove { guidance_id: String },
+    Add {
+        text: String,
+        node_id: Option<String>,
+    },
+    Edit {
+        guidance_id: String,
+        text: String,
+    },
+    Remove {
+        guidance_id: String,
+    },
 }
 
 fn not_found(run_id: &str) -> WorkflowError {
@@ -97,7 +105,8 @@ fn not_found(run_id: &str) -> WorkflowError {
 }
 
 fn node_missing(id: &str) -> WorkflowError {
-    WorkflowError::new("node_not_found", format!("the run has no node \"{id}\"")).with_nodes(vec![id.to_owned()])
+    WorkflowError::new("node_not_found", format!("the run has no node \"{id}\""))
+        .with_nodes(vec![id.to_owned()])
 }
 
 impl WorkflowScheduler {
@@ -105,14 +114,24 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `run_not_found` (also for a missing id) or `run_not_owned`.
-    pub(crate) fn access(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>) -> Result<Arc<LiveRun>, WorkflowError> {
-        let run_id = run_id.map(str::trim).filter(|id| !id.is_empty()).ok_or_else(|| not_found(""))?;
+    pub(crate) fn access(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+    ) -> Result<Arc<LiveRun>, WorkflowError> {
+        let run_id = run_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| not_found(""))?;
         let live = match self.live_run(run_id) {
             Some(live) => live,
             None => {
                 let run = self.store.load(run_id).ok_or_else(|| not_found(run_id))?;
                 if run.parent_session != caller.session_id {
-                    return Err(WorkflowError::new("run_not_owned", format!("run {run_id} belongs to another session")));
+                    return Err(WorkflowError::new(
+                        "run_not_owned",
+                        format!("run {run_id} belongs to another session"),
+                    ));
                 }
                 let elsewhere = !run.status.is_terminal()
                     && run.owner_pid.is_some_and(|pid| pid != std::process::id())
@@ -125,7 +144,10 @@ impl WorkflowScheduler {
             }
         };
         if lock(&live.run).parent_session != caller.session_id {
-            return Err(WorkflowError::new("run_not_owned", format!("run {run_id} belongs to another session")));
+            return Err(WorkflowError::new(
+                "run_not_owned",
+                format!("run {run_id} belongs to another session"),
+            ));
         }
         Ok(live)
     }
@@ -134,7 +156,11 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// See [`Self::access`].
-    pub fn snapshot(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>) -> Result<Snapshot, WorkflowError> {
+    pub fn snapshot(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+    ) -> Result<Snapshot, WorkflowError> {
         let live = self.access(caller, run_id)?;
         let run = lock(&live.run).clone();
         Ok(self.snapshot_of(&run))
@@ -152,7 +178,10 @@ impl WorkflowScheduler {
         let mut stalled = Vec::new();
         let mut nodes = Vec::new();
         for id in wave_order(&run.definition) {
-            let (Some(record), Some(spec)) = (run.nodes.get(&id), run.definition.nodes.iter().find(|n| n.id == id)) else {
+            let (Some(record), Some(spec)) = (
+                run.nodes.get(&id),
+                run.definition.nodes.iter().find(|n| n.id == id),
+            ) else {
                 continue;
             };
             let activity = record
@@ -160,7 +189,9 @@ impl WorkflowScheduler {
                 .as_deref()
                 .and_then(|task| self.executor.last_activity(task))
                 .or(record.last_activity_at);
-            if record.state == NodeState::Running && activity.is_some_and(|at| now.saturating_sub(at) >= STALL_MS) {
+            if record.state == NodeState::Running
+                && activity.is_some_and(|at| now.saturating_sub(at) >= STALL_MS)
+            {
                 stalled.push(id.clone());
             }
             nodes.push(NodeView {
@@ -206,14 +237,22 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// See [`Self::access`].
-    pub fn attach(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, notifier: Option<Notifier>) -> Result<(Snapshot, bool), WorkflowError> {
+    pub fn attach(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        notifier: Option<Notifier>,
+    ) -> Result<(Snapshot, bool), WorkflowError> {
         let live = self.access(caller, run_id)?;
         let run = lock(&live.run).clone();
         let active = !run.status.is_terminal();
         if active && let Some(notifier) = notifier {
             let mut waker = lock(&live.waker);
             let each_node = waker.as_ref().is_some_and(|w| w.each_node);
-            *waker = Some(Waker { notifier, each_node });
+            *waker = Some(Waker {
+                notifier,
+                each_node,
+            });
         }
         Ok((self.snapshot_of(&run), active))
     }
@@ -223,12 +262,20 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// See [`Self::access`].
-    pub fn wait_detached(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, notifier: Notifier) -> Result<bool, WorkflowError> {
+    pub fn wait_detached(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        notifier: Notifier,
+    ) -> Result<bool, WorkflowError> {
         let live = self.access(caller, run_id)?;
         if lock(&live.run).status.is_terminal() {
             return Ok(false);
         }
-        *lock(&live.waker) = Some(Waker { notifier, each_node: true });
+        *lock(&live.waker) = Some(Waker {
+            notifier,
+            each_node: true,
+        });
         Ok(true)
     }
 
@@ -236,7 +283,11 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// See [`Self::access`].
-    pub async fn wait_settled(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>) -> Result<(WorkflowRun, Vec<NodeResult>), WorkflowError> {
+    pub async fn wait_settled(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+    ) -> Result<(WorkflowRun, Vec<NodeResult>), WorkflowError> {
         let live = self.access(caller, run_id)?;
         let mut receiver = live.settled.subscribe();
         let _ = receiver.wait_for(|settled| *settled).await;
@@ -266,13 +317,21 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// See [`Self::access`].
-    pub fn cancel(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, reason: Option<&str>) -> Result<WorkflowRun, WorkflowError> {
+    pub fn cancel(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<WorkflowRun, WorkflowError> {
         let live = self.access(caller, run_id)?;
         let mut run = lock(&live.run);
         if run.status.is_terminal() {
             return Ok(run.clone());
         }
-        let message = reason.map_or_else(|| "the run was cancelled".to_owned(), |r| format!("the run was cancelled: {r}"));
+        let message = reason.map_or_else(
+            || "the run was cancelled".to_owned(),
+            |r| format!("the run was cancelled: {r}"),
+        );
         let now = now_ms();
         for node in run.nodes.values_mut() {
             if node.state.is_terminal() {
@@ -290,7 +349,10 @@ impl WorkflowScheduler {
         run.finished_at = Some(now);
         let run_id = run.run_id.clone();
         self.journal(&run_id, "run_cancelled", None, json!({"reason": reason}));
-        self.emit(crate::scheduler::RunEvent::RunSettled { run_id: run_id.clone(), status: RunStatus::Cancelled });
+        self.emit(crate::scheduler::RunEvent::RunSettled {
+            run_id: run_id.clone(),
+            status: RunStatus::Cancelled,
+        });
         live.settled.send_replace(true);
         let waker = lock(&live.waker).take();
         self.persist(&mut run);
@@ -326,30 +388,57 @@ impl WorkflowScheduler {
         prompt: Option<&str>,
     ) -> Result<(WorkflowRun, Vec<String>), WorkflowError> {
         if prompt.is_some() && node_ids.as_ref().is_none_or(|ids| ids.len() != 1) {
-            return Err(WorkflowError::new("invalid_arguments", "`prompt` is allowed only when exactly one node is selected"));
+            return Err(WorkflowError::new(
+                "invalid_arguments",
+                "`prompt` is allowed only when exactly one node is selected",
+            ));
         }
         let live = self.access(caller, run_id)?;
         let selected: Vec<String>;
         {
             let mut run = lock(&live.run);
             if !run.status.is_terminal() {
-                return Err(WorkflowError::new("run_still_active", format!("run {} is {}; retry needs a settled run", run.run_id, run.status.as_str())));
+                return Err(WorkflowError::new(
+                    "run_still_active",
+                    format!(
+                        "run {} is {}; retry needs a settled run",
+                        run.run_id,
+                        run.status.as_str()
+                    ),
+                ));
             }
-            let retryable = |state: NodeState| matches!(state, NodeState::Failed | NodeState::Cancelled | NodeState::Skipped);
+            let retryable = |state: NodeState| {
+                matches!(
+                    state,
+                    NodeState::Failed | NodeState::Cancelled | NodeState::Skipped
+                )
+            };
             let mut chosen: BTreeSet<String> = match &node_ids {
                 Some(ids) => {
                     for id in ids {
                         let node = run.nodes.get(id).ok_or_else(|| node_missing(id))?;
                         if !retryable(node.state) {
-                            return Err(WorkflowError::new("node_not_retryable", format!("node \"{id}\" is {}", node.state.as_str())).with_nodes(vec![id.clone()]));
+                            return Err(WorkflowError::new(
+                                "node_not_retryable",
+                                format!("node \"{id}\" is {}", node.state.as_str()),
+                            )
+                            .with_nodes(vec![id.clone()]));
                         }
                     }
                     ids.iter().cloned().collect()
                 }
-                None => run.nodes.values().filter(|n| retryable(n.state)).map(|n| n.id.clone()).collect(),
+                None => run
+                    .nodes
+                    .values()
+                    .filter(|n| retryable(n.state))
+                    .map(|n| n.id.clone())
+                    .collect(),
             };
             if chosen.is_empty() {
-                return Err(WorkflowError::new("node_not_retryable", "no failed, cancelled or skipped node to retry"));
+                return Err(WorkflowError::new(
+                    "node_not_retryable",
+                    "no failed, cancelled or skipped node to retry",
+                ));
             }
             // Dependents that were skipped or cancelled because of a selected node run again too.
             let deps = dependency_map(&run.definition);
@@ -389,23 +478,46 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `invalid_arguments`, `node_not_found`, `node_has_no_task`, `node_not_continuable`.
-    pub fn send(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, node_id: Option<&str>, message: Option<&str>) -> Result<SendOutcome, WorkflowError> {
+    pub fn send(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        node_id: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<SendOutcome, WorkflowError> {
         let live = self.access(caller, run_id)?;
-        let node_id = node_id.ok_or_else(|| WorkflowError::new("invalid_arguments", "send needs `node_id`"))?;
+        let node_id = node_id
+            .ok_or_else(|| WorkflowError::new("invalid_arguments", "send needs `node_id`"))?;
         let message = message
             .filter(|m| !m.trim().is_empty())
             .ok_or_else(|| WorkflowError::new("invalid_arguments", "send needs `message`"))?;
         let task = {
             let run = lock(&live.run);
-            let node = run.nodes.get(node_id).ok_or_else(|| node_missing(node_id))?;
+            let node = run
+                .nodes
+                .get(node_id)
+                .ok_or_else(|| node_missing(node_id))?;
             node.task_id.clone().ok_or_else(|| {
-                WorkflowError::new("node_has_no_task", format!("node \"{node_id}\" has not started a child task")).with_nodes(vec![node_id.to_owned()])
+                WorkflowError::new(
+                    "node_has_no_task",
+                    format!("node \"{node_id}\" has not started a child task"),
+                )
+                .with_nodes(vec![node_id.to_owned()])
             })?
         };
         match self.executor.send(&task, message) {
-            SendOutcome::NotContinuable => Err(WorkflowError::new("node_not_continuable", format!("the child of node \"{node_id}\" cannot take a message")).with_nodes(vec![node_id.to_owned()])),
+            SendOutcome::NotContinuable => Err(WorkflowError::new(
+                "node_not_continuable",
+                format!("the child of node \"{node_id}\" cannot take a message"),
+            )
+            .with_nodes(vec![node_id.to_owned()])),
             outcome => {
-                self.journal(&lock(&live.run).run_id, "node_message", Some(node_id), json!({"bytes": message.len()}));
+                self.journal(
+                    &lock(&live.run).run_id,
+                    "node_message",
+                    Some(node_id),
+                    json!({"bytes": message.len()}),
+                );
                 Ok(outcome)
             }
         }
@@ -415,21 +527,46 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `invalid_amendment`, `invalid_definition`, `amend_running_node`.
-    pub fn amend(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, definition: WorkflowDefinition) -> Result<(WorkflowRun, Vec<String>), WorkflowError> {
+    pub fn amend(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        definition: WorkflowDefinition,
+    ) -> Result<(WorkflowRun, Vec<String>), WorkflowError> {
         let live = self.access(caller, run_id)?;
         let rerun: Vec<String>;
         {
             let mut run = lock(&live.run);
             if definition.key != run.key {
-                return Err(WorkflowError::new("invalid_amendment", format!("definition.key \"{}\" does not match the run's key \"{}\"", definition.key, run.key)));
+                return Err(WorkflowError::new(
+                    "invalid_amendment",
+                    format!(
+                        "definition.key \"{}\" does not match the run's key \"{}\"",
+                        definition.key, run.key
+                    ),
+                ));
             }
-            let issues = validate(&definition, Limits { max_nodes: self.settings.max_nodes_per_run, max_prompt_bytes: self.settings.max_prompt_bytes });
+            let issues = validate(
+                &definition,
+                Limits {
+                    max_nodes: self.settings.max_nodes_per_run,
+                    max_prompt_bytes: self.settings.max_prompt_bytes,
+                },
+            );
             if !issues.is_empty() {
-                let mut error = WorkflowError::new("invalid_definition", format!("the amended definition has {} problem(s)", issues.len()));
+                let mut error = WorkflowError::new(
+                    "invalid_definition",
+                    format!("the amended definition has {} problem(s)", issues.len()),
+                );
                 error.errors = issues;
                 return Err(error);
             }
-            let old: BTreeMap<&str, String> = run.definition.nodes.iter().map(|n| (n.id.as_str(), node_fingerprint(n))).collect();
+            let old: BTreeMap<&str, String> = run
+                .definition
+                .nodes
+                .iter()
+                .map(|n| (n.id.as_str(), node_fingerprint(n)))
+                .collect();
             let changed: BTreeSet<String> = definition
                 .nodes
                 .iter()
@@ -437,17 +574,32 @@ impl WorkflowScheduler {
                 .map(|n| n.id.clone())
                 .collect();
             let new_ids: BTreeSet<&str> = definition.nodes.iter().map(|n| n.id.as_str()).collect();
-            let removed: Vec<String> = old.keys().filter(|id| !new_ids.contains(*id)).map(|id| (*id).to_owned()).collect();
+            let removed: Vec<String> = old
+                .keys()
+                .filter(|id| !new_ids.contains(*id))
+                .map(|id| (*id).to_owned())
+                .collect();
             let mut affected = changed.clone();
             affected.extend(downstream(&dependency_map(&definition), &changed));
             let touching: Vec<String> = affected
                 .iter()
                 .chain(removed.iter())
-                .filter(|id| run.nodes.get(id.as_str()).is_some_and(|n| n.state.is_active()))
+                .filter(|id| {
+                    run.nodes
+                        .get(id.as_str())
+                        .is_some_and(|n| n.state.is_active())
+                })
                 .cloned()
                 .collect();
             if !touching.is_empty() {
-                return Err(WorkflowError::new("amend_running_node", format!("the amendment changes node(s) that are running: {}", touching.join(", "))).with_nodes(touching));
+                return Err(WorkflowError::new(
+                    "amend_running_node",
+                    format!(
+                        "the amendment changes node(s) that are running: {}",
+                        touching.join(", ")
+                    ),
+                )
+                .with_nodes(touching));
             }
             let mut nodes = BTreeMap::new();
             let mut diagnostics = Vec::new();
@@ -456,9 +608,11 @@ impl WorkflowScheduler {
                 let record = match previous {
                     Some(record) if !affected.contains(&spec.id) => record,
                     previous => {
-                        let (prefix, missing) = skill_prefix(self.skills.as_ref(), &spec.id, &spec.load_skills);
+                        let (prefix, missing) =
+                            skill_prefix(self.skills.as_ref(), &spec.id, &spec.load_skills);
                         diagnostics.extend(missing);
-                        let mut record = NodeRecord::new(&spec.id, format!("{prefix}{}", spec.prompt));
+                        let mut record =
+                            NodeRecord::new(&spec.id, format!("{prefix}{}", spec.prompt));
                         record.skill_prefix = prefix;
                         if let Some(previous) = previous {
                             record.attempt = previous.attempt + 1;
@@ -475,7 +629,12 @@ impl WorkflowScheduler {
             run.amendments += 1;
             run.diagnostics.extend(diagnostics);
             let run_id = run.run_id.clone();
-            self.journal(&run_id, "amended", None, json!({"rerun": affected, "removed": removed}));
+            self.journal(
+                &run_id,
+                "amended",
+                None,
+                json!({"rerun": affected, "removed": removed}),
+            );
             if run.status.is_terminal() && !affected.is_empty() {
                 self.reopen(&live, &mut run);
             }
@@ -492,7 +651,11 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// See [`Self::access`]. A terminal run is returned unchanged.
-    pub fn user_pause(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>) -> Result<WorkflowRun, WorkflowError> {
+    pub fn user_pause(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+    ) -> Result<WorkflowRun, WorkflowError> {
         let live = self.access(caller, run_id)?;
         let mut run = lock(&live.run);
         if run.status.is_terminal() {
@@ -519,12 +682,19 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `run_not_user_paused`.
-    pub fn user_resume(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>) -> Result<WorkflowRun, WorkflowError> {
+    pub fn user_resume(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+    ) -> Result<WorkflowRun, WorkflowError> {
         let live = self.access(caller, run_id)?;
         {
             let mut run = lock(&live.run);
             if !run.user_paused {
-                return Err(WorkflowError::new("run_not_user_paused", "the run was not stopped by the user"));
+                return Err(WorkflowError::new(
+                    "run_not_user_paused",
+                    "the run was not stopped by the user",
+                ));
             }
             for note in &mut run.guidance {
                 note.frozen = true;
@@ -559,20 +729,35 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `run_paused_by_user` or `run_not_user_paused`.
-    pub fn resume_action(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>) -> Result<(), WorkflowError> {
+    pub fn resume_action(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+    ) -> Result<(), WorkflowError> {
         let live = self.access(caller, run_id)?;
         if lock(&live.run).user_paused {
-            return Err(WorkflowError::new("run_paused_by_user", "the user stopped this run; only the user's resume control restarts it"));
+            return Err(WorkflowError::new(
+                "run_paused_by_user",
+                "the user stopped this run; only the user's resume control restarts it",
+            ));
         }
-        Err(WorkflowError::new("run_not_user_paused", "the run was not stopped by the user; there is nothing to resume"))
+        Err(WorkflowError::new(
+            "run_not_user_paused",
+            "the run was not stopped by the user; there is nothing to resume",
+        ))
     }
 
-    fn paused_run<'a>(live: &'a LiveRun) -> Result<std::sync::MutexGuard<'a, WorkflowRun>, WorkflowError> {
+    fn paused_run<'a>(
+        live: &'a LiveRun,
+    ) -> Result<std::sync::MutexGuard<'a, WorkflowRun>, WorkflowError> {
         let run = lock(&live.run);
         if run.user_paused {
             Ok(run)
         } else {
-            Err(WorkflowError::new("run_not_user_paused", "this action needs a run stopped by the user"))
+            Err(WorkflowError::new(
+                "run_not_user_paused",
+                "this action needs a run stopped by the user",
+            ))
         }
     }
 
@@ -581,13 +766,21 @@ impl WorkflowScheduler {
     /// # Errors
     /// `run_not_user_paused`, `invalid_arguments`, `node_not_found`, `guidance_not_found`,
     /// `guidance_frozen`.
-    pub fn guide(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, op: GuideOp) -> Result<String, WorkflowError> {
+    pub fn guide(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        op: GuideOp,
+    ) -> Result<String, WorkflowError> {
         let live = self.access(caller, run_id)?;
         let mut run = Self::paused_run(&live)?;
         let id = match op {
             GuideOp::Add { text, node_id } => {
                 if text.trim().is_empty() {
-                    return Err(WorkflowError::new("invalid_arguments", "guide needs `text`"));
+                    return Err(WorkflowError::new(
+                        "invalid_arguments",
+                        "guide needs `text`",
+                    ));
                 }
                 if let Some(node) = &node_id
                     && !run.nodes.contains_key(node)
@@ -595,20 +788,36 @@ impl WorkflowScheduler {
                     return Err(node_missing(node));
                 }
                 let id = format!("g_{}", uuid::Uuid::new_v4().simple());
-                run.guidance.push(Guidance { id: id.clone(), text, node_id, frozen: false });
+                run.guidance.push(Guidance {
+                    id: id.clone(),
+                    text,
+                    node_id,
+                    frozen: false,
+                });
                 id
             }
             GuideOp::Edit { guidance_id, text } => {
                 if text.trim().is_empty() {
-                    return Err(WorkflowError::new("invalid_arguments", "guide needs `text`"));
+                    return Err(WorkflowError::new(
+                        "invalid_arguments",
+                        "guide needs `text`",
+                    ));
                 }
                 let note = run
                     .guidance
                     .iter_mut()
                     .find(|g| g.id == guidance_id)
-                    .ok_or_else(|| WorkflowError::new("guidance_not_found", format!("no guidance \"{guidance_id}\"")))?;
+                    .ok_or_else(|| {
+                        WorkflowError::new(
+                            "guidance_not_found",
+                            format!("no guidance \"{guidance_id}\""),
+                        )
+                    })?;
                 if note.frozen {
-                    return Err(WorkflowError::new("guidance_frozen", "this guidance is already being delivered"));
+                    return Err(WorkflowError::new(
+                        "guidance_frozen",
+                        "this guidance is already being delivered",
+                    ));
                 }
                 note.text = text;
                 guidance_id
@@ -618,16 +827,29 @@ impl WorkflowScheduler {
                     .guidance
                     .iter()
                     .position(|g| g.id == guidance_id)
-                    .ok_or_else(|| WorkflowError::new("guidance_not_found", format!("no guidance \"{guidance_id}\"")))?;
+                    .ok_or_else(|| {
+                        WorkflowError::new(
+                            "guidance_not_found",
+                            format!("no guidance \"{guidance_id}\""),
+                        )
+                    })?;
                 if run.guidance[index].frozen {
-                    return Err(WorkflowError::new("guidance_frozen", "this guidance is already being delivered"));
+                    return Err(WorkflowError::new(
+                        "guidance_frozen",
+                        "this guidance is already being delivered",
+                    ));
                 }
                 run.guidance.remove(index);
                 guidance_id
             }
         };
         let run_id = run.run_id.clone();
-        self.journal(&run_id, "guidance_changed", None, json!({"guidance_id": id}));
+        self.journal(
+            &run_id,
+            "guidance_changed",
+            None,
+            json!({"guidance_id": id}),
+        );
         self.persist(&mut run);
         Ok(id)
     }
@@ -636,17 +858,30 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `run_not_user_paused`, `invalid_arguments`, `node_not_found`.
-    pub fn cancel_node(self: &Arc<Self>, caller: &Caller, run_id: Option<&str>, node_id: Option<&str>) -> Result<WorkflowRun, WorkflowError> {
+    pub fn cancel_node(
+        self: &Arc<Self>,
+        caller: &Caller,
+        run_id: Option<&str>,
+        node_id: Option<&str>,
+    ) -> Result<WorkflowRun, WorkflowError> {
         let live = self.access(caller, run_id)?;
         let mut run = Self::paused_run(&live)?;
-        let node_id = node_id.ok_or_else(|| WorkflowError::new("invalid_arguments", "cancel_node needs `node_id`"))?;
-        let node = run.nodes.get_mut(node_id).ok_or_else(|| node_missing(node_id))?;
+        let node_id = node_id.ok_or_else(|| {
+            WorkflowError::new("invalid_arguments", "cancel_node needs `node_id`")
+        })?;
+        let node = run
+            .nodes
+            .get_mut(node_id)
+            .ok_or_else(|| node_missing(node_id))?;
         if !node.state.is_terminal() {
             if let Some(task) = node.task_id.as_deref() {
                 self.executor.cancel(task);
             }
             node.state = NodeState::Cancelled;
-            node.error = Some(NodeError::new(codes::TASK_CANCELLED, "cancelled by the user while the run was paused"));
+            node.error = Some(NodeError::new(
+                codes::TASK_CANCELLED,
+                "cancelled by the user while the run was paused",
+            ));
             node.finished_at = Some(now_ms());
         }
         let run_id = run.run_id.clone();

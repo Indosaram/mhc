@@ -92,7 +92,10 @@ async fn preserves_source_info() {
     assert_eq!(result.skills[0].skill.content, "Use this skill.");
     assert_eq!(
         result.skills[0].skill.file_path,
-        f.0.join("user").join("example").join("SKILL.md").to_string_lossy()
+        f.0.join("user")
+            .join("example")
+            .join("SKILL.md")
+            .to_string_lossy()
     );
 }
 
@@ -119,7 +122,10 @@ async fn attaches_sources_to_diagnostics() {
     assert_eq!(d.diagnostic.message, "description is required");
     assert_eq!(
         d.diagnostic.path,
-        f.0.join("user").join("broken").join("SKILL.md").to_string_lossy()
+        f.0.join("user")
+            .join("broken")
+            .join("SKILL.md")
+            .to_string_lossy()
     );
 }
 

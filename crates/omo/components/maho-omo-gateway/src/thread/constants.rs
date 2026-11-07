@@ -47,5 +47,7 @@ pub fn is_durable_id(value: &str) -> bool {
     if !(first.is_ascii_alphanumeric()) {
         return false;
     }
-    bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    bytes
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }

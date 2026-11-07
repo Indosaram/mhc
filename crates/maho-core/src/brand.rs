@@ -79,7 +79,11 @@ pub fn standalone_brand_profile() -> BrandProfile {
 fn read_string(source: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     let value = source.get(key)?.as_str()?;
     let trimmed = value.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
 }
 
 fn read_changelog(source: &serde_json::Map<String, Value>) -> Option<BrandChangelog> {
@@ -88,7 +92,10 @@ fn read_changelog(source: &serde_json::Map<String, Value>) -> Option<BrandChange
     if !path.starts_with('/') || path.contains('\0') {
         return None;
     }
-    Some(BrandChangelog { path, version: read_string(changelog, "version") })
+    Some(BrandChangelog {
+        path,
+        version: read_string(changelog, "version"),
+    })
 }
 
 fn read_update_channel(source: &serde_json::Map<String, Value>) -> Option<BrandUpdateChannel> {
@@ -149,7 +156,9 @@ pub fn parse_brand_profile(raw: Option<&str>) -> Option<BrandProfile> {
         display_version: read_string(source, "displayVersion"),
         config_dir,
         flat_layout: source.get("flatLayout").and_then(Value::as_bool) == Some(true),
-        env_prefix: read_string(source, "envPrefix").unwrap_or_else(|| name.clone()).to_uppercase(),
+        env_prefix: read_string(source, "envPrefix")
+            .unwrap_or_else(|| name.clone())
+            .to_uppercase(),
         user_agent: read_string(source, "userAgent").unwrap_or_else(|| name.clone()),
         originator: read_string(source, "originator"),
         update: read_update_channel(source),
@@ -209,7 +218,10 @@ pub fn reset_brand_profile_for_tests() {
 /// Environment variable names for one setting, most specific first (`brandEnvNames`).
 pub fn brand_env_names(suffix: &str, profile: Option<&BrandProfile>) -> Vec<String> {
     let mut prefixes: Vec<String> = Vec::new();
-    if let Some(prefix) = profile.map(|p| p.env_prefix.as_str()).filter(|p| !p.is_empty()) {
+    if let Some(prefix) = profile
+        .map(|p| p.env_prefix.as_str())
+        .filter(|p| !p.is_empty())
+    {
         prefixes.push(prefix.to_owned());
     }
     for prefix in LEGACY_ENV_PREFIXES {
@@ -259,17 +271,31 @@ mod tests {
         assert_eq!(profile.env_prefix, "OMO");
         assert_eq!(profile.user_agent, "omo-ai");
         assert_eq!(profile.originator.as_deref(), Some("omo"));
-        assert_eq!(profile.update.as_ref().map(|u| u.dist_tag.as_str()), Some("beta"));
-        assert_eq!(profile.changelog.as_ref().and_then(|c| c.version.as_deref()), Some("1.2.3"));
+        assert_eq!(
+            profile.update.as_ref().map(|u| u.dist_tag.as_str()),
+            Some("beta")
+        );
+        assert_eq!(
+            profile
+                .changelog
+                .as_ref()
+                .and_then(|c| c.version.as_deref()),
+            Some("1.2.3")
+        );
     }
 
     #[test]
     fn defaults_config_dir_to_dot_name_and_dist_tag_to_latest() {
-        let profile = parse_brand_profile(Some(r#"{"name":"tau","update":{"packageName":"tau","command":"npm i -g tau"}}"#))
-            .expect("profile");
+        let profile = parse_brand_profile(Some(
+            r#"{"name":"tau","update":{"packageName":"tau","command":"npm i -g tau"}}"#,
+        ))
+        .expect("profile");
         assert_eq!(profile.config_dir, ".tau");
         assert_eq!(profile.env_prefix, "TAU");
-        assert_eq!(profile.update.as_ref().map(|u| u.dist_tag.as_str()), Some("latest"));
+        assert_eq!(
+            profile.update.as_ref().map(|u| u.dist_tag.as_str()),
+            Some("latest")
+        );
     }
 
     #[test]
@@ -290,16 +316,24 @@ mod tests {
 
     #[test]
     fn rejects_changelog_without_absolute_path() {
-        let profile = parse_brand_profile(Some(r#"{"name":"x","changelog":{"path":"relative.md"}}"#)).expect("profile");
+        let profile =
+            parse_brand_profile(Some(r#"{"name":"x","changelog":{"path":"relative.md"}}"#))
+                .expect("profile");
         assert!(profile.changelog.is_none());
     }
 
     #[test]
     fn brand_env_names_put_the_profile_prefix_first_and_dedupe() {
-        let profile = parse_brand_profile(Some(r#"{"name":"omo","envPrefix":"senpi"}"#)).expect("profile");
+        let profile =
+            parse_brand_profile(Some(r#"{"name":"omo","envPrefix":"senpi"}"#)).expect("profile");
         assert_eq!(
             brand_env_names("CODING_AGENT_DIR", Some(&profile)),
-            vec!["SENPI_CODING_AGENT_DIR", "MAHO_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR", "OMO_CODING_AGENT_DIR"]
+            vec![
+                "SENPI_CODING_AGENT_DIR",
+                "MAHO_CODING_AGENT_DIR",
+                "PI_CODING_AGENT_DIR",
+                "OMO_CODING_AGENT_DIR"
+            ]
         );
         assert_eq!(
             brand_env_names("X", None),

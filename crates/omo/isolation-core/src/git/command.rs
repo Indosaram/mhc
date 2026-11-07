@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -116,21 +116,28 @@ fn collect(
     sink: Arc<Mutex<Vec<u8>>>,
     done: Sender<()>,
 ) {
-    let OutputLimit { retained, max_output_bytes, limit_error, output_limit_error } = limit;
+    let OutputLimit {
+        retained,
+        max_output_bytes,
+        limit_error,
+        output_limit_error,
+    } = limit;
     let mut chunk = [0u8; 8192];
     loop {
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => {
                 let total = retained.fetch_add(read as u64, Ordering::SeqCst) + read as u64;
-                if let Some(max) = max_output_bytes && total > max {
-                        let error = match &output_limit_error {
-                            Some(factory) => factory(),
-                            None => IsolationError::other("Git output exceeds budget"),
-                        };
-                        *lock(&limit_error) = Some(error);
-                        kill_tree(pid);
-                        break;
+                if let Some(max) = max_output_bytes
+                    && total > max
+                {
+                    let error = match &output_limit_error {
+                        Some(factory) => factory(),
+                        None => IsolationError::other("Git output exceeds budget"),
+                    };
+                    *lock(&limit_error) = Some(error);
+                    kill_tree(pid);
+                    break;
                 }
                 lock(&sink).extend_from_slice(&chunk[..read]);
             }
@@ -141,7 +148,11 @@ fn collect(
 }
 
 pub fn run_git(args: &[String], options: &GitOptions) -> Result<GitOutput> {
-    run_git_with_input(args, options, options.input.as_deref().map(Arc::<[u8]>::from))
+    run_git_with_input(
+        args,
+        options,
+        options.input.as_deref().map(Arc::<[u8]>::from),
+    )
 }
 
 /// [`run_git`] with stdin bytes shared by reference count instead of copied per call;
@@ -220,14 +231,16 @@ pub(crate) fn run_git_with_input(
     if let Some(on_spawn) = &options.on_spawn {
         on_spawn(pid);
     }
-    if let Some(input) = input && let Some(mut stdin) = child.stdin.take() {
-            std::thread::spawn(move || {
-                if stdin.write_all(&input).is_err() {
-                    kill_tree(pid);
-                    return;
-                }
-                let _ = stdin.flush();
-            });
+    if let Some(input) = input
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        std::thread::spawn(move || {
+            if stdin.write_all(&input).is_err() {
+                kill_tree(pid);
+                return;
+            }
+            let _ = stdin.flush();
+        });
     }
     let retained = Arc::new(AtomicU64::new(0));
     let limit_error: Arc<Mutex<Option<IsolationError>>> = Arc::new(Mutex::new(None));
@@ -282,7 +295,10 @@ pub(crate) fn run_git_with_input(
             });
         }
     };
-    let allowed = options.allowed_exit_codes.clone().unwrap_or_else(|| vec![0]);
+    let allowed = options
+        .allowed_exit_codes
+        .clone()
+        .unwrap_or_else(|| vec![0]);
     let signal = exit_signal(&status);
     let code = status.code();
     let failed = signal.is_some() || !allowed.contains(&code.unwrap_or(0));

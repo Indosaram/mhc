@@ -65,7 +65,11 @@ struct RawProjectSpec {
     raw_text: String,
 }
 
-fn to_registry_error(name: &str, source: TeamSpecSource, error: &SenpiTeamSpecError) -> TeamRegistryError {
+fn to_registry_error(
+    name: &str,
+    source: TeamSpecSource,
+    error: &SenpiTeamSpecError,
+) -> TeamRegistryError {
     TeamRegistryError {
         name: name.to_string(),
         source,
@@ -89,7 +93,9 @@ fn read_project_team_specs(project_root: &Path) -> Vec<RawProjectSpec> {
 
     let mut candidates = Vec::new();
     for name in names {
-        let Ok(raw_text) = std::fs::read_to_string(resolve_project_team_spec_path(project_root, &name)) else {
+        let Ok(raw_text) =
+            std::fs::read_to_string(resolve_project_team_spec_path(project_root, &name))
+        else {
             continue;
         };
         candidates.push(RawProjectSpec { name, raw_text });
@@ -125,7 +131,10 @@ pub fn load_team_registry(input: &LoadTeamRegistryInput<'_>) -> LoadTeamRegistry
     let mut result = LoadTeamRegistryResult::default();
 
     let project_specs = read_project_team_specs(input.project_root);
-    let project_names: HashSet<&str> = project_specs.iter().map(|candidate| candidate.name.as_str()).collect();
+    let project_names: HashSet<&str> = project_specs
+        .iter()
+        .map(|candidate| candidate.name.as_str())
+        .collect();
 
     for candidate in &project_specs {
         let raw_spec = match serde_json::from_str::<Value>(&candidate.raw_text) {
@@ -140,7 +149,13 @@ pub fn load_team_registry(input: &LoadTeamRegistryInput<'_>) -> LoadTeamRegistry
                 continue;
             }
         };
-        ingest(&candidate.name, TeamSpecSource::Project, &raw_spec, input.ports, &mut result);
+        ingest(
+            &candidate.name,
+            TeamSpecSource::Project,
+            &raw_spec,
+            input.ports,
+            &mut result,
+        );
     }
 
     if let Some(omo_teams) = input.omo_teams {
@@ -148,7 +163,13 @@ pub fn load_team_registry(input: &LoadTeamRegistryInput<'_>) -> LoadTeamRegistry
             if project_names.contains(name.as_str()) {
                 continue;
             }
-            ingest(name, TeamSpecSource::OmoJson, raw_spec, input.ports, &mut result);
+            ingest(
+                name,
+                TeamSpecSource::OmoJson,
+                raw_spec,
+                input.ports,
+                &mut result,
+            );
         }
     }
 

@@ -2,7 +2,8 @@
 
 use serde_json::{Map, Value};
 use team_core::team_tasklist::{
-    TaskInput, TaskListFilter, can_claim, claim_task, create_task, get_task, list_tasks, update_task_status,
+    TaskInput, TaskListFilter, can_claim, claim_task, create_task, get_task, list_tasks,
+    update_task_status,
 };
 use team_core::types::{Task, TaskStatus};
 
@@ -34,7 +35,10 @@ pub struct TeamTaskFilter {
     pub owner: Option<String>,
 }
 
-pub fn create_team_task(ctx: &TeamTasklistContext, input: CreateTeamTaskInput) -> team_core::Result<Task> {
+pub fn create_team_task(
+    ctx: &TeamTasklistContext,
+    input: CreateTeamTaskInput,
+) -> team_core::Result<Task> {
     create_task(
         &ctx.team_run_id,
         TaskInput {
@@ -52,7 +56,10 @@ pub fn create_team_task(ctx: &TeamTasklistContext, input: CreateTeamTaskInput) -
     )
 }
 
-pub fn list_team_tasks(ctx: &TeamTasklistContext, filter: Option<&TeamTaskFilter>) -> team_core::Result<Vec<Task>> {
+pub fn list_team_tasks(
+    ctx: &TeamTasklistContext,
+    filter: Option<&TeamTaskFilter>,
+) -> team_core::Result<Vec<Task>> {
     let filter = filter.map(|filter| TaskListFilter {
         status: filter.status,
         owner: filter.owner.clone(),
@@ -64,7 +71,11 @@ pub fn get_team_task(ctx: &TeamTasklistContext, task_id: &str) -> team_core::Res
     get_task(&ctx.team_run_id, task_id, &ctx.config)
 }
 
-pub fn claim_team_task(ctx: &TeamTasklistContext, task_id: &str, member_name: &str) -> team_core::Result<Task> {
+pub fn claim_team_task(
+    ctx: &TeamTasklistContext,
+    task_id: &str,
+    member_name: &str,
+) -> team_core::Result<Task> {
     claim_task(&ctx.team_run_id, task_id, member_name, &ctx.config)
 }
 

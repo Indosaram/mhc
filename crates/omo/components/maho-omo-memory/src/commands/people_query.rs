@@ -21,11 +21,10 @@ pub fn resolve_person_query(nodes: &[PalacePeopleNode], query: &str) -> PersonQu
         };
     }
 
-    if let Some(exact) = nodes
-        .iter()
-        .find(|node| node.slug.to_lowercase() == needle)
-    {
-        return PersonQueryResolution::Hit { slug: exact.slug.clone() };
+    if let Some(exact) = nodes.iter().find(|node| node.slug.to_lowercase() == needle) {
+        return PersonQueryResolution::Hit {
+            slug: exact.slug.clone(),
+        };
     }
 
     if let Some(named) = nodes.iter().find(|node| {
@@ -35,10 +34,14 @@ pub fn resolve_person_query(nodes: &[PalacePeopleNode], query: &str) -> PersonQu
                 .iter()
                 .any(|alias| alias.to_lowercase() == needle)
     }) {
-        return PersonQueryResolution::Hit { slug: named.slug.clone() };
+        return PersonQueryResolution::Hit {
+            slug: named.slug.clone(),
+        };
     }
 
-    PersonQueryResolution::Miss { close: close_slugs(nodes, &needle) }
+    PersonQueryResolution::Miss {
+        close: close_slugs(nodes, &needle),
+    }
 }
 
 fn close_slugs(nodes: &[PalacePeopleNode], needle: &str) -> Vec<String> {
@@ -84,7 +87,9 @@ fn shared_prefix(left: &str, right: &str) -> usize {
     let mut index = 0;
     let left_bytes = left.as_bytes();
     let right_bytes = right.as_bytes();
-    while index < left_bytes.len() && index < right_bytes.len() && left_bytes[index] == right_bytes[index]
+    while index < left_bytes.len()
+        && index < right_bytes.len()
+        && left_bytes[index] == right_bytes[index]
     {
         index += 1;
     }

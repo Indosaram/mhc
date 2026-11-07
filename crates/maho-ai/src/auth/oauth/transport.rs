@@ -32,7 +32,10 @@ impl HttpResponse {
     }
 
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str())
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
     }
 
     pub fn json(&self) -> anyhow::Result<serde_json::Value> {
@@ -42,7 +45,11 @@ impl HttpResponse {
 
 #[async_trait]
 pub trait OAuthTransport: Send + Sync {
-    async fn execute(&self, request: HttpRequest, signal: &AbortSignal) -> anyhow::Result<HttpResponse>;
+    async fn execute(
+        &self,
+        request: HttpRequest,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<HttpResponse>;
 
     fn now_ms(&self) -> f64 {
         system_now_ms()
@@ -62,7 +69,9 @@ pub struct ReqwestTransport {
 
 impl Default for ReqwestTransport {
     fn default() -> Self {
-        Self { client: reqwest::Client::new() }
+        Self {
+            client: reqwest::Client::new(),
+        }
     }
 }
 
@@ -74,7 +83,11 @@ impl ReqwestTransport {
 
 #[async_trait]
 impl OAuthTransport for ReqwestTransport {
-    async fn execute(&self, request: HttpRequest, signal: &AbortSignal) -> anyhow::Result<HttpResponse> {
+    async fn execute(
+        &self,
+        request: HttpRequest,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<HttpResponse> {
         if let Err(reason) = signal.throw_if_aborted() {
             anyhow::bail!("{reason}");
         }
@@ -98,10 +111,19 @@ impl OAuthTransport for ReqwestTransport {
         let headers = response
             .headers()
             .iter()
-            .map(|(key, value)| (key.as_str().to_string(), value.to_str().unwrap_or_default().to_string()))
+            .map(|(key, value)| {
+                (
+                    key.as_str().to_string(),
+                    value.to_str().unwrap_or_default().to_string(),
+                )
+            })
             .collect();
         let body = response.text().await?;
-        Ok(HttpResponse { status, body, headers })
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
+        })
     }
 }
 
@@ -111,9 +133,17 @@ pub fn default_transport() -> Arc<dyn OAuthTransport> {
 
 #[derive(Debug, Clone)]
 pub enum ScriptedResponse {
-    Json { status: u16, body: serde_json::Value },
-    Text { status: u16, body: String },
-    Failure { message: String },
+    Json {
+        status: u16,
+        body: serde_json::Value,
+    },
+    Text {
+        status: u16,
+        body: String,
+    },
+    Failure {
+        message: String,
+    },
 }
 
 #[derive(Default)]
@@ -127,7 +157,10 @@ impl ScriptedTransport {
     pub fn new(responses: Vec<(Option<&str>, ScriptedResponse)>) -> Self {
         Self {
             responses: Mutex::new(
-                responses.into_iter().map(|(matcher, response)| (matcher.map(str::to_string), response)).collect(),
+                responses
+                    .into_iter()
+                    .map(|(matcher, response)| (matcher.map(str::to_string), response))
+                    .collect(),
             ),
             requests: Mutex::new(Vec::new()),
             now_ms: Mutex::new(None),
@@ -145,7 +178,10 @@ impl ScriptedTransport {
     }
 
     pub fn requests(&self) -> Vec<HttpRequest> {
-        self.requests.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.requests
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub fn push(&self, matcher: Option<&str>, response: ScriptedResponse) {
@@ -159,28 +195,49 @@ impl ScriptedTransport {
 #[async_trait]
 impl OAuthTransport for ScriptedTransport {
     fn now_ms(&self) -> f64 {
-        self.now_ms.lock().unwrap_or_else(|p| p.into_inner()).unwrap_or_else(system_now_ms)
+        self.now_ms
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(system_now_ms)
     }
 
-    async fn execute(&self, request: HttpRequest, _signal: &AbortSignal) -> anyhow::Result<HttpResponse> {
-        self.requests.lock().unwrap_or_else(|p| p.into_inner()).push(request.clone());
+    async fn execute(
+        &self,
+        request: HttpRequest,
+        _signal: &AbortSignal,
+    ) -> anyhow::Result<HttpResponse> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(request.clone());
         let index = {
             let responses = self.responses.lock().unwrap_or_else(|p| p.into_inner());
-            responses
-                .iter()
-                .position(|(matcher, _)| matcher.as_ref().is_none_or(|matcher| request.url.contains(matcher.as_str())))
+            responses.iter().position(|(matcher, _)| {
+                matcher
+                    .as_ref()
+                    .is_none_or(|matcher| request.url.contains(matcher.as_str()))
+            })
         };
         let Some(index) = index else {
             anyhow::bail!("ScriptedTransport has no response for {}", request.url);
         };
-        let response = self.responses.lock().unwrap_or_else(|p| p.into_inner()).remove(index).1;
+        let response = self
+            .responses
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(index)
+            .1;
         match response {
             ScriptedResponse::Json { status, body } => Ok(HttpResponse {
                 status,
                 headers: vec![("content-type".into(), "application/json".into())],
                 body: body.to_string(),
             }),
-            ScriptedResponse::Text { status, body } => Ok(HttpResponse { status, headers: Vec::new(), body }),
+            ScriptedResponse::Text { status, body } => Ok(HttpResponse {
+                status,
+                headers: Vec::new(),
+                body,
+            }),
             ScriptedResponse::Failure { message } => anyhow::bail!("{message}"),
         }
     }
@@ -204,16 +261,34 @@ mod tests {
     #[tokio::test]
     async fn scripted_transport_matches_by_url_substring_and_records_requests() {
         let transport = ScriptedTransport::new(vec![
-            (Some("/oauth/token"), ScriptedResponse::Json { status: 200, body: serde_json::json!({"a": 1}) }),
-            (None, ScriptedResponse::Text { status: 404, body: "missing".into() }),
+            (
+                Some("/oauth/token"),
+                ScriptedResponse::Json {
+                    status: 200,
+                    body: serde_json::json!({"a": 1}),
+                },
+            ),
+            (
+                None,
+                ScriptedResponse::Text {
+                    status: 404,
+                    body: "missing".into(),
+                },
+            ),
         ]);
         let signal = AbortController::new().signal();
 
-        let matched = transport.execute(request("https://example.com/oauth/token"), &signal).await.unwrap();
+        let matched = transport
+            .execute(request("https://example.com/oauth/token"), &signal)
+            .await
+            .unwrap();
         assert!(matched.ok());
         assert_eq!(matched.json().unwrap()["a"], 1);
 
-        let fallback = transport.execute(request("https://example.com/other"), &signal).await.unwrap();
+        let fallback = transport
+            .execute(request("https://example.com/other"), &signal)
+            .await
+            .unwrap();
         assert_eq!(fallback.status, 404);
         assert_eq!(transport.requests().len(), 2);
     }
@@ -222,7 +297,14 @@ mod tests {
     async fn scripted_transport_reports_missing_responses() {
         let transport = ScriptedTransport::new(Vec::new());
         let signal = AbortController::new().signal();
-        let error = transport.execute(request("https://example.com/x"), &signal).await.unwrap_err();
-        assert!(error.to_string().contains("no response for https://example.com/x"));
+        let error = transport
+            .execute(request("https://example.com/x"), &signal)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no response for https://example.com/x")
+        );
     }
 }

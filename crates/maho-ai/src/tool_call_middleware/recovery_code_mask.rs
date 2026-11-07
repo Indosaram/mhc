@@ -15,8 +15,13 @@ pub struct RecoveryCodeMaskFeedOptions {
 #[derive(Clone)]
 enum MaskState {
     Plain,
-    Inline { delimiter_length: usize },
-    Fenced { delimiter_length: usize, closing_line: bool },
+    Inline {
+        delimiter_length: usize,
+    },
+    Fenced {
+        delimiter_length: usize,
+        closing_line: bool,
+    },
 }
 
 pub struct RecoveryCodeMask {
@@ -30,7 +35,12 @@ pub struct RecoveryCodeMask {
     finished: bool,
 }
 
-fn emit(segments: &mut Vec<RecoveryCodeMaskSegment>, text: &str, scan: bool, recovery_boundary: bool) {
+fn emit(
+    segments: &mut Vec<RecoveryCodeMaskSegment>,
+    text: &str,
+    scan: bool,
+    recovery_boundary: bool,
+) {
     if text.is_empty() {
         return;
     }
@@ -42,7 +52,11 @@ fn emit(segments: &mut Vec<RecoveryCodeMaskSegment>, text: &str, scan: bool, rec
         previous.text.push_str(text);
         return;
     }
-    segments.push(RecoveryCodeMaskSegment { text: text.to_string(), scan, recovery_boundary });
+    segments.push(RecoveryCodeMaskSegment {
+        text: text.to_string(),
+        scan,
+        recovery_boundary,
+    });
 }
 
 fn is_line_break(character: char) -> bool {
@@ -50,7 +64,12 @@ fn is_line_break(character: char) -> bool {
 }
 
 impl RecoveryCodeMask {
-    fn flush_plain_indent(&mut self, segments: &mut Vec<RecoveryCodeMaskSegment>, scan: bool, recovery_boundary: bool) {
+    fn flush_plain_indent(
+        &mut self,
+        segments: &mut Vec<RecoveryCodeMaskSegment>,
+        scan: bool,
+        recovery_boundary: bool,
+    ) {
         let indent = std::mem::take(&mut self.plain_indent);
         emit(segments, &indent, scan, recovery_boundary);
     }
@@ -77,13 +96,23 @@ impl RecoveryCodeMask {
             MaskState::Plain => {
                 if started_at_line_start && tick_count >= 3 {
                     self.flush_plain_indent(segments, false, true);
-                    self.state = MaskState::Fenced { delimiter_length: tick_count, closing_line: false };
+                    self.state = MaskState::Fenced {
+                        delimiter_length: tick_count,
+                        closing_line: false,
+                    };
                 } else {
                     self.flush_plain_indent(segments, true, false);
                     if self.pending_deferred_ticks > 0 {
-                        emit(segments, &"`".repeat(self.pending_deferred_ticks), false, true);
+                        emit(
+                            segments,
+                            &"`".repeat(self.pending_deferred_ticks),
+                            false,
+                            true,
+                        );
                     }
-                    self.state = MaskState::Inline { delimiter_length: tick_count };
+                    self.state = MaskState::Inline {
+                        delimiter_length: tick_count,
+                    };
                 }
             }
             MaskState::Inline { delimiter_length } => {
@@ -91,9 +120,14 @@ impl RecoveryCodeMask {
                     self.state = MaskState::Plain;
                 }
             }
-            MaskState::Fenced { delimiter_length, .. } => {
+            MaskState::Fenced {
+                delimiter_length, ..
+            } => {
                 if started_at_line_start && tick_count >= *delimiter_length {
-                    self.state = MaskState::Fenced { delimiter_length: *delimiter_length, closing_line: true };
+                    self.state = MaskState::Fenced {
+                        delimiter_length: *delimiter_length,
+                        closing_line: true,
+                    };
                 }
             }
         }
@@ -108,7 +142,11 @@ impl RecoveryCodeMask {
         }
         self.pending_tick_count += ticks.len();
         let mut offset = 0usize;
-        if matches!(self.state, MaskState::Plain) && self.pending_at_line_start && !self.plain_indent.is_empty() && self.pending_deferred_ticks < 3 {
+        if matches!(self.state, MaskState::Plain)
+            && self.pending_at_line_start
+            && !self.plain_indent.is_empty()
+            && self.pending_deferred_ticks < 3
+        {
             let deferred = (3 - self.pending_deferred_ticks).min(ticks.len());
             self.pending_deferred_ticks += deferred;
             offset = deferred;
@@ -119,12 +157,17 @@ impl RecoveryCodeMask {
             }
         }
         if offset < ticks.len() {
-            let recovery_boundary = matches!(self.state, MaskState::Plain) && self.pending_tick_count == ticks.len();
+            let recovery_boundary =
+                matches!(self.state, MaskState::Plain) && self.pending_tick_count == ticks.len();
             emit(segments, &ticks[offset..], false, recovery_boundary);
         }
     }
 
-    fn process_plain_character(&mut self, segments: &mut Vec<RecoveryCodeMaskSegment>, character: char) {
+    fn process_plain_character(
+        &mut self,
+        segments: &mut Vec<RecoveryCodeMaskSegment>,
+        character: char,
+    ) {
         if self.at_line_start && character == ' ' && self.leading_spaces < 3 {
             self.plain_indent.push(character);
             self.leading_spaces += 1;
@@ -135,7 +178,11 @@ impl RecoveryCodeMask {
         self.update_line_position(character);
     }
 
-    fn process_inline_character(&mut self, segments: &mut Vec<RecoveryCodeMaskSegment>, character: char) {
+    fn process_inline_character(
+        &mut self,
+        segments: &mut Vec<RecoveryCodeMaskSegment>,
+        character: char,
+    ) {
         emit(segments, character.encode_utf8(&mut [0u8; 4]), false, false);
         if is_line_break(character) {
             self.state = MaskState::Plain;
@@ -143,8 +190,14 @@ impl RecoveryCodeMask {
         self.update_line_position(character);
     }
 
-    fn process_fenced_character(&mut self, segments: &mut Vec<RecoveryCodeMaskSegment>, character: char) {
-        let MaskState::Fenced { closing_line, .. } = &self.state else { return };
+    fn process_fenced_character(
+        &mut self,
+        segments: &mut Vec<RecoveryCodeMaskSegment>,
+        character: char,
+    ) {
+        let MaskState::Fenced { closing_line, .. } = &self.state else {
+            return;
+        };
         let closing_line = *closing_line;
         if self.at_line_start && character == ' ' && self.leading_spaces < 3 {
             emit(segments, character.encode_utf8(&mut [0u8; 4]), false, false);
@@ -185,7 +238,11 @@ impl RecoveryCodeMask {
         }
     }
 
-    pub fn feed(&mut self, text: &str, options: Option<RecoveryCodeMaskFeedOptions>) -> Vec<RecoveryCodeMaskSegment> {
+    pub fn feed(
+        &mut self,
+        text: &str,
+        options: Option<RecoveryCodeMaskFeedOptions>,
+    ) -> Vec<RecoveryCodeMaskSegment> {
         assert!(!self.finished, "Recovery code mask is finished");
         let mut segments = Vec::new();
         if options.is_some_and(|options| options.active_invoke) {
@@ -231,10 +288,14 @@ mod tests {
     use super::*;
     use crate::tool_call_middleware::types::StreamParserEvent;
     use crate::types::Tool;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn scan_text(segments: &[RecoveryCodeMaskSegment]) -> String {
-        segments.iter().filter(|segment| segment.scan).map(|segment| segment.text.as_str()).collect()
+        segments
+            .iter()
+            .filter(|segment| segment.scan)
+            .map(|segment| segment.text.as_str())
+            .collect()
     }
 
     #[test]
@@ -266,7 +327,12 @@ mod tests {
     #[test]
     fn active_invoke_option_marks_everything_scannable_without_masking() {
         let mut mask = create_recovery_code_mask();
-        let segments = mask.feed("`still scanned`", Some(RecoveryCodeMaskFeedOptions { active_invoke: true }));
+        let segments = mask.feed(
+            "`still scanned`",
+            Some(RecoveryCodeMaskFeedOptions {
+                active_invoke: true,
+            }),
+        );
         assert_eq!(scan_text(&segments), "`still scanned`");
     }
 
@@ -349,7 +415,10 @@ mod tests {
         events
             .iter()
             .filter_map(|event| match event {
-                StreamParserEvent::ToolcallEnd { arguments, .. } => arguments.get("command").and_then(Value::as_str).map(str::to_string),
+                StreamParserEvent::ToolcallEnd { arguments, .. } => arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 _ => None,
             })
             .collect()
@@ -359,29 +428,52 @@ mod tests {
         for (index, chunks) in all_meaningful_chunk_splits(input).into_iter().enumerate() {
             let result = run_mask(&chunks);
             assert_eq!(result.text, input, "split {index} must preserve output");
-            assert_eq!(recovered_commands(&result.events), expected_commands, "split {index} must recover only executable invokes");
+            assert_eq!(
+                recovered_commands(&result.events),
+                expected_commands,
+                "split {index} must recover only executable invokes"
+            );
         }
     }
 
     #[test]
     fn suppresses_invoke_like_examples_inside_code_while_preserving_later_executable_calls() {
-        let input = format!("Example: `{}`\nThen run {}", code_invoke(), executable_invoke());
+        let input = format!(
+            "Example: `{}`\nThen run {}",
+            code_invoke(),
+            executable_invoke()
+        );
         expect_across_every_split(&input, &["echo executable"]);
     }
 
     #[test]
     fn masks_inline_and_fenced_invoke_examples_across_split_backtick_runs() {
-        let inline_with_matching_delimiter = format!("Inline: ``{}`` then {}", code_invoke(), executable_invoke());
-        let inline_newline_reset = format!("Unclosed: `{}\nThen {}", code_invoke(), executable_invoke());
-        let mismatched_inline_close = format!("Inline: ``{}` still code\nThen {}", code_invoke(), executable_invoke());
-        let indented_four_backtick_fence = format!("   ````xml\n{}\n```\n{}\n   ````\nThen {}", code_invoke(), code_invoke(), executable_invoke());
+        let inline_with_matching_delimiter =
+            format!("Inline: ``{}`` then {}", code_invoke(), executable_invoke());
+        let inline_newline_reset =
+            format!("Unclosed: `{}\nThen {}", code_invoke(), executable_invoke());
+        let mismatched_inline_close = format!(
+            "Inline: ``{}` still code\nThen {}",
+            code_invoke(),
+            executable_invoke()
+        );
+        let indented_four_backtick_fence = format!(
+            "   ````xml\n{}\n```\n{}\n   ````\nThen {}",
+            code_invoke(),
+            code_invoke(),
+            executable_invoke()
+        );
 
         expect_across_every_split(&inline_with_matching_delimiter, &["echo executable"]);
         expect_across_every_split(&inline_newline_reset, &["echo executable"]);
         expect_across_every_split(&mismatched_inline_close, &["echo executable"]);
         expect_across_every_split(&indented_four_backtick_fence, &["echo executable"]);
         for indent in ["", " ", "  ", "   "] {
-            let input = format!("{indent}```xml\n{}\n{indent}```\nThen {}", code_invoke(), executable_invoke());
+            let input = format!(
+                "{indent}```xml\n{}\n{indent}```\nThen {}",
+                code_invoke(),
+                executable_invoke()
+            );
             expect_across_every_split(&input, &["echo executable"]);
         }
     }
@@ -389,23 +481,38 @@ mod tests {
     #[test]
     fn preserves_ordinary_text_and_active_call_backticks_across_every_split_point() {
         let active_call = r#"<invoke name="Bash"><parameter name="command">echo ```literal```</parameter></invoke>"#;
-        for (index, chunks) in all_meaningful_chunk_splits(active_call).into_iter().enumerate() {
+        for (index, chunks) in all_meaningful_chunk_splits(active_call)
+            .into_iter()
+            .enumerate()
+        {
             let mut mask = create_recovery_code_mask();
             let mut parser = crate::tool_call_middleware::protocols::antml::recovery_stream::create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
             let mut events = Vec::new();
             for chunk in &chunks {
-                for segment in mask.feed(chunk, Some(RecoveryCodeMaskFeedOptions { active_invoke: true })) {
+                for segment in mask.feed(
+                    chunk,
+                    Some(RecoveryCodeMaskFeedOptions {
+                        active_invoke: true,
+                    }),
+                ) {
                     events.extend(parser.feed(&segment.text));
                 }
             }
             events.extend(parser.finish());
-            assert_eq!(recovered_commands(&events), vec!["echo ```literal```".to_string()], "active split {index}");
+            assert_eq!(
+                recovered_commands(&events),
+                vec!["echo ```literal```".to_string()],
+                "active split {index}"
+            );
         }
     }
 
     #[test]
     fn preserves_ordinary_prose_and_invokes_split_across_every_boundary() {
-        let input = format!("ordinary prose before {} ordinary prose after", executable_invoke());
+        let input = format!(
+            "ordinary prose before {} ordinary prose after",
+            executable_invoke()
+        );
         expect_across_every_split(&input, &["echo executable"]);
     }
 
@@ -445,7 +552,10 @@ mod tests {
         events.extend(parser.finish());
 
         assert_eq!(output, chunks.concat());
-        assert_eq!(recovered_commands(&events), vec!["echo executable".to_string()]);
+        assert_eq!(
+            recovered_commands(&events),
+            vec!["echo executable".to_string()]
+        );
     }
 
     #[test]
@@ -457,7 +567,12 @@ mod tests {
     #[test]
     fn resets_an_unclosed_inline_span_on_cr_only_newline() {
         for newline in ["\r", "\r\n"] {
-            let input = format!("\u{1F600} `{}{}{}", code_invoke(), newline, executable_invoke());
+            let input = format!(
+                "\u{1F600} `{}{}{}",
+                code_invoke(),
+                newline,
+                executable_invoke()
+            );
             expect_across_every_split(&input, &["echo executable"]);
         }
     }
@@ -466,15 +581,34 @@ mod tests {
     fn preserves_order_and_line_state_through_active_invoke_bypass() {
         let mut mask = create_recovery_code_mask();
         let mut ordered: Vec<RecoveryCodeMaskSegment> = mask.feed("`", None);
-        ordered.extend(mask.feed("", Some(RecoveryCodeMaskFeedOptions { active_invoke: true })));
-        ordered.extend(mask.feed("ABC\u{1F600}\r", Some(RecoveryCodeMaskFeedOptions { active_invoke: true })));
+        ordered.extend(mask.feed(
+            "",
+            Some(RecoveryCodeMaskFeedOptions {
+                active_invoke: true,
+            }),
+        ));
+        ordered.extend(mask.feed(
+            "ABC\u{1F600}\r",
+            Some(RecoveryCodeMaskFeedOptions {
+                active_invoke: true,
+            }),
+        ));
         ordered.extend(mask.finish());
-        assert_eq!(ordered.iter().map(|segment| segment.text.as_str()).collect::<String>(), "`ABC\u{1F600}\r");
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<String>(),
+            "`ABC\u{1F600}\r"
+        );
 
         let input = format!("x\r```xml\n{}\n```\n{}", code_invoke(), executable_invoke());
         let result = run_mask_with_active_prefix(&input);
         assert_eq!(result.text, input);
-        assert_eq!(recovered_commands(&result.events), vec!["echo executable".to_string()]);
+        assert_eq!(
+            recovered_commands(&result.events),
+            vec!["echo executable".to_string()]
+        );
     }
 
     fn run_mask_with_active_prefix(input: &str) -> MaskRun {
@@ -489,7 +623,12 @@ mod tests {
                 events.extend(parser.feed(&segment.text));
             }
         }
-        for segment in mask.feed("\r", Some(RecoveryCodeMaskFeedOptions { active_invoke: true })) {
+        for segment in mask.feed(
+            "\r",
+            Some(RecoveryCodeMaskFeedOptions {
+                active_invoke: true,
+            }),
+        ) {
             text.push_str(&segment.text);
             if segment.scan {
                 events.extend(parser.feed(&segment.text));
@@ -522,7 +661,13 @@ mod tests {
         during_feed.extend(mask.feed(&ticks[500_000..], None));
         let at_finish = mask.finish();
 
-        assert_eq!(during_feed.iter().map(|segment| segment.text.as_str()).collect::<String>(), ticks);
+        assert_eq!(
+            during_feed
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<String>(),
+            ticks
+        );
         assert!(during_feed.iter().all(|segment| !segment.scan));
         assert!(at_finish.is_empty());
     }
@@ -540,16 +685,25 @@ mod tests {
         let mut mask = create_recovery_code_mask();
         let mut segments = Vec::new();
         for chunk in chunks {
-            let options = active_invoke.then_some(RecoveryCodeMaskFeedOptions { active_invoke: true });
+            let options = active_invoke.then_some(RecoveryCodeMaskFeedOptions {
+                active_invoke: true,
+            });
             segments.extend(mask.feed(chunk, options));
         }
         segments.extend(mask.finish());
-        segments.iter().map(|segment| segment.text.as_str()).collect()
+        segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect()
     }
 
     fn char_split(text: &str, index: usize) -> Vec<String> {
         let chars: Vec<char> = text.chars().collect();
-        vec![chars[..index].iter().collect(), String::new(), chars[index..].iter().collect()]
+        vec![
+            chars[..index].iter().collect(),
+            String::new(),
+            chars[index..].iter().collect(),
+        ]
     }
 
     #[test]
@@ -557,7 +711,10 @@ mod tests {
         // senpi splits on UTF-16 code units, which can land inside an emoji; Rust strings are UTF-8,
         // so the equivalent split is taken at the char boundary before the emoji.
         let input = "```xml meta=\u{1F600}\nX\n```\nY";
-        let emoji_index = input.chars().position(|c| c == '\u{1F600}').expect("emoji present");
+        let emoji_index = input
+            .chars()
+            .position(|c| c == '\u{1F600}')
+            .expect("emoji present");
         for _ in 0..200 {
             assert_eq!(mask_output(&char_split(input, emoji_index), false), input);
         }
@@ -575,9 +732,12 @@ mod tests {
         for (input, active_invoke) in cases {
             let length = input.chars().count();
             for split in 0..=length {
-                assert_eq!(mask_output(&char_split(input, split), active_invoke), input, "split {split} of {input:?}");
+                assert_eq!(
+                    mask_output(&char_split(input, split), active_invoke),
+                    input,
+                    "split {split} of {input:?}"
+                );
             }
         }
     }
-
 }

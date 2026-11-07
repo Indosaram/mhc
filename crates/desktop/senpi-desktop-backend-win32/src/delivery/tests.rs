@@ -78,11 +78,26 @@ fn covers_the_full_known_silent_drop_matrix() {
         background("WinUIDesktopWin32WindowClass"),
         [true, true, true, false, false, false],
     );
-    assert_matrix(background("HwndWrapper[App;;abc]"), [true, true, false, true, true, true]);
-    assert_matrix(background("TkTopLevel.1"), [true, false, false, true, true, true]);
-    assert_matrix(background("gdkSurfaceToplevel"), [true, false, false, false, false, false]);
-    assert_matrix(background("gdkWindowToplevel"), [true, false, false, false, false, false]);
-    assert_matrix(background("SALFRAME"), [false, false, false, true, true, false]);
+    assert_matrix(
+        background("HwndWrapper[App;;abc]"),
+        [true, true, false, true, true, true],
+    );
+    assert_matrix(
+        background("TkTopLevel.1"),
+        [true, false, false, true, true, true],
+    );
+    assert_matrix(
+        background("gdkSurfaceToplevel"),
+        [true, false, false, false, false, false],
+    );
+    assert_matrix(
+        background("gdkWindowToplevel"),
+        [true, false, false, false, false, false],
+    );
+    assert_matrix(
+        background("SALFRAME"),
+        [false, false, false, true, true, false],
+    );
     assert_matrix(background("Chrome_WidgetWin"), [false; 6]);
     assert_matrix(background("HwndWrapperApp;;abc]"), [false; 6]);
     assert_matrix(background("TkTopLevelish"), [false; 6]);
@@ -158,5 +173,8 @@ fn every_line_break_style_becomes_exactly_one_return() {
             Char('d')
         ]
     );
-    assert_eq!(text_units("\r\r\n\n").collect::<Vec<_>>(), [Enter, Enter, Enter]);
+    assert_eq!(
+        text_units("\r\r\n\n").collect::<Vec<_>>(),
+        [Enter, Enter, Enter]
+    );
 }

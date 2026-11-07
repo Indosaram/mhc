@@ -211,7 +211,11 @@ fn upstream_uppercase_auth_values_stay_unchanged() {
         "opencode": {"type": "api_key", "key": "public"},
         "github": {"type": "oauth", "access": "ACCESS_TOKEN", "refresh": "REFRESH_TOKEN", "expires": 1},
     });
-    fs::write(agent.join("auth.json"), format!("{}\n", serde_json::to_string_pretty(&auth).unwrap())).expect("write");
+    fs::write(
+        agent.join("auth.json"),
+        format!("{}\n", serde_json::to_string_pretty(&auth).unwrap()),
+    )
+    .expect("write");
     run_migrations(&cwd, &home, &agent).expect("migrate");
     let migrated: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(agent.join("auth.json")).unwrap()).unwrap();
@@ -223,6 +227,9 @@ fn upstream_malformed_or_blank_models_json_survives_migrations_byte_identical() 
         let (_root, home, cwd, agent) = fixture();
         fs::write(agent.join("models.json"), content).expect("write");
         run_migrations(&cwd, &home, &agent).expect("migrations do not fail");
-        assert_eq!(fs::read_to_string(agent.join("models.json")).unwrap(), content);
+        assert_eq!(
+            fs::read_to_string(agent.join("models.json")).unwrap(),
+            content
+        );
     }
 }

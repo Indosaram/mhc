@@ -50,7 +50,9 @@ pub(super) fn delivered(target: Window) -> CoreResult<()> {
 pub(super) fn routed(target: Option<Window>) -> CoreResult<()> {
     if system::barrier_key_down() {
         system::barrier_key(false, None)?;
-        wait("the stale barrier key release", || !system::barrier_key_down())?;
+        wait("the stale barrier key release", || {
+            !system::barrier_key_down()
+        })?;
     }
     system::barrier_key(true, target)?;
     let pressed = wait("the barrier key press", system::barrier_key_down);

@@ -50,11 +50,7 @@ pub const ENGINE_METHODS: &[&str] = &[
 ];
 
 /// Every server-to-client notification, by wire name.
-pub const ENGINE_NOTIFICATIONS: &[&str] = &[
-    "audit",
-    "stopPath.changed",
-    "engine.log",
-];
+pub const ENGINE_NOTIFICATIONS: &[&str] = &["audit", "stopPath.changed", "engine.log"];
 
 /// The frozen desktop error vocabulary mirrored from core `ErrorCode`.
 pub const ERROR_CODES: &[&str] = &[

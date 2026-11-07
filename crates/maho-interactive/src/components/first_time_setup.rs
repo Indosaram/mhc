@@ -146,8 +146,9 @@ impl FirstTimeSetupComponent {
     fn update(&mut self) {
         self.root.clear();
         let theme = self.theme.clone();
-        self.root
-            .add_child(Rc::new(RefCell::new(SetupBorder { theme: theme.clone() })));
+        self.root.add_child(Rc::new(RefCell::new(SetupBorder {
+            theme: theme.clone(),
+        })));
         self.root.add_child(Rc::new(RefCell::new(Spacer::new(1))));
         self.add_text(theme.fg(ThemeColor::Accent, &SETUP_LOGO_LINES.join("\n")));
         self.root.add_child(Rc::new(RefCell::new(Spacer::new(1))));
@@ -166,16 +167,16 @@ impl FirstTimeSetupComponent {
             let labels: Vec<&str> = THEME_OPTIONS.iter().map(|option| option.label).collect();
             self.add_option_list(&labels, self.theme_index);
         } else {
-            self.add_text(theme.fg(
-                ThemeColor::Text,
-                "Opt-in to anonymous usage data sharing?",
-            ));
+            self.add_text(theme.fg(ThemeColor::Text, "Opt-in to anonymous usage data sharing?"));
             self.add_text(theme.fg(
                 ThemeColor::Muted,
                 "Opting in stores a tracking identifier in settings.json and enables anonymous\nusage analytics. This helps us to better debug, reproduce, and resolve issues\nand bugs within Pi. You can observe what is shared using /privacy and make\nchanges anytime in settings.json.",
             ));
             self.root.add_child(Rc::new(RefCell::new(Spacer::new(1))));
-            let labels: Vec<&str> = ANALYTICS_OPTIONS.iter().map(|option| option.label).collect();
+            let labels: Vec<&str> = ANALYTICS_OPTIONS
+                .iter()
+                .map(|option| option.label)
+                .collect();
             self.add_option_list(&labels, self.analytics_index);
         }
 
@@ -185,12 +186,14 @@ impl FirstTimeSetupComponent {
         } else {
             "finish"
         };
-        self.add_text(format!(
-            "{}{}{}",
-            raw_key_hint(&theme, "↑↓", "navigate"),
-            "  ",
-            key_hint(&theme, "tui.select.confirm", confirm)
-        ) + &format!("  {}", key_hint(&theme, "tui.select.cancel", "skip setup")));
+        self.add_text(
+            format!(
+                "{}{}{}",
+                raw_key_hint(&theme, "↑↓", "navigate"),
+                "  ",
+                key_hint(&theme, "tui.select.confirm", confirm)
+            ) + &format!("  {}", key_hint(&theme, "tui.select.cancel", "skip setup")),
+        );
         self.root.add_child(Rc::new(RefCell::new(Spacer::new(1))));
         let theme = self.theme.clone();
         self.root
@@ -205,7 +208,8 @@ impl FirstTimeSetupComponent {
                 (self.on_theme_preview)(THEME_OPTIONS[self.theme_index].value.to_string());
             }
         } else {
-            self.analytics_index = clamp_index(self.analytics_index, delta, ANALYTICS_OPTIONS.len());
+            self.analytics_index =
+                clamp_index(self.analytics_index, delta, ANALYTICS_OPTIONS.len());
         }
         self.update();
     }

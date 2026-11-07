@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use common::{create_editor, large_paste, paste};
 use maho_tui::image_markers::{
-    image_marker_id, is_image_marker, ImageMarkerRegistry, IMAGE_MARKER_REGEX, IMAGE_MARKER_SINGLE,
+    IMAGE_MARKER_REGEX, IMAGE_MARKER_SINGLE, ImageMarkerRegistry, image_marker_id, is_image_marker,
 };
 use maho_tui::paste_markers::{
     grapheme_segment_refs, is_paste_marker, segment_with_markers, segment_with_paste_markers,
@@ -270,7 +270,10 @@ fn does_not_expand_duplicate_canonical_marker_copies() {
 
     editor.set_text(&format!("{marker} LITERAL-COPY {marker}"));
 
-    assert_eq!(editor.get_expanded_text(), format!("{marker} LITERAL-COPY {marker}"));
+    assert_eq!(
+        editor.get_expanded_text(),
+        format!("{marker} LITERAL-COPY {marker}")
+    );
 }
 
 #[test]
@@ -281,7 +284,10 @@ fn does_not_expand_a_queued_prefix_that_duplicates_the_canonical_marker() {
 
     editor.set_text(&format!("queued {marker}\n\n{marker}"));
 
-    assert_eq!(editor.get_expanded_text(), format!("queued {marker}\n\n{marker}"));
+    assert_eq!(
+        editor.get_expanded_text(),
+        format!("queued {marker}\n\n{marker}")
+    );
 }
 
 #[test]
@@ -295,9 +301,15 @@ fn expands_over_the_original_text_without_recursively_expanding_pasted_bodies() 
     editor.handle_editor_input(" ");
     paste(&mut editor, &second_body);
 
-    assert_eq!(editor.get_expanded_text(), format!("{first_body} {second_body}"));
+    assert_eq!(
+        editor.get_expanded_text(),
+        format!("{first_body} {second_body}")
+    );
     assert!(editor.get_expanded_text().starts_with(second_marker));
-    assert_eq!(editor.get_expanded_text().split("SECOND-1\n").count() - 1, 1);
+    assert_eq!(
+        editor.get_expanded_text().split("SECOND-1\n").count() - 1,
+        1
+    );
     assert_eq!(first_marker, "[paste #1 +12 lines]");
 }
 

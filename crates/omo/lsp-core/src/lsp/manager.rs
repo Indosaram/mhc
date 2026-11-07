@@ -228,9 +228,7 @@ impl LspManager {
             }),
             idle_timeout_ms: options.idle_timeout_ms.unwrap_or(IDLE_TIMEOUT_MS) as f64,
             init_timeout_ms: options.init_timeout_ms.unwrap_or(INIT_TIMEOUT_MS) as f64,
-            max_resident_clients: options
-                .max_resident_clients
-                .unwrap_or(MAX_RESIDENT_CLIENTS),
+            max_resident_clients: options.max_resident_clients.unwrap_or(MAX_RESIDENT_CLIENTS),
             reaper_interval_ms: options.reaper_interval_ms.unwrap_or(REAPER_INTERVAL_MS),
             client_factory: options.client_factory.unwrap_or_else(|| {
                 Arc::new(|root: &str, server: &ResolvedServer| {
@@ -322,7 +320,12 @@ impl LspManager {
     }
 
     /// Throws while the respawn budget is spent and the cooldown has not elapsed.
-    fn ensure_respawn_allowed(&self, key: &str, root: &str, server_id: &str) -> Result<(), LspError> {
+    fn ensure_respawn_allowed(
+        &self,
+        key: &str,
+        root: &str,
+        server_id: &str,
+    ) -> Result<(), LspError> {
         let mut state = self.lock();
         let Some(budget) = state.respawn_budgets.get_mut(key) else {
             return Ok(());
@@ -371,7 +374,10 @@ impl LspManager {
                 let mut candidate_key: Option<String> = None;
                 let mut candidate_last_used = f64::MAX;
                 for (key, managed) in state.clients.iter() {
-                    if managed.ref_count > 0 || managed.pending_waiters > 0 || managed.is_initializing {
+                    if managed.ref_count > 0
+                        || managed.pending_waiters > 0
+                        || managed.is_initializing
+                    {
                         continue;
                     }
                     if candidate_key.is_none() || managed.last_used_at < candidate_last_used {
@@ -379,7 +385,8 @@ impl LspManager {
                         candidate_last_used = managed.last_used_at;
                     }
                 }
-                candidate_key.and_then(|key| state.clients.shift_remove(&key).map(|m| (key, m.client)))
+                candidate_key
+                    .and_then(|key| state.clients.shift_remove(&key).map(|m| (key, m.client)))
             };
 
             match victim {
@@ -491,7 +498,8 @@ impl LspManager {
             match pending_stop {
                 None => break,
                 Some(mut rx) => {
-                    await_with_signal(rx.wait_for(|settled| *settled), signal).await?
+                    await_with_signal(rx.wait_for(|settled| *settled), signal)
+                        .await?
                         .map_err(|error| LspError::other(error.to_string()))?;
                     if let Some(signal) = signal {
                         signal.throw_if_aborted()?;
@@ -672,7 +680,12 @@ impl LspManager {
     }
 
     /// TS `invalidateClient`: drops the pooled client (only if it is `client`, when given).
-    pub fn invalidate_client(self: &Arc<Self>, root: &str, server_id: &str, client: Option<&SharedClient>) {
+    pub fn invalidate_client(
+        self: &Arc<Self>,
+        root: &str,
+        server_id: &str,
+        client: Option<&SharedClient>,
+    ) {
         let key = get_key(root, server_id);
         let removed = {
             let mut state = self.lock();
@@ -695,7 +708,10 @@ impl LspManager {
         let key = get_key(root, &server.id);
         {
             let state = self.lock();
-            if state.disposed || state.clients.contains_key(&key) || state.pending_stops.contains_key(&key) {
+            if state.disposed
+                || state.clients.contains_key(&key)
+                || state.pending_stops.contains_key(&key)
+            {
                 return;
             }
         }

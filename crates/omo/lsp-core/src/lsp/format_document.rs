@@ -60,14 +60,18 @@ impl FormatDocumentResult {
 
     pub fn lines_added(&self) -> usize {
         match self {
-            Self::Formatted { lines_added, .. } | Self::Unchanged { lines_added, .. } => *lines_added,
+            Self::Formatted { lines_added, .. } | Self::Unchanged { lines_added, .. } => {
+                *lines_added
+            }
             Self::Unavailable { .. } => 0,
         }
     }
 
     pub fn lines_removed(&self) -> usize {
         match self {
-            Self::Formatted { lines_removed, .. } | Self::Unchanged { lines_removed, .. } => *lines_removed,
+            Self::Formatted { lines_removed, .. } | Self::Unchanged { lines_removed, .. } => {
+                *lines_removed
+            }
             Self::Unavailable { .. } => 0,
         }
     }
@@ -163,8 +167,11 @@ pub fn line_delta(edits: &[ParsedTextEdit]) -> (usize, usize) {
 
 fn write_atomically(file_path: &str, content: &str) -> Result<(), LspError> {
     let temp_path = format!("{file_path}.omo-format.tmp");
-    fs::write(&temp_path, content.as_bytes())
-        .map_err(|err| LspError::other(format!("Failed to write temporary file '{temp_path}': {err}")))?;
+    fs::write(&temp_path, content.as_bytes()).map_err(|err| {
+        LspError::other(format!(
+            "Failed to write temporary file '{temp_path}': {err}"
+        ))
+    })?;
 
     if let Err(err) = fs::rename(&temp_path, file_path) {
         let _ = fs::remove_file(&temp_path);

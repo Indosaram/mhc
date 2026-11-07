@@ -29,7 +29,8 @@ fn splits_a_sibling_argument_leaked_into_description() {
 #[test]
 fn leaves_params_untouched_when_the_target_was_already_supplied() {
     let mut input = params();
-    input.description = Some("<value></description>\n<parameter name=\"file_text\"><leak>".to_string());
+    input.description =
+        Some("<value></description>\n<parameter name=\"file_text\"><leak>".to_string());
     input.file_text = Some("declared body".to_string());
 
     let repaired = repair_leaked_arguments(input);
@@ -45,12 +46,14 @@ fn leaves_params_untouched_when_the_target_was_already_supplied() {
 #[test]
 fn ignores_a_closing_tag_that_names_an_unknown_or_self_argument() {
     let mut input = params();
-    input.description = Some("<value></description>\n<parameter name=\"unknown_arg\"><leak>".to_string());
+    input.description =
+        Some("<value></description>\n<parameter name=\"unknown_arg\"><leak>".to_string());
     let unknown = repair_leaked_arguments(input);
     assert!(unknown.repairs.is_empty());
 
     let mut self_named = params();
-    self_named.description = Some("<value></description>\n<parameter name=\"description\"><leak>".to_string());
+    self_named.description =
+        Some("<value></description>\n<parameter name=\"description\"><leak>".to_string());
     let same = repair_leaked_arguments(self_named);
     assert!(same.repairs.is_empty());
 }

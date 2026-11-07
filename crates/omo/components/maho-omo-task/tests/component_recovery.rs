@@ -351,7 +351,9 @@ async fn registered_agent_end_defers_idle_flush_past_the_handler() {
     let queued = deferred.clone();
     let mut context = support::context();
     context.cwd = root.path().into();
-    context.idle_coordinator = Some(idle_injection::into_slot(flushes.clone() as Arc<dyn IdleInjectionCoordinator>));
+    context.idle_coordinator = Some(idle_injection::into_slot(
+        flushes.clone() as Arc<dyn IdleInjectionCoordinator>
+    ));
     context.defer_macrotask = Some(Arc::new(move |task: Box<dyn FnOnce() + Send>| {
         queued.lock().expect("deferred").push(task)
     }));
@@ -533,7 +535,8 @@ fn sync_delivers_only_completions_owned_by_this_session() {
 }
 
 #[tokio::test]
-async fn before_compact_buffers_child_completion_and_compact_failed_clears_transition_and_delivers() {
+async fn before_compact_buffers_child_completion_and_compact_failed_clears_transition_and_delivers()
+{
     for aborted in [false, true] {
         let root = tempfile::tempdir().expect("root");
         let actions = Arc::new(Actions::default());
@@ -972,7 +975,9 @@ async fn recovery(case: Case) {
     .expect("registered recovery deadline");
     assert_eq!(
         wake.lock().expect("wake").as_slice(),
-        &[serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})],
+        &[
+            serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})
+        ],
         "registered startup awaits its owned resumption snapshot"
     );
     // Scope the guard in a lexical block so it is provably dropped before the AgentEnd await below.
@@ -1072,7 +1077,9 @@ async fn recovery(case: Case) {
     component.dispose();
     assert_eq!(
         wake.lock().expect("wake").last(),
-        Some(&serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})),
+        Some(
+            &serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})
+        ),
         "component disposal joins final clear emission"
     );
     assert!(

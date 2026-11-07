@@ -15,16 +15,19 @@ use serde_json::Value;
 use crate::types::{ContentBlock, ToolResultMessage};
 
 use super::r#gen::agent_pb::{
-    execute_hook_request, execute_hook_response, mcp_state_exec_result, pi_bash_exec_result, pi_edit_exec_result,
-    pi_find_exec_result, pi_grep_exec_result, pi_ls_exec_result, pi_read_exec_result, pi_write_exec_result,
-    AfterAgentResponseRequestResponse, AfterAgentThoughtRequestResponse, BeforeSubmitPromptRequestResponse,
-    ExecuteHookRequest, ExecuteHookResponse, ExecuteHookResult, McpStateExecResult, McpStateServer, McpStateSuccess,
-    McpToolDefinition, PiBashExecError, PiBashExecResult, PiBashExecSuccess, PiEditExecError, PiEditExecRejected,
-    PiEditExecResult, PiEditExecSuccess, PiFindExecError, PiFindExecResult, PiFindExecSuccess, PiGrepExecError,
-    PiGrepExecResult, PiGrepExecSuccess, PiLsExecError, PiLsExecResult, PiLsExecSuccess, PiReadExecError,
-    PiReadExecResult, PiReadExecSuccess, PiTruncation, PiWriteExecError, PiWriteExecRejected, PiWriteExecResult,
-    PiWriteExecSuccess, PostToolUseFailureRequestResponse, PostToolUseRequestResponse, PreCompactRequestResponse,
-    PreToolUseRequestResponse, StopRequestResponse, SubagentStartRequestResponse, SubagentStopRequestResponse,
+    AfterAgentResponseRequestResponse, AfterAgentThoughtRequestResponse,
+    BeforeSubmitPromptRequestResponse, ExecuteHookRequest, ExecuteHookResponse, ExecuteHookResult,
+    McpStateExecResult, McpStateServer, McpStateSuccess, McpToolDefinition, PiBashExecError,
+    PiBashExecResult, PiBashExecSuccess, PiEditExecError, PiEditExecRejected, PiEditExecResult,
+    PiEditExecSuccess, PiFindExecError, PiFindExecResult, PiFindExecSuccess, PiGrepExecError,
+    PiGrepExecResult, PiGrepExecSuccess, PiLsExecError, PiLsExecResult, PiLsExecSuccess,
+    PiReadExecError, PiReadExecResult, PiReadExecSuccess, PiTruncation, PiWriteExecError,
+    PiWriteExecRejected, PiWriteExecResult, PiWriteExecSuccess, PostToolUseFailureRequestResponse,
+    PostToolUseRequestResponse, PreCompactRequestResponse, PreToolUseRequestResponse,
+    StopRequestResponse, SubagentStartRequestResponse, SubagentStopRequestResponse,
+    execute_hook_request, execute_hook_response, mcp_state_exec_result, pi_bash_exec_result,
+    pi_edit_exec_result, pi_find_exec_result, pi_grep_exec_result, pi_ls_exec_result,
+    pi_read_exec_result, pi_write_exec_result,
 };
 
 /// Flatten a tool result's content into the single `output` string the Pi frames carry.
@@ -35,9 +38,9 @@ pub fn pi_output_text(tool_result: &ToolResultMessage) -> String {
         .map(|item| match item {
             ContentBlock::Text(text) => text.text.clone(),
             ContentBlock::Image(image) => format!("[{} image]", image.mime_type),
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
-                "[undefined image]".to_owned()
-            }
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => "[undefined image]".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -60,7 +63,11 @@ fn detail_count(tool_result: &ToolResultMessage, key: &str) -> Option<u32> {
 /// `positiveCount`: a finite number above zero floors to an integer; everything else is absent.
 fn positive_count(value: Option<Value>) -> Option<u32> {
     let value = value?.as_f64()?;
-    if value.is_finite() && value > 0.0 { Some(value.floor() as u32) } else { None }
+    if value.is_finite() && value > 0.0 {
+        Some(value.floor() as u32)
+    } else {
+        None
+    }
 }
 
 /// The entry cap a listing hit, from either shape a local tool records it in.
@@ -70,7 +77,10 @@ fn result_limit_reached(tool_result: &ToolResultMessage) -> Option<u32> {
     }
     let meta = bag_value(tool_result.details.as_ref(), "meta");
     let limits = bag_value(meta.as_ref(), "limits");
-    positive_count(bag_value(limits.as_ref(), "resultLimit").and_then(|limit| bag_value(Some(&limit), "reached")))
+    positive_count(
+        bag_value(limits.as_ref(), "resultLimit")
+            .and_then(|limit| bag_value(Some(&limit), "reached")),
+    )
 }
 
 /// Translate a local tool's truncation summary into `PiTruncation`.
@@ -100,13 +110,18 @@ pub fn pi_truncation(tool_result: &ToolResultMessage) -> Option<PiTruncation> {
     let output_bytes = bag_value(Some(&truncation), "outputBytes");
     Some(PiTruncation {
         truncated: true,
-        truncated_by: truncated_by.as_ref().and_then(Value::as_str).unwrap_or_default().to_owned(),
+        truncated_by: truncated_by
+            .as_ref()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         total_lines: total_lines.as_ref().and_then(Value::as_f64).unwrap_or(0.0) as u32,
         output_lines: output_lines.as_ref().and_then(Value::as_f64).unwrap_or(0.0) as u32,
         output_bytes: output_bytes.as_ref().and_then(Value::as_f64).unwrap_or(0.0) as u32,
         first_line_exceeds_limit: bag_value(Some(&truncation), "firstLineExceedsLimit")
             == Some(Value::Bool(true)),
-        last_line_partial: bag_value(Some(&truncation), "lastLinePartial") == Some(Value::Bool(true)),
+        last_line_partial: bag_value(Some(&truncation), "lastLinePartial")
+            == Some(Value::Bool(true)),
         ..PiTruncation::default()
     })
 }
@@ -114,7 +129,11 @@ pub fn pi_truncation(tool_result: &ToolResultMessage) -> Option<PiTruncation> {
 pub fn build_pi_read_result(tool_result: &ToolResultMessage) -> PiReadExecResult {
     let text = pi_output_text(tool_result);
     if tool_result.is_error {
-        return build_pi_read_error(if text.is_empty() { "Read failed" } else { &text });
+        return build_pi_read_error(if text.is_empty() {
+            "Read failed"
+        } else {
+            &text
+        });
     }
     PiReadExecResult {
         result: Some(pi_read_exec_result::Result::Success(PiReadExecSuccess {
@@ -126,7 +145,9 @@ pub fn build_pi_read_result(tool_result: &ToolResultMessage) -> PiReadExecResult
 
 pub fn build_pi_read_error(error: &str) -> PiReadExecResult {
     PiReadExecResult {
-        result: Some(pi_read_exec_result::Result::Error(PiReadExecError { error: error.to_owned() })),
+        result: Some(pi_read_exec_result::Result::Error(PiReadExecError {
+            error: error.to_owned(),
+        })),
     }
 }
 
@@ -136,7 +157,11 @@ pub fn build_pi_bash_result(tool_result: &ToolResultMessage) -> PiBashExecResult
     if tool_result.is_error {
         return PiBashExecResult {
             result: Some(pi_bash_exec_result::Result::Error(PiBashExecError {
-                error: if text.is_empty() { "Command failed".to_owned() } else { text },
+                error: if text.is_empty() {
+                    "Command failed".to_owned()
+                } else {
+                    text
+                },
                 truncation,
                 ..PiBashExecError::default()
             })),
@@ -166,15 +191,27 @@ pub fn build_pi_bash_error(error: &str) -> PiBashExecResult {
 pub fn build_pi_edit_result(tool_result: &ToolResultMessage) -> PiEditExecResult {
     let text = pi_output_text(tool_result);
     if tool_result.is_error {
-        return build_pi_edit_error(if text.is_empty() { "Edit failed" } else { &text });
+        return build_pi_edit_error(if text.is_empty() {
+            "Edit failed"
+        } else {
+            &text
+        });
     }
     let diff = bag_value(tool_result.details.as_ref(), "diff");
     let patch = bag_value(tool_result.details.as_ref(), "patch");
     PiEditExecResult {
         result: Some(pi_edit_exec_result::Result::Success(PiEditExecSuccess {
             output: text,
-            diff: diff.as_ref().and_then(Value::as_str).unwrap_or_default().to_owned(),
-            patch: patch.as_ref().and_then(Value::as_str).unwrap_or_default().to_owned(),
+            diff: diff
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            patch: patch
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             first_changed_line: detail_count(tool_result, "firstChangedLine"),
         })),
     }
@@ -182,7 +219,9 @@ pub fn build_pi_edit_result(tool_result: &ToolResultMessage) -> PiEditExecResult
 
 pub fn build_pi_edit_error(error: &str) -> PiEditExecResult {
     PiEditExecResult {
-        result: Some(pi_edit_exec_result::Result::Error(PiEditExecError { error: error.to_owned() })),
+        result: Some(pi_edit_exec_result::Result::Error(PiEditExecError {
+            error: error.to_owned(),
+        })),
     }
 }
 
@@ -192,37 +231,55 @@ pub fn build_pi_edit_error(error: &str) -> PiEditExecResult {
 /// permitted.
 pub fn build_pi_edit_rejected(reason: &str) -> PiEditExecResult {
     PiEditExecResult {
-        result: Some(pi_edit_exec_result::Result::Rejected(PiEditExecRejected { reason: reason.to_owned() })),
+        result: Some(pi_edit_exec_result::Result::Rejected(PiEditExecRejected {
+            reason: reason.to_owned(),
+        })),
     }
 }
 
 pub fn build_pi_write_result(tool_result: &ToolResultMessage) -> PiWriteExecResult {
     let text = pi_output_text(tool_result);
     if tool_result.is_error {
-        return build_pi_write_error(if text.is_empty() { "Write failed" } else { &text });
+        return build_pi_write_error(if text.is_empty() {
+            "Write failed"
+        } else {
+            &text
+        });
     }
     PiWriteExecResult {
-        result: Some(pi_write_exec_result::Result::Success(PiWriteExecSuccess { output: text })),
+        result: Some(pi_write_exec_result::Result::Success(PiWriteExecSuccess {
+            output: text,
+        })),
     }
 }
 
 pub fn build_pi_write_error(error: &str) -> PiWriteExecResult {
     PiWriteExecResult {
-        result: Some(pi_write_exec_result::Result::Error(PiWriteExecError { error: error.to_owned() })),
+        result: Some(pi_write_exec_result::Result::Error(PiWriteExecError {
+            error: error.to_owned(),
+        })),
     }
 }
 
 /// Same variant split as [`build_pi_edit_rejected`].
 pub fn build_pi_write_rejected(reason: &str) -> PiWriteExecResult {
     PiWriteExecResult {
-        result: Some(pi_write_exec_result::Result::Rejected(PiWriteExecRejected { reason: reason.to_owned() })),
+        result: Some(pi_write_exec_result::Result::Rejected(
+            PiWriteExecRejected {
+                reason: reason.to_owned(),
+            },
+        )),
     }
 }
 
 pub fn build_pi_grep_result(tool_result: &ToolResultMessage) -> PiGrepExecResult {
     let text = pi_output_text(tool_result);
     if tool_result.is_error {
-        return build_pi_grep_error(if text.is_empty() { "Grep failed" } else { &text });
+        return build_pi_grep_error(if text.is_empty() {
+            "Grep failed"
+        } else {
+            &text
+        });
     }
     let match_limit_reached = detail_count(tool_result, "perFileLimitReached");
     PiGrepExecResult {
@@ -230,7 +287,8 @@ pub fn build_pi_grep_result(tool_result: &ToolResultMessage) -> PiGrepExecResult
             truncation: pi_truncation(tool_result)
                 .or_else(|| grep_internal_cap_truncation(tool_result, &text, match_limit_reached)),
             match_limit_reached,
-            lines_truncated: bag_value(tool_result.details.as_ref(), "linesTruncated") == Some(Value::Bool(true)),
+            lines_truncated: bag_value(tool_result.details.as_ref(), "linesTruncated")
+                == Some(Value::Bool(true)),
             output: text,
         })),
     }
@@ -254,7 +312,11 @@ fn grep_internal_cap_truncation(
         truncated: true,
         truncated_by: "matches".to_owned(),
         total_lines: 0,
-        output_lines: if text.is_empty() { 0 } else { text.split('\n').count() as u32 },
+        output_lines: if text.is_empty() {
+            0
+        } else {
+            text.split('\n').count() as u32
+        },
         output_bytes: text.len() as u32,
         first_line_exceeds_limit: false,
         last_line_partial: false,
@@ -264,14 +326,20 @@ fn grep_internal_cap_truncation(
 
 pub fn build_pi_grep_error(error: &str) -> PiGrepExecResult {
     PiGrepExecResult {
-        result: Some(pi_grep_exec_result::Result::Error(PiGrepExecError { error: error.to_owned() })),
+        result: Some(pi_grep_exec_result::Result::Error(PiGrepExecError {
+            error: error.to_owned(),
+        })),
     }
 }
 
 pub fn build_pi_find_result(tool_result: &ToolResultMessage) -> PiFindExecResult {
     let text = pi_output_text(tool_result);
     if tool_result.is_error {
-        return build_pi_find_error(if text.is_empty() { "Find failed" } else { &text });
+        return build_pi_find_error(if text.is_empty() {
+            "Find failed"
+        } else {
+            &text
+        });
     }
     PiFindExecResult {
         result: Some(pi_find_exec_result::Result::Success(PiFindExecSuccess {
@@ -284,7 +352,9 @@ pub fn build_pi_find_result(tool_result: &ToolResultMessage) -> PiFindExecResult
 
 pub fn build_pi_find_error(error: &str) -> PiFindExecResult {
     PiFindExecResult {
-        result: Some(pi_find_exec_result::Result::Error(PiFindExecError { error: error.to_owned() })),
+        result: Some(pi_find_exec_result::Result::Error(PiFindExecError {
+            error: error.to_owned(),
+        })),
     }
 }
 
@@ -304,7 +374,9 @@ pub fn build_pi_ls_result(tool_result: &ToolResultMessage) -> PiLsExecResult {
 
 pub fn build_pi_ls_error(error: &str) -> PiLsExecResult {
     PiLsExecResult {
-        result: Some(pi_ls_exec_result::Result::Error(PiLsExecError { error: error.to_owned() })),
+        result: Some(pi_ls_exec_result::Result::Error(PiLsExecError {
+            error: error.to_owned(),
+        })),
     }
 }
 
@@ -326,7 +398,10 @@ pub fn build_mcp_state_result(
     let mut by_provider: Vec<(String, Vec<McpToolDefinition>)> = Vec::new();
     for tool in tools {
         let identifier = tool.provider_identifier.clone();
-        match by_provider.iter_mut().find(|(existing, _)| *existing == identifier) {
+        match by_provider
+            .iter_mut()
+            .find(|(existing, _)| *existing == identifier)
+        {
             Some((_, server_tools)) => server_tools.push(tool.clone()),
             None => by_provider.push((identifier, vec![tool.clone()])),
         }
@@ -334,7 +409,9 @@ pub fn build_mcp_state_result(
 
     let servers = by_provider
         .into_iter()
-        .filter(|(identifier, _)| server_identifiers.is_empty() || server_identifiers.contains(identifier))
+        .filter(|(identifier, _)| {
+            server_identifiers.is_empty() || server_identifiers.contains(identifier)
+        })
         .map(|(identifier, server_tools)| McpStateServer {
             server_name: identifier.clone(),
             server_identifier: identifier,
@@ -345,7 +422,9 @@ pub fn build_mcp_state_result(
         .collect();
 
     McpStateExecResult {
-        result: Some(mcp_state_exec_result::Result::Success(McpStateSuccess { servers })),
+        result: Some(mcp_state_exec_result::Result::Success(McpStateSuccess {
+            servers,
+        })),
     }
 }
 
@@ -357,7 +436,9 @@ pub fn build_mcp_state_result(
 /// anything to say", which is exactly true. Returns `None` for a request case
 /// this build does not model, which the dispatcher answers with
 /// `ExecClientThrow` rather than guessing a case.
-pub fn build_neutral_hook_result(request: Option<&ExecuteHookRequest>) -> Option<ExecuteHookResult> {
+pub fn build_neutral_hook_result(
+    request: Option<&ExecuteHookRequest>,
+) -> Option<ExecuteHookResult> {
     let response = match request?.request.as_ref()? {
         execute_hook_request::Request::PreCompact(_) => {
             execute_hook_response::Response::PreCompact(PreCompactRequestResponse::default())
@@ -375,22 +456,34 @@ pub fn build_neutral_hook_result(request: Option<&ExecuteHookRequest>) -> Option
             execute_hook_response::Response::PostToolUse(PostToolUseRequestResponse::default())
         }
         execute_hook_request::Request::PostToolUseFailure(_) => {
-            execute_hook_response::Response::PostToolUseFailure(PostToolUseFailureRequestResponse::default())
+            execute_hook_response::Response::PostToolUseFailure(
+                PostToolUseFailureRequestResponse::default(),
+            )
         }
         execute_hook_request::Request::BeforeSubmitPrompt(_) => {
-            execute_hook_response::Response::BeforeSubmitPrompt(BeforeSubmitPromptRequestResponse::default())
+            execute_hook_response::Response::BeforeSubmitPrompt(
+                BeforeSubmitPromptRequestResponse::default(),
+            )
         }
         execute_hook_request::Request::AfterAgentResponse(_) => {
-            execute_hook_response::Response::AfterAgentResponse(AfterAgentResponseRequestResponse::default())
+            execute_hook_response::Response::AfterAgentResponse(
+                AfterAgentResponseRequestResponse::default(),
+            )
         }
         execute_hook_request::Request::AfterAgentThought(_) => {
-            execute_hook_response::Response::AfterAgentThought(AfterAgentThoughtRequestResponse::default())
+            execute_hook_response::Response::AfterAgentThought(
+                AfterAgentThoughtRequestResponse::default(),
+            )
         }
         execute_hook_request::Request::Stop(_) => {
             execute_hook_response::Response::Stop(StopRequestResponse::default())
         }
     };
-    Some(ExecuteHookResult { response: Some(ExecuteHookResponse { response: Some(response) }) })
+    Some(ExecuteHookResult {
+        response: Some(ExecuteHookResponse {
+            response: Some(response),
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -398,7 +491,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn tool_result(content: &[ContentBlock], is_error: bool, details: Option<Value>) -> ToolResultMessage {
+    fn tool_result(
+        content: &[ContentBlock],
+        is_error: bool,
+        details: Option<Value>,
+    ) -> ToolResultMessage {
         ToolResultMessage {
             nested_calls: None,
             tool_call_id: "call-1".to_owned(),
@@ -442,7 +539,14 @@ mod tests {
                 let truncation = success.truncation.expect("truncation carried");
                 assert!(truncation.truncated);
                 assert_eq!(truncation.truncated_by, "lines");
-                assert_eq!((truncation.total_lines, truncation.output_lines, truncation.output_bytes), (10, 4, 12));
+                assert_eq!(
+                    (
+                        truncation.total_lines,
+                        truncation.output_lines,
+                        truncation.output_bytes
+                    ),
+                    (10, 4, 12)
+                );
                 assert!(truncation.first_line_exceeds_limit);
                 assert!(!truncation.last_line_partial);
             }
@@ -548,7 +652,9 @@ mod tests {
         let flat = json!({ "resultLimitReached": 3, "meta": { "limits": { "resultLimit": { "reached": 100 } } } });
         let ls = build_pi_ls_result(&tool_result(&[text("f")], false, Some(flat)));
         match ls.result {
-            Some(pi_ls_exec_result::Result::Success(success)) => assert_eq!(success.entry_limit_reached, Some(3)),
+            Some(pi_ls_exec_result::Result::Success(success)) => {
+                assert_eq!(success.entry_limit_reached, Some(3))
+            }
             other => panic!("expected success, got {other:?}"),
         }
     }
@@ -560,13 +666,19 @@ mod tests {
         match result.result {
             Some(pi_bash_exec_result::Result::Error(error)) => {
                 assert_eq!(error.error, "boom");
-                assert!(error.truncation.is_some_and(|truncation| truncation.truncated_by == "bytes"));
+                assert!(
+                    error
+                        .truncation
+                        .is_some_and(|truncation| truncation.truncated_by == "bytes")
+                );
             }
             other => panic!("expected error, got {other:?}"),
         }
         let empty = build_pi_bash_result(&tool_result(&[], true, None));
         match empty.result {
-            Some(pi_bash_exec_result::Result::Error(error)) => assert_eq!(error.error, "Command failed"),
+            Some(pi_bash_exec_result::Result::Error(error)) => {
+                assert_eq!(error.error, "Command failed")
+            }
             other => panic!("expected error, got {other:?}"),
         }
     }
@@ -579,7 +691,11 @@ mod tests {
             tool_name: name.to_owned(),
             ..McpToolDefinition::default()
         };
-        let tools = vec![tool("a", "pi-agent"), tool("b", "pi-agent"), tool("c", "other")];
+        let tools = vec![
+            tool("a", "pi-agent"),
+            tool("b", "pi-agent"),
+            tool("c", "other"),
+        ];
 
         let all = build_mcp_state_result(&tools, &[]);
         match all.result {

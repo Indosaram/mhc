@@ -36,8 +36,14 @@ fn default_stop_reason() -> String {
 #[derive(Debug)]
 pub enum FauxError {
     InvalidName(String),
-    Read { path: PathBuf, source: std::io::Error },
-    Parse { path: PathBuf, source: serde_json::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     Exhausted,
 }
 

@@ -48,7 +48,11 @@ pub fn to_cost_1e4(cost_usd: f64) -> f64 {
             .and_then(|digits| digits.parse().ok())
             .unwrap_or(0.0)
     };
-    if padded.as_bytes().get(point).is_some_and(|digit| *digit >= b'5') {
+    if padded
+        .as_bytes()
+        .get(point)
+        .is_some_and(|digit| *digit >= b'5')
+    {
         scaled + 1.0
     } else {
         scaled
@@ -83,7 +87,10 @@ pub fn turn_completed_properties(
         if optional && value.is_none() {
             return (0.0, true);
         }
-        match value.and_then(Value::as_f64).filter(|n| n.is_finite() && *n >= 0.0) {
+        match value
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite() && *n >= 0.0)
+        {
             Some(n) => (n, true),
             None => (0.0, false),
         }
@@ -103,8 +110,14 @@ pub fn turn_completed_properties(
         None => (0.0, false),
     };
     let (provider, model_id) = mask_provider_and_model(
-        message.get("provider").and_then(Value::as_str).unwrap_or_default(),
-        message.get("model").and_then(Value::as_str).unwrap_or_default(),
+        message
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        message
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
     );
     let cost_1e4 = to_cost_1e4(cost_total.0);
     let turn_index = event.get("turnIndex").and_then(Value::as_f64);
@@ -168,10 +181,7 @@ pub async fn handle_turn_end(options: &OmoNativeTurnHandlerOptions, event: &Valu
     ) else {
         return;
     };
-    options
-        .summary
-        .record_turn(&options.session_id, turn)
-        .await;
+    options.summary.record_turn(&options.session_id, turn).await;
     if invalid && let Some(diagnostics) = &options.diagnostics {
         diagnostics(&telemetry_core::TelemetryDiagnosticInput {
             event: TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
@@ -251,13 +261,9 @@ mod tests {
 
     #[test]
     fn complete_payload() {
-        let (properties, invalid, turn) = turn_completed_properties(
-            &event(),
-            "hashed-session",
-            0.05,
-            TelemetrySessionRole::Root,
-        )
-        .unwrap();
+        let (properties, invalid, turn) =
+            turn_completed_properties(&event(), "hashed-session", 0.05, TelemetrySessionRole::Root)
+                .unwrap();
         assert!(!invalid);
         assert_eq!(
             properties,

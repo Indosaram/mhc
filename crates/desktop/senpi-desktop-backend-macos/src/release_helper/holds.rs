@@ -15,11 +15,19 @@ impl Inputs {
         match input {
             Input::Key(code) if code < 128 => {
                 let bit = 1u128 << code;
-                self.keys = if down { self.keys | bit } else { self.keys & !bit };
+                self.keys = if down {
+                    self.keys | bit
+                } else {
+                    self.keys & !bit
+                };
             }
             Input::Button(number) if number < 32 => {
                 let bit = 1u32 << number;
-                self.buttons = if down { self.buttons | bit } else { self.buttons & !bit };
+                self.buttons = if down {
+                    self.buttons | bit
+                } else {
+                    self.buttons & !bit
+                };
             }
             Input::Key(_) | Input::Button(_) => {}
         }
@@ -165,7 +173,11 @@ pub(crate) fn transition(
     held: impl FnOnce(Input) -> bool,
 ) -> Option<Transition> {
     for (number, [down, up, dragged]) in (0u8..).zip(BUTTON_EVENTS) {
-        let input = Input::Button(if number < 2 { number } else { u8::try_from(button).unwrap_or(u8::MAX) });
+        let input = Input::Button(if number < 2 {
+            number
+        } else {
+            u8::try_from(button).unwrap_or(u8::MAX)
+        });
         if kind == down {
             return Some(Transition::Press(input));
         }
@@ -190,7 +202,11 @@ pub(crate) fn transition(
                 Some((flag, _)) => flags & flag != 0,
                 None => !held(key),
             };
-            Some(if down { Transition::Press(key) } else { Transition::Release(key) })
+            Some(if down {
+                Transition::Press(key)
+            } else {
+                Transition::Release(key)
+            })
         }
         _ => None,
     }

@@ -3,11 +3,12 @@
 use crate::google_fixtures;
 
 use google_fixtures::{
-    assistant, context, text, text_model, text_with_signature, thinking, thinking_with_signature, tool_call, user_text,
+    assistant, context, text, text_model, text_with_signature, thinking, thinking_with_signature,
+    tool_call, user_text,
 };
-use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};
+use maho_ai::api::google_shared::{ConvertMessagesOptions, convert_messages};
 use maho_ai::types::{ContentBlock, Model, StopReason};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const VALID_SIG: &str = "AAAAAAAAAAAAAAAAAAAAAA==";
 
@@ -20,7 +21,10 @@ fn contents_for(model: &Model, assistant_model_id: &str, content: Vec<ContentBlo
     assistant_model.id = assistant_model_id.to_owned();
     serde_json::to_value(convert_messages(
         model,
-        &context(vec![user_text("Hi"), assistant(&assistant_model, content, StopReason::ToolUse)]),
+        &context(vec![
+            user_text("Hi"),
+            assistant(&assistant_model, content, StopReason::ToolUse),
+        ]),
         ConvertMessagesOptions::default(),
     ))
     .expect("contents serialize")
@@ -92,9 +96,15 @@ fn still_drops_unsigned_empty_blocks() {
     );
 
     let turn = model_turn(&contents);
-    assert_eq!(turn["parts"].as_array().expect("parts is an array").len(), 1);
+    assert_eq!(
+        turn["parts"].as_array().expect("parts is an array").len(),
+        1
+    );
     assert!(turn["parts"][0].get("functionCall").is_none());
-    assert_eq!(turn["parts"][0]["text"], json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"ls\"\n}"));
+    assert_eq!(
+        turn["parts"][0]["text"],
+        json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"ls\"\n}")
+    );
 }
 
 #[test]
@@ -111,8 +121,14 @@ fn still_drops_signed_empty_blocks_from_a_different_provider_or_model() {
     );
 
     let turn = model_turn(&contents);
-    assert_eq!(turn["parts"].as_array().expect("parts is an array").len(), 1);
+    assert_eq!(
+        turn["parts"].as_array().expect("parts is an array").len(),
+        1
+    );
     assert!(turn["parts"][0].get("functionCall").is_none());
-    assert_eq!(turn["parts"][0]["text"], json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"ls\"\n}"));
+    assert_eq!(
+        turn["parts"][0]["text"],
+        json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"ls\"\n}")
+    );
     assert!(!turn.to_string().contains(VALID_SIG));
 }

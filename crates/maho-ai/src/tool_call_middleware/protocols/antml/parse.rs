@@ -5,14 +5,18 @@ use crate::tool_call_middleware::protocols::anthropic_xml::parse::parse_invoke_g
 use crate::tool_call_middleware::types::{ParsedToolCall, ParserOptions};
 use crate::types::Tool;
 
-pub fn parse_antml_generated_text(text: &str, tools: &[Tool], options: Option<&ParserOptions>) -> Vec<ParsedToolCall> {
+pub fn parse_antml_generated_text(
+    text: &str,
+    tools: &[Tool],
+    options: Option<&ParserOptions>,
+) -> Vec<ParsedToolCall> {
     parse_invoke_generated_text(text, tools, &ANTML_INVOKE_CONFIG, options)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn tool(name: &str) -> Tool {
         Tool {
@@ -33,7 +37,14 @@ mod tests {
         assert_eq!(calls[0].name, "get_weather");
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "Bash".into(),
+            description: "Run a shell command".into(),
+            parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn edit_tool() -> Tool {
@@ -65,7 +76,10 @@ mod tests {
             "</function_calls>"
         );
         let calls = parse_antml_generated_text(text, &[bash_tool()], None);
-        let commands: Vec<&str> = calls.iter().filter_map(|call| call.arguments.get("command").and_then(Value::as_str)).collect();
+        let commands: Vec<&str> = calls
+            .iter()
+            .filter_map(|call| call.arguments.get("command").and_then(Value::as_str))
+            .collect();
         assert_eq!(commands, vec!["one", "two"]);
     }
 
@@ -88,8 +102,14 @@ mod tests {
         );
         let calls = parse_antml_generated_text(text, &[edit_tool()], None);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].arguments.get("file_path"), Some(&json!("some/file.py")));
-        assert_eq!(calls[0].arguments.get("edits"), Some(&json!([{"oldText": "a", "newText": "b"}])));
+        assert_eq!(
+            calls[0].arguments.get("file_path"),
+            Some(&json!("some/file.py"))
+        );
+        assert_eq!(
+            calls[0].arguments.get("edits"),
+            Some(&json!([{"oldText": "a", "newText": "b"}]))
+        );
     }
 
     #[test]
@@ -109,9 +129,18 @@ mod tests {
             })),
         };
         let text = r#"<invoke name="Bash"><parameter name="command"></parameter></invoke>"#;
-        let strict_tool = Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string", "minLength": 1}}}), output_schema: None, freeform: None, constrained_sampling: None };
+        let strict_tool = Tool {
+            name: "Bash".into(),
+            description: "Run a shell command".into(),
+            parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string", "minLength": 1}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        };
         assert!(parse_antml_generated_text(text, &[strict_tool], Some(&options)).is_empty());
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not process antml tool call, keeping original text."]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not process antml tool call, keeping original text."]
+        );
     }
-
 }

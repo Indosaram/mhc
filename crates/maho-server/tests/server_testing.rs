@@ -579,7 +579,8 @@ async fn disconnect_releases_the_attachment_without_publishing_a_detach() {
         !connection
             .frames()
             .iter()
-            .any(|message| message["type"] == json!("attachment") && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
+            .any(|message| message["type"] == json!("attachment")
+                && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
     );
     assert_eq!(
         host.latest_harness("session-1")
@@ -633,7 +634,10 @@ async fn unexpected_session_termination_publishes_a_detach_to_the_attached_clien
         .terminate(ServerError::new("internal_error", "session crashed"))
         .await;
     connection
-        .wait_for(|message| message["type"] == json!("attachment") && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
+        .wait_for(|message| {
+            message["type"] == json!("attachment")
+                && matches!(message["attachment"], maho_chord::types::JsonValue::Null)
+        })
         .await;
     drop(sender);
     tokio::time::timeout(Duration::from_secs(2), serving)
@@ -760,7 +764,8 @@ async fn removing_another_session_keeps_the_current_attachment() {
         !connection
             .frames()
             .iter()
-            .any(|message| message["type"] == json!("attachment") && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
+            .any(|message| message["type"] == json!("attachment")
+                && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
     );
     assert_eq!(
         inner
@@ -778,7 +783,10 @@ async fn removing_another_session_keeps_the_current_attachment() {
         .await
         .unwrap();
     connection
-        .wait_for(|message| message["type"] == json!("attachment") && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
+        .wait_for(|message| {
+            message["type"] == json!("attachment")
+                && matches!(message["attachment"], maho_chord::types::JsonValue::Null)
+        })
         .await;
     drop(sender);
     tokio::time::timeout(Duration::from_secs(2), serving)
@@ -826,10 +834,14 @@ async fn failed_detach_release_still_publishes_the_detach_and_surfaces_the_error
     assert!(
         frames
             .iter()
-            .any(|message| message["type"] == json!("attachment") && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
+            .any(|message| message["type"] == json!("attachment")
+                && matches!(message["attachment"], maho_chord::types::JsonValue::Null))
     );
     assert_eq!(
-        frames.iter().find(|message| message["id"] == json!("d")).unwrap()["ok"],
+        frames
+            .iter()
+            .find(|message| message["id"] == json!("d"))
+            .unwrap()["ok"],
         json!(false)
     );
     harness.state.lock().await.fail_attachment_release = None;

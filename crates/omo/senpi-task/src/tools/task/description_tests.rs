@@ -13,7 +13,9 @@ use crate::tools::task::description::{
 fn agents() -> BTreeMap<String, AgentDefinition> {
     let mut plan_reviewer = AgentDefinition::named("plan-reviewer");
     plan_reviewer.description = "Deep reasoning".to_string().into();
-    [("plan-reviewer".to_string(), plan_reviewer)].into_iter().collect()
+    [("plan-reviewer".to_string(), plan_reviewer)]
+        .into_iter()
+        .collect()
 }
 
 fn empty_config() -> Value {
@@ -85,8 +87,16 @@ fn given_task_prompt_surfaces_when_inspected_then_target_selection_belongs_to_de
         .iter()
         .any(|guideline| target_rule.is_match(guideline));
 
-    assert!(Regex::new(r"\bprompt\b").expect("valid regex").is_match(&description));
-    assert!(Regex::new(r"\btasks\b").expect("valid regex").is_match(&description));
+    assert!(
+        Regex::new(r"\bprompt\b")
+            .expect("valid regex")
+            .is_match(&description)
+    );
+    assert!(
+        Regex::new(r"\btasks\b")
+            .expect("valid regex")
+            .is_match(&description)
+    );
     assert!(!duplicated_target_rule);
 }
 

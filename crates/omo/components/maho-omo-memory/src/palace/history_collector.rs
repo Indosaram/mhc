@@ -82,7 +82,8 @@ pub fn collect_history_with(
     let mut total_diff_bytes = 0usize;
     let mut commits = Vec::new();
     for record in metadata {
-        let (diff, diff_truncated) = cap_diff(diffs.get(&record.sha).map(String::as_str), total_diff_bytes);
+        let (diff, diff_truncated) =
+            cap_diff(diffs.get(&record.sha).map(String::as_str), total_diff_bytes);
         total_diff_bytes += diff.as_deref().map_or(0, |value| value.chars().count());
         commits.push(PalaceCommit {
             short_sha: record.sha.chars().take(7).collect(),
@@ -102,17 +103,29 @@ pub fn collect_history_with(
 fn read_metadata(repo: &GitMemoryRepo, exec: &dyn GitExec) -> Vec<CommitMetadata> {
     let limit = HISTORY_MAX_COMMITS.to_string();
     let format = format!("--format={RECORD_SEPARATOR}%H%x00%an%x00%aI%x00%s%x00%b");
-    let raw = git_log(repo, exec, &["-n", limit.as_str(), "--first-parent", format.as_str()]);
+    let raw = git_log(
+        repo,
+        exec,
+        &["-n", limit.as_str(), "--first-parent", format.as_str()],
+    );
     let mut records = Vec::new();
     for record in raw.split(RECORD_SEPARATOR) {
         if record.trim().is_empty() {
             continue;
         }
-        let fields = record.trim_start_matches('\n').split('\0').collect::<Vec<_>>();
+        let fields = record
+            .trim_start_matches('\n')
+            .split('\0')
+            .collect::<Vec<_>>();
         if fields.len() < 4 {
             continue;
         }
-        let (sha, author, date, subject) = (fields[0].trim(), fields[1].trim(), fields[2].trim(), fields[3].trim());
+        let (sha, author, date, subject) = (
+            fields[0].trim(),
+            fields[1].trim(),
+            fields[2].trim(),
+            fields[3].trim(),
+        );
         if !is_full_sha(sha) {
             continue;
         }
@@ -130,7 +143,17 @@ fn read_metadata(repo: &GitMemoryRepo, exec: &dyn GitExec) -> Vec<CommitMetadata
 fn read_diffs(repo: &GitMemoryRepo, exec: &dyn GitExec) -> BTreeMap<String, String> {
     let limit = HISTORY_RECENT_DIFFS.to_string();
     let format = format!("--format={RECORD_SEPARATOR}%H");
-    let raw = git_log(repo, exec, &["-n", limit.as_str(), "--first-parent", format.as_str(), "-p"]);
+    let raw = git_log(
+        repo,
+        exec,
+        &[
+            "-n",
+            limit.as_str(),
+            "--first-parent",
+            format.as_str(),
+            "-p",
+        ],
+    );
     let mut diffs = BTreeMap::new();
     for chunk in raw.split(RECORD_SEPARATOR) {
         if chunk.trim().is_empty() {
@@ -210,8 +233,21 @@ mod tests {
             .find(|commit| commit.subject.starts_with("feat(reflection)"))
             .unwrap();
         assert!(reflection.is_reflection);
-        assert!(reflection.diff.as_deref().unwrap_or_default().contains("learned thing"));
-        assert_eq!(history.commits.iter().filter(|commit| commit.is_reflection).count(), 1);
+        assert!(
+            reflection
+                .diff
+                .as_deref()
+                .unwrap_or_default()
+                .contains("learned thing")
+        );
+        assert_eq!(
+            history
+                .commits
+                .iter()
+                .filter(|commit| commit.is_reflection)
+                .count(),
+            1
+        );
         assert_eq!(
             history.caps,
             PalaceHistoryCaps {
@@ -229,6 +265,8 @@ mod tests {
         assert!(is_reflection_commit_subject("chore(reflection): prune"));
         assert!(is_reflection_commit_subject("merge(reflection): run 12"));
         assert!(!is_reflection_commit_subject("feat(memory): unrelated"));
-        assert!(!is_reflection_commit_subject("docs: mentions reflection later"));
+        assert!(!is_reflection_commit_subject(
+            "docs: mentions reflection later"
+        ));
     }
 }

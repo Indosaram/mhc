@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::git::exec::{GitExec, GitExecOptions, GitExecResult};
-use crate::sync::redact::{SecretPatternClass, redact_secret_like_material, scan_secret_like_material};
+use crate::sync::redact::{
+    SecretPatternClass, redact_secret_like_material, scan_secret_like_material,
+};
 
 use super::completion_repair::STABLE_LOG_OUTPUT;
 
@@ -92,7 +94,10 @@ fn find_commit_secret_failures(
             detail,
         });
     };
-    for record in records.iter().filter(|record| record.dst_mode == SUBMODULE_MODE) {
+    for record in records
+        .iter()
+        .filter(|record| record.dst_mode == SUBMODULE_MODE)
+    {
         flag(
             &record.path,
             format!(
@@ -155,10 +160,7 @@ struct DiffTreeRecord {
 /// Every file version one commit introduces, against EACH parent for merges (`-m`), including type
 /// changes (`T`) whose destination blob is a new file version too - a symlink target is a blob and
 /// can carry an evaded credential.
-fn list_commit_file_versions(
-    run: &Run<'_>,
-    commit: &str,
-) -> Result<Vec<DiffTreeRecord>, String> {
+fn list_commit_file_versions(run: &Run<'_>, commit: &str) -> Result<Vec<DiffTreeRecord>, String> {
     let mut argv: Vec<&str> = STABLE_LOG_OUTPUT.to_vec();
     argv.extend([
         "diff-tree",
@@ -206,10 +208,7 @@ fn list_commit_file_versions(
     Ok(records)
 }
 
-fn read_blob_contents(
-    run: &Run<'_>,
-    oids: &[String],
-) -> Result<BTreeMap<String, String>, String> {
+fn read_blob_contents(run: &Run<'_>, oids: &[String]) -> Result<BTreeMap<String, String>, String> {
     let mut unique: Vec<&str> = Vec::new();
     for oid in oids {
         if !unique.contains(&oid.as_str()) {

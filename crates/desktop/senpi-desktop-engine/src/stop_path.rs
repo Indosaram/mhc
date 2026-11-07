@@ -14,8 +14,8 @@ use senpi_desktop_core::protocol_params::StopRequestSource;
 use senpi_desktop_core::protocol_results::{StopPathKind, StopPathStatus};
 use senpi_desktop_core::types::DesktopCapabilities;
 use senpi_desktop_safety::{
-    ActiveStopPath, Chord, HostRelay, ResumeToken, StopPathError, StopPathFailure, StopPathListener,
-    StopPolicy, StopSource, Supervisor, SupervisorStatus,
+    ActiveStopPath, Chord, HostRelay, ResumeToken, StopPathError, StopPathFailure,
+    StopPathListener, StopPolicy, StopSource, Supervisor, SupervisorStatus,
 };
 use senpi_desktop_session::BackendSelection;
 
@@ -39,7 +39,9 @@ fn global_listener(selection: &BackendSelection) -> Option<Listener> {
 
 #[cfg(target_os = "macos")]
 fn platform_listener() -> Option<Listener> {
-    Some(Box::new(senpi_desktop_backend_macos::CgEventTapListener::new()))
+    Some(Box::new(
+        senpi_desktop_backend_macos::CgEventTapListener::new(),
+    ))
 }
 
 /// Mirrors the session's display-server choice: `WAYLAND_DISPLAY` wins over
@@ -125,7 +127,11 @@ pub struct StopPaths {
 }
 
 impl StopPaths {
-    pub fn new(supervisor: Arc<Supervisor>, selection: &BackendSelection, resume: ResumeToken) -> Self {
+    pub fn new(
+        supervisor: Arc<Supervisor>,
+        selection: &BackendSelection,
+        resume: ResumeToken,
+    ) -> Self {
         let announced = Announced::from(supervisor.status());
         Self {
             state: Mutex::new(State {
@@ -154,11 +160,17 @@ impl StopPaths {
     pub fn start(&self, chord: &Chord) -> StopPathStatus {
         let mut state = self.state.lock();
         let failure = state.global.as_mut().and_then(|global| {
-            if global.is_live() { None } else { global.start(chord, Arc::clone(&self.supervisor)).err() }
+            if global.is_live() {
+                None
+            } else {
+                global.start(chord, Arc::clone(&self.supervisor)).err()
+            }
         });
         state.global_failure = failure.as_ref().map(|error| match error {
             StopPathError::PermissionDenied(_) => StopPathFailure::AccessibilityDenied,
-            StopPathError::InvalidChord(_) | StopPathError::Unavailable { .. } => StopPathFailure::Unavailable,
+            StopPathError::InvalidChord(_) | StopPathError::Unavailable { .. } => {
+                StopPathFailure::Unavailable
+            }
         });
         state.global_failure_reason = failure.map(|error| match error {
             StopPathError::PermissionDenied(_) => "accessibility-denied".to_owned(),

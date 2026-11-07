@@ -220,16 +220,14 @@ async fn send(
     );
     let mut notifications = client.notifications.subscribe();
     let mut notifications_open = true;
-    let call_params =
-        json!({"name":entry.tool,"arguments":args,"_meta":{"progressToken":token}});
+    let call_params = json!({"name":entry.tool,"arguments":args,"_meta":{"progressToken":token}});
     // `mcpRequestOptions(current.requestOrigin?.(), {signal})`: a fresh binding-issued origin per attempt.
     let mut options = crate::request_origin::mcp_request_options(
         entry.request_origin.as_ref().and_then(|origin| origin()),
         Some(signal.clone()),
     );
     // call.ts `onprogress`: the modern engine reports attempt progress and synthesized task status here.
-    let (progress_sender, mut engine_progress) =
-        tokio::sync::mpsc::unbounded_channel::<Value>();
+    let (progress_sender, mut engine_progress) = tokio::sync::mpsc::unbounded_channel::<Value>();
     options.on_progress = Some(std::sync::Arc::new(move |progress: Value| {
         let _ = progress_sender.send(progress);
     }));
@@ -253,9 +251,7 @@ async fn send(
             structured_content: None,
             is_error: None,
         })
-        .map_err(|error| {
-            McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string())
-        })
+        .map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))
     };
     // tool-client.ts: a modern call validates structured output against the declared output schema.
     let request = async {
@@ -271,12 +267,7 @@ async fn send(
             .map(Value::Object)
         } else {
             client
-                .request_with_options(
-                    "tools/call",
-                    call_params,
-                    entry.request_timeout,
-                    &options,
-                )
+                .request_with_options("tools/call", call_params, entry.request_timeout, &options)
                 .await
         }
     };

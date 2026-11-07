@@ -5,9 +5,9 @@ use crate::agents::{
     AgentDefinition, AgentResolutionResult, ResolveAgentOptions, agent_fallback_chain,
     agent_model_candidates, map_omo_config_agents, resolve_agent,
 };
+use crate::category::exclude_model_patterns;
 use crate::category::{ResolveCategoryOptions, resolve_category};
 use crate::host::{HostError, SenpiModelRegistry};
-use crate::category::exclude_model_patterns;
 use crate::model_exclusion::without_excluded_models;
 use serde_json::Value;
 use std::collections::BTreeSet;

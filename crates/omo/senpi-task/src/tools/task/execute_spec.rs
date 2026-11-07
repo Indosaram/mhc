@@ -58,7 +58,8 @@ pub struct TaskOmoConfig {
 }
 
 /// Task tool dependencies used by spec building.
-pub type TaskStart = Arc<dyn Fn(&ManagerStartSpec, &[String]) -> crate::manager::types::StartResult + Send + Sync>;
+pub type TaskStart =
+    Arc<dyn Fn(&ManagerStartSpec, &[String]) -> crate::manager::types::StartResult + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct TaskToolDeps {
     pub start: Option<TaskStart>,

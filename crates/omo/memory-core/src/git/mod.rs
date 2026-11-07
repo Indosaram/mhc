@@ -1,29 +1,29 @@
 //! Git repository layer for MemFS storage.
 
 pub mod commit_outcome;
-pub mod stable_log_output;
-pub mod git_activity_lock;
-pub mod local_filesystem;
-pub mod repo_commit_times;
-pub mod repo_config_defaults;
-pub mod repo_lock_sweep;
-pub mod lock_scans;
 pub mod config_lock;
 pub mod errors;
 pub mod exec;
+pub mod git_activity_lock;
+pub mod local_filesystem;
+pub mod lock_scans;
 pub mod path_state;
 pub mod path_state_files;
 pub mod path_state_index;
 pub mod porcelain;
 pub mod repo;
 pub mod repo_arguments;
+pub mod repo_commit_times;
+pub mod repo_config_defaults;
 pub mod repo_head;
+pub mod repo_lock_sweep;
 pub mod repo_log;
 pub mod repo_maintenance;
 pub mod repo_status;
 pub mod repo_tree;
 pub mod repo_types;
 pub mod secret;
+pub mod stable_log_output;
 pub mod worktree_mutation_queue;
 
 pub use config_lock::*;
@@ -64,8 +64,6 @@ pub(crate) mod repo_tests;
 #[path = "repo_secret_tests.rs"]
 mod repo_secret_tests;
 
-
 #[cfg(test)]
 #[path = "repo_maintenance_tests.rs"]
 mod repo_maintenance_tests;
-

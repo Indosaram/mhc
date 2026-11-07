@@ -49,7 +49,9 @@ impl Fixture {
 #[tokio::test]
 async fn t10_stdout_and_stderr_are_separate() {
     let fixture = fixture();
-    let value = fixture.run(json!({"command": "echo hi; echo err >&2"})).await;
+    let value = fixture
+        .run(json!({"command": "echo hi; echo err >&2"}))
+        .await;
     assert_eq!(value["stdout"], "hi\n");
     assert_eq!(value["stderr"], "err\n");
     assert_eq!(value["exitCode"], 0);

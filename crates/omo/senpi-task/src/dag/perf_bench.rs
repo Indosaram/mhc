@@ -14,12 +14,16 @@ use std::time::Instant;
 
 use crate::dag::graph::{DagDefinition, DagNodeInput};
 use crate::dag::handle::{DagWaitSurfaceOptions, create_dag_wait_surface};
-use crate::dag::manager::{DagHistoryParams, DagManager, DagManagerOptions, DagStartParams, create_dag_manager};
+use crate::dag::manager::{
+    DagHistoryParams, DagManager, DagManagerOptions, DagStartParams, create_dag_manager,
+};
 use crate::dag::scheduler::{DagSchedulerOptions, create_dag_scheduler};
 use crate::dag::store::{DagFileStore, DagStoreConfig, DagStoreOptions, create_dag_file_store};
 use crate::dag::types::{DagNodeTarget, DagRunId, DagRunStatus};
 use crate::manager::TaskManager;
-use crate::manager::manager_tests::fakes::{FakeHandle, FakeRunner, HarnessOptions, Project, config, make_manager};
+use crate::manager::manager_tests::fakes::{
+    FakeHandle, FakeRunner, HarnessOptions, Project, config, make_manager,
+};
 
 struct Counting;
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
@@ -74,7 +78,11 @@ struct Sample {
 }
 
 fn measure<T>(f: impl FnOnce() -> T) -> (Sample, T) {
-    let (allocs0, bytes0, live0) = (ALLOCS.load(Relaxed), BYTES.load(Relaxed), LIVE.load(Relaxed));
+    let (allocs0, bytes0, live0) = (
+        ALLOCS.load(Relaxed),
+        BYTES.load(Relaxed),
+        LIVE.load(Relaxed),
+    );
     PEAK.store(live0, Relaxed);
     let cpu0 = cpu_us();
     let start = Instant::now();
@@ -117,7 +125,11 @@ fn node(id: String, depends_on: Vec<String>) -> DagNodeInput {
         id,
         target: DagNodeTarget::Category("quick".to_string()),
         label: None,
-        depends_on: if depends_on.is_empty() { None } else { Some(depends_on) },
+        depends_on: if depends_on.is_empty() {
+            None
+        } else {
+            Some(depends_on)
+        },
         task_summary: None,
         description: None,
         load_skills: None,
@@ -126,25 +138,55 @@ fn node(id: String, depends_on: Vec<String>) -> DagNodeInput {
 
 fn wide(key: &str) -> DagDefinition {
     let roots: Vec<String> = (0..63).map(|i| format!("n{i}")).collect();
-    let mut nodes: Vec<DagNodeInput> = roots.iter().map(|id| node(id.clone(), Vec::new())).collect();
+    let mut nodes: Vec<DagNodeInput> = roots
+        .iter()
+        .map(|id| node(id.clone(), Vec::new()))
+        .collect();
     nodes.push(node("join".to_string(), roots));
-    DagDefinition { key: key.to_string(), name: key.to_string(), nodes }
+    DagDefinition {
+        key: key.to_string(),
+        name: key.to_string(),
+        nodes,
+    }
 }
 
 fn layered(key: &str) -> DagDefinition {
     let mut nodes = Vec::new();
     for layer in 0..8 {
         for i in 0..8 {
-            let deps = if layer == 0 { Vec::new() } else { (0..8).map(|j| format!("l{}n{j}", layer - 1)).collect() };
+            let deps = if layer == 0 {
+                Vec::new()
+            } else {
+                (0..8).map(|j| format!("l{}n{j}", layer - 1)).collect()
+            };
             nodes.push(node(format!("l{layer}n{i}"), deps));
         }
     }
-    DagDefinition { key: key.to_string(), name: key.to_string(), nodes }
+    DagDefinition {
+        key: key.to_string(),
+        name: key.to_string(),
+        nodes,
+    }
 }
 
 fn chain(key: &str) -> DagDefinition {
-    let nodes = (0..64).map(|i| node(format!("c{i}"), if i == 0 { Vec::new() } else { vec![format!("c{}", i - 1)] })).collect();
-    DagDefinition { key: key.to_string(), name: key.to_string(), nodes }
+    let nodes = (0..64)
+        .map(|i| {
+            node(
+                format!("c{i}"),
+                if i == 0 {
+                    Vec::new()
+                } else {
+                    vec![format!("c{}", i - 1)]
+                },
+            )
+        })
+        .collect();
+    DagDefinition {
+        key: key.to_string(),
+        name: key.to_string(),
+        nodes,
+    }
 }
 
 struct Fixture {
@@ -166,7 +208,11 @@ fn fixture() -> Fixture {
         in_process: Some(Arc::clone(&runner)),
         process: Some(Arc::clone(&runner)),
         planner: Some(Arc::new(|spec| {
-            let target = spec.category.as_deref().or(spec.subagent_type.as_deref()).unwrap_or("default");
+            let target = spec
+                .category
+                .as_deref()
+                .or(spec.subagent_type.as_deref())
+                .unwrap_or("default");
             Ok(crate::manager::types::ResolvedChildPlan {
                 model: format!("scripted/{target}"),
                 category: spec.category.clone(),
@@ -179,18 +225,37 @@ fn fixture() -> Fixture {
     let store = Arc::new(
         create_dag_file_store(
             &DagStoreConfig::new(harness.project.dir.path()),
-            DagStoreOptions { fsync: Some(false), ..Default::default() },
+            DagStoreOptions {
+                fsync: Some(false),
+                ..Default::default()
+            },
         )
         .unwrap(),
     );
-    let manager = create_dag_manager(DagManagerOptions { store: Arc::clone(&store), new_run_id: None, now: None, materialize_skills: None, settings: None });
-    Fixture { _project: harness.project, store, manager, tasks: Arc::new(harness.manager) }
+    let manager = create_dag_manager(DagManagerOptions {
+        store: Arc::clone(&store),
+        new_run_id: None,
+        now: None,
+        materialize_skills: None,
+        settings: None,
+    });
+    Fixture {
+        _project: harness.project,
+        store,
+        manager,
+        tasks: Arc::new(harness.manager),
+    }
 }
 
 fn run_once(fixture: &Fixture, definition: DagDefinition) -> DagRunId {
     let started = fixture
         .manager
-        .start(DagStartParams { parent_model: None, definition, parent_session_id: PARENT.into(), root_session_id: ROOT.into() })
+        .start(DagStartParams {
+            parent_model: None,
+            definition,
+            parent_session_id: PARENT.into(),
+            root_session_id: ROOT.into(),
+        })
         .unwrap();
     let run_id = started.snapshot.run_id.clone();
     let scheduler = create_dag_scheduler(DagSchedulerOptions {
@@ -225,7 +290,11 @@ fn perf_bench_dag() {
     const WARMUP: usize = 2;
     const ITERS: usize = 15;
     type Scenario = (&'static str, fn(&str) -> DagDefinition);
-    let scenarios: [Scenario; 3] = [("dag_wide64", wide), ("dag_layered8x8", layered), ("dag_chain64", chain)];
+    let scenarios: [Scenario; 3] = [
+        ("dag_wide64", wide),
+        ("dag_layered8x8", layered),
+        ("dag_chain64", chain),
+    ];
     for (name, build) in scenarios {
         let mut samples = Vec::new();
         for iteration in 0..WARMUP + ITERS {
@@ -281,7 +350,11 @@ fn perf_bench_hooks() {
     let en = "Please refactor the scheduler so the journal stops cloning the checkpoint on every append, then run the tests and report the results back to me. ".repeat(12);
     let ko = "스케줄러를 리팩터링해서 저널이 append 할 때마다 체크포인트를 복제하지 않게 하고 테스트를 돌려서 결과를 알려줘. ".repeat(12);
     let en_keyword = format!("{en} ulw");
-    let cases: [(&str, &str); 3] = [("en_plain", &en), ("ko_plain", &ko), ("en_keyword", &en_keyword)];
+    let cases: [(&str, &str); 3] = [
+        ("en_plain", &en),
+        ("ko_plain", &ko),
+        ("en_keyword", &en_keyword),
+    ];
     let bench = |name: String, f: &dyn Fn()| {
         let mut samples = Vec::new();
         for iteration in 0..9 {

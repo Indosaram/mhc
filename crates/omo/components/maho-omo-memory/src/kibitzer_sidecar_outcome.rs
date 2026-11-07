@@ -90,7 +90,9 @@ impl KibitzerWakeEnd {
         match self {
             KibitzerWakeEnd::Failed { cause, .. } => Some((*cause).into()),
             KibitzerWakeEnd::Cancelled => Some(KibitzerWakeCause::Shutdown),
-            KibitzerWakeEnd::Completed | KibitzerWakeEnd::ToolBudgetExceeded | KibitzerWakeEnd::Deadline => None,
+            KibitzerWakeEnd::Completed
+            | KibitzerWakeEnd::ToolBudgetExceeded
+            | KibitzerWakeEnd::Deadline => None,
         }
     }
 }
@@ -183,7 +185,11 @@ const CHILD_TURN_CANCELLED_OUTSIDE: &str = "child turn was cancelled outside the
 /// aborted turn (it settles as `cancelled`); otherwise the settled outcome is classified the way
 /// the one-shot judge classified it, with the "empty response twice" rule keeping a silent child
 /// out of the failure streak.
-pub fn classify_wake_end(settle: &JudgeSettle, abort: Option<KibitzerWakeAbort>, accepted: &[RecallNudge]) -> KibitzerWakeEnd {
+pub fn classify_wake_end(
+    settle: &JudgeSettle,
+    abort: Option<KibitzerWakeAbort>,
+    accepted: &[RecallNudge],
+) -> KibitzerWakeEnd {
     match abort {
         Some(KibitzerWakeAbort::ToolBudget) => return KibitzerWakeEnd::ToolBudgetExceeded,
         Some(KibitzerWakeAbort::Deadline) => return KibitzerWakeEnd::Deadline,
@@ -191,11 +197,15 @@ pub fn classify_wake_end(settle: &JudgeSettle, abort: Option<KibitzerWakeAbort>,
         None => {}
     }
     match classify_judge_turn(settle, accepted) {
-        JudgeTurnClassification::Completed | JudgeTurnClassification::Empty => KibitzerWakeEnd::Completed,
+        JudgeTurnClassification::Completed | JudgeTurnClassification::Empty => {
+            KibitzerWakeEnd::Completed
+        }
         JudgeTurnClassification::Failed { cause, reason } => KibitzerWakeEnd::Failed {
             cause: match cause {
                 JudgeFailureCause::ChildFailed => KibitzerWakeFailureCause::ChildFailed,
-                JudgeFailureCause::ChildFailedUpstream => KibitzerWakeFailureCause::ChildFailedUpstream,
+                JudgeFailureCause::ChildFailedUpstream => {
+                    KibitzerWakeFailureCause::ChildFailedUpstream
+                }
             },
             reason,
             configuration: None,
@@ -211,7 +221,10 @@ pub fn classify_wake_end(settle: &JudgeSettle, abort: Option<KibitzerWakeAbort>,
 
 /// A child that never started: the same shape as a failed turn so the streak and backoff treat both
 /// alike - unless the refusal is a configuration state, which never feeds the streak.
-pub fn start_failure_end(message: &str, configuration: Option<KibitzerWakeConfiguration>) -> KibitzerWakeEnd {
+pub fn start_failure_end(
+    message: &str,
+    configuration: Option<KibitzerWakeConfiguration>,
+) -> KibitzerWakeEnd {
     KibitzerWakeEnd::Failed {
         cause: KibitzerWakeFailureCause::StartFailed,
         reason: normalize_gate_reason(Some(message)),
@@ -221,5 +234,11 @@ pub fn start_failure_end(message: &str, configuration: Option<KibitzerWakeConfig
 
 /// `isDiagnosticWakeEnd`: true only for a `failed` wake that is not a configuration state.
 pub fn is_diagnostic_wake_end(end: &KibitzerWakeEnd) -> bool {
-    matches!(end, KibitzerWakeEnd::Failed { configuration: None, .. })
+    matches!(
+        end,
+        KibitzerWakeEnd::Failed {
+            configuration: None,
+            ..
+        }
+    )
 }

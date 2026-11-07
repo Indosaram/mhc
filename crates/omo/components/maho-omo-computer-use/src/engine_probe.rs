@@ -310,22 +310,23 @@ pub async fn probe_computer_use_engine(
     if refusal_enabled
         && matches!(&result, EngineProbeResult::Err { code, .. } if code == "handshake-failed")
         && let Ok(Ok(status)) = timeout(Duration::from_millis(timeout_ms), guard.child.wait()).await
+    {
+        guard.pid = None;
+        let _ = (&mut stderr_guard.handle).await;
+        let tail = stderr_tail
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if status.code() == Some(1)
+            && let Some(reason) = refusal.lock().unwrap_or_else(|e| e.into_inner()).finish()
         {
-            guard.pid = None;
-            let _ = (&mut stderr_guard.handle).await;
-            let tail = stderr_tail
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            if status.code() == Some(1)
-                && let Some(reason) = refusal.lock().unwrap_or_else(|e| e.into_inner()).finish() {
-                    return EngineProbeResult::LaunchContextUnavailable {
-                        message: launch_context_message(&reason),
-                        reason,
-                        diagnostic: tail,
-                    };
-                }
+            return EngineProbeResult::LaunchContextUnavailable {
+                message: launch_context_message(&reason),
+                reason,
+                diagnostic: tail,
+            };
         }
+    }
     guard.kill_group();
     guard.wait_exited().await;
     result

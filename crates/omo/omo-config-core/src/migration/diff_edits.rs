@@ -13,8 +13,7 @@ fn deep_equal(left: &Value, right: &Value) -> bool {
                 })
         }
         (Value::Array(left), Value::Array(right)) => {
-            left.len() == right.len()
-                && left.iter().zip(right).all(|(a, b)| deep_equal(a, b))
+            left.len() == right.len() && left.iter().zip(right).all(|(a, b)| deep_equal(a, b))
         }
         (Value::Number(left), Value::Number(right)) => left.as_f64() == right.as_f64(),
         _ => left == right,
@@ -29,7 +28,11 @@ pub(super) fn without_marker(document: &Value) -> Value {
     document
 }
 
-pub(super) fn diff_edits(before: &Value, after: &Value, path: &[PathSegment]) -> Vec<OmoConfigEdit> {
+pub(super) fn diff_edits(
+    before: &Value,
+    after: &Value,
+    path: &[PathSegment],
+) -> Vec<OmoConfigEdit> {
     let mut edits = Vec::new();
     let (Some(before), Some(after)) = (before.as_object(), after.as_object()) else {
         return edits;
@@ -38,7 +41,10 @@ pub(super) fn diff_edits(before: &Value, after: &Value, path: &[PathSegment]) ->
         if !is_unsafe_object_key(key) && !after.contains_key(key) {
             let mut next = path.to_vec();
             next.push(PathSegment::Key(key.clone()));
-            edits.push(OmoConfigEdit { path: next, value: None });
+            edits.push(OmoConfigEdit {
+                path: next,
+                value: None,
+            });
         }
     }
     for (key, value) in after {
@@ -56,7 +62,10 @@ pub(super) fn diff_edits(before: &Value, after: &Value, path: &[PathSegment]) ->
                 continue;
             }
         }
-        edits.push(OmoConfigEdit { path: next, value: Some(value.clone()) });
+        edits.push(OmoConfigEdit {
+            path: next,
+            value: Some(value.clone()),
+        });
     }
     edits
 }
@@ -77,7 +86,13 @@ mod tests {
         assert_eq!(edits.len(), 3);
         assert_eq!(edits[0].path, vec![PathSegment::Key("gone".into())]);
         assert_eq!(edits[0].value, None);
-        assert_eq!(edits[1].path, vec![PathSegment::Key("task".into()), PathSegment::Key("remove".into())]);
+        assert_eq!(
+            edits[1].path,
+            vec![
+                PathSegment::Key("task".into()),
+                PathSegment::Key("remove".into())
+            ]
+        );
         assert_eq!(edits[1].value, None);
         assert_eq!(edits[2].value, Some(Value::Null));
     }

@@ -128,7 +128,9 @@ impl TelemetrySpan {
         T: Send + 'static,
         F: FnOnce(TelemetrySpan) -> BoxFuture<'static, T> + Send + 'static,
     {
-        TelemetryContext(self.0.clone()).start_span(options, callback).await
+        TelemetryContext(self.0.clone())
+            .start_span(options, callback)
+            .await
     }
 
     /// `span.addEvent(name, attributes?)`.
@@ -154,13 +156,19 @@ impl TelemetrySpan {
 /// `NOOP_TELEMETRY_CONTEXT`.
 pub fn noop_telemetry_context() -> TelemetryContext {
     static CONTEXT: std::sync::OnceLock<TelemetryContext> = std::sync::OnceLock::new();
-    CONTEXT.get_or_init(|| TelemetryContext(Arc::new(NoopTelemetry))).clone()
+    CONTEXT
+        .get_or_init(|| TelemetryContext(Arc::new(NoopTelemetry)))
+        .clone()
 }
 
 struct NoopTelemetry;
 
 impl Telemetry for NoopTelemetry {
-    fn start_span_raw(&self, _options: SpanOptions, callback: SpanRunner) -> BoxFuture<'static, ()> {
+    fn start_span_raw(
+        &self,
+        _options: SpanOptions,
+        callback: SpanRunner,
+    ) -> BoxFuture<'static, ()> {
         Box::pin(async move { callback(TelemetrySpan(Arc::new(NoopTelemetry))).await })
     }
 
@@ -221,7 +229,10 @@ fn copy_status(status: &SpanStatus) -> SpanStatus {
 fn automatic_error_status(error: Option<&str>) -> SpanStatus {
     match error {
         Some(message) => SpanStatus::Error {
-            error: Some(SpanStatusError { name: "Error".to_string(), message: message.to_string() }),
+            error: Some(SpanStatusError {
+                name: "Error".to_string(),
+                message: message.to_string(),
+            }),
         },
         None => SpanStatus::Error { error: None },
     }
@@ -273,7 +284,10 @@ impl Telemetry for InMemoryTelemetry {
                 guard.spans.len() - 1
             };
 
-            let span = TelemetrySpan(Arc::new(InMemoryTelemetry { state: state.clone(), span: Some(index) }));
+            let span = TelemetrySpan(Arc::new(InMemoryTelemetry {
+                state: state.clone(),
+                span: Some(index),
+            }));
             callback(span).await;
 
             let mut guard = state.lock().expect("telemetry state poisoned");
@@ -338,7 +352,10 @@ impl InMemoryTelemetryContext {
     }
 
     pub fn context(&self) -> TelemetryContext {
-        TelemetryContext(Arc::new(InMemoryTelemetry { state: self.state.clone(), span: None }))
+        TelemetryContext(Arc::new(InMemoryTelemetry {
+            state: self.state.clone(),
+            span: None,
+        }))
     }
 
     /// `getSpans()`: detached snapshots in span-start order.
@@ -369,7 +386,12 @@ impl InMemoryTelemetryContext {
 }
 
 /// `startAiSpan(name, attributes, callback, context)`.
-pub async fn start_ai_span<T, F>(name: &str, attributes: SpanAttributes, callback: F, context: &Context) -> T
+pub async fn start_ai_span<T, F>(
+    name: &str,
+    attributes: SpanAttributes,
+    callback: F,
+    context: &Context,
+) -> T
 where
     T: Send + 'static,
     F: FnOnce(TelemetrySpan, Context) -> BoxFuture<'static, T> + Send + 'static,
@@ -377,15 +399,27 @@ where
     let telemetry_context = get_telemetry_context(context);
     let parent = context.clone();
     telemetry_context
-        .start_span(SpanOptions { name: name.to_string(), attributes }, move |span| {
-            let child_context = with_telemetry_context(TelemetryContext::from_span(&span), &parent);
-            callback(span, child_context)
-        })
+        .start_span(
+            SpanOptions {
+                name: name.to_string(),
+                attributes,
+            },
+            move |span| {
+                let child_context =
+                    with_telemetry_context(TelemetryContext::from_span(&span), &parent);
+                callback(span, child_context)
+            },
+        )
         .await
 }
 
 /// `startHarnessSpan(name, attributes, callback, context)`.
-pub async fn start_harness_span<T, F>(name: &str, attributes: SpanAttributes, callback: F, context: &Context) -> T
+pub async fn start_harness_span<T, F>(
+    name: &str,
+    attributes: SpanAttributes,
+    callback: F,
+    context: &Context,
+) -> T
 where
     T: Send + 'static,
     F: FnOnce(TelemetrySpan, Context) -> BoxFuture<'static, T> + Send + 'static,
@@ -555,7 +589,10 @@ fn operation_error_attributes() -> Value {
 }
 
 fn operation_start_attributes_with_kind(kind: &str, description: &str) -> Value {
-    let mut map = operation_start_attributes().as_object().cloned().unwrap_or_default();
+    let mut map = operation_start_attributes()
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     map.insert(
         "pi.operation.kind".to_string(),
         json!({ "type": "string", "required": true, "values": [kind], "description": description }),
@@ -564,7 +601,10 @@ fn operation_start_attributes_with_kind(kind: &str, description: &str) -> Value 
 }
 
 fn operation_end_attributes(outcomes: &[&str], description: &str) -> Value {
-    let mut map = operation_error_attributes().as_object().cloned().unwrap_or_default();
+    let mut map = operation_error_attributes()
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     map.insert(
         "pi.operation.outcome".to_string(),
         json!({ "type": "string", "values": outcomes, "description": description }),
@@ -656,7 +696,10 @@ pub fn harness_telemetry_schema() -> Value {
             "status": { "default": "ok", "errorWhen": "Checkpoint work throws" }
         }),
     );
-    let mut turn_start = lane_and_operation_attributes().as_object().cloned().unwrap_or_default();
+    let mut turn_start = lane_and_operation_attributes()
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     turn_start.insert(
         "pi.turn.id".to_string(),
         json!({ "type": "string", "required": true, "cardinality": "high", "description": "Invocation-local turn id" }),
@@ -671,7 +714,10 @@ pub fn harness_telemetry_schema() -> Value {
             "status": { "default": "ok", "errorWhen": "Turn work throws" }
         }),
     );
-    let mut step_start = lane_and_operation_attributes().as_object().cloned().unwrap_or_default();
+    let mut step_start = lane_and_operation_attributes()
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     step_start.insert(
         "pi.step.kind".to_string(),
         json!({
@@ -921,7 +967,10 @@ pub fn harness_telemetry_schema() -> Value {
         }),
     );
 
-    Value::Object(Map::from_iter([("version".to_string(), json!(1)), ("spans".to_string(), Value::Object(spans))]))
+    Value::Object(Map::from_iter([
+        ("version".to_string(), json!(1)),
+        ("spans".to_string(), Value::Object(spans)),
+    ]))
 }
 
 /// `AGENT_TELEMETRY_SCHEMAS`.

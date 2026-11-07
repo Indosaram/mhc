@@ -17,7 +17,11 @@ thread_local! {
 
 pub fn env_value(name: &str) -> Option<String> {
     let overridden = ENV_OVERRIDES.with(|stack| {
-        stack.borrow().iter().rev().find_map(|layer| layer.get(name).cloned())
+        stack
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|layer| layer.get(name).cloned())
     });
     match overridden {
         Some(value) => value,
@@ -34,17 +38,26 @@ pub fn with_env_overrides<R>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> 
             });
         }
     }
-    let layer: HashMap<String, Option<String>> =
-        vars.iter().map(|(key, value)| ((*key).to_string(), value.map(str::to_string))).collect();
+    let layer: HashMap<String, Option<String>> = vars
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), value.map(str::to_string)))
+        .collect();
     ENV_OVERRIDES.with(|stack| stack.borrow_mut().push(layer));
     let _pop = Pop;
     f()
 }
 
 fn sanitize_header_value(value: &str, fallback: &str) -> String {
-    let sanitized: String = value.chars().filter(|ch| ('\u{20}'..='\u{7e}').contains(ch)).collect();
+    let sanitized: String = value
+        .chars()
+        .filter(|ch| ('\u{20}'..='\u{7e}').contains(ch))
+        .collect();
     let sanitized = sanitized.trim();
-    if sanitized.is_empty() { fallback.to_string() } else { sanitized.to_string() }
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized.to_string()
+    }
 }
 
 fn agent_dir() -> String {
@@ -85,9 +98,10 @@ fn arch() -> String {
 
 fn hostname() -> String {
     if let Some(name) = env_value("HOSTNAME")
-        && !name.trim().is_empty() {
-            return name;
-        }
+        && !name.trim().is_empty()
+    {
+        return name;
+    }
     // PERF-DIVERGENCE(senpi kimi identity): upstream calls os.hostname() per header build; this port memoizes the /proc hostname fallback (like release()) to avoid a blocking file read per call. The env override is still read each call.
     static PROC_HOSTNAME: OnceLock<String> = OnceLock::new();
     PROC_HOSTNAME
@@ -125,12 +139,17 @@ fn read_or_mint_device_id() -> String {
 
     let minted = uuid::Uuid::new_v4().to_string().replace('-', "");
     if std::fs::create_dir_all(&directory).is_ok()
-        && let Ok(mut file) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&path) {
-            use std::io::Write as _;
-            let _ = file.write_all(format!("{minted}\n").as_bytes());
-            #[cfg(unix)]
-            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+    {
+        use std::io::Write as _;
+        let _ = file.write_all(format!("{minted}\n").as_bytes());
+        #[cfg(unix)]
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     minted
 }
 
@@ -155,13 +174,28 @@ pub fn reset_kimi_device_id_for_tests() {
 
 pub fn kimi_code_identity_headers() -> Vec<(String, String)> {
     vec![
-        ("User-Agent".into(), format!("KimiCLI/{KIMI_CLIENT_VERSION}")),
+        (
+            "User-Agent".into(),
+            format!("KimiCLI/{KIMI_CLIENT_VERSION}"),
+        ),
         ("X-Msh-Platform".into(), KIMI_CLIENT_PLATFORM.to_string()),
         ("X-Msh-Version".into(), KIMI_CLIENT_VERSION.to_string()),
-        ("X-Msh-Device-Name".into(), sanitize_header_value(&hostname(), "unknown")),
-        ("X-Msh-Device-Model".into(), sanitize_header_value(device_model(), "unknown")),
-        ("X-Msh-Os-Version".into(), sanitize_header_value(release(), "unknown")),
-        ("X-Msh-Device-Id".into(), sanitize_header_value(&device_id(), "unknown")),
+        (
+            "X-Msh-Device-Name".into(),
+            sanitize_header_value(&hostname(), "unknown"),
+        ),
+        (
+            "X-Msh-Device-Model".into(),
+            sanitize_header_value(device_model(), "unknown"),
+        ),
+        (
+            "X-Msh-Os-Version".into(),
+            sanitize_header_value(release(), "unknown"),
+        ),
+        (
+            "X-Msh-Device-Id".into(),
+            sanitize_header_value(&device_id(), "unknown"),
+        ),
     ]
 }
 

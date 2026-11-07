@@ -1,7 +1,7 @@
 //! Port of `tools/team/messaging.ts`.
 
-use serde::{Deserialize, Deserializer, Serialize};
 use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
 use crate::tools::control::tool_result::{AgentToolResult, tool_result};
@@ -53,7 +53,10 @@ impl Serialize for TeamSendDetails {
                 map.serialize_entry("message_id", message_id)?;
                 map.end()
             }
-            Self::ToMembers { message_id, recipients } => {
+            Self::ToMembers {
+                message_id,
+                recipients,
+            } => {
                 let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("kind", "to_members")?;
                 map.serialize_entry("message_id", message_id)?;
@@ -86,13 +89,17 @@ impl<'de> Deserialize<'de> for TeamSendDetails {
         let wire = Wire::deserialize(deserializer)?;
         let missing = |field: &'static str| serde::de::Error::missing_field(field);
         match wire.kind.as_str() {
-            "to_lead" => Ok(Self::ToLead { message_id: wire.message_id.ok_or_else(|| missing("message_id"))? }),
+            "to_lead" => Ok(Self::ToLead {
+                message_id: wire.message_id.ok_or_else(|| missing("message_id"))?,
+            }),
             "to_members" => Ok(Self::ToMembers {
                 message_id: wire.message_id.ok_or_else(|| missing("message_id"))?,
                 recipients: wire.recipients.ok_or_else(|| missing("recipients"))?,
             }),
             kind => Ok(Self::Mailbox {
-                kind: MailboxErrorKind::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(kind))?,
+                kind: MailboxErrorKind::deserialize(
+                    serde::de::value::StrDeserializer::<D::Error>::new(kind),
+                )?,
                 to: wire.to.ok_or_else(|| missing("to"))?,
                 reason: wire.reason.ok_or_else(|| missing("reason"))?,
             }),

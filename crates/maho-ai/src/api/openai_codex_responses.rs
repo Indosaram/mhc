@@ -46,9 +46,7 @@ use crate::utils::diagnostics::{
 use crate::utils::error_body::{
     SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
 };
-use crate::utils::event_stream::{
-    AssistantMessageEventStream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::headers::headers_to_record;
 use crate::utils::lazy::error_stream;
 use crate::utils::retry_hint::{
@@ -1340,7 +1338,9 @@ async fn process_web_socket_stream(
                 let context = Context {
                     active_tool_names: None,
                     system_prompt: None,
-                    messages: vec![crate::types::Message::Assistant(std::sync::Arc::new(output.clone()))],
+                    messages: vec![crate::types::Message::Assistant(std::sync::Arc::new(
+                        output.clone(),
+                    ))],
                     tools: None,
                 };
                 let response_items: Vec<Value> = convert_responses_messages(
@@ -1979,10 +1979,15 @@ async fn drive(
             reqwest::header::HeaderValue::from_static("zstd"),
         );
     }
-    let sse_body: Bytes = Bytes::from(compressed_body.unwrap_or_else(|| body_json.clone().into_bytes()));
+    let sse_body: Bytes =
+        Bytes::from(compressed_body.unwrap_or_else(|| body_json.clone().into_bytes()));
 
     // PERF-DIVERGENCE(senpi openai-codex-responses.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let client = options
+        .request
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let url = resolve_codex_url(Some(model.base_url.as_str()));
     let max_retries = options.request.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
     let signal = options.request.signal.clone();

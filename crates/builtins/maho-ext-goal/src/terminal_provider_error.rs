@@ -1,68 +1,227 @@
-use maho_ai::types::{AssistantMessage, ContentBlock, StopReason};
-use maho_ext_api::AbortSource;
-use maho_core::agent_abort_provenance::AgentEndEvent;
 use crate::last_assistant_message::last_assistant_message;
+use maho_ai::types::{AssistantMessage, ContentBlock, StopReason};
+use maho_core::agent_abort_provenance::AgentEndEvent;
+use maho_ext_api::AbortSource;
 fn is_sdk_oauth_account_exhaustion(message: Option<&AssistantMessage>) -> bool {
-    let Some(message) = message else { return false; };
-    if message.api != "claude-sdk-oauth" || message.stop_reason != StopReason::Stop { return false; }
-    let text = message.content.iter().map(|part| match part { ContentBlock::Text(text) => text.text.as_str(), _ => "" }).collect::<Vec<_>>().join("\n");
-    ["API Error: Server is temporarily limiting requests", "accounts exhausted"].iter().all(|marker| text.contains(marker))
+    let Some(message) = message else {
+        return false;
+    };
+    if message.api != "claude-sdk-oauth" || message.stop_reason != StopReason::Stop {
+        return false;
+    }
+    let text = message
+        .content
+        .iter()
+        .map(|part| match part {
+            ContentBlock::Text(text) => text.text.as_str(),
+            _ => "",
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    [
+        "API Error: Server is temporarily limiting requests",
+        "accounts exhausted",
+    ]
+    .iter()
+    .all(|marker| text.contains(marker))
 }
 fn is_codex_policy_rejection(message: &AssistantMessage) -> bool {
-    if message.api != "openai-codex-responses" || message.stop_reason != StopReason::Error { return false; }
+    if message.api != "openai-codex-responses" || message.stop_reason != StopReason::Error {
+        return false;
+    }
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     PATTERN.get_or_init(|| match regex::Regex::new(r"(?i)\A(?:Codex error: )?This request was blocked by our safety systems\.(?: Reason: [^\n\r\x{2028}\x{2029}]+)?\z") { Ok(regex) => regex, Err(error) => panic!("invalid static policy pattern: {error}") }).is_match(message.error_message.as_deref().unwrap_or(""))
 }
 fn terminal_auth_status(message: &AssistantMessage) -> Option<u16> {
-    if message.stop_reason != StopReason::Error { return None; }
+    if message.stop_reason != StopReason::Error {
+        return None;
+    }
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     // A recently served credential can be refused for this request without being dead (#2491).
-    if message.credential_served_recently == Some(true) && message.provider_diagnostic.as_ref().is_some_and(|diagnostic| diagnostic.category == maho_ai::types::ProviderDiagnosticCategory::Auth) { return None; }
-    let captures=PATTERN.get_or_init(||regex::Regex::new(r"\A(401|403)\b").unwrap_or_else(|error|panic!("invalid static auth status pattern: {error}"))).captures(message.error_message.as_deref().unwrap_or(""))?;
+    if message.credential_served_recently == Some(true)
+        && message
+            .provider_diagnostic
+            .as_ref()
+            .is_some_and(|diagnostic| {
+                diagnostic.category == maho_ai::types::ProviderDiagnosticCategory::Auth
+            })
+    {
+        return None;
+    }
+    let captures = PATTERN
+        .get_or_init(|| {
+            regex::Regex::new(r"\A(401|403)\b")
+                .unwrap_or_else(|error| panic!("invalid static auth status pattern: {error}"))
+        })
+        .captures(message.error_message.as_deref().unwrap_or(""))?;
     captures.get(1)?.as_str().parse().ok()
 }
-pub fn terminal_provider_auth_failure(event: &AgentEndEvent) -> Option<crate::continuation_recovery::ProviderAuthBlock> {
-    if event.abort_source==Some(AbortSource::System)||event.will_retry { return None; }
-    let message=last_assistant_message(&event.messages)?;
-    Some(crate::continuation_recovery::ProviderAuthBlock { http_status:terminal_auth_status(message)?,provider:message.provider.clone(),model:message.model.clone() })
+pub fn terminal_provider_auth_failure(
+    event: &AgentEndEvent,
+) -> Option<crate::continuation_recovery::ProviderAuthBlock> {
+    if event.abort_source == Some(AbortSource::System) || event.will_retry {
+        return None;
+    }
+    let message = last_assistant_message(&event.messages)?;
+    Some(crate::continuation_recovery::ProviderAuthBlock {
+        http_status: terminal_auth_status(message)?,
+        provider: message.provider.clone(),
+        model: message.model.clone(),
+    })
 }
 pub fn did_terminal_policy_rejection_end_turn(event: &AgentEndEvent) -> bool {
-    if event.will_retry { return false; }
-    let Some(message) = last_assistant_message(&event.messages) else { return false; };
-    maho_ai::utils::stop_details::is_classifier_refusal(message) || is_codex_policy_rejection(message)
+    if event.will_retry {
+        return false;
+    }
+    let Some(message) = last_assistant_message(&event.messages) else {
+        return false;
+    };
+    maho_ai::utils::stop_details::is_classifier_refusal(message)
+        || is_codex_policy_rejection(message)
 }
 pub fn did_terminal_provider_error_end_turn(event: &AgentEndEvent) -> bool {
-    if event.abort_source == Some(AbortSource::System) || event.will_retry { return false; }
+    if event.abort_source == Some(AbortSource::System) || event.will_retry {
+        return false;
+    }
     let message = last_assistant_message(&event.messages);
-    if is_sdk_oauth_account_exhaustion(message) { return true; }
-    message.is_some_and(|message| message.stop_reason == StopReason::Error || message.stop_reason == StopReason::Aborted && event.abort_source != Some(AbortSource::User))
+    if is_sdk_oauth_account_exhaustion(message) {
+        return true;
+    }
+    message.is_some_and(|message| {
+        message.stop_reason == StopReason::Error
+            || message.stop_reason == StopReason::Aborted
+                && event.abort_source != Some(AbortSource::User)
+    })
 }
-#[cfg(test)] mod tests {
+#[cfg(test)]
+mod tests {
     use super::*;
-    fn event(stop_reason: StopReason, api: &str, error: &str, text: &str) -> AgentEndEvent { let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"text","text":text}],"api":api,"provider":"faux","model":"faux","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":stop_reason,"errorMessage":error,"timestamp":0})).unwrap(); AgentEndEvent { messages: vec![message], will_retry: false, aborted: false, abort_source: None } }
-    #[test] fn provider_error_is_terminal_without_retry() { let event = event(StopReason::Error, "faux", "failure", ""); let result = did_terminal_provider_error_end_turn(&event); assert!(result); }
-    #[test] fn recently_served_credential_auth_refusal_is_not_a_dead_credential() {
+    fn event(stop_reason: StopReason, api: &str, error: &str, text: &str) -> AgentEndEvent {
+        let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"text","text":text}],"api":api,"provider":"faux","model":"faux","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":stop_reason,"errorMessage":error,"timestamp":0})).unwrap();
+        AgentEndEvent {
+            messages: vec![message],
+            will_retry: false,
+            aborted: false,
+            abort_source: None,
+        }
+    }
+    #[test]
+    fn provider_error_is_terminal_without_retry() {
+        let event = event(StopReason::Error, "faux", "failure", "");
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(result);
+    }
+    #[test]
+    fn recently_served_credential_auth_refusal_is_not_a_dead_credential() {
         let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"anthropic","provider":"anthropic","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"403 Forbidden","credentialServedRecently":true,"providerDiagnostic":{"category":"auth","evidence":"structured_status"},"timestamp":0})).unwrap();
-        let served = AgentEndEvent { messages: vec![message], will_retry: false, aborted: false, abort_source: None };
+        let served = AgentEndEvent {
+            messages: vec![message],
+            will_retry: false,
+            aborted: false,
+            abort_source: None,
+        };
         assert!(terminal_provider_auth_failure(&served).is_none());
     }
-    #[test] fn auth_failure_requires_terminal_401_or_403_error() {
-        for (status,expected) in [("401 Unauthorized",Some(401)),("403 Forbidden",Some(403)),("500 Internal Server Error",None)] {
-            let event=event(StopReason::Error,"anthropic",status,"");
-            assert_eq!(terminal_provider_auth_failure(&event).map(|failure|failure.http_status),expected);
+    #[test]
+    fn auth_failure_requires_terminal_401_or_403_error() {
+        for (status, expected) in [
+            ("401 Unauthorized", Some(401)),
+            ("403 Forbidden", Some(403)),
+            ("500 Internal Server Error", None),
+        ] {
+            let event = event(StopReason::Error, "anthropic", status, "");
+            assert_eq!(
+                terminal_provider_auth_failure(&event).map(|failure| failure.http_status),
+                expected
+            );
         }
-        let mut retry=event(StopReason::Error,"anthropic","401 Unauthorized",""); retry.will_retry=true;
+        let mut retry = event(StopReason::Error, "anthropic", "401 Unauthorized", "");
+        retry.will_retry = true;
         assert!(terminal_provider_auth_failure(&retry).is_none());
-        let mut system=event(StopReason::Error,"anthropic","403 Forbidden",""); system.abort_source=Some(AbortSource::System);
+        let mut system = event(StopReason::Error, "anthropic", "403 Forbidden", "");
+        system.abort_source = Some(AbortSource::System);
         assert!(terminal_provider_auth_failure(&system).is_none());
     }
-    #[test] fn retrying_error_is_not_terminal() { let mut event = event(StopReason::Error, "faux", "failure", ""); event.will_retry = true; let result = did_terminal_provider_error_end_turn(&event); assert!(!result); }
-    #[test] fn system_abort_keeps_recovery_path() { let mut event = event(StopReason::Error, "faux", "failure", ""); event.abort_source = Some(AbortSource::System); let result = did_terminal_provider_error_end_turn(&event); assert!(!result); }
-    #[test] fn user_abort_is_not_provider_error() { let mut event = event(StopReason::Aborted, "faux", "", ""); event.abort_source = Some(AbortSource::User); let result = did_terminal_provider_error_end_turn(&event); assert!(!result); }
-    #[test] fn source_less_abort_is_terminal() { let event = event(StopReason::Aborted, "faux", "", ""); let result = did_terminal_provider_error_end_turn(&event); assert!(result); }
-    #[test] fn sdk_exhaustion_clean_stop_is_terminal() { let event = event(StopReason::Stop, "claude-sdk-oauth", "", "API Error: Server is temporarily limiting requests: 5 accounts exhausted. Retry in 123s"); let result = did_terminal_provider_error_end_turn(&event); assert!(result); }
-    #[test] fn exhaustion_requires_sdk_identity() { let event = event(StopReason::Stop, "faux", "", "API Error: Server is temporarily limiting requests: accounts exhausted"); let result = did_terminal_provider_error_end_turn(&event); assert!(!result); }
-    #[test] fn codex_diagnostic_is_terminal_policy_rejection() { let event = event(StopReason::Error, "openai-codex-responses", "Codex error: This request was blocked by our safety systems. Reason: rejected", ""); let result = did_terminal_policy_rejection_end_turn(&event); assert!(result); }
-    #[test] fn same_policy_sentence_other_api_is_not_policy_signal() { let event = event(StopReason::Error, "faux", "This request was blocked by our safety systems.", ""); let result = did_terminal_policy_rejection_end_turn(&event); assert!(!result); }
-    #[test] fn ordinary_assistant_text_is_not_policy_signal() { let event = event(StopReason::Stop, "openai-codex-responses", "", "This request was blocked by our safety systems."); let result = did_terminal_policy_rejection_end_turn(&event); assert!(!result); }
+    #[test]
+    fn retrying_error_is_not_terminal() {
+        let mut event = event(StopReason::Error, "faux", "failure", "");
+        event.will_retry = true;
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(!result);
+    }
+    #[test]
+    fn system_abort_keeps_recovery_path() {
+        let mut event = event(StopReason::Error, "faux", "failure", "");
+        event.abort_source = Some(AbortSource::System);
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(!result);
+    }
+    #[test]
+    fn user_abort_is_not_provider_error() {
+        let mut event = event(StopReason::Aborted, "faux", "", "");
+        event.abort_source = Some(AbortSource::User);
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(!result);
+    }
+    #[test]
+    fn source_less_abort_is_terminal() {
+        let event = event(StopReason::Aborted, "faux", "", "");
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(result);
+    }
+    #[test]
+    fn sdk_exhaustion_clean_stop_is_terminal() {
+        let event = event(
+            StopReason::Stop,
+            "claude-sdk-oauth",
+            "",
+            "API Error: Server is temporarily limiting requests: 5 accounts exhausted. Retry in 123s",
+        );
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(result);
+    }
+    #[test]
+    fn exhaustion_requires_sdk_identity() {
+        let event = event(
+            StopReason::Stop,
+            "faux",
+            "",
+            "API Error: Server is temporarily limiting requests: accounts exhausted",
+        );
+        let result = did_terminal_provider_error_end_turn(&event);
+        assert!(!result);
+    }
+    #[test]
+    fn codex_diagnostic_is_terminal_policy_rejection() {
+        let event = event(
+            StopReason::Error,
+            "openai-codex-responses",
+            "Codex error: This request was blocked by our safety systems. Reason: rejected",
+            "",
+        );
+        let result = did_terminal_policy_rejection_end_turn(&event);
+        assert!(result);
+    }
+    #[test]
+    fn same_policy_sentence_other_api_is_not_policy_signal() {
+        let event = event(
+            StopReason::Error,
+            "faux",
+            "This request was blocked by our safety systems.",
+            "",
+        );
+        let result = did_terminal_policy_rejection_end_turn(&event);
+        assert!(!result);
+    }
+    #[test]
+    fn ordinary_assistant_text_is_not_policy_signal() {
+        let event = event(
+            StopReason::Stop,
+            "openai-codex-responses",
+            "",
+            "This request was blocked by our safety systems.",
+        );
+        let result = did_terminal_policy_rejection_end_turn(&event);
+        assert!(!result);
+    }
 }

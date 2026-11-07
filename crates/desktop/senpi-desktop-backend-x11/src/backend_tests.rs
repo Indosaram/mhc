@@ -10,11 +10,11 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopPoint, DisplaySelector, FrontWindow, Target};
 use x11rb::protocol::xproto::AtomEnum;
 
-use crate::X11Backend;
+use crate::capture::fake::{viewable, FakeServer};
 use crate::capture::X11Capture;
-use crate::capture::fake::{FakeServer, viewable};
-use crate::input::X11Input;
 use crate::input::fake::{Call, FakeInputServer};
+use crate::input::X11Input;
+use crate::X11Backend;
 
 const EDITOR: u32 = 0x80_0001;
 const TERMINAL: u32 = 0x40_0001;
@@ -251,14 +251,12 @@ fn restore_cursor_preserves_a_newer_user_pointer_position() {
         backend.input_ref().unwrap().server().pointer.get(),
         (900, 700)
     );
-    assert!(
-        !backend
-            .input_ref()
-            .unwrap()
-            .server()
-            .calls()
-            .contains(&Call::Warp(12, 34))
-    );
+    assert!(!backend
+        .input_ref()
+        .unwrap()
+        .server()
+        .calls()
+        .contains(&Call::Warp(12, 34)));
 }
 
 #[test]

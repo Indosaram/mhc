@@ -1,11 +1,21 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf};
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum McpScope { User, Project, Local }
+pub enum McpScope {
+    User,
+    Project,
+    Local,
+}
 impl fmt::Display for McpScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(match self { Self::User => "user", Self::Project => "project", Self::Local => "local" }) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Local => "local",
+        })
+    }
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +27,11 @@ pub struct McpOAuthConfig {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum McpTransport { Http, Sse, Stdio }
+pub enum McpTransport {
+    Http,
+    Sse,
+    Stdio,
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ClaudeCodeMcpServer {
@@ -44,14 +58,35 @@ pub struct ClaudeCodeMcpServer {
 }
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub struct ClaudeCodeMcpConfig { pub mcp_servers: BTreeMap<String, ClaudeCodeMcpServer> }
+pub struct ClaudeCodeMcpConfig {
+    pub mcp_servers: BTreeMap<String, ClaudeCodeMcpServer>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerConfig {
-    Local { command: Vec<String>, #[serde(skip_serializing_if = "Option::is_none")] environment: Option<BTreeMap<String, String>>, enabled: bool },
-    Remote { url: String, #[serde(skip_serializing_if = "Option::is_none")] headers: Option<BTreeMap<String, String>>, #[serde(skip_serializing_if = "Option::is_none")] oauth: Option<McpOAuthConfig>, enabled: bool },
+    Local {
+        command: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        environment: Option<BTreeMap<String, String>>,
+        enabled: bool,
+    },
+    Remote {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        headers: Option<BTreeMap<String, String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        oauth: Option<McpOAuthConfig>,
+        enabled: bool,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoadedMcpServer { pub name: String, pub scope: McpScope, pub config: McpServerConfig }
+pub struct LoadedMcpServer {
+    pub name: String,
+    pub scope: McpScope,
+    pub config: McpServerConfig,
+}
 #[derive(Debug, Clone, Default)]
-pub struct McpLoadResult { pub servers: BTreeMap<String, McpServerConfig>, pub loaded_servers: Vec<LoadedMcpServer> }
+pub struct McpLoadResult {
+    pub servers: BTreeMap<String, McpServerConfig>,
+    pub loaded_servers: Vec<LoadedMcpServer>,
+}

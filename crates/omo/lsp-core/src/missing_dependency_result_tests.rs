@@ -1,8 +1,8 @@
 use super::*;
 use crate::lsp::errors::LspError;
+use crate::lsp::server_install_state::{InstallDecision, record_install_decision};
 use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::types::ServerLookupInfo;
-use crate::lsp::server_install_state::{InstallDecision, record_install_decision};
 use crate::request_context::join;
 use crate::request_context::parse_lsp_request_context;
 use crate::request_context::run_with_request_context;

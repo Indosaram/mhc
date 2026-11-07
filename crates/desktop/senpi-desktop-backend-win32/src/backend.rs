@@ -14,7 +14,7 @@ use senpi_desktop_core::types::{
 };
 
 use crate::ax::Win32Ax;
-use crate::capture::{Win32Capture, enable_per_monitor_awareness};
+use crate::capture::{enable_per_monitor_awareness, Win32Capture};
 use crate::input::{self, Win32Input};
 use crate::integrity::{self, IntegrityRid};
 

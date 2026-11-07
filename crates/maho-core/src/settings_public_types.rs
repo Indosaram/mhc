@@ -5,10 +5,13 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::compaction_settings_access::{CompactionModelOverride, CompactionModelSelector, CompactionSettings};
+pub use crate::compaction_settings_access::{
+    CompactionModelOverride, CompactionModelSelector, CompactionSettings,
+};
 pub use crate::settings_shapes::{
-    AskUserSettings, ContextFileLimits, ImageSettings, LookAtSettings, MarkdownSettings, MermaidRenderingMode, PromptCacheKeepAliveSettings,
-    PromptCacheSettings, ProviderConcurrencySettings, ResponsesSettings, ServiceTierPreference, ThinkingBudgetsSettings,
+    AskUserSettings, ContextFileLimits, ImageSettings, LookAtSettings, MarkdownSettings,
+    MermaidRenderingMode, PromptCacheKeepAliveSettings, PromptCacheSettings,
+    ProviderConcurrencySettings, ResponsesSettings, ServiceTierPreference, ThinkingBudgetsSettings,
 };
 pub use crate::terminal_settings::{BranchSummarySettings, TerminalSettings};
 
@@ -55,10 +58,18 @@ mod tests {
 
     #[test]
     fn retry_settings_deserialize_camel_case() {
-        let settings: RetrySettings =
-            serde_json::from_str(r#"{"enabled":true,"maxRetries":3,"provider":{"timeoutMs":1000,"maxRetries":2}}"#).expect("settings");
+        let settings: RetrySettings = serde_json::from_str(
+            r#"{"enabled":true,"maxRetries":3,"provider":{"timeoutMs":1000,"maxRetries":2}}"#,
+        )
+        .expect("settings");
         assert_eq!(settings.max_retries, Some(3));
-        assert_eq!(settings.provider.as_ref().and_then(|p| p.max_retries), Some(2));
-        assert_eq!(settings.provider.as_ref().and_then(|p| p.timeout_ms), Some(1000.0));
+        assert_eq!(
+            settings.provider.as_ref().and_then(|p| p.max_retries),
+            Some(2)
+        );
+        assert_eq!(
+            settings.provider.as_ref().and_then(|p| p.timeout_ms),
+            Some(1000.0)
+        );
     }
 }

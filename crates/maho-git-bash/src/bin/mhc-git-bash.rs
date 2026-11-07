@@ -77,4 +77,3 @@ async fn parent_exit() {
     // The server only serves on native Windows (spec §3); elsewhere stdin end of file suffices.
     std::future::pending::<()>().await
 }
-

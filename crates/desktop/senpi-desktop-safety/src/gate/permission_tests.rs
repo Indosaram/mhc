@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::{FakeClock, HEARTBEAT_FRESH_MS, StopPathId, StopSource};
+use crate::{FakeClock, StopPathId, StopSource, HEARTBEAT_FRESH_MS};
 
 struct View(bool);
 impl PermissionGate for View {

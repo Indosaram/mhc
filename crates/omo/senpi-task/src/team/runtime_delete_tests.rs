@@ -17,12 +17,13 @@ use crate::team::registry::TeamSpecSource;
 use crate::team::runtime::{TeamRuntimeError, create_team, delete_team};
 use crate::team::runtime_config::{TeamTaskBounds, to_team_core_config};
 use crate::team::runtime_fakes::{
-    CancelCall, DestroyCall, FakeDestruction, FakeTeamManager, FakeTeamManagerOptions, StartBehavior,
-    TeamBoundsOverrides, task_status, team_bounds,
+    CancelCall, DestroyCall, FakeDestruction, FakeTeamManager, FakeTeamManagerOptions,
+    StartBehavior, TeamBoundsOverrides, task_status, team_bounds,
 };
 use crate::team::runtime_types::{
-    CreateTeamDeps, CreateTeamResult, DeleteTeamDeps, TeamMemberCancelPort, TeamMemberDestructionPort,
-    TeamMemberReadPort, TeamMemberStartSpec, TeamRuntimeManagerPort, TeamStartResult,
+    CreateTeamDeps, CreateTeamResult, DeleteTeamDeps, TeamMemberCancelPort,
+    TeamMemberDestructionPort, TeamMemberReadPort, TeamMemberStartSpec, TeamRuntimeManagerPort,
+    TeamStartResult,
 };
 use crate::team::storage::{resolve_team_runtime_dirs, team_storage_base_dir};
 
@@ -61,7 +62,11 @@ fn create_deps(manager: &Arc<FakeTeamManager>, project: &Path) -> CreateTeamDeps
     }
 }
 
-fn delete_deps(manager: &Arc<FakeTeamManager>, destruction: &Arc<FakeDestruction>, project: &Path) -> DeleteTeamDeps {
+fn delete_deps(
+    manager: &Arc<FakeTeamManager>,
+    destruction: &Arc<FakeDestruction>,
+    project: &Path,
+) -> DeleteTeamDeps {
     DeleteTeamDeps {
         manager: manager.clone(),
         destruction: destruction.clone(),
@@ -116,8 +121,12 @@ fn completed_resident_team(status: &str, before_cancel_return: Option<BeforeCanc
     let team_spec = spec(json!({
         "members": [{ "name": "alpha", "kind": "category", "category": "quick", "prompt": "done" }]
     }));
-    let created = create_team(&team_spec, TeamSpecSource::Project, &create_deps(&manager, project.path()))
-        .expect("create team");
+    let created = create_team(
+        &team_spec,
+        TeamSpecSource::Project,
+        &create_deps(&manager, project.path()),
+    )
+    .expect("create team");
     let task_id = created
         .member_task_ids
         .values()
@@ -136,7 +145,8 @@ fn completed_resident_team(status: &str, before_cancel_return: Option<BeforeCanc
 }
 
 #[test]
-fn given_an_active_team_when_deleted_then_all_member_tasks_are_cancelled_and_the_runtime_dir_is_removed() {
+fn given_an_active_team_when_deleted_then_all_member_tasks_are_cancelled_and_the_runtime_dir_is_removed()
+ {
     // given
     let project = tempfile::tempdir().expect("tempdir");
     let manager = Arc::new(FakeTeamManager::new(FakeTeamManagerOptions::default()));
@@ -146,19 +156,30 @@ fn given_an_active_team_when_deleted_then_all_member_tasks_are_cancelled_and_the
             { "name": "beta", "kind": "category", "category": "deep", "prompt": "b" }
         ]
     }));
-    let created = create_team(&team_spec, TeamSpecSource::Project, &create_deps(&manager, project.path()))
-        .expect("create team");
+    let created = create_team(
+        &team_spec,
+        TeamSpecSource::Project,
+        &create_deps(&manager, project.path()),
+    )
+    .expect("create team");
     let team_run_id = created.runtime_state.team_run_id.clone();
     let runtime_dir = runtime_dir_of(project.path(), &team_run_id);
     let destruction = Arc::new(FakeDestruction::new());
 
     // when
-    let result = delete_team(&team_run_id, &delete_deps(&manager, &destruction, project.path())).expect("delete");
+    let result = delete_team(
+        &team_run_id,
+        &delete_deps(&manager, &destruction, project.path()),
+    )
+    .expect("delete");
 
     // then
     let mut cancelled = result.cancelled_task_ids.clone();
     cancelled.sort();
-    assert_eq!(cancelled, vec!["st_000001".to_string(), "st_000002".to_string()]);
+    assert_eq!(
+        cancelled,
+        vec!["st_000001".to_string(), "st_000002".to_string()]
+    );
     assert_eq!(manager.cancelled().len(), 2);
     assert!(!runtime_dir.exists());
 }
@@ -175,16 +196,26 @@ fn given_a_team_still_in_creating_when_deleted_then_an_invalid_state_error_is_th
         .to_string_lossy()
         .into_owned();
     let config = to_team_core_config(&settings(), &base_dir).expect("config");
-    let seeded =
-        create_runtime_state(&team_spec, Some("lead-session"), SpecSource::Project, &config).expect("seed state");
+    let seeded = create_runtime_state(
+        &team_spec,
+        Some("lead-session"),
+        SpecSource::Project,
+        &config,
+    )
+    .expect("seed state");
     let destruction = Arc::new(FakeDestruction::new());
 
     // when
-    let attempt = delete_team(&seeded.team_run_id, &delete_deps(&manager, &destruction, project.path()));
+    let attempt = delete_team(
+        &seeded.team_run_id,
+        &delete_deps(&manager, &destruction, project.path()),
+    );
 
     // then
     match attempt {
-        Err(TeamRuntimeError::Runtime(error)) => assert_eq!(error.code.as_str(), "invalid_delete_state"),
+        Err(TeamRuntimeError::Runtime(error)) => {
+            assert_eq!(error.code.as_str(), "invalid_delete_state")
+        }
         Err(other) => panic!("unexpected error: {other}"),
         Ok(_) => panic!("expected invalid_delete_state error"),
     }
@@ -198,8 +229,12 @@ fn given_an_already_deleted_team_when_deleted_again_then_it_is_a_no_op() {
     let team_spec = spec(json!({
         "members": [{ "name": "alpha", "kind": "category", "category": "quick", "prompt": "a" }]
     }));
-    let created = create_team(&team_spec, TeamSpecSource::Project, &create_deps(&manager, project.path()))
-        .expect("create team");
+    let created = create_team(
+        &team_spec,
+        TeamSpecSource::Project,
+        &create_deps(&manager, project.path()),
+    )
+    .expect("create team");
     let team_run_id = created.runtime_state.team_run_id.clone();
     let destruction = Arc::new(FakeDestruction::new());
     let deps = delete_deps(&manager, &destruction, project.path());
@@ -239,7 +274,10 @@ fn given_a_completed_resident_member_when_deleted_then_cancellation_stays_noop_w
             cause: "cancel",
         }]
     );
-    assert_eq!(status_of(&harness.manager, &harness.task_id), Some("completed".to_string()));
+    assert_eq!(
+        status_of(&harness.manager, &harness.task_id),
+        Some("completed".to_string())
+    );
     assert!(!runtime_dir.exists());
 }
 
@@ -279,11 +317,15 @@ fn given_a_member_sidecar_points_at_a_foreign_task_when_deleted_then_that_task_i
     assert_eq!(result.cancelled_task_ids, Vec::<String>::new());
     assert_eq!(harness.manager.cancelled(), Vec::<CancelCall>::new());
     assert_eq!(harness.destruction.calls(), Vec::<DestroyCall>::new());
-    assert_eq!(status_of(&harness.manager, &foreign.task_id), Some("completed".to_string()));
+    assert_eq!(
+        status_of(&harness.manager, &foreign.task_id),
+        Some("completed".to_string())
+    );
 }
 
 #[test]
-fn given_a_completed_resident_member_already_disposed_when_deleted_then_destruction_is_not_repeated() {
+fn given_a_completed_resident_member_already_disposed_when_deleted_then_destruction_is_not_repeated()
+ {
     // given
     let harness = completed_resident_team("completed", None);
     harness.manager.set_residency(
@@ -300,7 +342,8 @@ fn given_a_completed_resident_member_already_disposed_when_deleted_then_destruct
 }
 
 #[test]
-fn given_a_completed_resident_member_revives_between_residency_checks_when_deleted_then_destruction_is_skipped() {
+fn given_a_completed_resident_member_revives_between_residency_checks_when_deleted_then_destruction_is_skipped()
+ {
     // given
     let harness = completed_resident_team("completed", None);
     harness.manager.set_get_hook(
@@ -320,11 +363,15 @@ fn given_a_completed_resident_member_revives_between_residency_checks_when_delet
     // then
     assert_eq!(result.cancelled_task_ids, Vec::<String>::new());
     assert_eq!(harness.destruction.calls(), Vec::<DestroyCall>::new());
-    assert_eq!(status_of(&harness.manager, &harness.task_id), Some("running".to_string()));
+    assert_eq!(
+        status_of(&harness.manager, &harness.task_id),
+        Some("running".to_string())
+    );
 }
 
 #[test]
-fn given_a_resident_member_cancellation_is_in_flight_when_deleted_then_deletion_does_not_race_its_destruction() {
+fn given_a_resident_member_cancellation_is_in_flight_when_deleted_then_deletion_does_not_race_its_destruction()
+ {
     // given
     let destruction_attempts = Arc::new(AtomicUsize::new(0));
     let attempts = destruction_attempts.clone();
@@ -358,7 +405,7 @@ fn given_a_resident_member_cancellation_is_in_flight_when_deleted_then_deletion_
 
 #[test]
 fn given_two_delete_calls_for_one_team_when_invoked_concurrently_then_they_share_one_cancellation_and_one_destruction()
-{
+ {
     // given
     let harness = completed_resident_team("completed", None);
     let team_run_id = harness.team_run_id();

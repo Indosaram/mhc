@@ -6,24 +6,44 @@ use serde_json::Value;
 use std::sync::LazyLock;
 
 fn ci(pattern: &str) -> Regex {
-    RegexBuilder::new(pattern).case_insensitive(true).build().unwrap_or_else(|e| panic!("retry-hint pattern: {e}"))
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .unwrap_or_else(|e| panic!("retry-hint pattern: {e}"))
 }
 
-static MARKER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(retry-after-ms: (\d+)\)$").unwrap_or_else(|e| panic!("{e}")));
+static MARKER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(retry-after-ms: (\d+)\)$").unwrap_or_else(|e| panic!("{e}")));
 static RATE_LIMIT_BODY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    ci(r"\b(rate_limit_error|rate_limit_exceeded|too_many_requests|resource_exhausted|rate limit (?:exceeded|hit)|too many requests)\b")
+    ci(
+        r"\b(rate_limit_error|rate_limit_exceeded|too_many_requests|resource_exhausted|rate limit (?:exceeded|hit)|too many requests)\b",
+    )
 });
-const RATE_LIMIT_JSON_VALUES: &[&str] = &["rate_limit_error", "rate_limit_exceeded", "too_many_requests", "resource_exhausted"];
-static RETRY_AFTER_MS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+(?:\.\d+)?$").unwrap_or_else(|e| panic!("{e}")));
-static DELTA_SECONDS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+$").unwrap_or_else(|e| panic!("{e}")));
-static RETRY_DELAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+(?:\.\d+)?)\s*(ms|s|m)$").unwrap_or_else(|e| panic!("{e}")));
+const RATE_LIMIT_JSON_VALUES: &[&str] = &[
+    "rate_limit_error",
+    "rate_limit_exceeded",
+    "too_many_requests",
+    "resource_exhausted",
+];
+static RETRY_AFTER_MS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d+(?:\.\d+)?$").unwrap_or_else(|e| panic!("{e}")));
+static DELTA_SECONDS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d+$").unwrap_or_else(|e| panic!("{e}")));
+static RETRY_DELAY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\d+(?:\.\d+)?)\s*(ms|s|m)$").unwrap_or_else(|e| panic!("{e}")));
 static PROSE_MS_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"retry-after-ms:\s*(\d+)"));
 static PROSE_S_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"retry-after:\s*(\d+)"));
-static PROSE_WAIT_RE: LazyLock<Regex> =
-    LazyLock::new(|| ci(r"(?:try again|retry|wait after).*?(?:in\s+)?(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b"));
+static PROSE_WAIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    ci(
+        r"(?:try again|retry|wait after).*?(?:in\s+)?(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b",
+    )
+});
 static PROSE_RESET_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"resets?\s+at\s+(\S+)"));
-static PROSE_RESET_IN_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"\bresets?\s+in\s+(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b"));
-static DATA_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^data:\s*").unwrap_or_else(|e| panic!("{e}")));
+static PROSE_RESET_IN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    ci(r"\bresets?\s+in\s+(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b")
+});
+static DATA_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^data:\s*").unwrap_or_else(|e| panic!("{e}")));
 
 #[derive(Debug, Clone, Default)]
 pub struct RetryHintInput<'a> {
@@ -44,7 +64,9 @@ pub(crate) fn date_parse_ms(raw: &str) -> Option<i64> {
         .map(|date| date.timestamp_millis())
         .ok()
         .or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f").ok().map(|d| d.and_utc().timestamp_millis())
+            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|d| d.and_utc().timestamp_millis())
         })
 }
 
@@ -55,7 +77,8 @@ fn is_rate_limited(status: Option<u16>, body_text: &str) -> bool {
     try_parse_json(body_text).is_some_and(|json| {
         scan_value(&json, None, &mut |value, key| match value {
             Value::String(text) => {
-                key.is_some_and(|k| k.to_lowercase() == "retrydelay") || RATE_LIMIT_JSON_VALUES.contains(&text.as_str())
+                key.is_some_and(|k| k.to_lowercase() == "retrydelay")
+                    || RATE_LIMIT_JSON_VALUES.contains(&text.as_str())
             }
             Value::Number(number) => number.as_f64() == Some(429.0),
             _ => false,
@@ -75,11 +98,16 @@ fn from_retry_after_ms_header(headers: Option<&HeaderMap>) -> Option<u64> {
 fn from_retry_after_header(headers: Option<&HeaderMap>, now_ms: i64) -> Option<u64> {
     let raw = header(headers, "retry-after")?;
     if DELTA_SECONDS_RE.is_match(raw) {
-        return raw.parse::<u64>().ok().map(|seconds| seconds.saturating_mul(1000));
+        return raw
+            .parse::<u64>()
+            .ok()
+            .map(|seconds| seconds.saturating_mul(1000));
     }
     if raw.chars().any(|c| c.is_ascii_alphabetic()) {
         let parsed = date_parse_ms(raw)?;
-        let base = header(headers, "date").and_then(date_parse_ms).unwrap_or(now_ms);
+        let base = header(headers, "date")
+            .and_then(date_parse_ms)
+            .unwrap_or(now_ms);
         return Some(clamp_absolute(parsed, base));
     }
     None
@@ -87,9 +115,17 @@ fn from_retry_after_header(headers: Option<&HeaderMap>, now_ms: i64) -> Option<u
 
 fn from_x_rate_limit_reset(headers: Option<&HeaderMap>, now_ms: i64) -> Option<u64> {
     let mut best: Option<u64> = None;
-    for key in ["x-ratelimit-reset", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"] {
-        let Some(raw) = header(headers, key) else { continue };
-        let Ok(epoch) = raw.parse::<f64>() else { continue };
+    for key in [
+        "x-ratelimit-reset",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+    ] {
+        let Some(raw) = header(headers, key) else {
+            continue;
+        };
+        let Ok(epoch) = raw.parse::<f64>() else {
+            continue;
+        };
         if !epoch.is_finite() || epoch < 0.0 || !RETRY_AFTER_MS_RE.is_match(raw) {
             continue;
         }
@@ -150,7 +186,11 @@ fn convert_unit(number: f64, unit: &str) -> u64 {
     }
 }
 
-fn scan_value(value: &Value, key: Option<&str>, visit: &mut dyn FnMut(&Value, Option<&str>) -> bool) -> bool {
+fn scan_value(
+    value: &Value,
+    key: Option<&str>,
+    visit: &mut dyn FnMut(&Value, Option<&str>) -> bool,
+) -> bool {
     match value {
         Value::Array(items) => items.iter().any(|item| scan_value(item, key, visit)),
         Value::Object(map) => map.iter().any(|(k, v)| scan_value(v, Some(k), visit)),
@@ -204,22 +244,50 @@ mod tests {
     }
 
     fn hint(status: Option<u16>, h: &HeaderMap, body: &str) -> Option<u64> {
-        extract_429_retry_after_ms(&RetryHintInput { status, headers: Some(h), body_text: body }, Some(NOW))
+        extract_429_retry_after_ms(
+            &RetryHintInput {
+                status,
+                headers: Some(h),
+                body_text: body,
+            },
+            Some(NOW),
+        )
     }
 
     fn hint_default_now(status: Option<u16>, h: &HeaderMap, body: &str) -> Option<u64> {
-        extract_429_retry_after_ms(&RetryHintInput { status, headers: Some(h), body_text: body }, None)
+        extract_429_retry_after_ms(
+            &RetryHintInput {
+                status,
+                headers: Some(h),
+                body_text: body,
+            },
+            None,
+        )
     }
 
     #[test]
     fn relative_reset_hints_preserve_eligibility_and_precedence() {
         let empty = HeaderMap::new();
-        for (text, delay) in [("Limit resets in 1.5 minutes", 90_000), ("reset in 0 ms", 0), ("RESETS IN 2 SEC", 2_000)] {
+        for (text, delay) in [
+            ("Limit resets in 1.5 minutes", 90_000),
+            ("reset in 0 ms", 0),
+            ("RESETS IN 2 SEC", 2_000),
+        ] {
             assert_eq!(hint(Some(429), &empty, text), Some(delay));
         }
         assert_eq!(hint(Some(500), &empty, "resets in 2 seconds"), None);
-        assert_eq!(hint(Some(429), &headers(&[("retry-after", "3")]), "resets in 2 seconds"), Some(3_000));
-        assert_eq!(hint(Some(429), &empty, "retry in 1 second; resets in 2 seconds"), Some(1_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after", "3")]),
+                "resets in 2 seconds"
+            ),
+            Some(3_000)
+        );
+        assert_eq!(
+            hint(Some(429), &empty, "retry in 1 second; resets in 2 seconds"),
+            Some(1_000)
+        );
     }
 
     // ---------- 1. Eligibility gate ----------
@@ -227,14 +295,28 @@ mod tests {
     /// "429 status with generic body + retry-after header -> hint from header"
     #[test]
     fn eligibility_429_status_with_generic_body_and_retry_after_header() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after", "1258")]), r#"{"error":"rate limited"}"#), Some(1_258_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after", "1258")]),
+                r#"{"error":"rate limited"}"#
+            ),
+            Some(1_258_000)
+        );
     }
 
     /// "body rate_limit_error type on 200 SSE -> eligible, but no hint -> undefined"
     #[test]
     fn eligibility_body_rate_limit_error_type_on_200_sse_eligible_no_hint() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(200), &empty, r#"{"error":{"type":"rate_limit_error","message":"All tokens rate limited"}}"#), None);
+        assert_eq!(
+            hint(
+                Some(200),
+                &empty,
+                r#"{"error":{"type":"rate_limit_error","message":"All tokens rate limited"}}"#
+            ),
+            None
+        );
     }
 
     /// "500 with 'try again in 20 seconds' prose -> NOT eligible -> undefined"
@@ -262,21 +344,42 @@ mod tests {
     #[test]
     fn eligibility_200_with_rate_limit_exceeded_type_code() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(200), &empty, r#"{"error":{"type":"rate_limit_exceeded"}}"#), None);
+        assert_eq!(
+            hint(
+                Some(200),
+                &empty,
+                r#"{"error":{"type":"rate_limit_exceeded"}}"#
+            ),
+            None
+        );
     }
 
     /// "200 with resource_exhausted type -> eligible, no hint -> undefined"
     #[test]
     fn eligibility_200_with_resource_exhausted_type() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(200), &empty, r#"{"error":{"type":"resource_exhausted"}}"#), None);
+        assert_eq!(
+            hint(
+                Some(200),
+                &empty,
+                r#"{"error":{"type":"resource_exhausted"}}"#
+            ),
+            None
+        );
     }
 
     /// "200 with too_many_requests code string -> eligible, no hint -> undefined"
     #[test]
     fn eligibility_200_with_too_many_requests_code_string() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(200), &empty, r#"{"error":{"code":"too_many_requests"}}"#), None);
+        assert_eq!(
+            hint(
+                Some(200),
+                &empty,
+                r#"{"error":{"code":"too_many_requests"}}"#
+            ),
+            None
+        );
     }
 
     /// "200 with numeric code 429 -> eligible, no hint -> undefined"
@@ -298,20 +401,30 @@ mod tests {
     /// "strict integer"
     #[test]
     fn retry_after_ms_header_strict_integer() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after-ms", "5000")]), ""), Some(5000));
+        assert_eq!(
+            hint(Some(429), &headers(&[("retry-after-ms", "5000")]), ""),
+            Some(5000)
+        );
     }
 
     /// "strict decimal ceil"
     #[test]
     fn retry_after_ms_header_strict_decimal_ceil() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after-ms", "2.3")]), ""), Some(3));
+        assert_eq!(
+            hint(Some(429), &headers(&[("retry-after-ms", "2.3")]), ""),
+            Some(3)
+        );
     }
 
     /// "malformed 'later' falls through to retry-after: 12 -> 12000"
     #[test]
     fn retry_after_ms_header_malformed_later_falls_through() {
         assert_eq!(
-            hint(Some(429), &headers(&[("retry-after-ms", "later"), ("retry-after", "12")]), ""),
+            hint(
+                Some(429),
+                &headers(&[("retry-after-ms", "later"), ("retry-after", "12")]),
+                ""
+            ),
             Some(12_000)
         );
     }
@@ -319,13 +432,27 @@ mod tests {
     /// "'12junk' is malformed (strict full-string) -> falls through"
     #[test]
     fn retry_after_ms_header_12junk_is_malformed_falls_through() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after-ms", "12junk"), ("retry-after", "5")]), ""), Some(5_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after-ms", "12junk"), ("retry-after", "5")]),
+                ""
+            ),
+            Some(5_000)
+        );
     }
 
     /// "explicit zero beats lower-precedence positive prose 30s"
     #[test]
     fn retry_after_ms_header_explicit_zero_beats_lower_precedence_prose() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after-ms", "0")]), "try again in 30 seconds"), Some(0));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after-ms", "0")]),
+                "try again in 30 seconds"
+            ),
+            Some(0)
+        );
     }
 
     // ---------- 3. retry-after header (delta-seconds or HTTP-date) ----------
@@ -333,19 +460,32 @@ mod tests {
     /// "integer delta-seconds"
     #[test]
     fn retry_after_header_integer_delta_seconds() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after", "1258")]), "generic"), Some(1_258_000));
+        assert_eq!(
+            hint(Some(429), &headers(&[("retry-after", "1258")]), "generic"),
+            Some(1_258_000)
+        );
     }
 
     /// "explicit zero beats prose 30s"
     #[test]
     fn retry_after_header_explicit_zero_beats_prose() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after", "0")]), "try again in 30 seconds"), Some(0));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after", "0")]),
+                "try again in 30 seconds"
+            ),
+            Some(0)
+        );
     }
 
     /// "0.5 is malformed (strict integer) -> falls through"
     #[test]
     fn retry_after_header_0_5_is_malformed_falls_through() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after", "0.5")]), ""), None);
+        assert_eq!(
+            hint(Some(429), &headers(&[("retry-after", "0.5")]), ""),
+            None
+        );
     }
 
     /// "HTTP-date with skewed local clock using Date header"
@@ -360,7 +500,14 @@ mod tests {
             ("retry-after", "Tue, 14 Nov 2023 22:14:20 GMT"),
         ]);
         assert_eq!(
-            extract_429_retry_after_ms(&RetryHintInput { status: Some(429), headers: Some(&h), body_text: "" }, Some(skewed_now)),
+            extract_429_retry_after_ms(
+                &RetryHintInput {
+                    status: Some(429),
+                    headers: Some(&h),
+                    body_text: ""
+                },
+                Some(skewed_now)
+            ),
             Some(60_000)
         );
     }
@@ -386,7 +533,10 @@ mod tests {
     /// "malformed retry-after 'abc' falls through to x-ratelimit-reset"
     #[test]
     fn retry_after_header_malformed_abc_falls_through_to_x_ratelimit_reset() {
-        let h = headers(&[("retry-after", "abc"), ("x-ratelimit-reset", &(NOW / 1000 + 10).to_string())]);
+        let h = headers(&[
+            ("retry-after", "abc"),
+            ("x-ratelimit-reset", &(NOW / 1000 + 10).to_string()),
+        ]);
         assert_eq!(hint(Some(429), &h, ""), Some(10_000));
     }
 
@@ -419,7 +569,10 @@ mod tests {
     /// "malformed epoch 'soon' falls through"
     #[test]
     fn x_ratelimit_reset_malformed_epoch_soon_falls_through() {
-        let h = headers(&[("x-ratelimit-reset", "soon"), ("x-ratelimit-reset-tokens", &(NOW / 1000 + 5).to_string())]);
+        let h = headers(&[
+            ("x-ratelimit-reset", "soon"),
+            ("x-ratelimit-reset-tokens", &(NOW / 1000 + 5).to_string()),
+        ]);
         assert_eq!(hint(Some(429), &h, ""), Some(5_000));
     }
 
@@ -429,28 +582,40 @@ mod tests {
     #[test]
     fn json_retry_delay_0_25s_to_250() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"retryDelay":"0.25s"}"#), Some(250));
+        assert_eq!(
+            hint(Some(429), &empty, r#"{"retryDelay":"0.25s"}"#),
+            Some(250)
+        );
     }
 
     /// `{"retryDelay":"45s"} -> 45000`
     #[test]
     fn json_retry_delay_45s_to_45000() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"retryDelay":"45s"}"#), Some(45_000));
+        assert_eq!(
+            hint(Some(429), &empty, r#"{"retryDelay":"45s"}"#),
+            Some(45_000)
+        );
     }
 
     /// `{"retryDelay":"2m"} -> 120000`
     #[test]
     fn json_retry_delay_2m_to_120000() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"retryDelay":"2m"}"#), Some(120_000));
+        assert_eq!(
+            hint(Some(429), &empty, r#"{"retryDelay":"2m"}"#),
+            Some(120_000)
+        );
     }
 
     /// `{"retryDelay":"500ms"} -> 500`
     #[test]
     fn json_retry_delay_500ms_to_500() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"retryDelay":"500ms"}"#), Some(500));
+        assert_eq!(
+            hint(Some(429), &empty, r#"{"retryDelay":"500ms"}"#),
+            Some(500)
+        );
     }
 
     /// `{"retryDelay":500} numeric -> rejected, falls through`
@@ -471,21 +636,38 @@ mod tests {
     #[test]
     fn json_retry_delay_nested_max_wins() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"a":{"retryDelay":"5s"},"b":{"retryDelay":"60s"}}"#), Some(60_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                r#"{"a":{"retryDelay":"5s"},"b":{"retryDelay":"60s"}}"#
+            ),
+            Some(60_000)
+        );
     }
 
     /// "retryDelay in array elements"
     #[test]
     fn json_retry_delay_in_array_elements() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"[{"retryDelay":"3s"},{"retryDelay":"10s"}]"#), Some(10_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                r#"[{"retryDelay":"3s"},{"retryDelay":"10s"}]"#
+            ),
+            Some(10_000)
+        );
     }
 
     /// "SSE data: payload with retryDelay 45s -> 45000"
     #[test]
     fn json_retry_delay_sse_data_payload_45s() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(200), &empty, "data: {\"retryDelay\":\"45s\"}\n\n"), Some(45_000));
+        assert_eq!(
+            hint(Some(200), &empty, "data: {\"retryDelay\":\"45s\"}\n\n"),
+            Some(45_000)
+        );
     }
 
     /// "SSE data: payload with rate_limit_error body and retryDelay"
@@ -493,7 +675,11 @@ mod tests {
     fn json_retry_delay_sse_data_payload_with_rate_limit_error_body() {
         let empty = HeaderMap::new();
         assert_eq!(
-            hint(Some(200), &empty, "data: {\"error\":{\"type\":\"rate_limit_error\"},\"retryDelay\":\"45s\"}\n\n"),
+            hint(
+                Some(200),
+                &empty,
+                "data: {\"error\":{\"type\":\"rate_limit_error\"},\"retryDelay\":\"45s\"}\n\n"
+            ),
             Some(45_000)
         );
     }
@@ -504,7 +690,10 @@ mod tests {
     #[test]
     fn body_prose_ms_marker() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, "error: retry-after-ms: 5000"), Some(5000));
+        assert_eq!(
+            hint(Some(429), &empty, "error: retry-after-ms: 5000"),
+            Some(5000)
+        );
     }
 
     /// "seconds-marker: 'retry-after: 30'"
@@ -518,7 +707,10 @@ mod tests {
     #[test]
     fn body_prose_relative_try_again_in_20_seconds() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, "try again in 20 seconds"), Some(20_000));
+        assert_eq!(
+            hint(Some(429), &empty, "try again in 20 seconds"),
+            Some(20_000)
+        );
     }
 
     /// "relative prose: 'retry in 5 seconds'"
@@ -532,14 +724,20 @@ mod tests {
     #[test]
     fn body_prose_relative_wait_after_10_seconds() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, "wait after 10 seconds"), Some(10_000));
+        assert_eq!(
+            hint(Some(429), &empty, "wait after 10 seconds"),
+            Some(10_000)
+        );
     }
 
     /// "relative prose with minutes: 'try again in 3 minutes'"
     #[test]
     fn body_prose_relative_with_minutes() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, "try again in 3 minutes"), Some(180_000));
+        assert_eq!(
+            hint(Some(429), &empty, "try again in 3 minutes"),
+            Some(180_000)
+        );
     }
 
     /// "relative prose with ms: 'try again in 500 ms'"
@@ -554,21 +752,38 @@ mod tests {
     fn body_prose_resets_at_iso8601_with_tz() {
         let empty = HeaderMap::new();
         // 2023-11-14T22:14:20Z = 1700000060000, which is 60s after NOW.
-        assert_eq!(hint(Some(429), &empty, "rate limit resets at 2023-11-14T22:14:20Z"), Some(60_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                "rate limit resets at 2023-11-14T22:14:20Z"
+            ),
+            Some(60_000)
+        );
     }
 
     /// "resets at <ISO8601-with-tz> past -> 0"
     #[test]
     fn body_prose_resets_at_iso8601_with_tz_past() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, "rate limit resets at 2023-11-14T22:00:00Z"), Some(0));
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                "rate limit resets at 2023-11-14T22:00:00Z"
+            ),
+            Some(0)
+        );
     }
 
     /// "ms-marker beats seconds-marker (precedence)"
     #[test]
     fn body_prose_ms_marker_beats_seconds_marker() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, "retry-after: 30 retry-after-ms: 5000"), Some(5000));
+        assert_eq!(
+            hint(Some(429), &empty, "retry-after: 30 retry-after-ms: 5000"),
+            Some(5000)
+        );
     }
 
     // ---------- 7. Precedence: explicit zero beats lower-precedence positive ----------
@@ -576,13 +791,27 @@ mod tests {
     /// "retry-after: 0 + prose 30s -> 0"
     #[test]
     fn precedence_retry_after_0_plus_prose_30s() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after", "0")]), "try again in 30 seconds"), Some(0));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after", "0")]),
+                "try again in 30 seconds"
+            ),
+            Some(0)
+        );
     }
 
     /// "retry-after-ms: 0 + retry-after: 60 -> 0 (higher precedence wins with zero)"
     #[test]
     fn precedence_retry_after_ms_0_plus_retry_after_60() {
-        assert_eq!(hint(Some(429), &headers(&[("retry-after-ms", "0"), ("retry-after", "60")]), ""), Some(0));
+        assert_eq!(
+            hint(
+                Some(429),
+                &headers(&[("retry-after-ms", "0"), ("retry-after", "60")]),
+                ""
+            ),
+            Some(0)
+        );
     }
 
     /// "x-ratelimit-reset epoch now + retryDelay 5s -> 0 (epoch now = 0 delta, beats retryDelay)"
@@ -612,14 +841,20 @@ mod tests {
     #[test]
     fn malformed_garbage_json_object() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"foo":"bar","baz":[1,2,3]}"#), None);
+        assert_eq!(
+            hint(Some(429), &empty, r#"{"foo":"bar","baz":[1,2,3]}"#),
+            None
+        );
     }
 
     /// "bodyText with retryDelay in a string value (not key) -> undefined"
     #[test]
     fn malformed_retry_delay_in_string_value_not_key() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"message":"retryDelay is unknown"}"#), None);
+        assert_eq!(
+            hint(Some(429), &empty, r#"{"message":"retryDelay is unknown"}"#),
+            None
+        );
     }
 
     /// "deeply nested retryDelay max-wins"
@@ -627,7 +862,11 @@ mod tests {
     fn malformed_deeply_nested_retry_delay_max_wins() {
         let empty = HeaderMap::new();
         assert_eq!(
-            hint(Some(429), &empty, r#"{"a":{"b":{"c":{"retryDelay":"1s"}},"d":{"retryDelay":"100s"}}}"#),
+            hint(
+                Some(429),
+                &empty,
+                r#"{"a":{"b":{"c":{"retryDelay":"1s"}},"d":{"retryDelay":"100s"}}}"#
+            ),
             Some(100_000)
         );
     }
@@ -636,13 +875,23 @@ mod tests {
     #[test]
     fn malformed_retry_delay_with_both_s_and_ms_max_wins() {
         let empty = HeaderMap::new();
-        assert_eq!(hint(Some(429), &empty, r#"{"a":{"retryDelay":"45s"},"b":{"retryDelay":"500ms"}}"#), Some(45_000));
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                r#"{"a":{"retryDelay":"45s"},"b":{"retryDelay":"500ms"}}"#
+            ),
+            Some(45_000)
+        );
     }
 
     /// "nowMs default (no parameter) returns a number when hint exists"
     #[test]
     fn malformed_now_ms_default_no_parameter_returns_number() {
-        assert_eq!(hint_default_now(Some(429), &headers(&[("retry-after", "5")]), ""), Some(5_000));
+        assert_eq!(
+            hint_default_now(Some(429), &headers(&[("retry-after", "5")]), ""),
+            Some(5_000)
+        );
     }
 
     // ---------- 9. Marker helpers ----------
@@ -650,25 +899,37 @@ mod tests {
     /// "appends marker to message"
     #[test]
     fn append_retry_after_ms_marker_appends_marker_to_message() {
-        assert_eq!(append_retry_after_ms_marker("rate limited", 1258000), "rate limited (retry-after-ms: 1258000)");
+        assert_eq!(
+            append_retry_after_ms_marker("rate limited", 1258000),
+            "rate limited (retry-after-ms: 1258000)"
+        );
     }
 
     /// "appends marker with zero"
     #[test]
     fn append_retry_after_ms_marker_appends_marker_with_zero() {
-        assert_eq!(append_retry_after_ms_marker("rate limited", 0), "rate limited (retry-after-ms: 0)");
+        assert_eq!(
+            append_retry_after_ms_marker("rate limited", 0),
+            "rate limited (retry-after-ms: 0)"
+        );
     }
 
     /// "parses marker from message"
     #[test]
     fn parse_retry_after_ms_marker_parses_marker_from_message() {
-        assert_eq!(parse_retry_after_ms_marker("rate limited (retry-after-ms: 1258000)"), Some(1_258_000));
+        assert_eq!(
+            parse_retry_after_ms_marker("rate limited (retry-after-ms: 1258000)"),
+            Some(1_258_000)
+        );
     }
 
     /// "parses zero marker"
     #[test]
     fn parse_retry_after_ms_marker_parses_zero_marker() {
-        assert_eq!(parse_retry_after_ms_marker("rate limited (retry-after-ms: 0)"), Some(0));
+        assert_eq!(
+            parse_retry_after_ms_marker("rate limited (retry-after-ms: 0)"),
+            Some(0)
+        );
     }
 
     /// "returns undefined when no marker"

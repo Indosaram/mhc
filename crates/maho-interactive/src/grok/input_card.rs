@@ -31,7 +31,11 @@ impl Component for GrokInputCard {
         let content_width = width - 2;
         let horizontal = "─".repeat(content_width);
         let editor_lines = self.editor.borrow_mut().render(content_width);
-        let content = if editor_lines.is_empty() { vec![String::new()] } else { editor_lines };
+        let content = if editor_lines.is_empty() {
+            vec![String::new()]
+        } else {
+            editor_lines
+        };
         let padded_lines: Vec<String> = content
             .into_iter()
             .map(|line| {

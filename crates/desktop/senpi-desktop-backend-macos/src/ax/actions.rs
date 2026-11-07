@@ -42,7 +42,11 @@ impl AxRequests for AXUIElement {
 /// outcome is unknown rather than failed (`AxUnconfirmed`, ported from
 /// oh-my-pi `element_action_result`). Every other reply keeps the
 /// [`ax_result`] mapping.
-pub(super) fn request_result(error: AXError, request: &str, failed: impl Into<String>) -> CoreResult<()> {
+pub(super) fn request_result(
+    error: AXError,
+    request: &str,
+    failed: impl Into<String>,
+) -> CoreResult<()> {
     if error == AXError::CannotComplete {
         return Err(DesktopError::ax_unconfirmed(format!(
             "{request} was requested, but its outcome could not be confirmed: the app did not reply \
@@ -55,10 +59,17 @@ pub(super) fn request_result(error: AXError, request: &str, failed: impl Into<St
 
 /// Performs a model-requested action (`ax.perform`, presses): a request the
 /// app got but did not answer is `AxUnconfirmed`.
-pub(super) fn perform_requested(element: &(impl AxRequests + ?Sized), action: &str) -> CoreResult<()> {
+pub(super) fn perform_requested(
+    element: &(impl AxRequests + ?Sized),
+    action: &str,
+) -> CoreResult<()> {
     let native = action_name(action);
     let error = element.send_action(&CFString::from_str(&native));
-    request_result(error, &format!("AX action '{native}'"), format!("AX action '{native}' failed"))
+    request_result(
+        error,
+        &format!("AX action '{native}'"),
+        format!("AX action '{native}' failed"),
+    )
 }
 
 pub(super) fn set_value(element: &AXUIElement, value: &str) -> CoreResult<()> {
@@ -78,7 +89,11 @@ pub(super) fn write_value(element: &(impl AxRequests + ?Sized), value: &str) -> 
 
 pub(super) fn focus(element: &(impl AxRequests + ?Sized)) -> CoreResult<()> {
     let error = element.write_attribute(&CFString::from_str("AXFocused"), CFBoolean::new(true));
-    request_result(error, "setting AXFocused=true", "setting AXFocused=true failed")
+    request_result(
+        error,
+        "setting AXFocused=true",
+        "setting AXFocused=true failed",
+    )
 }
 
 /// Sets `AXMain` and `AXFocused` to true on a window element: the restore and

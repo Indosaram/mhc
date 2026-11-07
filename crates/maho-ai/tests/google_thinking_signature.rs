@@ -1,7 +1,7 @@
 //! Port of senpi packages/ai/test/google-thinking-signature.test.ts.
 
 use maho_ai::api::google_shared::{is_thinking_part, retain_thought_signature};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 fn part(entries: &[(&str, Value)]) -> Map<String, Value> {
     let mut part = Map::new();
@@ -13,20 +13,35 @@ fn part(entries: &[(&str, Value)]) -> Map<String, Value> {
 
 #[test]
 fn treats_part_thought_true_as_thinking() {
-    assert!(is_thinking_part(&part(&[("thought", json!(true)), ("thoughtSignature", Value::Null)])));
-    assert!(is_thinking_part(&part(&[("thought", json!(true)), ("thoughtSignature", json!("opaque-signature"))])));
+    assert!(is_thinking_part(&part(&[
+        ("thought", json!(true)),
+        ("thoughtSignature", Value::Null)
+    ])));
+    assert!(is_thinking_part(&part(&[
+        ("thought", json!(true)),
+        ("thoughtSignature", json!("opaque-signature"))
+    ])));
 }
 
 #[test]
 fn does_not_treat_thought_signature_alone_as_thinking() {
-    assert!(!is_thinking_part(&part(&[("thoughtSignature", json!("opaque-signature"))])));
-    assert!(!is_thinking_part(&part(&[("thought", json!(false)), ("thoughtSignature", json!("opaque-signature"))])));
+    assert!(!is_thinking_part(&part(&[(
+        "thoughtSignature",
+        json!("opaque-signature")
+    )])));
+    assert!(!is_thinking_part(&part(&[
+        ("thought", json!(false)),
+        ("thoughtSignature", json!("opaque-signature"))
+    ])));
 }
 
 #[test]
 fn does_not_treat_empty_or_missing_signatures_as_thinking_if_thought_is_not_set() {
     assert!(!is_thinking_part(&part(&[])));
-    assert!(!is_thinking_part(&part(&[("thought", json!(false)), ("thoughtSignature", json!(""))])));
+    assert!(!is_thinking_part(&part(&[
+        ("thought", json!(false)),
+        ("thoughtSignature", json!(""))
+    ])));
 }
 
 #[test]

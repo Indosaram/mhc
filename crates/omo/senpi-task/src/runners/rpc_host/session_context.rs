@@ -26,14 +26,15 @@ pub fn build_child_context(spec: &RpcRunnerSpec) -> ChildSessionContext {
         && let (Some(identity), Some(config)) = (
             env.get("SENPI_TASK_MEMBER"),
             env.get("SENPI_TASK_TEAM_CONFIG"),
-        ) {
-            let parts = identity.split("::").collect::<Vec<_>>();
-            if let [run, name] = parts.as_slice() {
-                context.insert("team_run_id".into(), (*run).into());
-                context.insert("member_name".into(), (*name).into());
-                context.insert("team_config".into(), config.clone());
-            }
+        )
+    {
+        let parts = identity.split("::").collect::<Vec<_>>();
+        if let [run, name] = parts.as_slice() {
+            context.insert("team_run_id".into(), (*run).into());
+            context.insert("member_name".into(), (*name).into());
+            context.insert("team_config".into(), config.clone());
         }
+    }
     ChildSessionContext {
         kind: "worker",
         context,

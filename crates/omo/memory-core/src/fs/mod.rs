@@ -14,4 +14,6 @@ pub use resilient::{
     sleep_ms, write,
 };
 pub use retry::{EINTR_RETRY_CAP, is_eintr, retry_on_eintr};
-pub use write_all::{is_exclusive_flag, open_with_exclusive_policy, write_all_to_handle, write_path_all};
+pub use write_all::{
+    is_exclusive_flag, open_with_exclusive_policy, write_all_to_handle, write_path_all,
+};
