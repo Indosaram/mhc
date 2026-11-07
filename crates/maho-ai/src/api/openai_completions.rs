@@ -2727,6 +2727,7 @@ async fn run_stream_inner(
     // instead of left waiting for bytes the aborted turn will never read.
     while let Some(chunk) = next_chunk_or_abort(&mut chunks, signal.as_ref()).await? {
         let chunk = chunk?;
+        stream.note_provider_chunk();
         if let Some(options) = options {
             options
                 .stream

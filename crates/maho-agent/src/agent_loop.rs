@@ -1842,6 +1842,7 @@ impl AssistantEventReader {
         timeout_ms: u64,
     ) -> Result<Option<AssistantRecord>, AgentStreamError> {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut seen_chunks = self.stream.provider_chunk_count();
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let signal = self.signal.clone();
@@ -1862,6 +1863,15 @@ impl AssistantEventReader {
                     // That silence is tracked as local work on the stream; re-arm the
                     // idle bound instead of killing a healthy request.
                     if self.stream.has_pending_local_work() {
+                        deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+                        continue;
+                    }
+                    // A keepalive frame carries no content, so the adapter emits no public
+                    // event for it and `silent_ms` keeps growing. Count those frames too:
+                    // any provider chunk that arrived proves the stream is healthy.
+                    let chunks = self.stream.provider_chunk_count();
+                    if chunks != seen_chunks {
+                        seen_chunks = chunks;
                         deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
                         continue;
                     }
@@ -3578,6 +3588,54 @@ mod audit_gap_tests {
         assert_eq!(
             create_tool_result_message(&finalized).nested_calls,
             nested_calls
+        );
+    }
+}
+
+#[cfg(test)]
+mod idle_rearm_tests {
+    use super::*;
+    use maho_ai::utils::event_stream::AssistantMessageEventStream;
+
+    /// A gateway keepalive carries no content, so the OpenAI adapter emits no public event for
+    /// it and `silent_ms` would keep growing. The wire counter must re-arm the idle bound
+    /// instead, or a healthy long thinking phase dies at five minutes.
+    #[tokio::test(start_paused = true)]
+    async fn keepalive_chunks_re_arm_the_idle_bound() {
+        let stream = AssistantMessageEventStream::assistant();
+        let controller = AbortController::new();
+        let mut reader = AssistantEventReader::new(
+            stream.clone(),
+            Some(1000),
+            controller.signal(),
+            None,
+            None,
+            None,
+        );
+        let task = tokio::spawn(async move { reader.next().await });
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(999)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "the bound has not expired yet");
+
+        stream.note_provider_chunk();
+        tokio::time::advance(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "a keepalive frame must re-arm the idle bound"
+        );
+
+        tokio::time::advance(Duration::from_millis(999)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "re-armed bound starts at the keepalive");
+
+        tokio::time::advance(Duration::from_millis(2)).await;
+        let outcome = task.await.expect("reader task");
+        assert!(
+            outcome.is_err(),
+            "silence after the last keepalive still times out"
         );
     }
 }
