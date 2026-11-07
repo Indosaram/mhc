@@ -26,7 +26,7 @@ pub struct DagRetentionSweep {
 impl DagRetentionSweep {
     fn deferred(sweep: Box<dyn FnOnce() + Send>) -> Self {
         Self {
-            done: Some(std::thread::spawn(move || sweep())),
+            done: Some(std::thread::spawn(sweep)),
         }
     }
 

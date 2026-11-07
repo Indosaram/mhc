@@ -3629,7 +3629,10 @@ mod idle_rearm_tests {
 
         tokio::time::advance(Duration::from_millis(999)).await;
         tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "re-armed bound starts at the keepalive");
+        assert!(
+            !task.is_finished(),
+            "re-armed bound starts at the keepalive"
+        );
 
         tokio::time::advance(Duration::from_millis(2)).await;
         let outcome = task.await.expect("reader task");

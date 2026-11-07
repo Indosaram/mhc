@@ -17,6 +17,7 @@ use maho_tui::tui::Component;
 use super::keybinding_hints::key_display_text;
 use super::theme_selector::{dynamic_border, select_list_theme};
 use crate::theme::TerminalTheme;
+use crate::theme::system_theme::SYSTEM_THEME_NAME;
 use crate::theme::theme::{Theme, ThemeColor, parse_auto_theme_setting};
 
 /// pi-agent-core ThinkingLevel, including "off".
@@ -588,40 +589,67 @@ impl Component for WarningSettingsSubmenu {
 
 /// settings-selector.ts themeItems.
 pub fn theme_items(available_themes: &[String], current_theme: &str) -> Vec<SelectItem> {
-    available_themes
-        .iter()
-        .map(|name| SelectItem {
-            value: name.clone(),
-            label: format!("{} {name}", if name == current_theme { "✓" } else { " " }),
-            description: None,
-        })
-        .collect()
+    let item = |name: &str| SelectItem {
+        value: name.to_owned(),
+        label: format!("{} {name}", if name == current_theme { "✓" } else { " " }),
+        description: (name == SYSTEM_THEME_NAME).then(system_theme_description),
+    };
+    // senpi `getAvailableThemesWithPaths` always lists the generated `system` theme (no file) and
+    // sorts it first (`theme.ts:491-492,506-509`). The registry's file scan cannot report it, so
+    // the picker adds it here and drops a custom theme that squatted on the reserved name (upstream
+    // adds `system` before deduping custom names).
+    let mut items = vec![item(SYSTEM_THEME_NAME)];
+    items.extend(
+        available_themes
+            .iter()
+            .filter(|name| name.as_str() != SYSTEM_THEME_NAME)
+            .map(|name| item(name.as_str())),
+    );
+    items
+}
+
+/// settings-selector.ts themeItems: the generated theme's description.
+fn system_theme_description() -> String {
+    "Theme created from your terminal's colors".to_owned()
 }
 
 /// settings-selector.ts AUTOMATIC_THEME_VALUE.
 pub const AUTOMATIC_THEME_VALUE: &str = "/";
 
-/// settings-selector.ts singleModeThemeItems.
+/// settings-selector.ts singleModeThemeItems: the system theme first, then automatic mode, then
+/// the remaining themes.
 pub fn single_mode_theme_items(
     available_themes: &[String],
     current_theme: &str,
 ) -> Vec<SelectItem> {
-    let mut items = vec![SelectItem {
+    let mut items = theme_items(available_themes, current_theme);
+    let system = items.remove(0);
+    let mut ordered = vec![system];
+    ordered.push(SelectItem {
         value: AUTOMATIC_THEME_VALUE.to_owned(),
         label: "  Automatic".to_owned(),
         description: Some("Use separate themes for light and dark terminal appearance".to_owned()),
-    }];
-    items.extend(theme_items(available_themes, current_theme));
-    items
+    });
+    ordered.extend(items);
+    ordered
 }
 
+/// senpi `preferredTheme`. `system` counts as offered even when the registry's file scan cannot
+/// list it: both pickers always append it, so the upstream fallback to `SYSTEM_THEME_NAME` resolves
+/// instead of dropping to the first scanned theme.
 fn preferred_theme(available_themes: &[String], preferred: Option<&str>, fallback: &str) -> String {
+    let offered = |name: &str| {
+        name == SYSTEM_THEME_NAME
+            || available_themes
+                .iter()
+                .any(|offered| offered.as_str() == name)
+    };
     if let Some(preferred) = preferred
-        && available_themes.iter().any(|name| name == preferred)
+        && offered(preferred)
     {
         return preferred.to_owned();
     }
-    if available_themes.iter().any(|name| name == fallback) {
+    if offered(fallback) {
         return fallback.to_owned();
     }
     available_themes
@@ -638,7 +666,7 @@ fn default_automatic_themes(
         return (light.to_owned(), dark.to_owned());
     }
     let current_fixed = (!current_theme_setting.contains('/')).then_some(current_theme_setting);
-    let theme_name = preferred_theme(available_themes, current_fixed, "dark");
+    let theme_name = preferred_theme(available_themes, current_fixed, SYSTEM_THEME_NAME);
     (theme_name.clone(), theme_name)
 }
 
@@ -736,7 +764,7 @@ impl ThemeSubmenu {
             } else {
                 None
             }),
-            "dark",
+            SYSTEM_THEME_NAME,
         );
         let mut submenu = Self {
             theme: theme.clone(),

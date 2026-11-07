@@ -1046,7 +1046,23 @@ impl Agent {
         config.before_tool_call = settings.before_tool_call.clone();
         config.after_tool_call = settings.after_tool_call.clone();
         config.cursor_exec_handlers = settings.cursor_exec_handlers.clone();
-        config.finish_turn = settings.finish_turn.clone();
+        // `{ action: "end" }` ends the run without polling queues, so the fork's post-run queue drain is
+        // suppressed for this run as well: queued input stays for its owner.
+        config.finish_turn = settings.finish_turn.clone().map(|finish_turn| {
+            let agent = self.clone();
+            let wrapped: crate::types::FinishTurn = Arc::new(move |context, signal| {
+                let agent = agent.clone();
+                let finish_turn = finish_turn.clone();
+                Box::pin(async move {
+                    let decision = finish_turn(context, signal).await;
+                    if decision == Some(crate::types::AgentTurnDecision::End) {
+                        agent.suppress_queued_message_drain();
+                    }
+                    decision
+                })
+            });
+            wrapped
+        });
         config.prepare_request = settings.prepare_request.clone();
 
         if let Some(should_stop_after_turn) = settings.should_stop_after_turn.clone() {

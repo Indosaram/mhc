@@ -9647,6 +9647,47 @@ async fn aborted_branch_provider_response_preserves_navigation_context() {
 
 #[tokio::test]
 async fn manual_compaction_runs_faux_summary_and_records_file_details() {
+    let (session, provider) = faux_compaction_session().await;
+    let result = session.compact(None).await.expect("compaction");
+    assert_eq!(
+        result.summary,
+        "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest"
+    );
+    assert!(result.details.expect("file details")["readFiles"].is_array());
+    assert!(result.usage.is_some());
+    assert_eq!(
+        result.estimated_tokens_after,
+        Some(
+            session
+                .with_session_manager(|manager| manager.current_context())
+                .messages
+                .iter()
+                .map(crate::compaction::compaction::estimate_tokens)
+                .sum::<u64>() as i64
+        )
+    );
+    assert!(!session.is_compacting());
+    assert_eq!(session.compaction_state().status(), "completed");
+    assert_eq!(session.compaction_state().generation(), 1);
+    assert_eq!(session.model().id, "faux-1");
+    assert_eq!(
+        provider
+            .get_call_log()
+            .iter()
+            .map(|call| call.model_id.as_str())
+            .collect::<Vec<_>>(),
+        ["summary", "summary"]
+    );
+    assert_eq!(
+        session.with_session_manager(|manager| {
+            manager.entries().last().expect("entry")["type"].clone()
+        }),
+        "compaction"
+    );
+}
+
+/// A faux session with two summary responses and a context big enough to compact.
+async fn faux_compaction_session() -> (AgentSession, maho_ai::providers::faux::FauxProviderHandle) {
     use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider};
     let provider = faux_provider(RegisterFauxProviderOptions {
         tokens_per_second: Some(0.0),
@@ -9712,41 +9753,33 @@ async fn manual_compaction_runs_faux_summary_and_records_file_details() {
         )
     });
     session.rebuild_session_context().expect("context");
-    let result = session.compact(None).await.expect("compaction");
+    (session, provider)
+}
+
+/// An extension's `ctx.compact` reaches the log as `extension`, so an automatic trigger is never
+/// reported as the user's `/compact` and the circuit breaker keeps governing it.
+#[tokio::test]
+async fn extension_compaction_is_labeled_extension() {
+    let (session, _provider) = faux_compaction_session().await;
+    let reasons = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&reasons);
+    let _subscription = session.subscribe(Arc::new(move |event| {
+        if let AgentSessionEvent::CompactionStart { reason, .. }
+        | AgentSessionEvent::CompactionEnd { reason, .. } = event
+        {
+            lock(&seen).push(*reason);
+        }
+    }));
+    session
+        .compact_from_extension(None)
+        .await
+        .expect("extension compaction");
     assert_eq!(
-        result.summary,
-        "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest"
-    );
-    assert!(result.details.expect("file details")["readFiles"].is_array());
-    assert!(result.usage.is_some());
-    assert_eq!(
-        result.estimated_tokens_after,
-        Some(
-            session
-                .with_session_manager(|manager| manager.current_context())
-                .messages
-                .iter()
-                .map(crate::compaction::compaction::estimate_tokens)
-                .sum::<u64>() as i64
-        )
-    );
-    assert!(!session.is_compacting());
-    assert_eq!(session.compaction_state().status(), "completed");
-    assert_eq!(session.compaction_state().generation(), 1);
-    assert_eq!(session.model().id, "faux-1");
-    assert_eq!(
-        provider
-            .get_call_log()
-            .iter()
-            .map(|call| call.model_id.as_str())
-            .collect::<Vec<_>>(),
-        ["summary", "summary"]
-    );
-    assert_eq!(
-        session.with_session_manager(|manager| {
-            manager.entries().last().expect("entry")["type"].clone()
-        }),
-        "compaction"
+        lock(&reasons).clone(),
+        [
+            maho_ext_api::CompactionReason::Extension,
+            maho_ext_api::CompactionReason::Extension
+        ]
     );
 }
 

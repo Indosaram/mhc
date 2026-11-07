@@ -59,7 +59,7 @@ fn main() {
         selected_tools: tools.clone(),
         tool_snippets: tool_snippets(&tools),
         prompt_guidelines: Vec::new(),
-        context_files: load_project_context_files(&cwd, &agent_dir),
+        context_files: load_project_context_files(&cwd, &agent_dir, None).files,
         skills: skills.skills,
         tuning_section: None,
         core_prompt: None,

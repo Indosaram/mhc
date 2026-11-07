@@ -26,6 +26,7 @@ fn default_full_access() {
     let (rules, approved) = load_permission_settings(
         &manager(json!({}), json!({})),
         &[],
+        root.path(),
         (root.path(), "/home/user"),
         None,
     )
@@ -46,6 +47,7 @@ fn explicit_full_access_restores_star_allow() {
     let (rules, _) = load_permission_settings(
         &manager(json!({"permissionPreset":"full-access"}), json!({})),
         &[],
+        root.path(),
         (root.path(), "/home/user"),
         None,
     )
@@ -65,6 +67,7 @@ fn guarded_name_is_accepted_in_settings() {
     let (rules, _) = load_permission_settings(
         &manager(json!({"permissionPreset":"guarded"}), json!({})),
         &[],
+        root.path(),
         (root.path(), "/home/user"),
         None,
     )
@@ -80,6 +83,7 @@ fn explicit_ask() {
     let (rules, _) = load_permission_settings(
         &manager(json!({"permissionPreset":"ask"}), json!({})),
         &[],
+        root.path(),
         (root.path(), "/home/user"),
         None,
     )
@@ -92,6 +96,7 @@ fn auto_preset_loads_as_blanket_ask() {
     let (rules, _) = load_permission_settings(
         &manager(json!({"permissionPreset":"auto"}), json!({})),
         &[],
+        root.path(),
         (root.path(), "/home/user"),
         None,
     )
@@ -113,6 +118,7 @@ fn cli_overrides() {
     let (rules, _) = load_permission_settings(
         &manager(json!({"permissionPreset":"read-only"}), json!({})),
         &cli,
+        root.path(),
         (root.path(), "/home/user"),
         Some(PermissionPresetName::Workspace),
     )
@@ -140,6 +146,7 @@ fn scope_precedence() {
             json!({"permissionPreset":"read-only","permission":{"edit":"allow"}}),
         ),
         &cli,
+        root.path(),
         (root.path(), "/home/user"),
         Some(PermissionPresetName::Workspace),
     )
@@ -161,6 +168,7 @@ fn invalid_global() {
         load_permission_settings(
             &manager(json!({"permissionPreset":"dangerous"}), json!({})),
             &[],
+            root.path(),
             (root.path(), "/home/user"),
             None
         )
@@ -174,6 +182,7 @@ fn invalid_project() {
         load_permission_settings(
             &manager(json!({}), json!({"permissionPreset":"dangerous"})),
             &[],
+            root.path(),
             (root.path(), "/home/user"),
             None
         )

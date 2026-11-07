@@ -618,6 +618,7 @@ fn build_harness(
             default_concurrency: Some(options.concurrency),
             provider_concurrency: None,
             model_concurrency: None,
+            global_concurrency: None,
         },
         max_depth: 1,
         default_execution_mode: ExecutionMode::InProcess,

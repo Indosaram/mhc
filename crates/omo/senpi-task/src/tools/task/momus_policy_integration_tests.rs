@@ -211,6 +211,7 @@ fn make_manager() -> Harness {
             default_concurrency: Some(5),
             provider_concurrency: None,
             model_concurrency: None,
+            global_concurrency: None,
         },
         max_depth: 1,
         default_execution_mode: ExecutionMode::InProcess,

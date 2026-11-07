@@ -425,6 +425,7 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
         json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},"limit":{"type":"number"},"skip":{"type":"number"}},"required":["pattern"]}),
         execute,
     );
+    tool.workspace_effect = Some(crate::definition::ToolWorkspaceEffect::Read);
     tool.parameters["properties"]["glob"] =
         json!({"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]});
     for name in ["ignoreCase", "literal", "multiline", "hidden", "gitignore"] {
