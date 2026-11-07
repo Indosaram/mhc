@@ -927,6 +927,31 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         start_usage_polling(&agent_dir, report);
     }
     let run = async {
+        // `--print-prompt-sizes` is a report-and-exit flag: it composes the prompt with extensions
+        // bound in sizes-only mode and prints a JSON measurement, never opening a turn. It is handled
+        // before the mode branches because it must not fall into print mode's message loop or start
+        // the interactive TUI, and because it must not attach MCP servers - the inventory reads the
+        // config by name only.
+        if parsed.print_prompt_sizes {
+            let report = super::print_prompt_sizes::print_prompt_sizes(&session)
+                .await
+                .map_err(|error| error.to_string())?;
+            // Print mode writes its payload to the real stdout on purpose, and so does this: the
+            // report is the command's output, not a diagnostic. `maho_write_stdout` is the wrong
+            // sink here because non-interactive startup took stdout over, and that guard redirects
+            // process-wide stdout writes to stderr so stray output cannot corrupt a JSON/RPC stream.
+            // Using it would print the report on stderr with an empty stdout.
+            let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+            {
+                use std::io::Write;
+                let mut stdout = std::io::stdout().lock();
+                stdout
+                    .write_all(format!("{json}\n").as_bytes())
+                    .map_err(|error| error.to_string())?;
+                stdout.flush().map_err(|error| error.to_string())?;
+            }
+            return Ok(0);
+        }
         match mode {
             AppMode::Rpc => {
                 // senpi main.ts:1324-1332: RPC refreshes model catalogs in the background, bounded to 15 s

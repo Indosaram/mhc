@@ -11,6 +11,7 @@ use maho_tui::components::select_list::{
 };
 use maho_tui::tui::Component;
 
+use crate::theme::system_theme::SYSTEM_THEME_NAME;
 use crate::theme::theme::{Theme, ThemeColor};
 
 /// senpi's `DynamicBorder`: one horizontal rule of the viewport width.
@@ -64,24 +65,29 @@ impl ThemeSelectorComponent {
         on_cancel: Box<dyn FnMut()>,
         on_preview: Box<dyn FnMut(&str)>,
     ) -> Self {
-        let items: Vec<SelectItem> = available_themes
-            .iter()
-            .map(|name| SelectItem {
-                value: name.clone(),
-                label: name.clone(),
-                description: (name == current_theme).then(|| "(current)".to_owned()),
-            })
-            .collect();
+        let item = |name: &str| SelectItem {
+            value: name.to_owned(),
+            label: name.to_owned(),
+            description: (name == current_theme).then(|| "(current)".to_owned()),
+        };
+        // senpi's selector lists `getAvailableThemes()`, which always includes the generated
+        // `system` theme (no file) first; the registry's file scan cannot report it, so add it here
+        // and drop a custom theme that squatted on the reserved name.
+        let mut items = vec![item(SYSTEM_THEME_NAME)];
+        items.extend(
+            available_themes
+                .iter()
+                .filter(|name| name.as_str() != SYSTEM_THEME_NAME)
+                .map(|name| item(name.as_str())),
+        );
+        let selected_index = items.iter().position(|item| item.value == current_theme);
         let mut select_list = SelectList::new(
             items,
             10,
             select_list_theme(theme),
             theme_select_list_layout(),
         );
-        if let Some(index) = available_themes
-            .iter()
-            .position(|name| name == current_theme)
-        {
+        if let Some(index) = selected_index {
             select_list.set_selected_index(index);
         }
         let mut on_select = on_select;

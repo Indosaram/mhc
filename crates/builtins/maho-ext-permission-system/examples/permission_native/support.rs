@@ -214,7 +214,7 @@ pub async fn run() -> Result<(), Failure> {
         std::fs::read_to_string(project.join("allowed.txt"))?,
         "native mutation\n"
     );
-    let approved = storage::load_approved(project)?;
+    let approved = storage::load_approved(project, project);
     println!(
         "{}",
         json!({"stage":"first","result":first,"approved":approved})

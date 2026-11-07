@@ -77,11 +77,16 @@ fn render_system_node(
         let mut child_parts = path_parts.to_vec();
         child_parts.push(label.as_str());
 
-        lines.push(format!("{pad}<{label}>"));
+        let safe_label = crate::sync::redact::redact_secret_like_material(label);
+        lines.push(format!("{pad}<{safe_label}>"));
         if let Some(file) = &child.file {
+            let safe_path = child_parts
+                .iter()
+                .map(|part| crate::sync::redact::redact_secret_like_material(part))
+                .collect::<Vec<_>>()
+                .join("/");
             lines.push(format!(
-                "{pad}  <projection>{MEMORY_DIR}/system/{}.md</projection>",
-                child_parts.join("/")
+                "{pad}  <projection>{MEMORY_DIR}/system/{safe_path}.md</projection>"
             ));
             let desc_trimmed = file.description.trim();
             if !desc_trimmed.is_empty() {
@@ -93,7 +98,7 @@ fn render_system_node(
             }
         }
         render_system_node(child, lines, indent + 1, &child_parts);
-        lines.push(format!("{pad}</{label}>"));
+        lines.push(format!("{pad}</{safe_label}>"));
     }
 }
 

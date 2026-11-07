@@ -33,6 +33,8 @@ pub mod types;
 pub mod workpool_admission;
 #[cfg(test)]
 pub(crate) mod workpool_admission_tests;
+#[cfg(test)]
+pub(crate) mod workpool_respawn_tests;
 
 #[cfg(test)]
 mod contract_tests;

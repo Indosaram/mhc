@@ -262,6 +262,9 @@ pub fn compose_task_engine_with_clock(
                 })
                 .collect()
         }),
+        global_concurrency: settings["global_concurrency"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok()),
     };
     options.destruction = Some(Arc::new(TaskLifecycleDestruction((*lifecycle).clone())));
     options.trusted_respawn_launch = trusted_respawn_launch(&deps.cwd, &settings);

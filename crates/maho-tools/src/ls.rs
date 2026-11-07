@@ -199,6 +199,7 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
         json!({"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: current directory)"},"limit":{"type":"number","description":"Maximum number of entries to return (default: 500)"}}}),
         execute,
     );
+    tool.workspace_effect = Some(crate::definition::ToolWorkspaceEffect::Read);
     tool.prompt_snippet = Some("List directory contents".into());
     if server_pinned {
         tool.server_pinned = Some(true);

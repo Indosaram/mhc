@@ -66,6 +66,48 @@ fn context7_key_turns_on_bearer_auth() {
 }
 
 #[test]
+fn placeholder_context7_key_is_rejected() {
+    let dir = tempfile::tempdir().expect("dir");
+    for placeholder in [
+        "",
+        "   ",
+        "<YOUR_API_KEY>",
+        "your_api_key",
+        "YOUR-API-KEY",
+        "  your api key  ",
+        "\"Your API Key\"",
+    ] {
+        let settings = BuiltinSettings::resolve(
+            dir.path(),
+            &env(dir.path(), &[("CONTEXT7_API_KEY", placeholder)]),
+        );
+        let declared = declarations(&settings);
+        let (_, context7) = &declared[0];
+        assert_eq!(context7.auth, Some(McpAuth::Disabled), "{placeholder:?}");
+        assert_eq!(context7.bearer_token_env, None, "{placeholder:?}");
+    }
+}
+
+#[test]
+fn real_context7_key_is_kept() {
+    let dir = tempfile::tempdir().expect("dir");
+    // The last two forms fold to `your api key ` (trailing space): a trailing separator run is
+    // significant, so they are real keys and must not be treated as the placeholder.
+    for key in ["ctx7sk-abc123", "your_api_key_", "your api key-"] {
+        let settings =
+            BuiltinSettings::resolve(dir.path(), &env(dir.path(), &[("CONTEXT7_API_KEY", key)]));
+        let declared = declarations(&settings);
+        let (_, context7) = &declared[0];
+        assert_eq!(context7.auth, Some(McpAuth::Bearer), "{key:?}");
+        assert_eq!(
+            context7.bearer_token_env.as_deref(),
+            Some("CONTEXT7_API_KEY"),
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
 fn switch_offline_and_config_turn_them_off() {
     let dir = tempfile::tempdir().expect("dir");
     for (key, value) in [

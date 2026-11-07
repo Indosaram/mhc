@@ -132,7 +132,7 @@ function walkTs(dir) {
 }
 
 /** Non-test .ts files of a crate, as paths relative to their declared root (first root wins). */
-const OMO_PIN = "77f3067f157a4f88e6d8ed48b3a6c338654402ed";
+const OMO_PIN = "354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9";
 let omoChecked = false;
 /** oh-my-openagent checkout for `omo` roots: $OMO_SRC (default /Users/indo/code/oh-my-openagent), pinned like senpi. */
 function omoSrc() {
@@ -170,13 +170,97 @@ export function countTsTests(text) {
 
 const MAX_NON_TEST_LINES = 8000;
 
-/** Source lines before the first top-level `#[cfg(test)]` line. */
-function nonTestLineCount(text) {
+/** `{`/`}` counts in code, ignoring line comments and string/char literals. */
+function braceDelta(line) {
+	let opened = 0;
+	let closed = 0;
+	let i = 0;
+	while (i < line.length) {
+		const c = line[i];
+		if (c === "/" && line[i + 1] === "/") break;
+		if (c === "r" && (line[i + 1] === '"' || line[i + 1] === "#")) {
+			let hashes = 0;
+			let j = i + 1;
+			while (line[j] === "#") {
+				hashes++;
+				j++;
+			}
+			if (line[j] === '"') {
+				const close = `"${"#".repeat(hashes)}`;
+				const end = line.indexOf(close, j + 1);
+				i = end === -1 ? line.length : end + close.length;
+				continue;
+			}
+		}
+		if (c === '"') {
+			let j = i + 1;
+			while (j < line.length) {
+				if (line[j] === "\\") {
+					j += 2;
+					continue;
+				}
+				if (line[j] === '"') break;
+				j++;
+			}
+			i = j + 1;
+			continue;
+		}
+		if (c === "'") {
+			const literal = /^'(\\.|[^\\'])'/.exec(line.slice(i));
+			if (literal) {
+				i += literal[0].length;
+				continue;
+			}
+		}
+		if (c === "{") opened++;
+		else if (c === "}") closed++;
+		i++;
+	}
+	return { opened, closed };
+}
+
+/**
+ * Source lines outside every inline `#[cfg(test)]` item.
+ *
+ * Extracted `*_tests.rs` files are already excluded by the caller's filename filter; this covers
+ * the inline ones. It cannot stop at the first attribute: `agent_session.rs` keeps a few small
+ * `#[cfg(test)]` helpers before the extracted module, and truncating there reported 3,749 lines for
+ * a 22,506-line source, hiding exactly the file the limit exists to catch.
+ */
+export function nonTestLineCount(text) {
 	if (text === "") return 0;
 	const lines = text.split("\n");
-	const firstTest = lines.findIndex((line) => line.startsWith("#[cfg(test)]"));
-	if (firstTest !== -1) return firstTest;
-	return text.endsWith("\n") ? lines.length - 1 : lines.length;
+	const total = text.endsWith("\n") ? lines.length - 1 : lines.length;
+	let count = 0;
+	let inTestItem = false;
+	let depth = 0;
+	let sawBody = false;
+	for (let i = 0; i < total; i++) {
+		const line = lines[i];
+		if (!inTestItem) {
+			if (!line.startsWith("#[cfg(test)]")) count++;
+			else {
+				inTestItem = true;
+				depth = 0;
+				sawBody = false;
+			}
+			continue;
+		}
+		const { opened, closed } = braceDelta(line);
+		depth += opened - closed;
+		if (opened > 0) sawBody = true;
+		if (sawBody) {
+			if (depth <= 0) {
+				inTestItem = false;
+				depth = 0;
+				sawBody = false;
+			}
+		} else if (/[;}]\s*$/.test(line)) {
+			// `#[cfg(test)] mod tests;` and `#[cfg(test)] use ...;` have no body to balance.
+			inTestItem = false;
+		}
+	}
+	return count;
 }
 
 /** Non-test Rust files under crates/ over MAX_NON_TEST_LINES, as repo-relative paths. */
@@ -534,9 +618,26 @@ function selfTest() {
 		put(join(repo, "crates/maho-ai/src/large.rs"), `${filler}#[cfg(test)]\nmod tests {}\n`);
 		put(join(repo, "crates/maho-ai/src/large_tests.rs"), filler);
 		put(join(repo, "crates/maho-ai/src/tests/large.rs"), filler);
-		check("line count stops at top-level cfg(test)", nonTestLineCount(readFileSync(join(repo, "crates/maho-ai/src/large.rs"), "utf8")) === MAX_NON_TEST_LINES + 1);
+		check("inline cfg(test) tail does not count", nonTestLineCount(readFileSync(join(repo, "crates/maho-ai/src/large.rs"), "utf8")) === MAX_NON_TEST_LINES + 1);
 		const large = largeSourceFiles(repo);
 		check("large non-test file is reported", large.length === 1 && large[0].path.endsWith("src/large.rs") && large[0].count === MAX_NON_TEST_LINES + 1);
+
+		// Small `#[cfg(test)]` helpers above the real source must not hide the rest of the file:
+		// truncating at the first one reported 3,749 lines for a 22,506-line agent_session.rs.
+		const earlyTest = "#[cfg(test)]\nstruct Helper;\n\n#[cfg(test)]\nimpl Helper {\n    fn new() -> Self {\n        Self\n    }\n}\n";
+		put(join(repo, "crates/maho-ai/src/late.rs"), `${earlyTest}${filler}#[cfg(test)]\nmod tests {}\n`);
+		check(
+			"source after inline cfg(test) helpers still counts",
+			nonTestLineCount(readFileSync(join(repo, "crates/maho-ai/src/late.rs"), "utf8")) > MAX_NON_TEST_LINES,
+		);
+		check(
+			"oversized source behind inline cfg(test) helpers is reported",
+			largeSourceFiles(repo).some((file) => file.path.endsWith("src/late.rs") && file.count > MAX_NON_TEST_LINES),
+		);
+		check(
+			"cfg(test) use items close without a body",
+			nonTestLineCount("#[cfg(test)]\nuse std::sync::Arc;\nfn live() {}\n") === 1,
+		);
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
 	}

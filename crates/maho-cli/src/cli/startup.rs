@@ -8,7 +8,7 @@ pub fn resolve_app_mode(parsed: &Args, stdin_is_tty: bool, stdout_is_tty: bool) 
         Some(Mode::Rpc) => AppMode::Rpc,
         Some(Mode::Json) => AppMode::Json,
         Some(Mode::Text) | None => {
-            if parsed.print || !stdin_is_tty || !stdout_is_tty {
+            if parsed.print || parsed.print_prompt_sizes || !stdin_is_tty || !stdout_is_tty {
                 AppMode::Print
             } else {
                 AppMode::Interactive

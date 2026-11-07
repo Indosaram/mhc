@@ -1176,6 +1176,13 @@ impl SettingsManager {
         self.set(SettingsScope::Global, &values)
     }
 
+    /// senpi `contextFiles` settings (`contextFiles.*` size limits).
+    pub fn get_context_files_limits(&self) -> Option<crate::context_files::ContextFileLimits> {
+        self.get_value("contextFiles")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
     /// `handoffHint` settings with their defaults (senpi#3230).
     pub fn get_handoff_hint_settings(&self) -> crate::settings_shapes::ResolvedHandoffHintSettings {
         let configured = self

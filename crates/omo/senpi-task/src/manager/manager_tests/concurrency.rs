@@ -78,6 +78,7 @@ fn given_model_and_provider_overrides_when_resolving_a_key_then_model_override_w
         default_concurrency: Some(5),
         model_concurrency: Some(BTreeMap::from([("anthropic/opus".to_string(), 2)])),
         provider_concurrency: Some(BTreeMap::from([("anthropic".to_string(), 3)])),
+        global_concurrency: None,
     });
     assert_eq!(concurrency.get_key("anthropic/opus"), "anthropic/opus");
     assert_eq!(concurrency.get_key("anthropic/sonnet"), "anthropic");

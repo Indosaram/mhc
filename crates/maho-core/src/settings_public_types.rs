@@ -9,9 +9,9 @@ pub use crate::compaction_settings_access::{
     CompactionModelOverride, CompactionModelSelector, CompactionSettings,
 };
 pub use crate::settings_shapes::{
-    AskUserSettings, ImageSettings, LookAtSettings, MarkdownSettings, MermaidRenderingMode,
-    PromptCacheKeepAliveSettings, PromptCacheSettings, ProviderConcurrencySettings,
-    ResponsesSettings, ServiceTierPreference, ThinkingBudgetsSettings,
+    AskUserSettings, ContextFileLimits, ImageSettings, LookAtSettings, MarkdownSettings,
+    MermaidRenderingMode, PromptCacheKeepAliveSettings, PromptCacheSettings,
+    ProviderConcurrencySettings, ResponsesSettings, ServiceTierPreference, ThinkingBudgetsSettings,
 };
 pub use crate::terminal_settings::{BranchSummarySettings, TerminalSettings};
 
@@ -53,6 +53,7 @@ mod tests {
         let _: Option<TerminalSettings> = None;
         let _: Option<MarkdownSettings> = None;
         let _: Option<RetrySettings> = None;
+        let _: Option<ContextFileLimits> = None;
     }
 
     #[test]

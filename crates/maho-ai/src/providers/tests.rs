@@ -2,8 +2,8 @@
 //! todo-5 code. Cases that need another node's module are listed in the node rows file.
 
 use super::all::{
-    builtin_images_models, builtin_images_providers, builtin_models, builtin_providers,
-    get_builtin_model, get_builtin_model_data_generated_at, get_builtin_models,
+    FORK_OWNED_CATALOGS, builtin_images_models, builtin_images_providers, builtin_models,
+    builtin_providers, get_builtin_model, get_builtin_model_data_generated_at, get_builtin_models,
     get_builtin_providers,
 };
 use super::cloudflare_stream::resolve_cloudflare_model;
@@ -17,7 +17,7 @@ use crate::compat::register_faux_provider;
 use crate::models::{
     CreateProviderOptions, ModelsRequestTransforms, ProviderApi, create_models, create_provider,
 };
-use crate::models_generated::MODELS;
+use crate::models_generated::{CLASSIFIER_MODELS, MODELS};
 use crate::types::{
     AssistantMessageEvent, BoxFuture, CacheRetention, ContentBlock, Context, DeferredCancelOptions,
     DeferredHandle, DeferredOption, InputModality, Message, Model, ModelThinkingLevel, ProviderEnv,
@@ -25,6 +25,7 @@ use crate::types::{
     UserContent, UserMessage,
 };
 use serde_json::{Map, json};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 fn user_message(text: &str) -> Message {
@@ -83,14 +84,6 @@ fn faux_models() -> crate::models::Models {
 fn builtin_models_registers_every_builtin_provider_with_models() {
     let models = builtin_models(None).expect("builtin models");
     let providers = models.get_providers();
-    assert_eq!(
-        providers.len(),
-        builtin_providers().expect("builtin providers").len()
-    );
-    let ids: Vec<&str> = providers.iter().map(|provider| provider.id()).collect();
-    for id in ["anthropic", "bai", "ollama"] {
-        assert!(ids.contains(&id), "missing builtin provider {id}");
-    }
 
     let anthropic = models
         .get_model("anthropic", "claude-haiku-4-5")
@@ -99,10 +92,14 @@ fn builtin_models_registers_every_builtin_provider_with_models() {
     assert!(models.get_models(None).len() > 500);
 
     // Static providers list models immediately; Radius, Ollama, B.AI and Cursor discover
-    // account-specific availability only after authentication.
+    // account-specific availability only after authentication. TypeSafe is classifier-only:
+    // its chat catalog is empty and its entries live in `CLASSIFIER_MODELS`.
     for provider in providers {
         let list = models.get_models(Some(provider.id()));
-        if matches!(provider.id(), "radius" | "ollama" | "bai" | "cursor") {
+        if matches!(
+            provider.id(),
+            "radius" | "ollama" | "bai" | "cursor" | "typesafe"
+        ) {
             assert!(
                 list.is_empty(),
                 "{} should ship no static catalog",
@@ -113,6 +110,97 @@ fn builtin_models_registers_every_builtin_provider_with_models() {
         }
         assert!(list.iter().all(|model| model.provider == provider.id()));
     }
+}
+
+/// Every built-in provider id must be constructible, and every constructor except the four
+/// auth-discovered providers must resolve back to a catalog entry. This replaces the old
+/// count-only check (`providers.len() == builtin_providers().len()`), which compared the freshly
+/// built vec with itself and therefore could not notice a provider that was never registered.
+#[test]
+fn builtin_providers_cover_catalog() {
+    // The union of every id a built-in catalog knows about.
+    //
+    // (i) `data/models.json` keys (42) and (iii) the hand-written `meta` catalog that
+    // `models_generated.rs:50-53` inserts into the same map. `MODELS` is a `LazyLock`, so the
+    // insertion has already run by the time this test reads it: one read carries both.
+    let mut catalog: BTreeSet<String> = MODELS.keys().cloned().collect();
+    assert!(
+        MODELS.contains_key("meta"),
+        "models_generated.rs:50-53 must inject the meta catalog into MODELS"
+    );
+    // (ii) `all.rs:15-27`: fork-owned hand catalogs models.dev does not describe (kimi-coding).
+    let fork_owned: BTreeSet<String> = FORK_OWNED_CATALOGS.keys().cloned().collect();
+    assert_eq!(fork_owned, BTreeSet::from(["kimi-coding".to_owned()]));
+    catalog.extend(fork_owned);
+    // (iv) classifier-only catalogs (typesafe). cloudflare-workers-ai and vercel-ai-gateway are
+    // also classifier keys, but they already exist as models.json keys.
+    let classifier: BTreeSet<String> = CLASSIFIER_MODELS.keys().cloned().collect();
+    assert!(classifier.contains("typesafe"));
+    catalog.extend(classifier);
+
+    // 42 models.json keys + kimi-coding + meta + typesafe = 45. The meta shard is injected into
+    // MODELS itself, so the read above already includes it.
+    assert_eq!(catalog.len(), 45, "catalog union drifted");
+
+    let providers = builtin_providers().expect("builtin providers");
+    // 47 constructors before meta/typesafe were registered, +2 = 49.
+    assert_eq!(
+        providers.len(),
+        49,
+        "builtin_providers() constructor count drifted"
+    );
+    let constructed: BTreeSet<String> = providers
+        .iter()
+        .map(|provider| provider.id().to_owned())
+        .collect();
+    assert_eq!(
+        constructed.len(),
+        providers.len(),
+        "builtin_providers() returned duplicate ids"
+    );
+
+    // (a) every catalog id is constructible.
+    for id in &catalog {
+        assert!(
+            constructed.contains(id),
+            "catalog provider {id} is not constructed by builtin_providers()"
+        );
+    }
+
+    // (b) every constructor resolves in the catalog, except exactly four:
+    //   cursor/ollama/radius discover their catalog only after authentication, and
+    //   devin ships a hand-written fork seed (`providers/devin_models.rs:41 devin_models()`,
+    //   reached from `providers/devin.rs:31`).
+    let expected_exceptions: BTreeSet<String> = ["cursor", "ollama", "radius", "devin"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let exceptions: BTreeSet<String> = constructed.difference(&catalog).cloned().collect();
+    assert_eq!(
+        exceptions, expected_exceptions,
+        "constructed providers outside the catalog union"
+    );
+    assert_eq!(exceptions.len(), 4, "exception count drifted");
+
+    // 49 constructors - 4 exceptions = 45 = union size, so no union entry is left unconstructed
+    // and no constructor is silently absent from every catalog.
+    let covered = constructed.intersection(&catalog).count();
+    assert_eq!(covered, 45, "covered provider count drifted");
+    assert_eq!(providers.len() - exceptions.len(), catalog.len());
+
+    // Positive proof that both registered providers reach the runtime registry by id.
+    let models = builtin_models(None).expect("builtin models");
+    let meta = models.get_provider("meta").expect("meta registered");
+    assert_eq!(meta.id(), "meta");
+    assert!(!models.get_models(Some("meta")).is_empty());
+    let typesafe = models
+        .get_provider("typesafe")
+        .expect("typesafe registered");
+    assert_eq!(typesafe.id(), "typesafe");
+    // typesafe ships no chat models: it is classifier-only.
+    assert!(models.get_models(Some("typesafe")).is_empty());
+    assert!(typesafe.supports_classification());
+    assert!(!models.get_classifier_models(Some("typesafe")).is_empty());
 }
 
 #[test]

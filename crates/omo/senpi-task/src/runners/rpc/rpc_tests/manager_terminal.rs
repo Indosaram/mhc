@@ -82,6 +82,7 @@ fn create_manager() -> Harness {
             default_concurrency: Some(2),
             provider_concurrency: None,
             model_concurrency: None,
+            global_concurrency: None,
         },
         max_depth: 2,
         default_execution_mode: ExecutionMode::Process,

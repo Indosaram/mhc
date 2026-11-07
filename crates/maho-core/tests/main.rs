@@ -47,3 +47,5 @@ mod sdk_tool_selection;
 mod sdk_tool_updates;
 #[path = "session_qa.rs"]
 mod session_qa;
+#[path = "tool_barrier_read_only.rs"]
+mod tool_barrier_read_only;

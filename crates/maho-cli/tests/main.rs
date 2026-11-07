@@ -42,6 +42,8 @@ pub mod deferred_commands;
 pub mod doctor;
 #[path = "duration.rs"]
 pub mod duration;
+#[path = "every_documented_read_tool_declares_read.rs"]
+pub mod every_documented_read_tool_declares_read;
 #[path = "experimental_commands.rs"]
 pub mod experimental_commands;
 #[path = "extension_registry.rs"]

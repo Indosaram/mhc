@@ -126,11 +126,12 @@ pub fn effective_approval_summary(config: &ResolvedPermissionConfig) -> Approval
 pub fn load_permission_settings(
     manager: &SettingsManager,
     cli: &[crate::types::Rule],
+    agent_dir: &Path,
     project: (&Path, &str),
     preset: Option<PermissionPresetName>,
 ) -> Result<(Ruleset, Ruleset), SettingsError> {
     let resolved = resolve_permission_config(manager, cli, project.1, preset)?;
-    Ok((resolved.rules, load_approved(project.0)?))
+    Ok((resolved.rules, load_approved(agent_dir, project.0)))
 }
 
 /// The preset a session runs under when it is not the default: `--permission-preset`, else project, else global `permissionPreset`.

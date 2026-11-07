@@ -198,7 +198,11 @@ pub fn find_shadowed_context_file(cwd: &str) -> Option<String> {
 }
 
 /// senpi loadProjectContextFiles: the agent-dir file first, then the nearest ancestor files.
-pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<ContextFile> {
+pub fn load_project_context_files(
+    cwd: &str,
+    agent_dir: &str,
+    limits: Option<crate::context_files::ContextFileLimits>,
+) -> crate::context_files::ContextFiles {
     let process_cwd = std::env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -245,7 +249,7 @@ pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<ContextFile
     }
 
     context_files.extend(ancestor_context_files);
-    context_files
+    crate::context_files::apply_context_file_limits(context_files, limits.unwrap_or_default())
 }
 
 /// The CLI inputs senpi `DefaultResourceLoader` keeps across reloads: `-e` sources
@@ -810,8 +814,11 @@ mod tests {
         write(&project.join("AGENTS.md"), "project rules");
         write(&nested.join("AGENTS.md"), "nested rules");
 
-        let files =
-            load_project_context_files(&nested.to_string_lossy(), &agent_dir.to_string_lossy());
+        let files = load_project_context_files(
+            &nested.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            None,
+        );
         let contents: Vec<&str> = files.iter().map(|file| file.content.as_str()).collect();
         assert_eq!(
             contents,
@@ -1067,7 +1074,7 @@ mod tests {
         let dir = crate::test_support::isolated_tempdir();
         let agent_dir = dir.path().to_string_lossy().into_owned();
         write(&dir.path().join("AGENTS.md"), "rules");
-        let files = load_project_context_files(&agent_dir, &agent_dir);
+        let files = load_project_context_files(&agent_dir, &agent_dir, None);
         assert_eq!(files.len(), 1);
     }
 }

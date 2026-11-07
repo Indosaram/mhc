@@ -49,6 +49,8 @@ mod openai_remote_timeout;
 mod orchestration;
 #[path = "overflow_retry.rs"]
 mod overflow_retry;
+#[path = "per_turn_cap.rs"]
+mod per_turn_cap;
 #[path = "policy.rs"]
 mod policy;
 #[path = "prompts.rs"]
