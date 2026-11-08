@@ -397,8 +397,13 @@ static PROVIDER_STREAM_STALL_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap_or_else(|e| panic!("stall pattern: {e}"))
 });
 
+/// The transport emits two wordings for the same client-side bound: the bare `Request timed out.`
+/// from the OpenAI-completions send guard, and `Request timed out after {n}ms` from the Anthropic,
+/// system-one and warm-prompt-cache guards. Both are provider transport timeouts, so both must
+/// reach the timeout classifier; matching only the bare form silently demotes the suffixed one to
+/// a generic retryable error, which skips the stream-start retry plan.
 static PROVIDER_TRANSPORT_TIMEOUT_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(r"^Request timed out\.?$")
+    RegexBuilder::new(r"^Request timed out(?:\.| after [0-9]+ms| after [0-9]+(?:\.[0-9]+)?s)?$")
         .case_insensitive(true)
         .build()
         .unwrap_or_else(|e| panic!("{e}"))
@@ -955,6 +960,39 @@ mod tests {
             ..Default::default()
         });
         assert!(!is_provider_stream_stall_error(&stall_but_aborted));
+    }
+
+    /// The Anthropic/system-one/warm-cache guards report the same client-side bound as
+    /// `Request timed out after {n}ms`. That is the same transport timeout the bare form names, so
+    /// it has to classify as one; otherwise the stream-start retry plan is skipped and the turn is
+    /// retried without the watchdog budget the transport was actually granted.
+    #[test]
+    fn recognizes_duration_suffixed_transport_timeouts() {
+        for text in [
+            "Request timed out after 600000ms",
+            "Request timed out after 90s",
+            "Request timed out after 1.5s",
+            "request timed out after 600000ms",
+        ] {
+            let message = faux(FauxOptions {
+                stop_reason: StopReason::Aborted,
+                error_message: Some(text.into()),
+                ..Default::default()
+            });
+            assert!(is_provider_timeout_error(&message), "{text}");
+        }
+        for text in [
+            "Command timed out after 30000ms",
+            "Request timed out while waiting for a tool",
+            "Request timed out after",
+        ] {
+            let message = faux(FauxOptions {
+                stop_reason: StopReason::Aborted,
+                error_message: Some(text.into()),
+                ..Default::default()
+            });
+            assert!(!is_provider_timeout_error(&message), "{text}");
+        }
     }
 
     /// "classifies the observed OpenAI server_error as retryable"
