@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub fn fold_tool_name(name: &str) -> String {
@@ -53,6 +54,25 @@ fn unique_match(names: &BTreeSet<String>, matches: impl Fn(&str) -> bool) -> Opt
     }
 }
 
+/// Some OpenAI-compatible gateways rewrite a tool name to `<prefix>_<sha256(name)[..12]>` on the
+/// way out. The prefix is arbitrary and sometimes corrupted (`clnt_`, `clint_`, `clit_`), but the
+/// digest is stable, so a model that echoes the rewritten name back can still be routed to the
+/// tool it meant instead of failing as an unknown tool.
+fn digest_suffix(requested: &str) -> Option<String> {
+    let (_, suffix) = requested.rsplit_once('_')?;
+    (suffix.len() == 12 && suffix.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| suffix.to_ascii_lowercase())
+}
+
+fn digest_prefix(name: &str) -> String {
+    hex::encode(Sha256::digest(name.as_bytes()))[..12].to_owned()
+}
+
+fn resolve_digest_alias(requested: &str, names: &BTreeSet<String>) -> Option<String> {
+    let suffix = digest_suffix(requested)?;
+    unique_match(names, |name| digest_prefix(name) == suffix).map(str::to_owned)
+}
+
 pub fn resolve_tool_name_match(
     requested: &str,
     available: impl IntoIterator<Item = String>,
@@ -75,7 +95,7 @@ pub fn resolve_tool_name_match(
             return Some(name.to_owned());
         }
     }
-    None
+    resolve_digest_alias(requested, &names)
 }
 
 #[cfg(test)]
@@ -112,6 +132,10 @@ mod tests {
             ("Read", vec!["Read", "read"], Some("Read")),
             ("read", vec!["read", "read"], Some("read")),
             ("mcp__a___Read", vec!["read"], Some("read")),
+            ("clnt_1bbd174404ef", vec!["eval"], Some("eval")),
+            ("clit_1bbd174404ef", vec!["eval"], Some("eval")),
+            ("clnt_1bbd174404ef", vec!["read"], None),
+            ("clnt_1bbd174404e", vec!["eval"], None),
         ] {
             // Given: registered tools and a provider-emitted name.
             let available = available.into_iter().map(str::to_owned);
