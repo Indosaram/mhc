@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use ulw_loop_core::command_types::{CreateGoalsOptions, RecordEvidenceOptions};
-use ulw_loop_core::paths::{UlwLoopScope, ulw_loop_ledger_path, ulw_loop_state_lock_path};
+use ulw_loop_core::paths::{ulw_loop_ledger_path, ulw_loop_state_lock_path, UlwLoopScope};
 use ulw_loop_core::plan_io::read_ulw_loop_plan;
 use ulw_loop_core::sdk::{AgentToolkit, ToolkitContext, ToolkitResponse};
 use ulw_loop_core::surface::UlwLoopToolkitSurface;
@@ -98,7 +98,9 @@ fn mutation_waits_for_existing_state_lock() {
     let releaser = thread::spawn(move || {
         ready_tx.send(()).unwrap();
         release_rx.recv().unwrap();
-        fs::remove_file(release).unwrap();
+        // The mutation may have already reclaimed the stale lock (pid 1 is not alive) and
+        // removed the file, so releasing an absent lock is success, not a panic.
+        let _ = fs::remove_file(release);
     });
     ready_rx.recv().unwrap();
     let root = dir.path().to_path_buf();
