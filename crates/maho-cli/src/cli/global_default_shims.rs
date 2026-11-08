@@ -104,4 +104,35 @@ mod tests {
         );
         assert!(active_global_default_extension_ids(agent.path()).contains("files"));
     }
+
+    #[test]
+    fn omo_generated_shims_activate_every_default_and_are_left_alone() {
+        let agent = tempfile::tempdir().expect("agent dir");
+        std::fs::create_dir_all(agent.path().join("extensions")).expect("extensions dir");
+        let omo = maho_core::generated_shim_banner::HISTORICAL_SHIM_BANNERS
+            .iter()
+            .find(|banner| banner.contains("OmO"))
+            .expect("OmO banner");
+        let original = format!("{omo}export {{ default }} from \"file:///omo/diff.js\";\n");
+        for id in GLOBAL_DEFAULT_EXTENSION_IDS {
+            std::fs::write(
+                global_default_extension_shim_path(agent.path(), id),
+                &original,
+            )
+            .expect("OmO shim");
+        }
+        ensure_global_default_extensions(agent.path()).expect("write shims");
+        assert_eq!(
+            active_global_default_extension_ids(agent.path()).len(),
+            GLOBAL_DEFAULT_EXTENSION_IDS.len()
+        );
+        for id in GLOBAL_DEFAULT_EXTENSION_IDS {
+            assert_eq!(
+                std::fs::read_to_string(global_default_extension_shim_path(agent.path(), id))
+                    .expect("shim kept"),
+                original,
+                "{id} shim must not be rewritten"
+            );
+        }
+    }
 }
