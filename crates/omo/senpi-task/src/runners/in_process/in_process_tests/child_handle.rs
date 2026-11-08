@@ -127,17 +127,21 @@ fn given_a_restored_session_with_prior_assistant_output_when_the_handle_is_creat
 }
 
 #[test]
-fn given_a_restored_session_without_assistant_output_when_wait_for_idle_is_awaited_then_a_typed_empty_turn_outcome_settles_instead_of_hanging()
+fn given_a_restored_session_whose_last_assistant_turn_was_tool_calls_only_when_created_then_both_policies_restore_cleanly()
  {
-    let fake = FakeSession::new("child-session-1");
-    let handle = InProcessChildHandle::restored("task-1", fake.clone());
-    match handle.wait_for_idle() {
-        RunnerOutcome::Error { failure, .. } => {
-            assert_eq!(failure.kind, RunnerFailureKind::ChildTurnFailed);
-        }
-        other => panic!("expected error, got {other:?}"),
+    // The real failure shape (st_01a1b46a): the model checkpoint ends in tool calls, so the
+    // session's last assistant TEXT is absent while the transcript itself is complete. The restore
+    // verdict is not a turn verdict, so neither policy may turn it into a failure.
+    for completion in [
+        ChildCompletionPolicy::FinalText,
+        ChildCompletionPolicy::Turn,
+    ] {
+        let fake = FakeSession::new("child-session-1");
+        let handle =
+            InProcessChildHandle::restored_with_completion("task-1", fake.clone(), completion);
+        assert_eq!(fake.prompt_calls(), 0);
+        assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
     }
-    assert_eq!(fake.prompt_calls(), 0);
 }
 
 #[test]
@@ -279,7 +283,7 @@ fn given_the_turn_policy_and_a_textless_normally_settled_turn_when_it_settles_th
 }
 
 #[test]
-fn given_the_turn_policy_when_a_restored_handle_with_no_transcript_text_drains_then_the_outcome_is_a_completed_empty_turn()
+fn given_a_restored_handle_with_no_transcript_text_when_the_turn_policy_drains_it_then_the_outcome_is_a_completed_empty_turn()
  {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::restored_with_completion(

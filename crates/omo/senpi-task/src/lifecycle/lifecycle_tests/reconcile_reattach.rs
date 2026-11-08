@@ -28,7 +28,7 @@ use crate::manager::types::{
 use crate::manager::{TaskManager, create_task_manager};
 use crate::runners::RunnerOutcome;
 use crate::runners::types::{RpcRunnerSpec, RpcSpawnSpec, RpcSwitchSessionResult};
-use crate::state::{ResidencyState::*, TaskSpawnSpec, TaskStatus::*};
+use crate::state::{ResidencyState::*, SpawnSpecV1, TaskSpawnSpec, TaskStatus::*};
 use crate::team::member_respawn::{
     TeamMemberRespawnLaunchResolverOptions, create_team_member_respawn_launch_resolver,
 };
@@ -322,6 +322,8 @@ impl ManagedChildHandle for FakeTurnHandle {
 #[derive(Default)]
 struct FakeManagedRunner {
     specs: Mutex<Vec<ManagedStartSpec>>,
+    /// `(spec, session path)` for each in-process resume: the restart-recovery evidence.
+    resumed: Mutex<Vec<(ManagedStartSpec, String)>>,
     handles: Mutex<HashMap<String, Arc<FakeTurnHandle>>>,
     started: Condvar,
     /// `EffectiveSpawnRunner`: the launch inputs the runner reports back on the handle.
@@ -346,6 +348,10 @@ impl FakeManagedRunner {
             let sender = lock(&handle.settle).clone();
             let _ = sender.send(outcome);
         }
+    }
+
+    fn resumed(&self) -> Vec<(ManagedStartSpec, String)> {
+        lock(&self.resumed).clone()
     }
 
     fn wait_started(&self, task_id: &str) {
@@ -381,6 +387,12 @@ impl ManagedRunner for FakeManagedRunner {
         self.started.notify_all();
         notify();
         Ok(handle as Arc<dyn ManagedChildHandle>)
+    }
+
+    /// In-process resume: the same task id comes back bound to the persisted transcript.
+    fn resume(&self, spec: &ManagedStartSpec, session_path: &str) -> Option<ManagedRunnerResult> {
+        lock(&self.resumed).push((spec.clone(), session_path.to_string()));
+        Some(self.start(spec))
     }
 }
 
@@ -855,14 +867,66 @@ fn given_a_live_foreign_process_and_persisted_session_when_reconciled_then_it_is
 }
 
 #[test]
-fn given_an_in_process_record_when_reconciled_then_the_previous_process_task_is_lost_and_never_respawned()
+fn given_an_in_process_record_with_a_transcript_when_reconciled_then_the_same_task_id_resumes_instead_of_being_lost()
  {
-    // given
+    // The reported failure (st_01a1b510): a child that really ran tools was marked lost purely for
+    // being in-process. A transcript is a valid resume point, so the record must be respawned and
+    // reattached under its own id rather than destroyed.
+    let task_id = "st_00000004";
     let harness = create_harness(HarnessOptions {
-        task_id: "st_00000004",
+        task_id,
         mode: "in-process",
         pid: None,
         spawn_spec: false,
+        ..HarnessOptions::default()
+    });
+    // The real records carry a v1 spawn spec, which is what rebuilds the resumed child.
+    let seeded = harness.store.load(task_id).expect("load").expect("record");
+    harness
+        .store
+        .replace(&TaskRecord {
+            spawn_spec: Some(TaskSpawnSpec::V1(SpawnSpecV1 {
+                cwd: MANAGER_CWD.to_string(),
+                prompt: "persisted effective prompt".to_string(),
+                instructions: None,
+                member_scoped_tool_names: None,
+                isolation: None,
+            })),
+            ..seeded
+        })
+        .expect("seed v1 spec");
+    let session_path = harness
+        .session_path
+        .clone()
+        .expect("expected a persisted in-process transcript");
+
+    // when
+    let result = harness
+        .lifecycle
+        .reconcile_on_session_start(None)
+        .expect("reconcile");
+
+    // then the respawn targets the persisted transcript and the record survives under its own id
+    assert_ne!(result.outcomes[0].kind, ReconcileOutcomeKind::Lost);
+    let record = harness.store.load(task_id).expect("load").expect("record");
+    assert_ne!(record.status, Lost);
+    let resumed = harness.in_process.resumed();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].0.task_id, task_id);
+    assert_eq!(resumed[0].1, session_path.to_string_lossy().into_owned());
+}
+
+#[test]
+fn given_an_in_process_record_without_a_transcript_when_reconciled_then_it_is_still_lost_and_never_respawned()
+ {
+    // Nothing to resume from: the conservative loss path stays, and no child is spawned blindly.
+    let task_id = "st_00000005";
+    let harness = create_harness(HarnessOptions {
+        task_id,
+        mode: "in-process",
+        pid: None,
+        spawn_spec: false,
+        sessions: false,
         ..HarnessOptions::default()
     });
 
@@ -874,7 +938,13 @@ fn given_an_in_process_record_when_reconciled_then_the_previous_process_task_is_
 
     // then
     assert_eq!(result.outcomes[0].kind, ReconcileOutcomeKind::Lost);
+    let record = harness.store.load(task_id).expect("load").expect("record");
+    assert_eq!(record.status, Lost);
     assert!(harness.respawn.specs().is_empty());
+    assert!(
+        harness.in_process.resumed().is_empty(),
+        "a transcript-less record must not be resumed blindly"
+    );
 }
 
 #[test]

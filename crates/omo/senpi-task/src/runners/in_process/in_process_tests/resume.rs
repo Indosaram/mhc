@@ -8,9 +8,10 @@ use serde_json::json;
 
 use super::fake_session::{FakeSession, OnPrompt};
 use super::support::{
-    Captured, base_spec, capturing_runner, last_options, make_tool, session_dir_in, session_header,
-    strings, tmp, tool_names, write_session_file,
+    Captured, base_spec, capturing_runner, last_options, make_tool, make_tracked_tool,
+    session_dir_in, session_header, strings, tmp, tool_names, write_session_file,
 };
+use crate::manager::child_handle::ManagedChildHandle;
 use crate::runners::in_process::child_handle::{ChildSession, RunnerFailureKind, RunnerOutcome};
 use crate::runners::in_process::runner::{ChildSpec, InProcessRunner};
 use crate::runners::in_process::runner_error::RunnerError;
@@ -201,6 +202,103 @@ fn given_the_real_default_session_manager_when_one_stubbed_turn_runs_then_a_json
         std::fs::read_to_string(Path::new(&session_dir).join(&files[0])).expect("read");
     assert!(transcript.contains("child prompt marker"));
     assert!(transcript.contains("child assistant marker"));
+}
+
+#[test]
+fn given_a_child_cut_off_after_tool_calls_when_the_host_restarts_then_the_same_task_id_resumes_with_its_context_and_finishes_a_follow_up_turn()
+ {
+    // End-to-end restart recovery, mirroring st_01a1b46a: the persisted transcript's last assistant
+    // turn is tool calls only, followed by a session-lifecycle entry. A restarted host must resume
+    // that same task id against that transcript (not fail it for having no final text), keep the
+    // prior context, and complete a follow-up turn that actually runs a tool.
+    let dir = tmp();
+    let spec = persist_spec(&dir, "task-restart-1");
+
+    // The prior process's transcript: a user turn, an assistant tool call, its result, and the
+    // trailing lifecycle entry that made the old tail check miss the interruption.
+    let session_path = write_session_file(
+        &dir,
+        &format!(
+            "{}{}\n{}\n{}\n",
+            session_header("restart-session"),
+            json!({
+                "type": "message",
+                "message": { "role": "user", "content": [{ "type": "text", "text": "PRIOR CONTEXT MARKER" }] },
+            }),
+            json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "toolCall", "id": "call_1", "name": "bash", "arguments": { "command": "echo prior" } }],
+                    "stopReason": "toolUse",
+                },
+            }),
+            json!({
+                "type": "custom",
+                "customType": "session-lifecycle",
+                "data": { "state": "waiting_human", "seq": 4 },
+            }),
+        ),
+    );
+
+    // The restarted host resumes the same task id against that transcript.
+    let tool_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let bash = make_tracked_tool("bash", &tool_ran);
+    let restored_bash = Arc::clone(&bash);
+    // Kept for the surface assertion; the closure below takes its own clone by move.
+    let expected_bash = Arc::clone(&bash);
+    let (runner, captured) = capturing_runner(vec![bash], &[], None, move || {
+        let bash = Arc::clone(&restored_bash);
+        let on_prompt: OnPrompt = Box::new(move || {
+            // The follow-up turn runs a real tool from the restored surface.
+            bash.execute("call_2", &json!({ "command": "echo resumed" }))
+                .expect("tool executes on the resumed child");
+        });
+        FakeSession::immediate("restart-session", Some(on_prompt))
+    });
+    let handle = runner.resume(&spec, &session_path).expect("resume");
+
+    // The restored handle settles cleanly instead of reporting a missing final text.
+    let drained = handle.wait_for_idle();
+    assert!(
+        !matches!(drained, RunnerOutcome::Error { .. }),
+        "a transcript-bearing child must restore without a failure: {drained:?}"
+    );
+
+    // The restored child is bound to the SAME persisted transcript, so its prior context survives.
+    assert_eq!(
+        last_options(&captured).session_manager.session_file(),
+        session_path.as_path()
+    );
+    let restored_surface = last_options(&captured).custom_tools;
+    let restored_tool = restored_surface
+        .iter()
+        .find(|tool| tool.name() == "bash")
+        .expect("the restored child keeps the bash tool");
+    assert!(
+        Arc::ptr_eq(restored_tool, &expected_bash),
+        "the resumed child must receive the restored tool surface"
+    );
+    let transcript = std::fs::read_to_string(&session_path).expect("transcript");
+    assert!(transcript.contains("PRIOR CONTEXT MARKER"));
+
+    // The interrupted tail is still detected through the trailing lifecycle entry, so the host
+    // sends the continuation and the child completes a fresh turn that runs a tool.
+    assert!(
+        crate::manager::interrupted_turn::session_tail_needs_continuation(&session_path),
+        "the aborted tool-call tail must be recognised as interrupted"
+    );
+    handle
+        .follow_up_turn(crate::manager::respawn::CONTINUATION_MESSAGE)
+        .expect("continuation");
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed("done"));
+    assert!(
+        tool_ran.load(std::sync::atomic::Ordering::SeqCst),
+        "the follow-up turn must actually execute the restored tool"
+    );
+
+    // The same task id is preserved on the resumed handle.
+    assert_eq!(handle.task_id(), "task-restart-1");
 }
 
 #[test]

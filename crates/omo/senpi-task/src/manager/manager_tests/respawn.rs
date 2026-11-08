@@ -784,6 +784,38 @@ fn given_assistant_text_only_tail_when_respawned_then_no_continuation() {
 }
 
 #[test]
+fn given_an_aborted_tool_call_turn_followed_by_session_lifecycle_entry_when_respawned_then_continuation_still_runs()
+ {
+    // The real transcript shape (st_01a1b46a): the aborted assistant turn is followed by a
+    // `session-lifecycle` custom entry, so the literal last line is not a message. Judging the tail
+    // by that line reported the cut-off turn as clean and the resumed child never continued.
+    let count = follow_ups_after(
+        &respawn_record(),
+        &[
+            r#"{"type":"message","message":{"role":"assistant","stopReason":"aborted","content":[{"type":"toolCall","name":"bash","arguments":{}}]}}"#,
+            r#"{"type":"custom","customType":"session-lifecycle","data":{"state":"waiting_human","seq":4}}"#,
+        ],
+    );
+
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn given_a_completed_assistant_tail_followed_by_session_lifecycle_entry_when_respawned_then_no_continuation()
+ {
+    // The same trailing entry must not manufacture a continuation out of a clean finish.
+    let count = follow_ups_after(
+        &respawn_record(),
+        &[
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"finished"}]}}"#,
+            r#"{"type":"custom","customType":"session-lifecycle","data":{"state":"idle","seq":5}}"#,
+        ],
+    );
+
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn given_unreadable_session_path_when_respawned_then_no_continuation_and_respawn_succeeds() {
     let harness = continuation_harness();
 

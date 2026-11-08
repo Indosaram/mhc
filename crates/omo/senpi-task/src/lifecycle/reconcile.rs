@@ -351,17 +351,23 @@ fn reconcile_legacy_exclusive(
     if host_session_identity(&record).is_some() {
         return reconcile_host_session_orphan(context, &record);
     }
+    // An in-process child cannot be reattached by pid, but its transcript is a complete resume
+    // point: respawn resumes that session under the SAME task id and re-attaches the new handle.
+    // Only a transcript-less record is genuinely unrecoverable.
     if record.execution_mode != "process" {
-        mark_lost(
-            context,
-            &record,
-            "in-process task from a previous process cannot be reattached",
-        )?;
-        return Ok(outcome(
-            &record.task_id,
-            Lost,
-            "previous-process in-process",
-        ));
+        let Some(session_path) = newest_session_path(context, &record.task_id) else {
+            mark_lost(
+                context,
+                &record,
+                "in-process task from a previous process has no transcript to resume",
+            )?;
+            return Ok(outcome(
+                &record.task_id,
+                Lost,
+                "previous-process in-process",
+            ));
+        };
+        return reattach_legacy_record(context, &record, session_path);
     }
     let Some(pid) = record.pid else {
         mark_lost(context, &record, "rpc task had no recorded pid")?;

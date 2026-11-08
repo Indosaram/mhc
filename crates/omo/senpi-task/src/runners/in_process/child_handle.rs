@@ -273,18 +273,14 @@ fn turn_outcome(
     }
 }
 
-fn settled_session_outcome(
-    session: &dyn ChildSession,
-    completion: ChildCompletionPolicy,
-) -> RunnerOutcome {
+fn settled_session_outcome(session: &dyn ChildSession) -> RunnerOutcome {
     match session.get_last_assistant_text() {
         Some(last) if !last.is_empty() => RunnerOutcome::completed(last),
-        // A restored `turn` child drains as a completed empty turn instead of a no-output error.
-        _ if completion == ChildCompletionPolicy::Turn => RunnerOutcome::completed(""),
-        _ => RunnerOutcome::error(
-            RunnerFailureKind::ChildTurnFailed,
-            "restored session has no assistant output",
-        ),
+        // A restored handle drains an ALREADY-SETTLED session, so this is not a turn verdict: an
+        // absent final text is the normal shape of a child cut off after tool calls, not a child
+        // failure. `ChildCompletionPolicy::FinalText` governs turns (`turn_outcome`), and the
+        // respawn continuation runs the turn that produces the missing text.
+        _ => RunnerOutcome::completed(""),
     }
 }
 
@@ -310,7 +306,7 @@ impl InProcessChildHandle {
                 aborted: false,
                 disposed: false,
                 turn: 0,
-                outcome: Some(settled_session_outcome(session.as_ref(), completion)),
+                outcome: Some(settled_session_outcome(session.as_ref())),
                 outcomes: std::collections::HashMap::new(),
                 observation: TurnObservation::default(),
             }),
