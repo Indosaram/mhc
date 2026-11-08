@@ -3127,7 +3127,7 @@ async fn faux_screen_hi_matches_pinned_interactive_cells() {
         };
         mounted.start(&mut terminal, false, false);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.omo/evidence/task-35-faux")
+            .join("tests/golden/task35-faux")
             .join(fixture);
         let expected: maho_test_support::vterm::Screen =
             serde_json::from_str(&std::fs::read_to_string(fixture).expect("pinned fixture"))
@@ -3192,11 +3192,11 @@ async fn faux_screen_slash_hotkeys_matches_pinned_cells() {
     };
     mounted.start(&mut terminal, false, false);
     let fixture = if cfg!(target_os = "macos") {
-        include_str!("../../../.omo/evidence/task-35-slash/senpi-hotkeys-120-darwin.cells.json")
+        include_str!("golden/senpi-hotkeys-120-darwin.cells.json")
     } else if cfg!(windows) {
         include_str!("golden/senpi-hotkeys-120-windows.cells.json")
     } else {
-        include_str!("../../../.omo/evidence/task-35-slash/senpi-hotkeys-120.cells.json")
+        include_str!("golden/senpi-hotkeys-120.cells.json")
     };
     let expected: maho_test_support::vterm::Screen =
         serde_json::from_str(fixture).expect("pinned cells");
