@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let identity = identity.expect("identity");
         assert!(crate::session_file_identity::same_file(
-            &std::fs::metadata(&path).expect("stat"),
+            &File::open(&path).expect("open"),
             &identity
         ));
     }

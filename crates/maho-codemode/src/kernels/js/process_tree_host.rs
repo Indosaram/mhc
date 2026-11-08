@@ -4,102 +4,6 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone)]
-struct WindowsProcessRow {
-    pid: u32,
-    parent_pid: u32,
-    created_at: u64,
-    name: String,
-}
-
-fn parse_windows_rows(stdout: &str) -> Vec<WindowsProcessRow> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
-            let parent_pid = fields.next()?.parse().ok()?;
-            let created_at = fields.next()?.parse().ok()?;
-            let name = fields.collect::<Vec<_>>().join(" ");
-            (pid > 0).then_some(WindowsProcessRow {
-                pid,
-                parent_pid,
-                created_at,
-                name,
-            })
-        })
-        .collect()
-}
-
-fn windows_tree_kill_pids(rows: &[WindowsProcessRow], root_pid: u32, self_pid: u32) -> Vec<u32> {
-    let by_pid = rows
-        .iter()
-        .map(|row| (row.pid, row))
-        .collect::<HashMap<_, _>>();
-    if !by_pid.contains_key(&root_pid) {
-        return Vec::new();
-    }
-    let mut tree = HashSet::from([root_pid]);
-    loop {
-        let mut changed = false;
-        for row in rows {
-            if tree.contains(&row.pid) {
-                continue;
-            }
-            if let Some(parent) = by_pid.get(&row.parent_pid)
-                && tree.contains(&row.parent_pid)
-                && row.created_at >= parent.created_at
-            {
-                changed |= tree.insert(row.pid);
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let protected = [
-        "system",
-        "smss.exe",
-        "csrss.exe",
-        "wininit.exe",
-        "winlogon.exe",
-        "services.exe",
-        "lsass.exe",
-        "lsaiso.exe",
-        "svchost.exe",
-    ];
-    let mut ancestors = HashSet::from([self_pid]);
-    let mut cursor = by_pid.get(&self_pid).copied();
-    while let Some(current) = cursor {
-        let Some(parent) = by_pid.get(&current.parent_pid).copied() else {
-            break;
-        };
-        if ancestors.contains(&parent.pid) || parent.created_at > current.created_at {
-            break;
-        }
-        ancestors.insert(parent.pid);
-        cursor = Some(parent);
-    }
-    let refused = tree.iter().any(|pid| {
-        by_pid
-            .get(pid)
-            .is_some_and(|row| protected.contains(&row.name.to_lowercase().as_str()))
-            || ancestors.contains(pid)
-    });
-    if !refused {
-        return tree.into_iter().collect();
-    }
-    let root_refused = by_pid
-        .get(&root_pid)
-        .is_some_and(|row| protected.contains(&row.name.to_lowercase().as_str()))
-        || ancestors.contains(&root_pid);
-    if root_refused {
-        Vec::new()
-    } else {
-        vec![root_pid]
-    }
-}
-
 pub struct TerminateProcessTreesOptions {
     pub grace_ms: u64,
     pub kill_wait_ms: Option<u64>,
@@ -122,26 +26,17 @@ pub async fn is_process_alive(pid: u32) -> bool {
             })
     }
     // PERF-DIVERGENCE(senpi process-tree): Windows has no kill(pid, 0); upstream's
-    // process.kill(pid, 0) opens the process handle, and this port asks tasklist for the pid.
-    #[cfg(not(unix))]
+    // process.kill(pid, 0) opens the process handle, and this port does the same Win32 probe
+    // instead of spawning `tasklist.exe` for every poll tick.
+    #[cfg(windows)]
     {
-        tokio::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .stderr(Stdio::null())
-            .output()
-            .await
-            .is_ok_and(|output| tasklist_lists_pid(&String::from_utf8_lossy(&output.stdout), pid))
+        maho_agent::harness::env::windows_process_probe::is_process_alive(pid)
     }
-}
-
-/// Whether `tasklist /FO CSV /NH` output has a row for `pid` (the second CSV column). A missing
-/// process prints an `INFO:` line instead of a row.
-#[cfg_attr(unix, allow(dead_code))]
-fn tasklist_lists_pid(stdout: &str, pid: u32) -> bool {
-    let wanted = format!("\"{pid}\"");
-    stdout
-        .lines()
-        .any(|line| line.split(',').nth(1) == Some(wanted.as_str()))
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 #[cfg(unix)]
@@ -324,45 +219,42 @@ pub async fn terminate_process_trees(roots: &[u32], options: TerminateProcessTre
         return;
     }
     if cfg!(windows) {
-        let stdout=bounded_process_output(tokio::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command","Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { $created = if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }; \"{0} {1} {2} {3}\" -f $_.ProcessId, $_.ParentProcessId, $created, $_.Name }"]),16*1024*1024).await;
-        let rows = if stdout.is_empty() {
-            None
-        } else {
-            Some(parse_windows_rows(&stdout))
-        };
+        let rows = maho_agent::harness::env::windows_process_probe::process_rows();
         for root in live {
-            let args = match &rows {
-                None => vec![
-                    "/F".to_owned(),
-                    "/T".into(),
-                    "/PID".into(),
-                    root.to_string(),
-                ],
-                Some(rows) => {
-                    let pids = windows_tree_kill_pids(rows, root, std::process::id());
-                    if pids.is_empty() {
-                        continue;
-                    }
-                    vec!["/F".into()]
-                        .into_iter()
-                        .chain(
-                            pids.into_iter()
-                                .flat_map(|pid| ["/PID".to_owned(), pid.to_string()]),
-                        )
-                        .collect()
-                }
-            };
-            if args.len() > 1 {
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    tokio::process::Command::new("taskkill")
-                        .args(&args)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status(),
-                )
-                .await;
+            let plan = maho_agent::harness::env::windows_process_probe::tree_kill_plan(
+                &rows,
+                root,
+                std::process::id(),
+            );
+            if plan.kill.is_empty() {
+                continue;
             }
+            maho_agent::harness::env::windows_process_probe::terminate_all(&plan.kill);
+            let remaining: Vec<u32> = plan
+                .kill
+                .iter()
+                .copied()
+                .filter(|pid| {
+                    *pid > 1
+                        && maho_agent::harness::env::windows_process_probe::is_process_alive(*pid)
+                })
+                .collect();
+            if remaining.is_empty() {
+                continue;
+            }
+            let mut args = vec!["/F".to_owned()];
+            for pid in remaining {
+                args.extend(["/PID".to_owned(), pid.to_string()]);
+            }
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::process::Command::new("taskkill")
+                    .args(&args)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status(),
+            )
+            .await;
         }
         return;
     }
@@ -390,17 +282,6 @@ pub async fn terminate_process_trees(roots: &[u32], options: TerminateProcessTre
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tasklist_rows_decide_windows_liveness() {
-        let row = "\"bun.exe\",\"4242\",\"Console\",\"1\",\"10,240 K\"\r\n";
-        assert!(tasklist_lists_pid(row, 4242));
-        assert!(!tasklist_lists_pid(row, 42));
-        assert!(!tasklist_lists_pid(
-            "INFO: No tasks are running which match the specified criteria.\r\n",
-            4242
-        ));
-    }
 
     #[tokio::test]
     async fn process_output_is_bounded_and_preserves_nonzero_partial_output() {

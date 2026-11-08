@@ -11,15 +11,30 @@ pub type StreamWrite = Arc<dyn Fn(&str) + Send + Sync>;
 
 fn default_stdout() -> StreamWrite {
     Arc::new(|text: &str| {
-        let mut out = std::io::stdout().lock();
-        let _ = out.write_all(text.as_bytes());
-        let _ = out.flush();
+        // The buffer is kept for the life of the process and flushed at the end of every call, so
+        // output ordering is unchanged. A large frame then reaches the terminal as one
+        // `write_all` instead of the per-call handle lock plus one syscall per stdio write.
+        static STDOUT: Mutex<Option<std::io::BufWriter<std::io::Stdout>>> = Mutex::new(None);
+        let mut guard = STDOUT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let writer = guard
+            .get_or_insert_with(|| std::io::BufWriter::with_capacity(64 * 1024, std::io::stdout()));
+        let _ = writer.write_all(text.as_bytes());
+        let _ = writer.flush();
     })
 }
 
 fn default_stderr() -> StreamWrite {
     Arc::new(|text: &str| {
-        let _ = std::io::stderr().lock().write_all(text.as_bytes());
+        static STDERR: Mutex<Option<std::io::BufWriter<std::io::Stderr>>> = Mutex::new(None);
+        let mut guard = STDERR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let writer = guard
+            .get_or_insert_with(|| std::io::BufWriter::with_capacity(16 * 1024, std::io::stderr()));
+        let _ = writer.write_all(text.as_bytes());
+        let _ = writer.flush();
     })
 }
 

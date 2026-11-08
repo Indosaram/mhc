@@ -2,17 +2,8 @@ use super::constants::PROJECT_MARKERS;
 use std::path::{Path, PathBuf};
 
 fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let s = path.to_string_lossy();
-        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = s.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
-        }
-    }
-    path
+    // One implementation: the lossless wide-string strip lives in maho-core.
+    maho_core::paths::strip_verbatim_prefix(path)
 }
 
 pub fn find_project_root(start_path: &Path, markers: Option<&[&str]>) -> Option<PathBuf> {

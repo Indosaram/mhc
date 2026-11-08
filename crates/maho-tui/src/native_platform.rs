@@ -36,6 +36,12 @@ pub trait NativePlatformHelper: NativeClipboard {
     fn enable_virtual_terminal_input(&self) -> Option<bool> {
         None
     }
+    /// Put the console output into UTF-8 and ANSI-processing mode (Windows only).
+    fn enable_virtual_terminal_output(&self) -> Option<bool> {
+        None
+    }
+    /// Undo [`Self::enable_virtual_terminal_output`]; called when the TUI releases the terminal.
+    fn restore_console_output(&self) {}
     fn is_modifier_pressed(&self, _key: ModifierKey) -> Option<bool> {
         None
     }

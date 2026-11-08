@@ -79,14 +79,31 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
+/// Replace `to` with `from`.
+///
+/// `std::fs::rename` already maps to `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` on Windows, so
+/// the only recoverable failures are transient sharing violations and delete-pending states. Those
+/// are retried; the destination is never deleted first, because a failed rename after the delete
+/// would leave no file at all.
 fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
-            let _ = std::fs::remove_file(to);
-            std::fs::rename(from, to)
+    let attempts = if cfg!(windows) { 5 } else { 1 };
+    let mut attempt = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                let retryable = cfg!(windows)
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock
+                    );
+                if !retryable || attempt >= attempts {
+                    return Err(error);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+            }
         }
-        Err(error) => Err(error),
     }
 }
 

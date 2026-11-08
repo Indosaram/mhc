@@ -33,15 +33,31 @@ fn default_expand_tilde() -> bool {
 }
 
 /// Strip the Windows `\\?\` or `\\?\UNC\` verbatim prefix.
+///
+/// The prefix is matched on the platform's own wide-string encoding, so a path whose tail is not
+/// valid UTF-8 (permitted on Windows) survives the strip unchanged instead of being replaced by
+/// U+FFFD and pointing at a different file.
+#[cfg(windows)]
 pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        path
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    let unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+    if wide.len() >= unc.len() && wide[..unc.len()] == unc[..] {
+        let mut restored = vec![u16::from(b'\\'), u16::from(b'\\')];
+        restored.extend_from_slice(&wide[unc.len()..]);
+        return PathBuf::from(std::ffi::OsString::from_wide(&restored));
     }
+    if wide.len() >= verbatim.len() && wide[..verbatim.len()] == verbatim[..] {
+        return PathBuf::from(std::ffi::OsString::from_wide(&wide[verbatim.len()..]));
+    }
+    path
+}
+
+/// Only Windows has verbatim prefixes; elsewhere the path is already canonical text.
+#[cfg(not(windows))]
+pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// `canonicalizePath`: realpath, falling back to the raw path when resolution fails.

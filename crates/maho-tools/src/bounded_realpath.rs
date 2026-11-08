@@ -1,5 +1,16 @@
 use std::{future::Future, path::PathBuf, time::Duration};
 pub const RESOLUTION_DEADLINE_MS: u64 = 2000;
+
+/// The resolution hit its symlink/reparse-point budget.
+///
+/// Raw errno 40 is ELOOP on Linux but means nothing on Windows (and is `EMSGSIZE` elsewhere), so
+/// the failure is built from a kind and message instead of a numeric OS code.
+pub fn symlink_loop_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "ELOOP: too many levels of symbolic links",
+    )
+}
 pub fn is_missing_path_error(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -26,12 +37,18 @@ pub fn fold_path_for_case_insensitive_filesystem(path: PathBuf) -> PathBuf {
     #[cfg(not(target_os = "linux"))]
     {
         use unicode_normalization::UnicodeNormalization;
-        PathBuf::from(
-            path.to_string_lossy()
-                .nfc()
-                .collect::<String>()
-                .to_lowercase(),
-        )
+        // A verbatim prefix is matched literally by Win32: lowercasing `\\?\UNC\` yields `\\?\unc\`,
+        // which no longer names the same path. Fold only what follows it.
+        let text = path.to_string_lossy();
+        let (prefix, tail) = if let Some(tail) = text.strip_prefix(r"\\?\UNC\") {
+            (r"\\?\UNC\", tail)
+        } else if let Some(tail) = text.strip_prefix(r"\\?\") {
+            (r"\\?\", tail)
+        } else {
+            ("", text.as_ref())
+        };
+        let folded: String = tail.nfc().collect::<String>().to_lowercase();
+        PathBuf::from(format!("{prefix}{folded}"))
     }
 }
 
@@ -69,6 +86,19 @@ mod tests {
         assert_eq!(
             fold_path_for_case_insensitive_filesystem(PathBuf::from("/A/B")),
             PathBuf::from("/A/B")
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn folding_keeps_the_verbatim_prefix_intact() {
+        assert_eq!(
+            fold_path_for_case_insensitive_filesystem(PathBuf::from(r"\\?\C:\Users\Mixed\File")),
+            PathBuf::from(r"\\?\c:\users\mixed\file")
+        );
+        assert_eq!(
+            fold_path_for_case_insensitive_filesystem(PathBuf::from(r"\\?\UNC\Server\Share\Mixed")),
+            PathBuf::from(r"\\?\UNC\server\share\mixed")
         );
     }
 }

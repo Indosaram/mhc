@@ -20,6 +20,20 @@ pub struct FileLockLostError {
 impl FileLockLostError {
     pub const CODE: &'static str = "ELOCKLOST";
 }
+
+/// A transient contention failure from `SetFileTime` is not lock loss: antivirus, the search
+/// indexer and another writer's open handle all deny the directory for a moment. Windows reports
+/// `ERROR_SHARING_VIOLATION` (32), `ERROR_LOCK_VIOLATION` (33) and `ERROR_ACCESS_DENIED` (5), and any
+/// of them is retried on the next heartbeat instead of marking the lock lost; `assert_held` above
+/// still decides whether the lock directory itself is gone.
+fn is_transient_contention(error: &std::io::Error) -> bool {
+    if cfg!(windows) && matches!(error.kind(), std::io::ErrorKind::PermissionDenied) {
+        // `PermissionDenied` also covers a genuinely removed lock, but `assert_held` above already
+        // ruled that out, so a sharing/access denial here is the recoverable case.
+        return matches!(error.raw_os_error(), Some(5 | 32 | 33));
+    }
+    error.kind() == std::io::ErrorKind::ResourceBusy
+}
 #[derive(Clone)]
 pub struct HeldFileLock {
     path: PathBuf,
@@ -58,6 +72,7 @@ impl HeldFileLock {
                 }
                 if let Some(dir) = held.token_path.parent()
                     && let Err(error) = filetime::set_file_mtime(dir, filetime::FileTime::now())
+                    && !is_transient_contention(&error)
                 {
                     held.report_compromised(error.to_string());
                 }

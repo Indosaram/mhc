@@ -143,10 +143,7 @@ pub fn read_persisted_base(
     let Ok(file) = File::open(&base.file_identity.path) else {
         return Err(PersistedBaseError::BaseFileMissing);
     };
-    let metadata = file
-        .metadata()
-        .map_err(|_| PersistedBaseError::BaseFileMissing)?;
-    if !crate::session_file_identity::same_file(&metadata, &base.file_identity) {
+    if !crate::session_file_identity::same_file(&file, &base.file_identity) {
         return Err(PersistedBaseError::BaseFileReplaced);
     }
     let wanted = base.count + accepted_ids.len();

@@ -297,7 +297,7 @@ fn try_acquire(dir: &Path) -> std::io::Result<()> {
                     .map(|age| age.as_millis() as u64 > FILE_STORAGE_LOCK_STALE_MS)
                     .unwrap_or(false)
             {
-                let _ = std::fs::remove_dir_all(dir);
+                reclaim_stale_lock(dir)?;
                 return std::fs::create_dir(dir);
             }
             Err(std::io::Error::new(
@@ -306,6 +306,33 @@ fn try_acquire(dir: &Path) -> std::io::Result<()> {
             ))
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Take a stale lock directory away without letting two processes both win.
+///
+/// A plain `remove_dir_all` + `create_dir` is a check-then-act race and, on NTFS, fails outright
+/// while the victim's handles are still open (the directory enters delete-pending). Renaming the
+/// directory is the atomic claim: exactly one racer's rename succeeds, and whoever wins then owns
+/// the name and can create a fresh lock directory.
+fn reclaim_stale_lock(dir: &Path) -> std::io::Result<()> {
+    let claimed = dir.with_file_name(format!(
+        ".{}.stale.{}",
+        dir.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    match std::fs::rename(dir, &claimed) {
+        Ok(()) => {
+            // The claim is ours; a failed cleanup only leaves a directory behind, never the lock.
+            let _ = std::fs::remove_dir_all(&claimed);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        // Another racer claimed it first: report contention, not corruption.
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "ELOCKED",
+        )),
     }
 }
 

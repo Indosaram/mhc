@@ -19,6 +19,7 @@ unicode-normalization = "=0.1.25"
 regex = "=1.12.3"
 tempfile = "=3.27.0"
 base64 = "=0.22.1"
+percent-encoding = { workspace = true }
 dunce = "=1.0.5"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 

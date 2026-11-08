@@ -7,6 +7,7 @@ license = "MIT"
 autotests = false
 
 [dependencies]
+maho-core = { path = "../../maho-core" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-rule-activation = { path = "../maho-ext-rule-activation" }
 maho-tui = { path = "../../maho-tui" }

@@ -526,21 +526,58 @@ fn kill_process_tree(pid: u32) {
 }
 
 /// `killWindowsProcessTree(pid, taskkillPaths)`.
+///
+/// The tree is resolved in-process from one ToolHelp snapshot and terminated with
+/// `TerminateProcess`; `taskkill` is only launched for pids Windows refuses to open, and only the
+/// paths found on this machine are tried.
 pub fn kill_windows_process_tree(pid: u32, taskkill_paths: &[String]) {
-    let rows = super::windows_process_tree::list_windows_process_rows_sync(5000);
-    let args = super::windows_process_tree::windows_tree_kill_args(
-        pid,
-        rows.as_deref(),
-        std::process::id(),
-    );
-    if args.is_empty() {
+    use super::windows_process_probe as probe;
+
+    let Some(rows) = super::windows_process_tree::list_windows_process_rows_sync(5000) else {
+        let args =
+            super::windows_process_tree::windows_tree_kill_args(pid, None, std::process::id());
+        run_taskkill(&args, taskkill_paths);
+        return;
+    };
+    let plan = super::windows_process_tree::windows_tree_kill_plan(&rows, pid, std::process::id());
+    if plan.kill.is_empty() {
         return;
     }
-    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    probe::terminate_all(&plan.kill);
+    let remaining: Vec<u32> = plan
+        .kill
+        .iter()
+        .copied()
+        .filter(|pid| *pid > 1 && probe::is_process_alive(*pid))
+        .collect();
+    if remaining.is_empty() {
+        return;
+    }
+    let mut args = vec!["/F".to_owned()];
+    for pid in &remaining {
+        args.extend(["/PID".to_owned(), pid.to_string()]);
+    }
+    run_taskkill(&args, taskkill_paths);
+    #[cfg(windows)]
+    for pid in remaining {
+        if probe::is_process_alive(pid) {
+            let _ = super::windows_process_tree::terminate_windows_process(pid);
+            if probe::is_process_alive(pid) {
+                kill_owned_windows_child(pid);
+            }
+        }
+    }
+}
+
+fn run_taskkill(args: &[String], taskkill_paths: &[String]) {
+    if args.len() < 2 {
+        return;
+    }
+    let rendered: Vec<_> = args.iter().map(String::as_str).collect();
     for taskkill_path in taskkill_paths {
         let handled = run_command_bounded(
             taskkill_path,
-            &args,
+            &rendered,
             Duration::from_secs(5),
             16 * 1024 * 1024,
         )
@@ -549,14 +586,6 @@ pub fn kill_windows_process_tree(pid: u32, taskkill_paths: &[String]) {
             return;
         }
     }
-    #[cfg(windows)]
-    {
-        if super::windows_process_tree::terminate_windows_process(pid).is_err() {
-            kill_owned_windows_child(pid);
-        }
-    }
-    #[cfg(not(windows))]
-    kill_process_tree(pid);
 }
 
 /// Strict LF reader; the final line's termination is reported.

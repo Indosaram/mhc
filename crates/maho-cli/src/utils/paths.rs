@@ -206,7 +206,7 @@ fn resolve_without_open(input: &str) -> (String, Option<std::io::Error>) {
                     path.extend(pending);
                     return (
                         path.to_string_lossy().into_owned(),
-                        Some(std::io::Error::from_raw_os_error(40)),
+                        Some(maho_tools::bounded_realpath::symlink_loop_error()),
                     );
                 }
                 match std::fs::read_link(&candidate) {

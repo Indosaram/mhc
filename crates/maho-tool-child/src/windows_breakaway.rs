@@ -10,6 +10,7 @@
 #![allow(unsafe_code)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::launch_env_names::without_internal_env_on;
@@ -95,16 +96,29 @@ pub fn environment_block(env: &HashMap<String, String>) -> Vec<u8> {
 pub struct BreakawayProcess {
     pub pid: u32,
     kernel: Arc<dyn Kernel32Process>,
-    process: u64,
+    /// The process handle, or 0 once it has been taken by `wait` or `drop`. `AtomicU64` lets both
+    /// paths take ownership exactly once without holding a lock across the wait.
+    process: AtomicU64,
 }
+
+const ERROR_INVALID_HANDLE: u32 = 6;
+const NO_HANDLE: u64 = 0;
 
 impl BreakawayProcess {
     /// Blocks until the command exits and returns its exit code.
     pub fn wait(&self) -> Result<u32, BreakawayError> {
-        self.kernel.wait_for_single_object(self.process, INFINITE);
+        let Some(handle) = self.take_process() else {
+            // The handle was already closed by an earlier wait or by drop; there is nothing left to
+            // query and closing again would release an unrelated handle that reused the value.
+            return Err(BreakawayError::new(
+                "WaitForSingleObject",
+                ERROR_INVALID_HANDLE,
+            ));
+        };
+        self.kernel.wait_for_single_object(handle, INFINITE);
         let mut code = [0u8; 4];
-        let ok = self.kernel.get_exit_code_process(self.process, &mut code) != 0;
-        self.kernel.close_handle(self.process);
+        let ok = self.kernel.get_exit_code_process(handle, &mut code) != 0;
+        self.kernel.close_handle(handle);
         if !ok {
             return Err(BreakawayError::new(
                 "GetExitCodeProcess",
@@ -112,6 +126,24 @@ impl BreakawayProcess {
             ));
         }
         Ok(u32::from_le_bytes(code))
+    }
+
+    fn take_process(&self) -> Option<u64> {
+        match self.process.swap(NO_HANDLE, Ordering::AcqRel) {
+            NO_HANDLE => None,
+            handle => Some(handle),
+        }
+    }
+}
+
+impl Drop for BreakawayProcess {
+    fn drop(&mut self) {
+        // A launch that is dropped without being waited for (for example when the reporting thread
+        // cannot be spawned) still owns the process handle; without this the handle leaks for the
+        // life of the tool child.
+        if let Some(handle) = self.take_process() {
+            self.kernel.close_handle(handle);
+        }
     }
 }
 
@@ -155,7 +187,7 @@ pub fn start_breakaway(
     Ok(BreakawayProcess {
         pid: u32::from_le_bytes(pid),
         kernel,
-        process,
+        process: AtomicU64::new(process),
     })
 }
 
@@ -176,10 +208,15 @@ mod real {
     use super::Kernel32Process;
     use std::ffi::c_void;
     use std::ptr;
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT,
+    };
     use windows_sys::Win32::System::Console::GetStdHandle;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
+        CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+        InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
+        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTUPINFOEXW, STARTUPINFOW,
     };
 
     pub struct RealKernel32Process;
@@ -189,6 +226,84 @@ mod real {
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect()
+    }
+
+    /// An initialized `PROC_THREAD_ATTRIBUTE_LIST` restricted to the three standard handles.
+    ///
+    /// Without it `bInheritHandles = TRUE` hands the child every inheritable handle the tool child
+    /// happens to hold (pipes, sockets, files), which both leaks descriptors and can make a handle
+    /// outlive its owner. The list is only built when all three handles are inheritable: a
+    /// non-inheritable handle cannot appear in the list, and a partial list would pass the child a
+    /// handle it cannot use.
+    struct HandleList {
+        buffer: Vec<usize>,
+        /// The handle array the attribute points at: it must stay valid until the list is
+        /// destroyed, and it must be this allocation's address that the attribute captured, not a
+        /// parameter that dies when `new` returns.
+        _handles: Box<[HANDLE; 3]>,
+    }
+
+    impl HandleList {
+        fn new(std_handles: [HANDLE; 3]) -> Option<Self> {
+            std_handles.iter().try_for_each(|handle| {
+                let mut flags = 0u32;
+                // SAFETY: `handle` was returned by GetStdHandle and `flags` is a live output.
+                let ok = unsafe { GetHandleInformation(*handle, &mut flags) };
+                (ok != 0 && flags & HANDLE_FLAG_INHERIT != 0).then_some(())
+            })?;
+            let mut size = 0usize;
+            // SAFETY: a null list with a live size output is the documented size query; it is
+            // expected to fail with ERROR_INSUFFICIENT_BUFFER and fill `size`.
+            unsafe {
+                InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size);
+            }
+            // `usize` elements guarantee the alignment the list requires; `size` is in bytes.
+            let mut buffer = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+            let list: LPPROC_THREAD_ATTRIBUTE_LIST = buffer.as_mut_ptr().cast();
+            // SAFETY: `buffer` is at least `size` bytes of suitably aligned storage and stays alive
+            // in `Self` for as long as the list is used.
+            if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut size) } == 0 {
+                return None;
+            }
+            // Allocate the array first: the attribute stores this pointer, so it must be the final
+            // address and it must outlive the list.
+            let handles = Box::new(std_handles);
+            // SAFETY: `list` is initialized for one attribute, `handles` is a live boxed array of
+            // three handles that outlives this call, and the size is exactly that array's length.
+            let updated = unsafe {
+                UpdateProcThreadAttribute(
+                    list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    handles.as_ptr().cast::<c_void>(),
+                    std::mem::size_of_val(&*handles),
+                    ptr::null_mut(),
+                    ptr::null(),
+                )
+            };
+            if updated == 0 {
+                // SAFETY: `list` was successfully initialized above and is not used afterwards.
+                unsafe { DeleteProcThreadAttributeList(list) };
+                return None;
+            }
+            Some(Self {
+                buffer,
+                _handles: handles,
+            })
+        }
+
+        fn list(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+            self.buffer.as_mut_ptr().cast()
+        }
+    }
+
+    impl Drop for HandleList {
+        fn drop(&mut self) {
+            // SAFETY: the buffer is the same initialized list created in `new` and is not used after
+            // this point; freeing the allocation afterwards is what `DeleteProcThreadAttributeList`
+            // expects the caller to do.
+            unsafe { DeleteProcThreadAttributeList(self.list()) };
+        }
     }
 
     impl Kernel32Process for RealKernel32Process {
@@ -216,9 +331,29 @@ mod real {
                     copy,
                 );
             }
+            let std_handles = [80usize, 88, 96].map(|at| {
+                let mut raw = [0u8; 8];
+                if let Some(bytes) = startup_info.get(at..at + 8) {
+                    raw.copy_from_slice(bytes);
+                }
+                u64::from_le_bytes(raw) as HANDLE
+            });
+            let mut handle_list = HandleList::new(std_handles);
+            // SAFETY: STARTUPINFOEXW is plain-old-data; `Default` zeroes it.
+            let mut extended = STARTUPINFOEXW::default();
+            let mut create_flags = flags;
+            let startup_ptr: *const STARTUPINFOW = match handle_list.as_mut() {
+                Some(list) => {
+                    extended.StartupInfo = startup;
+                    extended.lpAttributeList = list.list();
+                    create_flags |= EXTENDED_STARTUPINFO_PRESENT;
+                    ptr::from_ref(&extended).cast()
+                }
+                None => ptr::from_ref(&startup),
+            };
             // SAFETY: `line` is a writable NUL-terminated UTF-16 buffer, `env` a double-NUL-terminated Unicode block
-            // (CREATE_UNICODE_ENVIRONMENT is in `flags`), and `startup`/`info` are live structs; the std handles
-            // inside `startup` are the caller's own.
+            // (CREATE_UNICODE_ENVIRONMENT is in `flags`), `startup_ptr` points at one of the live startup structs
+            // above, and `extended`/`handle_list` outlive the call so its attribute list stays valid.
             let ok = unsafe {
                 CreateProcessW(
                     ptr::null(),
@@ -226,10 +361,10 @@ mod real {
                     ptr::null(),
                     ptr::null(),
                     1,
-                    flags,
+                    create_flags,
                     env.as_ptr().cast::<c_void>(),
                     ptr::null(),
-                    &startup,
+                    startup_ptr,
                     &mut info,
                 )
             };
@@ -377,8 +512,8 @@ mod tests {
     }
 
     #[test]
-    fn passes_the_breakaway_flag_the_quoted_command_line_and_the_x64_startupinfow_with_the_callers_std_handles()
-     {
+    fn passes_the_breakaway_flag_the_quoted_command_line_and_the_x64_startupinfow_with_the_callers_std_handles(
+    ) {
         let kernel = fake(true);
         start_breakaway(kernel.clone(), "cmd /c \"echo hi\"", &HashMap::new()).unwrap();
         let seen = kernel.seen.lock().unwrap();
@@ -394,13 +529,35 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_pid_from_process_information_closes_the_thread_handle_at_once_and_the_process_handle_after_the_wait()
-     {
+    fn reads_the_pid_from_process_information_closes_the_thread_handle_at_once_and_the_process_handle_after_the_wait(
+    ) {
         let kernel = fake(true);
         let command = start_breakaway(kernel.clone(), "x.exe", &HashMap::new()).unwrap();
         assert_eq!(command.pid, 5150);
         assert_eq!(calls(&kernel), vec!["close:546"]);
         assert_eq!(command.wait().unwrap(), 3);
+        assert_eq!(
+            calls(&kernel),
+            vec!["close:546", "wait:273", "exit:273", "close:273"]
+        );
+    }
+
+    #[test]
+    fn dropping_without_a_wait_still_closes_the_process_handle_once() {
+        // A launch whose reporting thread cannot be spawned is dropped without `wait`.
+        let kernel = fake(true);
+        let command = start_breakaway(kernel.clone(), "x.exe", &HashMap::new()).unwrap();
+        drop(command);
+        assert_eq!(calls(&kernel), vec!["close:546", "close:273"]);
+    }
+
+    #[test]
+    fn a_second_wait_never_closes_the_handle_again() {
+        // The value could have been reused by another open handle in the meantime.
+        let kernel = fake(true);
+        let command = start_breakaway(kernel.clone(), "x.exe", &HashMap::new()).unwrap();
+        assert_eq!(command.wait().unwrap(), 3);
+        assert!(command.wait().is_err());
         assert_eq!(
             calls(&kernel),
             vec!["close:546", "wait:273", "exit:273", "close:273"]

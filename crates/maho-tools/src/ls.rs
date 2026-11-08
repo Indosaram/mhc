@@ -9,6 +9,18 @@ pub trait LsOperations: Send + Sync {
     fn exists<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool>;
     fn is_directory<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool>;
     fn readdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<String>>;
+    /// Per-entry type from the directory scan itself, avoiding one `stat` per name.
+    fn readdir_typed<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<(String, Option<bool>)>> {
+        Box::pin(async move {
+            let names = self.readdir(path).await?;
+            let mut entries = Vec::with_capacity(names.len());
+            for name in names {
+                let directory = self.is_directory(&path.join(&name)).await.ok();
+                entries.push((name, directory));
+            }
+            Ok(entries)
+        })
+    }
 }
 pub struct LocalLsOperations;
 impl LsOperations for LocalLsOperations {
@@ -33,6 +45,19 @@ impl LsOperations for LocalLsOperations {
                 names.push(entry.file_name().to_string_lossy().into_owned());
             }
             Ok(names)
+        })
+    }
+    fn readdir_typed<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<(String, Option<bool>)>> {
+        Box::pin(async move {
+            let mut entries = tokio::fs::read_dir(path)
+                .await
+                .map_err(|e| node_fs_error(e, "scandir", path))?;
+            let mut typed = Vec::new();
+            while let Some(entry) = entries.next_entry().await? {
+                let directory = entry.file_type().await.map(|kind| kind.is_dir()).ok();
+                typed.push((entry.file_name().to_string_lossy().into_owned(), directory));
+            }
+            Ok(typed)
         })
     }
 }
@@ -124,27 +149,26 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
                     )));
                 }
                 let entries = ops
-                    .readdir(&path)
+                    .readdir_typed(&path)
                     .await
                     .map_err(|e| ToolError::Message(format!("Cannot read directory: {e}")))?;
                 // Keyed once per entry: (collation elements, lowercase) orders exactly like `locale_compare`.
-                let mut keyed: Vec<(_, String)> = entries
+                let mut keyed: Vec<(_, String, Option<bool>)> = entries
                     .into_iter()
-                    .map(|entry| {
+                    .map(|(entry, directory)| {
                         let lower = entry.to_lowercase();
-                        ((collation_elements(&lower), lower), entry)
+                        ((collation_elements(&lower), lower), entry, directory)
                     })
                     .collect();
                 keyed.sort_by(|a, b| a.0.cmp(&b.0));
-                let entries: Vec<String> = keyed.into_iter().map(|(_, entry)| entry).collect();
                 let mut results = Vec::new();
                 let mut limited = false;
-                for entry in entries {
+                for (_, entry, directory) in keyed {
                     if results.len() >= limit {
                         limited = true;
                         break;
                     }
-                    if let Ok(directory) = ops.is_directory(&path.join(&entry)).await {
+                    if let Some(directory) = directory {
                         results.push(format!("{entry}{}", if directory { "/" } else { "" }));
                     }
                 }

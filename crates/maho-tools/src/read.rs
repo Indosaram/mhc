@@ -17,6 +17,15 @@ pub trait ReadOperations: Send + Sync {
     fn detect_image_mime_type<'a>(&'a self, _path: &'a Path) -> ToolFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
+    /// One open per read: access, sniff and payload in a single pass.
+    fn read_checked<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, (Option<String>, Vec<u8>)> {
+        Box::pin(async move {
+            self.access(path).await?;
+            let mime = self.detect_image_mime_type(path).await?;
+            let buffer = self.read_file(path).await?;
+            Ok((mime, buffer))
+        })
+    }
 }
 pub struct LocalReadOperations;
 impl ReadOperations for LocalReadOperations {
@@ -48,6 +57,17 @@ impl ReadOperations for LocalReadOperations {
             let count = file.read(&mut bytes).await?;
             bytes.truncate(count);
             Ok(detect_supported_image_mime_type(&bytes).map(str::to_owned))
+        })
+    }
+    fn read_checked<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, (Option<String>, Vec<u8>)> {
+        Box::pin(async move {
+            reject_dataless(path).await?;
+            let buffer = tokio::fs::read(path)
+                .await
+                .map_err(|e| node_fs_error(e, "open", path))?;
+            let mime = detect_supported_image_mime_type(&buffer[..buffer.len().min(4100)])
+                .map(str::to_owned);
+            Ok((mime, buffer))
         })
     }
 }
@@ -428,12 +448,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     .run(&call.signal, {
                         let ops = Arc::clone(&ops);
                         let path = path.clone();
-                        async move {
-                            ops.access(&path).await?;
-                            let mime = ops.detect_image_mime_type(&path).await?;
-                            let buffer = ops.read_file(&path).await?;
-                            Ok((mime, buffer))
-                        }
+                        async move { ops.read_checked(&path).await }
                     })
                     .await?;
                 if let Some(mime) = mime {

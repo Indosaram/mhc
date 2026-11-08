@@ -5,7 +5,7 @@
 use std::{
     collections::BTreeMap,
     path::Path,
-    sync::{LazyLock, Mutex, MutexGuard, PoisonError},
+    sync::{LazyLock, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
 /// Family of a resolved shell executable, used to pick invocation arguments.
@@ -123,6 +123,32 @@ pub fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, 
             Err(format!("Custom shell path not found: {path}"))
         };
     }
+    if let Some(config) = cached_default_shell() {
+        return Ok(config);
+    }
+    let resolved = resolve_default_shell();
+    if let Ok(config) = &resolved {
+        *CACHED_SHELL
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(config.clone());
+    }
+    resolved
+}
+
+/// The default shell cannot change while the process runs, and resolving it launches
+/// `where`/`which`; every bash tool call would otherwise pay for that probe.
+static CACHED_SHELL: OnceLock<Mutex<Option<ShellConfig>>> = OnceLock::new();
+
+fn cached_default_shell() -> Option<ShellConfig> {
+    CACHED_SHELL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+fn resolve_default_shell() -> Result<ShellConfig, String> {
     if let Ok(path) = std::env::var(GIT_BASH_PATH_ENV)
         && !path.is_empty()
     {
@@ -226,7 +252,8 @@ fn tracked_detached_child_is_gone(entry: &TrackedDetachedChild) -> bool {
 }
 
 /// Record that a tracked child exited. Ownership is released only when its process group is
-/// empty; Windows has no such group, so the entry is dropped on exit.
+/// empty; Windows has no process group, and the child's own descendants can outlive it, so the
+/// entry stays tracked until shutdown kills the tree.
 pub fn note_detached_child_exited(pid: i32) {
     let mut tracked = tracked();
     let Some(entry) = tracked.get_mut(&pid) else {
@@ -237,12 +264,24 @@ pub fn note_detached_child_exited(pid: i32) {
         entry.leader_exited = true;
         return;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // The leader is gone but its children may still be running; keep the pid so
+        // `kill_tracked_detached_children` can still take the tree down at session end.
+        entry.leader_exited = true;
+        return;
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = entry;
+    // Windows returned above; every other platform releases the entry here.
+    #[cfg(not(windows))]
     tracked.remove(&pid);
 }
 
 /// Drop tracked groups that have no members left, so a long session cannot accumulate entries.
+///
+/// Windows keeps every entry: there is no group to probe without a process-handle query, and the
+/// number of detached launches per session is small. Shutdown clears the list.
 pub fn prune_tracked_detached_children() {
     #[cfg(unix)]
     tracked().retain(|_, entry| !tracked_detached_child_is_gone(entry));
@@ -279,7 +318,34 @@ fn kill_tracked_detached_group(entry: &TrackedDetachedChild) {
 }
 
 /// Ordered `taskkill` launchers to try, most reliable first.
+///
+/// Each candidate is a filesystem probe, so the resolved list is memoized per environment; this
+/// runs on every tree kill and the probe would otherwise repeat dozens of times per session.
 pub fn windows_taskkill_candidates(env: &BTreeMap<String, String>) -> Vec<String> {
+    static CACHE: OnceLock<Mutex<BTreeMap<Vec<String>, Vec<String>>>> = OnceLock::new();
+    // Keyed by the environment variables the resolution reads, not by a constant: two callers
+    // with different `SystemRoot`/`windir` must not share one list.
+    let key: Vec<String> = ["SystemDrive", "SystemRoot", "SYSTEMROOT", "windir"]
+        .into_iter()
+        .filter_map(|name| env.get(name).map(|value| format!("{name}={value}")))
+        .collect();
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+    {
+        return cached.clone();
+    }
+    let resolved = resolve_taskkill_candidates(env);
+    cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(key, resolved.clone());
+    resolved
+}
+
+fn resolve_taskkill_candidates(env: &BTreeMap<String, String>) -> Vec<String> {
     let drive = env
         .get("SystemDrive")
         .filter(|drive| !drive.is_empty())

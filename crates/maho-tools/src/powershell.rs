@@ -16,14 +16,33 @@ pub const POWERSHELL_ARGS: [&str; 5] = [
     "Bypass",
     "-Command",
 ];
-async fn find_executable_on_path(executable: &str) -> Option<String> {
-    let lookup = tokio::process::Command::new("where")
+/// `where`/`which` costs a process launch per call, and the answer cannot change while this
+/// process runs, so one probe per executable name is memoized.
+fn find_executable_on_path(executable: &'static str) -> Option<String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<&'static str, Option<String>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(executable)
+    {
+        return cached.clone();
+    }
+    let found = probe_executable(executable);
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(executable, found.clone());
+    found
+}
+
+fn probe_executable(executable: &str) -> Option<String> {
+    let output = std::process::Command::new("where")
         .arg(executable)
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(std::time::Duration::from_millis(5000), lookup)
-        .await
-        .ok()?
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
         .ok()?;
     if !output.status.success() {
         return None;
@@ -44,7 +63,8 @@ pub async fn get_powershell_config() -> Result<(String, Vec<String>), ToolError>
             "The powershell tool is only available on Windows.".into(),
         ));
     }
-    let shell = match find_executable_on_path("pwsh.exe").await { Some(path) => Some(path), None => find_executable_on_path("powershell.exe").await }
+    let shell = find_executable_on_path("pwsh.exe")
+        .or_else(|| find_executable_on_path("powershell.exe"))
         .ok_or_else(|| ToolError::Message("No PowerShell executable found. Install PowerShell or add powershell.exe/pwsh.exe to PATH.".into()))?;
     Ok((
         shell,

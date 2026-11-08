@@ -125,10 +125,12 @@ impl Drop for Slot {
 }
 
 async fn register_slot(path: &Path) -> Result<Slot, ToolError> {
-    let _order = REGISTRATION.get_or_init(|| Mutex::new(())).lock().await;
+    // Resolve before taking the registration lock: `canonicalize` hits the filesystem and would
+    // otherwise serialize every concurrent mutation behind one blocking walk.
     let key = crate::bounded_realpath::fold_path_for_case_insensitive_filesystem(
         canonicalize_filesystem_path(path).await?,
     );
+    let _order = REGISTRATION.get_or_init(|| Mutex::new(())).lock().await;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let (done, tail) = watch::channel(false);
     let mut queues = registry();

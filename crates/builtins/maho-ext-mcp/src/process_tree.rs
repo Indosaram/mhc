@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, time::Duration};
+#[cfg(unix)]
+use std::collections::BTreeSet;
+use std::time::Duration;
+#[cfg(unix)]
 use tokio::process::Command;
 
 #[cfg(unix)]
@@ -44,43 +47,7 @@ pub async fn collect_process_tree(root: u32) -> Vec<u32> {
 
 #[cfg(windows)]
 pub async fn collect_process_tree(root: u32) -> Vec<u32> {
-    let mut tree = vec![root];
-    let output=tokio::time::timeout(
-        Duration::from_secs(3),
-        Command::new("powershell.exe")
-            .args(["-NoProfile","-NonInteractive","-Command","Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"])
-            .kill_on_drop(true)
-            .output(),
-    ).await;
-    if let Ok(Ok(output)) = output
-        && output.status.success()
-    {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut children_map: std::collections::HashMap<u32, Vec<u32>> =
-            std::collections::HashMap::new();
-        for line in text.lines() {
-            let mut parts = line.split_whitespace();
-            if let (Some(Ok(pid)), Some(Ok(ppid))) = (
-                parts.next().map(str::parse::<u32>),
-                parts.next().map(str::parse::<u32>),
-            ) {
-                children_map.entry(ppid).or_default().push(pid);
-            }
-        }
-        let mut queue = vec![root];
-        let mut seen = BTreeSet::from([root]);
-        while let Some(parent) = queue.pop() {
-            if let Some(children) = children_map.get(&parent) {
-                for &child in children {
-                    if seen.insert(child) {
-                        tree.push(child);
-                        queue.push(child);
-                    }
-                }
-            }
-        }
-    }
-    tree
+    maho_agent::harness::env::windows_process_probe::process_tree(root)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -104,17 +71,7 @@ pub async fn is_process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .await
-            .is_ok_and(|output| {
-                let text = String::from_utf8_lossy(&output.stdout);
-                !text.contains("INFO: No tasks")
-                    && text
-                        .lines()
-                        .any(|line| line.split_whitespace().nth(1) == Some(&pid.to_string()))
-            })
+        maho_agent::harness::env::windows_process_probe::is_process_alive(pid)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -142,10 +99,7 @@ async fn kill_pids(pids: &[u32], signal: &str) {
     {
         let _ = signal;
         for pid in pids.iter().rev().filter(|pid| **pid > 1) {
-            let _ = Command::new("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
-                .output()
-                .await;
+            let _ = maho_agent::harness::env::windows_process_probe::terminate_process(*pid);
         }
     }
     #[cfg(not(any(unix, windows)))]
@@ -175,11 +129,19 @@ pub async fn reap_process_tree(root: u32, term_wait: Duration, kill_wait: Durati
     #[cfg(windows)]
     {
         let _ = term_wait;
-        let pids = collect_process_tree(root).await;
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &root.to_string()])
-            .output()
-            .await;
+        let rows = maho_agent::harness::env::windows_process_probe::process_rows();
+        let plan = maho_agent::harness::env::windows_process_probe::tree_kill_plan(
+            &rows,
+            root,
+            std::process::id(),
+        );
+        // Only the planned pids may be killed. Re-deriving the tree here would bypass the
+        // protected-image and self-ancestor refusals the plan just decided.
+        let pids = plan.kill.clone();
+        if pids.is_empty() {
+            return;
+        }
+        kill_pids(&pids, "").await;
         wait_for_dead(&pids, kill_wait).await;
         let mut remaining = Vec::new();
         for pid in &pids {

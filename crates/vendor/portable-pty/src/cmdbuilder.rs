@@ -577,27 +577,54 @@ impl CommandBuilder {
 }
 
 #[cfg(windows)]
+fn is_batch_file(path: &OsStr) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+#[cfg(windows)]
 impl CommandBuilder {
     fn search_path(&self, exe: &OsStr) -> OsString {
+        let exe_path = Path::new(exe);
+        // An explicit relative path (`.\tool`, `bin\tool.exe`) is resolved against the child cwd by
+        // CreateProcessW itself; PATH lookup would silently pick a different file.
+        if exe_path.components().count() > 1 {
+            return exe.to_owned();
+        }
         if let Some(path) = self.get_env("PATH") {
             let extensions = self.get_env("PATHEXT").unwrap_or(OsStr::new(".EXE"));
+            // `split_paths` splits on `;` on Windows, which is exactly PATHEXT's separator.
+            let extensions: Vec<std::path::PathBuf> = std::env::split_paths(&extensions).collect();
             for path in std::env::split_paths(&path) {
-                // Check for exactly the user's string in this path dir
-                let candidate = path.join(&exe);
-                if candidate.exists() {
+                // Check for exactly the user's string in this path dir. A directory is never an
+                // executable: CreateProcessW would report a confusing access error instead.
+                let candidate = path.join(exe_path);
+                if candidate.is_file() {
                     return candidate.into_os_string();
                 }
-
-                // otherwise try tacking on some extensions.
-                // Note that this really replaces the extension in the
-                // user specified path, so this is potentially wrong.
-                for ext in std::env::split_paths(&extensions) {
-                    // PATHEXT includes the leading `.`, but `with_extension`
-                    // doesn't want that
-                    let ext = ext.to_str().expect("PATHEXT entries must be utf8");
-                    let path = path.join(&exe).with_extension(&ext[1..]);
-                    if path.exists() {
-                        return path.into_os_string();
+                // A name that already carries an extension the user asked for wins over PATHEXT.
+                if exe_path.extension().is_some() {
+                    continue;
+                }
+                for ext in &extensions {
+                    // PATHEXT entries carry the leading dot; an entry without one or with a
+                    // non-UTF-8 name is skipped rather than panicking the whole spawn.
+                    let Some(ext) = ext.to_str() else { continue };
+                    let ext = ext.trim_start_matches('.');
+                    if ext.is_empty() {
+                        continue;
+                    }
+                    // Append, never replace: `foo.bar` + `.exe` must try `foo.bar.exe`.
+                    let mut name = exe_path.as_os_str().to_owned();
+                    name.push(".");
+                    name.push(ext);
+                    let candidate = path.join(name);
+                    if candidate.is_file() {
+                        return candidate.into_os_string();
                     }
                 }
             }
@@ -675,6 +702,39 @@ impl CommandBuilder {
         } else {
             self.search_path(&self.args[0])
         };
+
+        // CreateProcessW refuses a batch file as lpApplicationName (ERROR_BAD_EXE_FORMAT), so a
+        // `.cmd`/`.bat` is launched through the command interpreter, exactly as `cmd /c` would.
+        if !self.is_default_prog() && is_batch_file(&exe) {
+            let interpreter: OsString = self
+                .get_env("ComSpec")
+                .unwrap_or(OsStr::new("cmd.exe"))
+                .into();
+            Self::append_quoted(&interpreter, &mut cmdline);
+            for literal in ["/d", "/s", "/c"] {
+                cmdline.push(' ' as u16);
+                cmdline.extend(literal.encode_utf16());
+            }
+            // cmd.exe strips the first and last quote after `/c`, leaving the quoted script and its
+            // arguments as one command string.
+            cmdline.push(' ' as u16);
+            cmdline.push('"' as u16);
+            Self::append_quoted(&exe, &mut cmdline);
+            for arg in self.args.iter().skip(1) {
+                cmdline.push(' ' as u16);
+                anyhow::ensure!(
+                    !arg.encode_wide().any(|c| c == 0),
+                    "invalid encoding for command line argument {:?}",
+                    arg
+                );
+                Self::append_quoted(arg, &mut cmdline);
+            }
+            cmdline.push('"' as u16);
+            cmdline.push(0);
+            let mut exe: Vec<u16> = interpreter.encode_wide().collect();
+            exe.push(0);
+            return Ok((exe, cmdline));
+        }
 
         Self::append_quoted(&exe, &mut cmdline);
 
@@ -757,6 +817,83 @@ fn is_cwd_relative_path<P: AsRef<Path>>(p: P) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("maho-cmdbuilder-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_search_path_appends_pathext_instead_of_replacing_the_extension() {
+        // Given: `tool.cmd` on PATH and a PATHEXT of `.CMD;.EXE`.
+        let dir = scratch_dir("pathext-append");
+        let script = dir.join("tool.cmd");
+        std::fs::write(&script, "@echo off\r\n").expect("script");
+        let mut cmd = CommandBuilder::new("tool");
+        cmd.env("PATH", dir.as_os_str());
+        cmd.env("PATHEXT", ".CMD;.EXE");
+        // When
+        let resolved = cmd.search_path(OsStr::new("tool"));
+        // Then
+        assert_eq!(Path::new(&resolved), script.as_path());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_search_path_never_rewrites_an_extension_the_user_gave() {
+        // Given: only `tool.exe` exists and the user asked for `tool.cfg`.
+        let dir = scratch_dir("pathext-replace");
+        std::fs::write(dir.join("tool.exe"), b"MZ").expect("exe");
+        let mut cmd = CommandBuilder::new("tool.cfg");
+        cmd.env("PATH", dir.as_os_str());
+        cmd.env("PATHEXT", ".EXE");
+        // When
+        let resolved = cmd.search_path(OsStr::new("tool.cfg"));
+        // Then: the name is left alone. `with_extension` used to turn it into `tool.exe`, starting a
+        // program the user never named.
+        assert_eq!(Path::new(&resolved), Path::new("tool.cfg"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_search_path_skips_a_dotless_pathext_entry_instead_of_panicking() {
+        // Given: PATHEXT entries without a leading dot and one non-UTF-8 entry.
+        let dir = scratch_dir("pathext-odd");
+        let exe = dir.join("tool.exe");
+        std::fs::write(&exe, b"MZ").expect("exe");
+        let mut cmd = CommandBuilder::new("tool");
+        cmd.env("PATH", dir.as_os_str());
+        cmd.env("PATHEXT", "CMD;.EXE");
+        // When
+        let resolved = cmd.search_path(OsStr::new("tool"));
+        // Then
+        assert_eq!(Path::new(&resolved), exe.as_path());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_batch_file_is_launched_through_comspec() {
+        // Given: a resolved `.cmd` script with one argument.
+        let dir = scratch_dir("batch-cmdline");
+        let script = dir.join("tool.cmd");
+        std::fs::write(&script, "@echo off\r\n").expect("script");
+        let mut cmd = CommandBuilder::new(&script);
+        cmd.arg("hello world");
+        cmd.env("ComSpec", r"C:\Windows\System32\cmd.exe");
+        // When
+        let (exe, _) = cmd.cmdline().expect("cmdline");
+        // Then: CreateProcessW receives cmd.exe, never the .cmd file as lpApplicationName.
+        let exe = String::from_utf16_lossy(&exe);
+        assert_eq!(exe.trim_end_matches('\0'), r"C:\Windows\System32\cmd.exe");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[cfg(unix)]
     #[test]

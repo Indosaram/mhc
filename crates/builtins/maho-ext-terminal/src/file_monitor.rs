@@ -128,17 +128,8 @@ pub fn realpath_without_open(input: &Path) -> PathBuf {
 }
 
 fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let s = path.to_string_lossy();
-        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = s.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
-        }
-    }
-    path
+    // One implementation: the lossless wide-string strip lives in maho-core.
+    maho_core::paths::strip_verbatim_prefix(path)
 }
 
 /// Upstream `FileMonitorRecord` (file-monitor-record.ts); registration, the check pass and settle

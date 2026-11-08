@@ -1,15 +1,12 @@
 //! Port of senpi packages/agent/src/harness/env/windows-process-tree.ts.
 
-use std::collections::{BTreeMap, BTreeSet};
+pub use super::windows_process_probe::{
+    ProcessRow as WindowsProcessRow, TreeKillPlan as WindowsTreeKillPlan,
+    TreeKillRefusal as WindowsTreeKillRefusal,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsProcessRow {
-    pub pid: u32,
-    pub parent_pid: u32,
-    pub created_at: u128,
-    pub name: String,
-}
-
+/// Kept for parity with the upstream constant. The listing itself is now a Win32 ToolHelp
+/// snapshot ([`super::windows_process_probe::process_rows`]), not this PowerShell script.
 pub const WINDOWS_PROCESS_TREE_ROWS: &str = r#"Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object {
 $created = if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }
 "{0} {1} {2} {3}" -f $_.ProcessId, $_.ParentProcessId, $created, $_.Name }"#;
@@ -36,120 +33,19 @@ pub fn parse_windows_process_tree_rows(stdout: &str) -> Vec<WindowsProcessRow> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsTreeKillRefusal {
-    pub pid: u32,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsTreeKillPlan {
-    pub kill: Vec<u32>,
-    pub refused: Vec<WindowsTreeKillRefusal>,
-}
-
 pub fn windows_tree_kill_plan(
     rows: &[WindowsProcessRow],
     root_pid: u32,
     self_pid: u32,
 ) -> WindowsTreeKillPlan {
-    let by_pid: BTreeMap<_, _> = rows.iter().map(|row| (row.pid, row)).collect();
-    if !by_pid.contains_key(&root_pid) {
-        return WindowsTreeKillPlan {
-            kill: Vec::new(),
-            refused: Vec::new(),
-        };
-    }
-    // Keep insertion order, matching the upstream Set and thus its explicit PID argument order.
-    let mut tree = vec![root_pid];
-    let mut members = BTreeSet::from([root_pid]);
-    loop {
-        let before = tree.len();
-        for row in rows {
-            if members.contains(&row.pid) || !members.contains(&row.parent_pid) {
-                continue;
-            }
-            if by_pid
-                .get(&row.parent_pid)
-                .is_some_and(|parent| row.created_at >= parent.created_at)
-            {
-                members.insert(row.pid);
-                tree.push(row.pid);
-            }
-        }
-        if tree.len() == before {
-            break;
-        }
-    }
-    let mut ancestors = BTreeSet::from([self_pid]);
-    let mut current = by_pid.get(&self_pid).copied();
-    while let Some(row) = current {
-        let Some(parent) = by_pid.get(&row.parent_pid).copied() else {
-            break;
-        };
-        if ancestors.contains(&parent.pid) || parent.created_at > row.created_at {
-            break;
-        }
-        ancestors.insert(parent.pid);
-        current = Some(parent);
-    }
-    let refused: Vec<_> = tree
-        .iter()
-        .filter_map(|pid| {
-            let name = &by_pid.get(pid)?.name;
-            let protected = matches!(
-                name.to_ascii_lowercase().as_str(),
-                "system"
-                    | "smss.exe"
-                    | "csrss.exe"
-                    | "wininit.exe"
-                    | "winlogon.exe"
-                    | "services.exe"
-                    | "lsass.exe"
-                    | "lsaiso.exe"
-                    | "svchost.exe"
-            );
-            (protected || ancestors.contains(pid)).then(|| WindowsTreeKillRefusal {
-                pid: *pid,
-                name: name.clone(),
-            })
-        })
-        .collect();
-    let kill = if refused.is_empty() {
-        tree
-    } else if refused.iter().any(|entry| entry.pid == root_pid) {
-        Vec::new()
-    } else {
-        vec![root_pid]
-    };
-    WindowsTreeKillPlan { kill, refused }
+    super::windows_process_probe::tree_kill_plan(rows, root_pid, self_pid)
 }
 
-pub fn list_windows_process_rows_sync(timeout_ms: u64) -> Option<Vec<WindowsProcessRow>> {
-    #[cfg(windows)]
-    {
-        let output = super::nodejs::run_command_bounded(
-            "powershell.exe",
-            &[
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                WINDOWS_PROCESS_TREE_ROWS,
-            ],
-            std::time::Duration::from_millis(timeout_ms),
-            16 * 1024 * 1024,
-        )?;
-        if !output.status.success() {
-            return None;
-        }
-        let rows = parse_windows_process_tree_rows(std::str::from_utf8(&output.stdout).ok()?);
-        (!rows.is_empty()).then_some(rows)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = timeout_ms;
-        None
-    }
+/// The WMI listing this replaces launched PowerShell and ran a COM query per tree kill; a ToolHelp
+/// snapshot answers the same question in-process.
+pub fn list_windows_process_rows_sync(_timeout_ms: u64) -> Option<Vec<WindowsProcessRow>> {
+    let rows = super::windows_process_probe::process_rows();
+    (!rows.is_empty()).then_some(rows)
 }
 
 /// Last resort after every taskkill launcher fails: terminate only the requested PID.
@@ -157,8 +53,7 @@ pub fn list_windows_process_rows_sync(timeout_ms: u64) -> Option<Vec<WindowsProc
 /// without waiting for exit or touching descendants. The guard closes the native handle.
 #[cfg(windows)]
 pub fn terminate_windows_process(pid: u32) -> winsafe::SysResult<()> {
-    let process = winsafe::HPROCESS::OpenProcess(winsafe::co::PROCESS::TERMINATE, false, pid)?;
-    process.TerminateProcess(1)
+    winsafe::HPROCESS::OpenProcess(winsafe::co::PROCESS::TERMINATE, false, pid)?.TerminateProcess(1)
 }
 
 pub fn windows_tree_kill_args(
@@ -183,6 +78,38 @@ pub fn windows_tree_kill_args(
         args.extend(["/PID".into(), pid.to_string()]);
     }
     args
+}
+
+/// Kill a known tree through `TerminateProcess` directly, so the common path never pays for a
+/// `taskkill.exe` launch; surviving pids (open refused) fall back to the launcher.
+pub fn kill_known_tree(root_pid: u32) -> usize {
+    let rows = super::windows_process_probe::process_rows();
+    let plan = windows_tree_kill_plan(&rows, root_pid, std::process::id());
+    if plan.kill.is_empty() {
+        return 0;
+    }
+    let terminated = super::windows_process_probe::terminate_all(&plan.kill);
+    let remaining: Vec<u32> = plan
+        .kill
+        .iter()
+        .copied()
+        .filter(|pid| super::windows_process_probe::is_process_alive(*pid))
+        .collect();
+    if remaining.is_empty() {
+        return terminated;
+    }
+    let mut args = vec!["/F".to_owned()];
+    for pid in remaining {
+        args.extend(["/PID".to_owned(), pid.to_string()]);
+    }
+    let rendered: Vec<&str> = args.iter().map(String::as_str).collect();
+    let _ = super::nodejs::run_command_bounded(
+        "taskkill.exe",
+        &rendered,
+        std::time::Duration::from_secs(5),
+        16 * 1024 * 1024,
+    );
+    terminated
 }
 
 #[cfg(test)]
@@ -268,5 +195,15 @@ mod tests {
                 name: "good name.exe".into()
             }]
         );
+    }
+
+    #[test]
+    fn newer_child_of_a_recycled_parent_is_still_adopted() {
+        // Given: a live child created after its parent.
+        let rows = parse_windows_process_tree_rows("10 1 100 bash.exe\n30 10 200 child.exe");
+        // When: the tree is planned.
+        let plan = windows_tree_kill_plan(&rows, 10, 99);
+        // Then: the child is killed with its parent.
+        assert_eq!(plan.kill, [10, 30]);
     }
 }

@@ -40,20 +40,29 @@ impl WinChild {
 
     fn do_kill(&mut self) -> IoResult<()> {
         let proc = self.proc.lock().unwrap().try_clone().unwrap();
-        let res = unsafe { TerminateProcess(proc.as_raw_handle() as _, 1) };
-        let err = IoError::last_os_error();
-        if res != 0 {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        terminate_verified(proc.as_raw_handle() as _)
     }
+}
+
+/// `TerminateProcess` returns non-zero on success. A process that already exited reports
+/// `ERROR_ACCESS_DENIED` (5), which is the desired end state and therefore not an error here.
+const ERROR_ACCESS_DENIED: i32 = 5;
+
+fn terminate_verified(handle: *mut winapi::ctypes::c_void) -> IoResult<()> {
+    let res = unsafe { TerminateProcess(handle, 1) };
+    if res != 0 {
+        return Ok(());
+    }
+    let err = IoError::last_os_error();
+    if err.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+        return Ok(());
+    }
+    Err(err)
 }
 
 impl ChildKiller for WinChild {
     fn kill(&mut self) -> IoResult<()> {
-        self.do_kill().ok();
-        Ok(())
+        self.do_kill()
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
@@ -69,13 +78,7 @@ pub struct WinChildKiller {
 
 impl ChildKiller for WinChildKiller {
     fn kill(&mut self) -> IoResult<()> {
-        let res = unsafe { TerminateProcess(self.proc.as_raw_handle() as _, 1) };
-        let err = IoError::last_os_error();
-        if res != 0 {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        terminate_verified(self.proc.as_raw_handle() as _)
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {

@@ -56,7 +56,7 @@ pub fn compose_filesystem_policies(
 
 fn canonicalize_missing(path: &Path, depth: usize) -> std::io::Result<PathBuf> {
     if depth > 40 {
-        return Err(std::io::Error::from_raw_os_error(40));
+        return Err(crate::bounded_realpath::symlink_loop_error());
     }
     match std::fs::canonicalize(path) {
         Ok(path) => return Ok(path),

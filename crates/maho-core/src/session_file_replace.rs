@@ -115,6 +115,35 @@ fn write_durably(
     result
 }
 
+/// Replace `to` with `from`.
+///
+/// `std::fs::rename` maps to `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` on Windows, where the call
+/// fails while any other process still has the destination open without `FILE_SHARE_DELETE`
+/// (editors, antivirus, `tail`) or while a previous delete of it is still pending. Those are
+/// transient: retry briefly instead of failing the whole session rewrite. The destination is never
+/// deleted first, because a failed rename after a delete would leave no file at all.
+fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    let attempts = if cfg!(windows) { 5 } else { 1 };
+    let mut attempt = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                let retryable = cfg!(windows)
+                    && matches!(
+                        error.kind(),
+                        ErrorKind::PermissionDenied | ErrorKind::WouldBlock
+                    );
+                if !retryable || attempt >= attempts {
+                    return Err(error);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+            }
+        }
+    }
+}
+
 /// Directory fsync is not a supported operation everywhere; the rename itself already happened.
 fn sync_directory(directory: &Path) -> std::io::Result<()> {
     let Ok(handle) = File::open(directory) else {
@@ -168,7 +197,7 @@ pub fn replace_file_atomically(
         return Ok(());
     };
     let written = write_durably(temp, chunks, &target, file_path, &mut captured)
-        .and_then(|()| std::fs::rename(&temp_path, &target.path));
+        .and_then(|()| rename_over(&temp_path, &target.path));
     if let Err(error) = written {
         // A temp file that cannot be removed is reported with the write error (upstream AggregateError).
         return match std::fs::remove_file(&temp_path) {
@@ -222,9 +251,9 @@ mod tests {
         )
         .expect("replace");
         let identity = seen.expect("identity");
-        let metadata = std::fs::metadata(&path).expect("stat");
         assert!(crate::session_file_identity::same_file(
-            &metadata, &identity
+            &File::open(&path).expect("open"),
+            &identity
         ));
     }
 

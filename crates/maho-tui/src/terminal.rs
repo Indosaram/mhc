@@ -561,11 +561,8 @@ fn read_console_input(timeout_ms: u64) -> Result<Option<Vec<u8>>, TerminalError>
             for record in console.read_console_input()? {
                 if let InputRecord::KeyEvent(key) = record
                     && key.key_down
-                    && key.u_char != 0
                 {
-                    for _ in 0..key.repeat_count.max(1) {
-                        units.push(key.u_char);
-                    }
+                    units.extend(console_key_units(&key));
                 }
             }
             if !units.is_empty() {
@@ -574,6 +571,52 @@ fn read_console_input(timeout_ms: u64) -> Result<Option<Vec<u8>>, TerminalError>
             // Only focus, mouse, menu or resize records were queued: consumed, wait again.
         }
     }
+}
+
+/// `KEY_EVENT_RECORD` → the UTF-16 units Node's raw-mode stdin would have delivered.
+///
+/// With `ENABLE_VIRTUAL_TERMINAL_INPUT` the console already expands special keys into VT
+/// sequences, so `u_char` carries every byte. When the console rejects that mode (legacy conhost,
+/// redirected handle) the same keys arrive with `u_char == 0` and only a virtual-key code, which
+/// would otherwise be dropped; this maps those to the sequences the renderer expects.
+#[cfg(windows)]
+fn console_key_units(key: &crossterm_winapi::KeyEventRecord) -> Vec<u16> {
+    const SHIFT_PRESSED: u32 = 0x0010;
+    let shift = key.control_key_state.has_state(SHIFT_PRESSED);
+    let sequence: &[u16] = match key.virtual_key_code {
+        // A shifted Tab is reported as a plain 0x09 tab even without VT input.
+        0x09 if shift => &[0x1b, b'[' as u16, b'Z' as u16],
+        0x09 => &[0x09],
+        0x0d => &[0x0d],
+        0x1b => &[0x1b],
+        0x08 => &[0x7f],
+        0x25 => &[0x1b, b'[' as u16, b'D' as u16],
+        0x26 => &[0x1b, b'[' as u16, b'A' as u16],
+        0x27 => &[0x1b, b'[' as u16, b'C' as u16],
+        0x28 => &[0x1b, b'[' as u16, b'B' as u16],
+        0x24 => &[0x1b, b'[' as u16, b'H' as u16],
+        0x23 => &[0x1b, b'[' as u16, b'F' as u16],
+        0x21 => &[0x1b, b'[' as u16, b'5' as u16, b'~' as u16],
+        0x22 => &[0x1b, b'[' as u16, b'6' as u16, b'~' as u16],
+        0x2d => &[0x1b, b'[' as u16, b'2' as u16, b'~' as u16],
+        0x2e => &[0x1b, b'[' as u16, b'3' as u16, b'~' as u16],
+        0x70 => &[0x1b, b'O' as u16, b'P' as u16],
+        0x71 => &[0x1b, b'O' as u16, b'Q' as u16],
+        0x72 => &[0x1b, b'O' as u16, b'R' as u16],
+        0x73 => &[0x1b, b'O' as u16, b'S' as u16],
+        0x74 => &[0x1b, b'[' as u16, b'1' as u16, b'5' as u16, b'~' as u16],
+        0x75 => &[0x1b, b'[' as u16, b'1' as u16, b'7' as u16, b'~' as u16],
+        0x76 => &[0x1b, b'[' as u16, b'1' as u16, b'8' as u16, b'~' as u16],
+        0x77 => &[0x1b, b'[' as u16, b'1' as u16, b'9' as u16, b'~' as u16],
+        0x78 => &[0x1b, b'[' as u16, b'2' as u16, b'0' as u16, b'~' as u16],
+        0x79 => &[0x1b, b'[' as u16, b'2' as u16, b'1' as u16, b'~' as u16],
+        0x7a => &[0x1b, b'[' as u16, b'2' as u16, b'3' as u16, b'~' as u16],
+        0x7b => &[0x1b, b'[' as u16, b'2' as u16, b'4' as u16, b'~' as u16],
+        _ if key.u_char != 0 => &[key.u_char],
+        _ => &[],
+    };
+    let repeat = usize::from(key.repeat_count.max(1));
+    sequence.repeat(repeat)
 }
 
 /// Blocks until the console input buffer holds a record or `timeout` passes; `Ok(false)` on timeout.
@@ -1175,6 +1218,28 @@ impl ProcessTerminal {
         }
     }
 
+    /// A Windows console starts in the OEM code page with VT processing off, so every escape the
+    /// renderer writes would be printed literally and non-ASCII text would be mojibake. Enable
+    /// UTF-8 output plus `ENABLE_VIRTUAL_TERMINAL_PROCESSING` before the first write; [`Self::stop`]
+    /// restores the previous state.
+    fn enable_windows_vt_output(&mut self) {
+        if node_platform() != "win32" {
+            return;
+        }
+        if let Some(helper) = get_native_platform_helper() {
+            let _ = helper.enable_virtual_terminal_output();
+        }
+    }
+
+    fn restore_windows_console_output(&mut self) {
+        if node_platform() != "win32" {
+            return;
+        }
+        if let Some(helper) = get_native_platform_helper() {
+            helper.restore_console_output();
+        }
+    }
+
     fn disable_keyboard_protocols(&mut self) {
         let should_disable_kitty_protocol =
             self.keyboard_protocol_pushed || self.kitty_protocol_active;
@@ -1329,6 +1394,7 @@ impl Drop for ProcessTerminal {
 
 impl Terminal for ProcessTerminal {
     fn start(&mut self, on_input: InputHandler, on_resize: ResizeHandler) {
+        self.enable_windows_vt_output();
         self.install_external_stdout_guard();
         self.install_external_stderr_observer();
         self.keyboard_negotiation_settled = !keyboard_enhancement_enabled();
@@ -1383,6 +1449,7 @@ impl Terminal for ProcessTerminal {
             return Err(error);
         }
         self.remove_external_stdout_guard();
+        self.restore_windows_console_output();
         self.schedule_stdin_error_handler_cleanup();
         Ok(())
     }

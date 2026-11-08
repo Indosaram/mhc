@@ -3,9 +3,11 @@
 //! for text and images (PNG, else a CF_DIBV5/CF_DIB bitmap wrapped in a BMP file header).
 //! Registered by [`crate::native_platform::register_builtin_native_platform_helper`].
 //!
-//! `isModifierPressed` (`GetAsyncKeyState`) has no safe binding and this crate forbids `unsafe`,
-//! so it keeps the trait default (`None`): callers fall back exactly as when senpi's addon is
-//! missing.
+//! `isModifierPressed` (`GetAsyncKeyState`) and the console output setup (`SetConsoleOutputCP`
+//! plus `ENABLE_VIRTUAL_TERMINAL_PROCESSING`) live here too; each Win32 call is a narrow
+//! `#[allow(unsafe_code)]` block with a SAFETY note.
+// SAFETY (module-wide): the only `unsafe` here is the documented Win32 calls below.
+#![allow(unsafe_code)]
 
 use clipboard_win::{
     formats, get_clipboard, get_clipboard_string, is_format_avail, register_format,
@@ -13,7 +15,7 @@ use clipboard_win::{
 };
 use crossterm_winapi::{ConsoleMode, Handle, HandleType};
 
-use crate::native_platform::{NativeClipboard, NativePlatformHelper};
+use crate::native_platform::{ModifierKey, NativeClipboard, NativePlatformHelper};
 
 const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 const BITMAP_FILE_HEADER_SIZE: usize = 14;
@@ -125,6 +127,119 @@ impl NativePlatformHelper for Win32PlatformHelper {
                 console.set_mode(mode | ENABLE_VIRTUAL_TERMINAL_INPUT)
             });
         Some(enabled.is_ok())
+    }
+
+    /// Enable UTF-8 output and ANSI processing, remembering the previous console state so
+    /// [`Self::restore_console_output`] can put it back when the TUI releases the terminal.
+    fn enable_virtual_terminal_output(&self) -> Option<bool> {
+        let saved = console_output::enable();
+        let enabled = saved.is_some();
+        if let Some(saved) = saved {
+            *console_output::SAVED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(saved);
+        }
+        Some(enabled)
+    }
+
+    fn restore_console_output(&self) {
+        let saved = console_output::SAVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(saved) = saved {
+            console_output::restore(saved);
+        }
+    }
+
+    fn is_modifier_pressed(&self, key: ModifierKey) -> Option<bool> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        };
+        let virtual_key = match key {
+            ModifierKey::Shift => VK_SHIFT,
+            ModifierKey::Control => VK_CONTROL,
+            ModifierKey::Option => VK_MENU,
+            ModifierKey::Command => VK_LWIN,
+        };
+        // SAFETY: GetAsyncKeyState takes an integer virtual-key code and only reports key state;
+        // it has no pointer arguments and cannot fail in a way that affects memory.
+        let pressed = unsafe { GetAsyncKeyState(virtual_key as i32) };
+        let pressed = pressed as u16 & 0x8000 != 0;
+        if matches!(key, ModifierKey::Command) && !pressed {
+            // SAFETY: same contract as above.
+            let right = unsafe { GetAsyncKeyState(VK_RWIN as i32) };
+            return Some(right as u16 & 0x8000 != 0);
+        }
+        Some(pressed)
+    }
+}
+
+/// Console output state the TUI changes and puts back on exit.
+#[cfg(windows)]
+mod console_output {
+    use std::sync::Mutex;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetConsoleOutputCP, STD_OUTPUT_HANDLE, SetConsoleMode, SetConsoleOutputCP,
+    };
+
+    const CP_UTF8: u32 = 65001;
+    pub(super) const ENABLE_PROCESSED_OUTPUT: u32 = 0x0001;
+    pub(super) const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+
+    #[derive(Clone, Copy)]
+    pub(super) struct Saved {
+        codepage: u32,
+        mode: Option<u32>,
+    }
+
+    pub(super) static SAVED: Mutex<Option<Saved>> = Mutex::new(None);
+
+    fn stdout_handle() -> Option<*mut std::ffi::c_void> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Console::GetStdHandle;
+        // SAFETY: GetStdHandle has no preconditions; the returned handle is owned by the process.
+        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            None
+        } else {
+            Some(handle)
+        }
+    }
+
+    pub(super) fn enable() -> Option<Saved> {
+        let codepage = {
+            // SAFETY: SetConsoleOutputCP takes an integer codepage; no pointers are involved.
+            let previous = unsafe { GetConsoleOutputCP() };
+            // SAFETY: as above.
+            unsafe { SetConsoleOutputCP(CP_UTF8) };
+            previous
+        };
+        let mode = stdout_handle().and_then(|handle| {
+            let mut mode = 0u32;
+            // SAFETY: `handle` is the process's stdout console handle and `mode` is a valid
+            // out-pointer for the duration of the call.
+            let ok = unsafe { GetConsoleMode(handle, &mut mode) };
+            if ok == 0 {
+                return None;
+            }
+            let wanted = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            // SAFETY: as above; `wanted` is a valid console mode mask.
+            (unsafe { SetConsoleMode(handle, wanted) } != 0).then_some(mode)
+        });
+        (codepage != 0 || mode.is_some()).then_some(Saved { codepage, mode })
+    }
+
+    pub(super) fn restore(saved: Saved) {
+        if saved.codepage != 0 {
+            // SAFETY: SetConsoleOutputCP takes an integer codepage; no pointers are involved.
+            unsafe { SetConsoleOutputCP(saved.codepage) };
+        }
+        if let (Some(handle), Some(mode)) = (stdout_handle(), saved.mode) {
+            // SAFETY: `handle` is the process's stdout console handle; `mode` is a mask this
+            // module read from that same handle.
+            unsafe { SetConsoleMode(handle, mode) };
+        }
     }
 }
 
