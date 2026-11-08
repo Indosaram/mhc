@@ -6,6 +6,7 @@ pub const GOAL_WAIT_BAR_CELLS: usize = 12;
 pub enum GoalWaitKind {
     Monitor,
     UserGrace,
+    ProviderRetry,
 }
 pub struct GoalWaitLabelInput {
     pub kind: GoalWaitKind,
@@ -108,6 +109,9 @@ pub fn format_goal_wait_label(input: &GoalWaitLabelInput) -> String {
             "next turn {remaining} {}",
             channels_joined(&input.channel_counts)
         ),
+        GoalWaitKind::ProviderRetry => {
+            format!("provider unavailable \u{b7} goal retries in {remaining}")
+        }
         GoalWaitKind::UserGrace => format!("goal resumes in {remaining}"),
     }
 }

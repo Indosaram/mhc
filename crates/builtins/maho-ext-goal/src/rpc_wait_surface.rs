@@ -31,6 +31,7 @@ pub enum GoalContinuationFireNowResult {
 fn wait_kind_name(kind: GoalWaitKind) -> &'static str {
     match kind {
         GoalWaitKind::Monitor => "monitor",
+        GoalWaitKind::ProviderRetry => "providerRetry",
         GoalWaitKind::UserGrace => "userGrace",
     }
 }

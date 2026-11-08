@@ -361,6 +361,7 @@ impl GoalRuntime {
                         .map_err(|error| ExtensionFailure::new(error.to_string()))?;
                     monitor.sync_goal(goal.as_ref());
                     monitor.reset_length_recovery_after_clean_stop(goal.as_ref(), messages);
+                    monitor.reset_provider_retry_backoff();
                     monitor.last_turn_progress = (false, false);
                     if let Some(goal) = goal
                         .as_ref()
@@ -957,7 +958,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut monitor = runtime.monitor.lock().unwrap();
-            let pending = monitor.take_settled_recovery();
+            let pending = monitor.after_agent_settled(2000.0);
             assert_eq!(pending.is_some(), staged);
             if let Some((path, pending)) = pending {
                 assert_eq!(
@@ -966,7 +967,7 @@ mod tests {
                 );
                 assert_eq!(pending.goal.id, goal.id);
             }
-            assert!(monitor.take_settled_recovery().is_none());
+            assert!(monitor.after_agent_settled(2000.0).is_none());
             assert!(monitor.recent_normalized_output_hashes.is_empty());
         }
     }
@@ -1061,7 +1062,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut monitor = runtime.monitor.lock().unwrap();
-            let pending = monitor.take_settled_recovery();
+            let pending = monitor.after_agent_settled(2000.0);
             assert_eq!(pending.is_some(), !will_retry);
             if let Some((path, pending)) = pending {
                 assert_eq!(
@@ -1070,7 +1071,7 @@ mod tests {
                 );
                 assert_eq!(pending.goal.id, goal.id);
             }
-            assert!(monitor.take_settled_recovery().is_none());
+            assert!(monitor.after_agent_settled(2000.0).is_none());
             assert!(monitor.recent_normalized_output_hashes.is_empty());
             assert_eq!(monitor.toolless_continuation_streak, u64::from(will_retry));
         }

@@ -41,6 +41,10 @@ pub struct MonitorAwareGoalContinuation {
     pub consecutive_length_recoveries: BTreeMap<String, u64>,
     pending_system_recovery: Option<PendingGoalRecovery>,
     pending_provider_recovery: Option<PendingGoalRecovery>,
+    /// Consecutive provider-recovery continuations since the last agent_end (`#providerRetryAttempts`).
+    provider_retry_attempts: u32,
+    /// The delay the armed `providerRetry` timer was scheduled with (`#providerRetryDelayMs`).
+    provider_retry_delay_ms: Option<f64>,
 }
 #[derive(Clone)]
 pub struct PendingGoalRecovery {
@@ -200,34 +204,49 @@ impl MonitorAwareGoalContinuation {
         }
         None
     }
-    pub fn take_settled_recovery(
+    /// `afterAgentSettled`: a staged system recovery queues at once; a staged provider recovery
+    /// first backs off so a provider that is certainly down is not hammered, and the goal is still
+    /// there when it comes back (senpi#3264). The first retry is immediate unless the failure named
+    /// the instant it frees up.
+    pub fn after_agent_settled(
         &mut self,
+        now: f64,
     ) -> Option<(
         crate::continuation::GoalContinuationPath,
         PendingGoalRecovery,
     )> {
         let system = self.pending_system_recovery.take();
         let provider = self.pending_provider_recovery.take();
-        system
+        if let Some(pending) = system
             .filter(|pending| pending.event.abort_source != Some(maho_ext_api::AbortSource::User))
-            .map(|pending| {
-                (
-                    crate::continuation::GoalContinuationPath::SystemRecovery,
-                    pending,
-                )
-            })
-            .or_else(|| {
-                provider
-                    .filter(|pending| {
-                        pending.event.abort_source != Some(maho_ext_api::AbortSource::User)
-                    })
-                    .map(|pending| {
-                        (
-                            crate::continuation::GoalContinuationPath::ProviderRecovery,
-                            pending,
-                        )
-                    })
-            })
+        {
+            return Some((
+                crate::continuation::GoalContinuationPath::SystemRecovery,
+                pending,
+            ));
+        }
+        let pending = provider.filter(|pending| {
+            pending.event.abort_source != Some(maho_ext_api::AbortSource::User)
+        })?;
+        self.provider_retry_attempts = self.provider_retry_attempts.saturating_add(1);
+        let attempt = self.provider_retry_attempts;
+        let delay_ms = crate::provider_retry::provider_retry_delay_ms(
+            attempt,
+            crate::provider_retry::provider_retry_at(&pending.event.messages, now as i64),
+            now as i64,
+        ) as f64;
+        if delay_ms > 0.0 {
+            self.armed_timer = None;
+            self.held_timer = None;
+            self.scheduled_cache = None;
+            self.provider_retry_delay_ms = Some(delay_ms);
+            self.arm_timer(GoalWaitKind::ProviderRetry, delay_ms, delay_ms, false, now);
+            return None;
+        }
+        Some((
+            crate::continuation::GoalContinuationPath::ProviderRecovery,
+            pending,
+        ))
     }
     pub fn take_due_continuation(
         &mut self,
@@ -256,10 +275,12 @@ impl MonitorAwareGoalContinuation {
         });
         Some(DueGoalContinuation {
             goal: goal.clone(),
-            path: if timer.kind == GoalWaitKind::Monitor {
-                crate::continuation::GoalContinuationPath::MonitorDelayed
-            } else {
-                crate::continuation::GoalContinuationPath::UserGrace
+            path: match timer.kind {
+                GoalWaitKind::Monitor => crate::continuation::GoalContinuationPath::MonitorDelayed,
+                GoalWaitKind::ProviderRetry => {
+                    crate::continuation::GoalContinuationPath::ProviderRecovery
+                }
+                GoalWaitKind::UserGrace => crate::continuation::GoalContinuationPath::UserGrace,
             },
             schedule,
             waited_ms,
@@ -418,6 +439,12 @@ impl MonitorAwareGoalContinuation {
     pub fn note_continuation_started(&mut self) {
         self.ended_turn_was_user_initiated = false;
     }
+    /// `afterAgentEnd`: a turn that did not end in a provider failure resets the backoff, so a
+    /// later outage starts over at an immediate first retry.
+    pub fn reset_provider_retry_backoff(&mut self) {
+        self.provider_retry_attempts = 0;
+        self.provider_retry_delay_ms = None;
+    }
     pub fn record_assistant_output(&mut self, text: &str, turn_used_tools: bool) {
         if turn_used_tools {
             self.recent_normalized_output_hashes.clear();
@@ -461,6 +488,8 @@ impl MonitorAwareGoalContinuation {
     pub fn reset_continuation_state(&mut self) {
         self.pending_system_recovery = None;
         self.pending_provider_recovery = None;
+        self.provider_retry_attempts = 0;
+        self.provider_retry_delay_ms = None;
         self.cache_warm_iteration = 0.0;
         self.consecutive_length_recoveries.clear();
         self.recent_normalized_output_hashes.clear();
@@ -661,7 +690,7 @@ mod tests {
             };
             let mut monitor = MonitorAwareGoalContinuation::default();
             monitor.after_provider_failure(&context, Some(&goal), &event);
-            let recovery = monitor.take_settled_recovery();
+            let recovery = monitor.after_agent_settled(0.0);
             assert_eq!(recovery.is_some(), expected);
             if let Some((path, pending)) = recovery {
                 assert_eq!(
@@ -671,8 +700,57 @@ mod tests {
                 assert_eq!(pending.goal, goal);
                 assert_eq!(pending.event, event);
             }
-            assert!(monitor.take_settled_recovery().is_none());
+            assert!(monitor.after_agent_settled(0.0).is_none());
         }
+    }
+    #[test]
+    fn provider_failure_backs_off_into_an_armed_retry_wake() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let context = crate::test_context::context();
+        let event = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: Vec::new(),
+            will_retry: false,
+            aborted: false,
+            abort_source: None,
+        };
+        let mut monitor = MonitorAwareGoalContinuation::default();
+        // The first consecutive recovery is immediate.
+        monitor.after_provider_failure(&context, Some(&goal), &event);
+        assert_eq!(
+            monitor.after_agent_settled(0.0).unwrap().0,
+            crate::continuation::GoalContinuationPath::ProviderRecovery
+        );
+        // The second one arms a delayed wake instead of sealing the turn.
+        monitor.after_provider_failure(&context, Some(&goal), &event);
+        assert!(monitor.after_agent_settled(0.0).is_none());
+        assert_eq!(
+            monitor.scheduled_continuation(),
+            Some(GoalWaitKind::ProviderRetry)
+        );
+        assert_eq!(
+            monitor.armed_timer.unwrap().due_at_ms,
+            crate::provider_retry::PROVIDER_RETRY_BASE_MS as f64
+        );
+        assert!(monitor.take_due_continuation(1000.0, true, false).is_none());
+        let due = monitor
+            .take_due_continuation(15_000.0, true, false)
+            .unwrap();
+        assert_eq!(
+            due.path,
+            crate::continuation::GoalContinuationPath::ProviderRecovery
+        );
+        assert_eq!(due.goal.id, "g");
+        assert_eq!(due.waited_ms, 15_000.0);
+        // A wake without live monitor channels still fires: the provider is the wake source.
+        assert!(!monitor.has_active_wake_sources());
+        // The third consecutive recovery doubles the backoff.
+        monitor.after_provider_failure(&context, Some(&goal), &event);
+        assert!(monitor.after_agent_settled(15_000.0).is_none());
+        assert_eq!(monitor.armed_timer.unwrap().due_at_ms, 45_000.0);
+        // A turn that did not end in a provider failure starts the backoff over.
+        monitor.reset_provider_retry_backoff();
+        monitor.after_provider_failure(&context, Some(&goal), &event);
+        assert!(monitor.after_agent_settled(45_000.0).is_some());
     }
     #[test]
     fn system_settlement_takes_precedence_and_consumes_both_staged_routes() {
@@ -694,10 +772,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            monitor.take_settled_recovery().unwrap().0,
+            monitor.after_agent_settled(0.0).unwrap().0,
             crate::continuation::GoalContinuationPath::SystemRecovery
         );
-        assert!(monitor.take_settled_recovery().is_none());
+        assert!(monitor.after_agent_settled(0.0).is_none());
     }
     #[test]
     fn system_recovery_requires_error_and_reset_discards_staged_recovery() {
@@ -723,18 +801,18 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            monitor.take_settled_recovery().unwrap().0,
+            monitor.after_agent_settled(0.0).unwrap().0,
             crate::continuation::GoalContinuationPath::SystemRecovery
         );
         monitor.after_provider_failure(&context, Some(&goal), &event);
         monitor.reset_continuation_state();
-        assert!(monitor.take_settled_recovery().is_none());
+        assert!(monitor.after_agent_settled(0.0).is_none());
         monitor.set_wake_source_count("task", 1.0, &[], 0.0, 1000.0);
         let schedule = monitor
             .after_system_abort(&context, Some(&goal), &event, 0.0, 270.0, 1000.0)
             .unwrap();
         assert_eq!(schedule.cache.unwrap().cached_tokens, 150.0);
-        assert!(monitor.take_settled_recovery().is_none());
+        assert!(monitor.after_agent_settled(0.0).is_none());
     }
     #[test]
     fn restored_schedule_publishes_event_without_duplicate_card() {

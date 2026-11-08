@@ -52,7 +52,8 @@ pub fn collect_turn_end_liveness_input(
         expectations.push(WakeExpectation::ArmedTimer {
             timer: match timer {
                 crate::wait_progress::GoalWaitKind::Monitor => "monitor",
-                crate::wait_progress::GoalWaitKind::UserGrace => "user-grace",
+                crate::wait_progress::GoalWaitKind::ProviderRetry => "providerRetry",
+                crate::wait_progress::GoalWaitKind::UserGrace => "userGrace",
             }
             .into(),
         });

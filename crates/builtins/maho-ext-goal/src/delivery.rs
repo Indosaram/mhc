@@ -736,12 +736,14 @@ impl GoalDelivery {
                     .await?;
             }
             ExtensionEvent::AgentSettled => {
+                // A provider failure backs off into an armed `providerRetry` timer instead of
+                // sealing the turn; `reconcile` below arms it and its delivery queues the recovery.
                 let recovery = self
                     .runtime
                     .monitor
                     .lock()
                     .map_err(failure)?
-                    .take_settled_recovery();
+                    .after_agent_settled((self.now)());
                 if let Some((path, recovery)) = recovery {
                     self.queue(ctx, &recovery.goal, path).await?;
                 }
