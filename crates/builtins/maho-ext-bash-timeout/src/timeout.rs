@@ -48,9 +48,13 @@ pub fn apply_bash_timeout(input: &Value, defaults: BashTimeoutDefaults) -> Value
     result
 }
 
+/// `eval_only` is true when the session withholds `bash` and only exposes it as `tool.bash(...)`
+/// inside an eval cell. The policy then names the callable form, never the bare tool that a
+/// model would try to invoke directly.
 pub fn build_bash_timeout_prompt(
     defaults: BashTimeoutDefaults,
     foreground_window_seconds: Option<f64>,
+    eval_only: bool,
 ) -> String {
     let minutes = |seconds: u64| {
         if seconds.is_multiple_of(60) {
@@ -60,8 +64,13 @@ pub fn build_bash_timeout_prompt(
         }
     };
     let detach = foreground_window_seconds.map_or_else(String::new, |seconds| format!("\n- Foreground blocking stops at the ~{seconds}s window. A command still running then auto-detaches alive to a background session with a `bash_id` and keeps running until it exits or hits the kill deadline; the session tools in the terminal section steer or stop it."));
+    let callable = if eval_only {
+        "The `bash` tool runs ONLY inside eval cells as `tool.bash({ command: \"...\" })`; there is no top-level `bash` tool to call. Its `timeout` parameter is"
+    } else {
+        "The `bash` tool's `timeout` parameter is"
+    };
     format!(
-        "\n## Bash Tool Timeout Policy\n\nThe `bash` tool's `timeout` parameter is the process kill deadline, not how long you wait for output: the command is killed when it reaches the deadline.\n\n- Default timeout: {}s ({}). Applied automatically when you do not set `timeout`.\n- Recommended maximum timeout: {}s ({}). Explicit `timeout` values are preserved because different hosts may use different timeout units.{detach}",
+        "\n## Bash Tool Timeout Policy\n\n{callable} the process kill deadline, not how long you wait for output: the command is killed when it reaches the deadline.\n\n- Default timeout: {}s ({}). Applied automatically when you do not set `timeout`.\n- Recommended maximum timeout: {}s ({}). Explicit `timeout` values are preserved because different hosts may use different timeout units.{detach}",
         defaults.default_seconds,
         minutes(defaults.default_seconds),
         defaults.max_seconds,

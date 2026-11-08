@@ -149,17 +149,28 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
     let has_grep = tools.iter().any(|tool| tool == "grep");
     let has_find = tools.iter().any(|tool| tool == "find");
     let has_ls = tools.iter().any(|tool| tool == "ls");
+    // `bash` is `exposure: Eval` whenever the session registers `eval`, so the guideline must
+    // name the callable helper instead of a top-level tool the model never receives.
+    let bash_name = if tools.iter().any(|tool| tool == "eval") {
+        "tool.bash"
+    } else {
+        "bash"
+    };
 
     match get_eval_only_grep_guideline(&tools, tool_snippets) {
         Some(guideline) => add_guideline(guideline),
         None => {
             if (has_bash || has_power_shell) && !has_grep && !has_find && !has_ls {
                 if has_bash && has_power_shell {
-                    add_guideline("Use bash or PowerShell for file operations like listing, searching, and finding files".to_string());
+                    add_guideline(format!(
+                        "Use {bash_name} or PowerShell for file operations like listing, searching, and finding files"
+                    ));
                 } else if has_power_shell {
                     add_guideline("Use PowerShell for file operations like listing, searching, and finding files".to_string());
                 } else {
-                    add_guideline("Use bash for file operations like ls, rg, find".to_string());
+                    add_guideline(format!(
+                        "Use {bash_name} for file operations like ls, rg, find"
+                    ));
                 }
             }
         }
@@ -307,6 +318,23 @@ mod tests {
             ..Default::default()
         });
         assert!(prompt.contains("- Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell"));
+        assert!(!prompt.contains("- Use bash for file operations"));
+    }
+
+    #[test]
+    fn a_bash_guideline_names_the_eval_helper_when_eval_is_selected() {
+        // `bash` is `exposure: Eval` under an eval-registering session; naming the bare tool in
+        // the guidelines pushes the model to call something it never receives.
+        let prompt = build_system_prompt(&BuildSystemPromptOptions {
+            cwd: "/work".to_string(),
+            selected_tools: Some(vec!["bash".to_string(), "eval".to_string()]),
+            tool_snippets: Some(snippets(&[("bash", "Run commands")])),
+            ..Default::default()
+        });
+        assert!(
+            prompt.contains("- Use tool.bash for file operations like ls, rg, find"),
+            "{prompt}"
+        );
         assert!(!prompt.contains("- Use bash for file operations"));
     }
 

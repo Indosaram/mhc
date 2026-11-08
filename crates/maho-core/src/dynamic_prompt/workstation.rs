@@ -205,7 +205,15 @@ pub fn collect_workstation_facts() -> &'static WorkstationFacts {
 
 /// `executorPhrase`.
 pub fn executor_phrase(selected_tools: &[String]) -> String {
-    let executors: Vec<&str> = ["bash", "eval"]
+    // `bash` declares `exposure: Eval`, so a session that registers `eval` never exposes a
+    // top-level bash tool: shell work happens as `tool.bash(...)` inside an eval cell. Naming
+    // bash as its own executor there advertises a tool the model cannot call.
+    let candidates: &[&str] = if selected_tools.iter().any(|tool| tool == "eval") {
+        &["eval"]
+    } else {
+        &["bash"]
+    };
+    let executors: Vec<&str> = candidates
         .iter()
         .copied()
         .filter(|name| selected_tools.iter().any(|tool| tool.as_str() == *name))
@@ -324,7 +332,7 @@ mod tests {
     fn the_executor_phrase_names_the_tools_that_are_selected() {
         assert_eq!(
             executor_phrase(&["bash".to_string(), "eval".to_string()]),
-            "`bash` and `eval` execute"
+            "`eval` executes"
         );
         assert_eq!(executor_phrase(&["bash".to_string()]), "`bash` executes");
         assert_eq!(
@@ -337,7 +345,7 @@ mod tests {
     fn every_dialect_keeps_its_own_wording() {
         let default_section =
             build_workstation_section(&options(WorkstationDialect::Default, &["bash", "eval"]));
-        assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `bash` and `eval` execute on THIS machine — you MUST match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target a different machine; anything you RUN executes HERE."));
+        assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `eval` executes on THIS machine — you MUST match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target a different machine; anything you RUN executes HERE."));
 
         let claude = build_workstation_section(&options(WorkstationDialect::Claude, &["bash"]));
         assert!(claude.ends_with("<execution_context>\n`bash` executes on THIS workstation. Match commands, paths, package managers, and parallel pool sizes to it. Code you write may target any machine; code you run always runs here.\n</execution_context>"));

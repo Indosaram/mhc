@@ -1,11 +1,18 @@
 pub fn build_terminal_prompt_section(eval_only: bool) -> String {
     let bash = if eval_only { "tool.bash" } else { "bash" };
     let monitor = if eval_only { "tool.monitor" } else { "monitor" };
+    // With eval registered, bash is `exposure: Eval`: there is no top-level tool to describe, only
+    // the `tool.bash(...)` helper that the section already names.
+    let lead = if eval_only {
+        "Shell work runs inside eval cells through a PTY-backed `tool.bash(...)`."
+    } else {
+        "The `bash` tool is PTY-backed."
+    };
     format!(
         r#"
 ## Persistent terminal sessions
 
-The `bash` tool is PTY-backed. For long-running or interactive work, do NOT use tmux or
+{lead} For long-running or interactive work, do NOT use tmux or
 manual `&` backgrounding — use the built-in session tools:
 
 - `{bash}({{ command, run_in_background: true }})` starts a persistent session and returns a
@@ -49,4 +56,38 @@ manual `&` backgrounding — use the built-in session tools:
 - `kill_bash({{ bash_id }})` (or `{{ all: true }}`) tears the session tree down with no orphans.
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_terminal_prompt_section;
+
+    #[test]
+    fn eval_only_section_never_advertises_a_top_level_bash_tool() {
+        let section = build_terminal_prompt_section(true);
+        assert!(
+            section.contains(
+                "Shell work runs inside eval cells through a PTY-backed `tool.bash(...)`."
+            ),
+            "{section}"
+        );
+        assert!(section.contains("`tool.bash({ command, run_in_background: true })`"));
+        assert!(
+            section.contains(
+                "`tool.monitor({ description, command, filter?, timeout_ms?, persistent? })`"
+            ),
+            "{section}"
+        );
+    }
+
+    #[test]
+    fn direct_section_names_the_bash_tool() {
+        let section = build_terminal_prompt_section(false);
+        assert!(
+            section.contains("The `bash` tool is PTY-backed."),
+            "{section}"
+        );
+        assert!(section.contains("`bash({ command, run_in_background: true })`"));
+        assert!(!section.contains("tool.bash("));
+    }
 }

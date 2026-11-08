@@ -35,6 +35,14 @@ impl Extension for BashTimeout {
                     let ExtensionEvent::BeforeAgentStart(event) = event else {
                         return Ok(EventResult::None);
                     };
+                    // The terminal extension flips its own section to `tool.bash` when eval is
+                    // registered; this policy must use the same callable form, or it advertises a
+                    // top-level tool the session withholds.
+                    let eval_only = event
+                        .system_prompt_options
+                        .tools
+                        .iter()
+                        .any(|tool| tool == "eval");
                     if maho_ext_anthropic_bash::is_anthropic_bash_enabled()
                         && ctx
                             .model
@@ -45,7 +53,7 @@ impl Extension for BashTimeout {
                             system_prompt: Some(format!(
                                 "{}{}",
                                 event.system_prompt,
-                                build_bash_timeout_prompt(defaults, None)
+                                build_bash_timeout_prompt(defaults, None, eval_only)
                             )),
                             ..Default::default()
                         }));
@@ -59,7 +67,7 @@ impl Extension for BashTimeout {
                         system_prompt: Some(format!(
                             "{}{}",
                             event.system_prompt,
-                            build_bash_timeout_prompt(defaults, Some(window))
+                            build_bash_timeout_prompt(defaults, Some(window), eval_only)
                         )),
                         ..Default::default()
                     }))

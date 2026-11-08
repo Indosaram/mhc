@@ -1,4 +1,6 @@
-use maho_ext_bash_timeout::{apply_bash_timeout, resolve_bash_timeout_defaults};
+use maho_ext_bash_timeout::{
+    apply_bash_timeout, build_bash_timeout_prompt, resolve_bash_timeout_defaults,
+};
 use serde_json::json;
 
 #[test]
@@ -112,4 +114,42 @@ fn preserved_when_non_object() {
         apply_bash_timeout(&json!("echo hi"), defaults),
         json!("echo hi")
     );
+}
+
+#[test]
+fn eval_only_policy_names_the_callable_bash_helper() {
+    let prompt = build_bash_timeout_prompt(resolve_bash_timeout_defaults(None, None), None, true);
+    assert!(
+        prompt.contains("runs ONLY inside eval cells as `tool.bash({ command: \"...\" })`"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("The `bash` tool's `timeout` parameter is"));
+}
+
+#[test]
+fn direct_policy_names_the_bash_tool() {
+    let prompt = build_bash_timeout_prompt(resolve_bash_timeout_defaults(None, None), None, false);
+    assert!(
+        prompt.contains("The `bash` tool's `timeout` parameter is"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("tool.bash("));
+}
+
+#[test]
+fn the_policy_keeps_its_defaults_and_detach_note_in_both_forms() {
+    let defaults = resolve_bash_timeout_defaults(Some("60"), Some("120"));
+    let eval_only = build_bash_timeout_prompt(defaults, Some(30.0), true);
+    let direct = build_bash_timeout_prompt(defaults, Some(30.0), false);
+    for prompt in [&eval_only, &direct] {
+        assert!(
+            prompt.contains("- Default timeout: 60s (1 min)."),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- Recommended maximum timeout: 120s (2 min)."),
+            "{prompt}"
+        );
+        assert!(prompt.contains("~30s window"), "{prompt}");
+    }
 }
