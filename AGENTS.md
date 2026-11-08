@@ -75,6 +75,12 @@ cargo nextest run -p <crate>
 cargo clippy -p <crate> --all-targets -- -D warnings
 ```
 
+## LOCAL SCRATCH (`.omo/`)
+`.omo/` is gitignored local state: session evidence, plans, benchmarks, the private build-host
+note. Nothing in it is committed, so no tracked file may depend on a path under it. Parity
+ledgers citing `.omo/evidence/...` point at local artifacts that exist only on the machine that
+produced them.
+
 ## REMOTE BUILD ON GITHUB ACTIONS
 The repo is public, so GitHub-hosted runners are unmetered. `.github/workflows/ci.yml` runs `cargo clippy --workspace --all-targets -D warnings` on Linux, macOS and Windows, builds `maho-cli`, and runs the whole nextest suite in 6 Linux crate shards and 3 Windows crate shards in parallel (`scripts/ci-shard.py` puts every workspace member in exactly one shard, balanced by test-file count), each on a fresh VM. Nothing is shared with other sessions.
 
