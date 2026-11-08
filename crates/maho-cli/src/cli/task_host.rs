@@ -227,15 +227,37 @@ impl HostAssembly {
                     return Ok(socket);
                 }
             }
-            maho_rpc::host_ensure::ensure_host(maho_rpc::host_ensure::EnsureHostOptions {
-                socket,
-                agent_dir: Some(agent_dir),
-                extensions,
-                ..Default::default()
-            })
-            .await
-            .map(|host| host.socket)
-            .map_err(error)
+            // Every shard host this assembly starts is bound to the session process's lifetime: without the
+            // owner record and pipe the supervisor has no signal that its parent is gone, so a crashed or
+            // exited session leaves the host to the 15 minute idle timer alone. A generation that predates
+            // owner records cannot be claimed (its record is `Unknown`); that is reported, not fatal.
+            let ensure_with = |owner: bool| {
+                let socket = socket.clone();
+                let agent_dir = agent_dir.clone();
+                let extensions = extensions.clone();
+                async move {
+                    maho_rpc::host_ensure::ensure_host(maho_rpc::host_ensure::EnsureHostOptions {
+                        socket,
+                        agent_dir: Some(agent_dir),
+                        extensions,
+                        owner,
+                        ..Default::default()
+                    })
+                    .await
+                }
+            };
+            match ensure_with(true).await {
+                Ok(host) => Ok(host.socket),
+                Err(owner_error) => {
+                    eprintln!(
+                        "rpc host owner binding unavailable ({owner_error}); starting without a lifetime owner"
+                    );
+                    ensure_with(false)
+                        .await
+                        .map(|host| host.socket)
+                        .map_err(error)
+                }
+            }
         })
     }
     pub fn admit(&self, store: String) -> Result<(), HostError> {
