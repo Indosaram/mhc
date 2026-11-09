@@ -86,8 +86,10 @@ pub async fn run_command_hook(
         .kill_on_drop(true);
     #[cfg(unix)]
     process.process_group(0);
+    // CREATE_NEW_PROCESS_GROUP (0x200) is needed for group kill; CREATE_NO_WINDOW (0x0800_0000) stops
+    // a console window from flashing on screen for every hook run, since hook output is captured.
     #[cfg(windows)]
-    process.creation_flags(0x0000_0200);
+    process.creation_flags(0x0000_0200 | 0x0800_0000);
     let mut child = process.spawn()?;
     let pid = child.id();
     let tracked_pid = pid.and_then(|pid| i32::try_from(pid).ok());

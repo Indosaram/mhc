@@ -9,9 +9,9 @@
 //! `#[allow(unsafe_code)]` helper; Windows start identity uses `GetProcessTimes` the same way.
 //! Linux's `/proc` read is already in process and needs no FFI.
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 use std::process::{Command, Output, Stdio};
-#[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ pub enum ProcessLiveness {
     Unknown,
 }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Option<Output> {
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -273,32 +273,56 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
     }
     #[cfg(windows)]
     {
-        let mut cmd = Command::new("tasklist");
-        cmd.args(["/FI", &format!("PID eq {pid}")]);
-        let output = match run_command_with_timeout(cmd, Duration::from_secs(2)) {
-            Some(out) => out,
-            None => return ProcessLiveness::Unknown,
-        };
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains(&pid.to_string()) {
-                ProcessLiveness::Alive
-            } else if stdout.contains("No tasks are running")
-                || stdout.contains("INFO:")
-                || stdout.contains("정보:")
-            {
-                ProcessLiveness::Dead
-            } else {
-                ProcessLiveness::Unknown
-            }
-        } else {
-            ProcessLiveness::Unknown
+        // Liveness is answered in process: parsing `tasklist` output depended on the user's
+        // display language (`No tasks are running` / `정보:` / ...), so every localized Windows
+        // reported Unknown and stale-lock recovery stopped working.
+        match windows_process_liveness(pid) {
+            Some(true) => ProcessLiveness::Alive,
+            Some(false) => ProcessLiveness::Dead,
+            None => ProcessLiveness::Unknown,
         }
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         ProcessLiveness::Unknown
+    }
+}
+
+/// `OpenProcess` + `WaitForSingleObject`: `Some(true)` while the process runs, `Some(false)` once
+/// it has exited, `None` when access is denied (an elevated process we can see but not signal).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_process_liveness(pid: u32) -> Option<bool> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    // SAFETY: `OpenProcess` only reads its integer arguments and returns a new handle or null.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        // Access denied means the process exists but is not ours to inspect.
+        return (std::io::Error::last_os_error().raw_os_error()
+            == i32::try_from(ERROR_ACCESS_DENIED).ok())
+        .then_some(true);
+    }
+    // SAFETY: `handle` is a valid process handle owned by this call.
+    let waited = unsafe { WaitForSingleObject(handle, 0) };
+    // SAFETY: `handle` was opened above and is not used after this call.
+    unsafe { CloseHandle(handle) };
+    match waited {
+        WAIT_TIMEOUT => Some(true),
+        WAIT_OBJECT_0 => Some(false),
+        _ => None,
     }
 }
 

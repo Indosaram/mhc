@@ -604,8 +604,13 @@ mod tests {
         let (frames, mut received) = tokio::sync::mpsc::unbounded_channel();
         let replier = server.clone();
         let _unsubscribe = server.on_message(move |message| {
-            // The server's half of the protocol: acknowledge every launch and every update.
+            // The server's half of the protocol: acknowledge hello, every launch and every update.
             match &message {
+                ToolChildMessage::Child(ChildToServer::Hello { generation, .. }) => {
+                    let _ = replier.send(&ToolChildMessage::Server(ServerToChild::HelloAck {
+                        generation: *generation,
+                    }));
+                }
                 ToolChildMessage::Child(ChildToServer::Launch { launch_id, .. }) => {
                     let _ = replier.send(&ToolChildMessage::Server(ServerToChild::LaunchAck {
                         launch_id: launch_id.clone(),

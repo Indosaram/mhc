@@ -351,7 +351,15 @@ fn resolve_for_current_process(options: &GitBashMcpOptions) -> GitBashResolution
 
 /// The `where bash` probe; the resolver itself is reused from `maho-utils`, which keeps this probe
 /// private, so the MCP layer carries its own copy of that one-line process call.
+///
+/// `tools/list` asks whether Git Bash is available on every call, and each answer used to spawn a
+/// `where.exe`. PATH does not change for the lifetime of a process, so the probe result is cached.
 fn where_bash() -> Vec<String> {
+    static PROBE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    PROBE.get_or_init(probe_where_bash).clone()
+}
+
+fn probe_where_bash() -> Vec<String> {
     Command::new("where")
         .arg("bash")
         .output()

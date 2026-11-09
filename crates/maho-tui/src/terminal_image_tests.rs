@@ -53,6 +53,28 @@ fn detect(env: &Env) -> DetectedTerminalCapabilities {
 }
 
 #[test]
+fn old_windows_wezterm_drops_images_and_new_builds_keep_them() {
+    let wezterm = |version: &str| {
+        crate::process_env::env_from(&[
+            ("TERM_PROGRAM", "WezTerm"),
+            ("TERM_PROGRAM_VERSION", version),
+        ])
+    };
+    let old = wezterm("20240203-110809-5046fc22");
+    assert_eq!(
+        detect_capabilities_in(&old, "win32", no_tmux_hyperlinks).images,
+        None
+    );
+    let new = wezterm("20250208-160106-4accc376");
+    assert_eq!(
+        detect_capabilities_in(&new, "win32", no_tmux_hyperlinks).images,
+        Some(ImageProtocol::Kitty)
+    );
+    // The ConPTY defect is Windows-only, so the same old build keeps images elsewhere.
+    assert_eq!(detect(&old).images, Some(ImageProtocol::Kitty));
+}
+
+#[test]
 fn vs_code_environment_without_term_program_turns_hyperlinks_on() {
     assert!(detect(&vs_code_env(&[])).hyperlinks);
 }

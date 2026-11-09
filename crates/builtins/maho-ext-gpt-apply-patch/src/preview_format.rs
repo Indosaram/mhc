@@ -137,6 +137,15 @@ fn window_count(len: usize, start: usize, end: usize) -> usize {
     end - start + usize::from(start > 0) + usize::from(end < len)
 }
 pub fn truncate_preview(text: &str) -> String {
+    // A CRLF diff left `\r` at the end of every rendered line, which the terminal reads as a
+    // carriage return and overwrites the line. Normalize before measuring and splitting.
+    let normalized;
+    let text = if text.contains("\r\n") {
+        normalized = text.replace("\r\n", "\n");
+        normalized.as_str()
+    } else {
+        text
+    };
     if text.encode_utf16().count() <= PATCH_PREVIEW_MAX_CHARS
         && (if text.is_empty() {
             0
@@ -428,6 +437,17 @@ mod tests {
         let preview = truncate_preview(&"😀".repeat(3000));
         assert_eq!(preview.encode_utf16().count(), 4000);
         assert!(preview.ends_with('…'));
+    }
+    #[test]
+    fn crlf_diff_lines_lose_their_carriage_returns() {
+        // A CRLF diff rendered each line with a trailing `\r`, which overwrote the line on screen.
+        let lines = (1..=40)
+            .map(|i| format!("{}{:2} line\r", if i == 30 { '+' } else { ' ' }, i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let preview = truncate_preview(&lines);
+        assert!(!preview.contains('\r'), "{preview:?}");
+        assert!(preview.contains("+30 line"));
     }
     #[test]
     fn path_inside_cwd_becomes_relative() {

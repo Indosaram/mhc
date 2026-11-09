@@ -9,13 +9,12 @@
 // SAFETY (module-wide): the only `unsafe` here is the documented Win32 calls below.
 #![allow(unsafe_code)]
 
+use crate::native_platform::{ModifierKey, NativeClipboard, NativePlatformHelper};
 use clipboard_win::{
     formats, get_clipboard, get_clipboard_string, is_format_avail, register_format,
     set_clipboard_string,
 };
 use crossterm_winapi::{ConsoleMode, Handle, HandleType};
-
-use crate::native_platform::{ModifierKey, NativeClipboard, NativePlatformHelper};
 
 const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 const BITMAP_FILE_HEADER_SIZE: usize = 14;
@@ -66,6 +65,48 @@ fn dib_pixel_offset(dib: &[u8]) -> Option<usize> {
     (offset <= size).then_some(offset)
 }
 
+/// Read the first image file named by an Explorer-style `CF_HDROP` clipboard payload.
+///
+/// A copied image file is published as a file list rather than as `CF_DIB`, so the bitmap
+/// branches never see it. Only a bounded payload is read: a clipboard is an untrusted source and
+/// a file it names can be arbitrarily large.
+fn read_clipboard_image_file() -> Result<Option<Vec<u8>>, String> {
+    const MAX_CLIPBOARD_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+    if !is_format_avail(formats::CF_HDROP) {
+        return Ok(None);
+    }
+    // `clipboard-win` only implements `Getter<Vec<PathBuf>>` behind its `std` feature, which this
+    // workspace does not enable, so the names arrive as `String` and are converted here.
+    let paths =
+        get_clipboard::<Vec<String>, _>(formats::FileList).map_err(|error| error.to_string())?;
+    for path in paths {
+        let path = std::path::PathBuf::from(path);
+        let is_image = path
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp"
+                )
+            });
+        if !is_image {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+            continue;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => return Ok(Some(bytes)),
+            _ => continue,
+        }
+    }
+    Ok(None)
+}
+
 /// Prefix a packed DIB with a `BITMAPFILEHEADER`, producing a `.bmp` file.
 fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     let offset = dib_pixel_offset(dib)?;
@@ -97,15 +138,22 @@ impl NativeClipboard for Win32PlatformHelper {
         let dib_format = [formats::CF_DIBV5, formats::CF_DIB]
             .into_iter()
             .find(|format| is_format_avail(*format));
-        let Some(format) = png_format.or(dib_format) else {
-            return Ok(None);
+        let Some((format, is_png)) = png_format
+            .map(|format| (format, true))
+            .or_else(|| dib_format.map(|format| (format, false)))
+        else {
+            // Explorer puts a copied image file on the clipboard as a file list, not as a bitmap,
+            // so a screenshot file would otherwise read as "no image".
+            return read_clipboard_image_file();
         };
         let bytes: Vec<u8> =
             get_clipboard(formats::RawData(format)).map_err(|error| error.to_string())?;
+        // An empty payload means the clipboard holds no image: that is an empty result, not the
+        // transfer failure the previous `Err` reported.
         if bytes.is_empty() {
-            return Err("Clipboard does not contain an image".to_string());
+            return Ok(None);
         }
-        if png_format.is_some() {
+        if is_png {
             return Ok(Some(bytes));
         }
         dib_to_bmp(&bytes)

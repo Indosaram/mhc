@@ -102,15 +102,18 @@ pub fn process_alive(pid: u32) -> bool {
 /// which TS `isProcessAlive` counts as alive; an exited process or unknown pid is ESRCH.
 #[cfg(windows)]
 pub fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, STILL_ACTIVE};
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
     if pid == 0 {
         return false;
     }
-    let Some(handle) = WindowsProcess::open(pid) else {
+    // Liveness needs only synchronize access: asking for PROCESS_TERMINATE made the probe fail
+    // with access denied against a process we can see but not kill, and liveness must not require
+    // a capability the caller never uses.
+    let Some(handle) = WindowsProcess::open_query(pid) else {
         return io::Error::last_os_error().raw_os_error()
             == i32::try_from(ERROR_ACCESS_DENIED).ok();
     };
-    handle.exit_code() == u32::try_from(STILL_ACTIVE).ok()
+    handle.is_running()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -177,13 +180,34 @@ impl WindowsProcess {
         (!handle.is_null()).then_some(Self(handle))
     }
 
-    fn exit_code(&self) -> Option<u32> {
-        use windows_sys::Win32::System::Threading::GetExitCodeProcess;
-        let mut code = 0_u32;
-        // SAFETY: `self.0` is a live process handle owned by this value and `code` is a valid
-        // out-pointer for the duration of the call.
-        let ok = unsafe { GetExitCodeProcess(self.0, &mut code) };
-        (ok != 0).then_some(code)
+    /// A handle for existence/exit queries only; enough for `is_running`, no kill rights.
+    fn open_query(pid: u32) -> Option<Self> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        };
+        // SAFETY: `OpenProcess` only reads its integer arguments and returns a new handle or null.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    /// Whether the process has not exited. `GetExitCodeProcess` cannot answer this: `STILL_ACTIVE`
+    /// (259) is also a legitimate exit code, so a process that exited with 259 looked alive.
+    fn is_running(&self) -> bool {
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: `self.0` is a live process handle owned by this value.
+        let waited = unsafe { WaitForSingleObject(self.0, 0) };
+        // WAIT_OBJECT_0 is the only "signalled" result. WAIT_TIMEOUT is the running case. WAIT_FAILED and
+        // WAIT_ABANDONED mean the query itself failed, and reporting those as "exited" would let a live
+        // daemon be replaced; a failed liveness query is treated as alive, the same choice the caller
+        // makes on access denied.
+        waited != WAIT_OBJECT_0 && waited != WAIT_FAILED
     }
 
     fn terminate(&self) -> bool {

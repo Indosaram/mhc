@@ -236,9 +236,21 @@ async fn termination_signal() -> i32 {
 }
 #[cfg(not(unix))]
 async fn termination_signal() -> i32 {
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => 143,
-        Err(_) => std::future::pending().await,
+    // `tokio::signal::ctrl_c` covers only Ctrl+C. A Windows console also delivers Ctrl+Break when the
+    // user presses it, and CTRL_CLOSE/CTRL_SHUTDOWN when the window closes or the machine shuts down;
+    // leaving those unhandled let the process die without releasing the connection. senpi registers
+    // SIGTERM and maps it to 143, so every Windows termination path reports that same code.
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+    let (Ok(mut brk), Ok(mut close), Ok(mut shutdown)) =
+        (ctrl_break(), ctrl_close(), ctrl_shutdown())
+    else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => 143,
+        _ = brk.recv() => 143,
+        _ = close.recv() => 143,
+        _ = shutdown.recv() => 143,
     }
 }
 /// Run RPC mode over supplied streams: the transport-independent process entry

@@ -669,8 +669,21 @@ async fn bootstrap(inner: &Arc<Inner>, generation: u64) -> Result<(), ToolChildE
         });
     }
     let (exit_tx, exit_rx) = oneshot::channel::<()>();
+    // The child handle belongs to the waiter; a bootstrap failure asks it to kill the child through
+    // this channel instead, so a containment failure cannot leak a live tool child.
+    let (kill_tx, kill_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
-        let _ = child.wait().await;
+        tokio::select! {
+            _ = child.wait() => {}
+            request = kill_rx => {
+                // `Err` means bootstrap succeeded and dropped the sender: there is nothing to kill,
+                // only the child to reap.
+                if request.is_ok() {
+                    let _ = child.start_kill();
+                }
+                let _ = child.wait().await;
+            }
+        }
         let _ = exit_tx.send(());
     });
     let exited: Signal = async move {
@@ -689,6 +702,9 @@ async fn bootstrap(inner: &Arc<Inner>, generation: u64) -> Result<(), ToolChildE
     let containment = match contain_child(pid, host) {
         Ok(containment) => Arc::new(containment),
         Err(error) => {
+            // The child exists but nothing holds it: kill it before returning, or a containment
+            // failure leaks a live tool child that no job can ever reach.
+            let _ = kill_tx.send(());
             let _ = listener.close().await;
             return Err(ToolChildError::new(&error.code, &error.message));
         }
@@ -745,6 +761,12 @@ async fn bootstrap(inner: &Arc<Inner>, generation: u64) -> Result<(), ToolChildE
         }
     };
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+    // The child is already inside its Job Object by now (assigned before `hello` was accepted), so
+    // the ack releases it to start grandchildren. Without it the child could spawn between its own
+    // start and the job assignment, and those descendants would escape containment.
+    let _ = channel.send(&ToolChildMessage::Server(ServerToChild::HelloAck {
+        generation,
+    }));
     let barrier = create_generation_barrier(GenerationBarrierOptions {
         dir: options.dir.clone(),
         generation,

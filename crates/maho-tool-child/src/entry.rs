@@ -118,6 +118,11 @@ struct Session {
     streams: Mutex<HashMap<String, Arc<JobUpdates>>>,
     generation: u64,
     wake: WakeFn,
+    /// Set once the server confirms the child is inside its Job Object. Until then a launched job
+    /// could start grandchildren outside containment, so job frames wait here instead of running.
+    contained: std::sync::atomic::AtomicBool,
+    /// Jobs that arrived before the containment ack; drained when it lands, never discarded.
+    waiting_for_containment: Mutex<Vec<ServerToChild>>,
 }
 
 pub async fn run_tool_child(options: ToolChildEntryOptions) -> Result<(), HandlerError> {
@@ -206,6 +211,8 @@ pub async fn run_tool_child(options: ToolChildEntryOptions) -> Result<(), Handle
         streams: Mutex::new(HashMap::new()),
         generation,
         wake,
+        contained: std::sync::atomic::AtomicBool::new(false),
+        waiting_for_containment: Mutex::new(Vec::new()),
     });
     let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader_blocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -242,6 +249,21 @@ pub async fn run_tool_child(options: ToolChildEntryOptions) -> Result<(), Handle
                 _ => return,
             };
             match server {
+                ServerToChild::HelloAck {
+                    generation: acknowledged,
+                } if *acknowledged == session.generation => {
+                    session.contained.store(true, Ordering::SeqCst);
+                    // Release every job that arrived while containment was still unconfirmed.
+                    let waiting: Vec<ServerToChild> = {
+                        let mut waiting = lock(&session.waiting_for_containment);
+                        std::mem::take(&mut *waiting)
+                    };
+                    for job in waiting {
+                        let (session, job) = (session.clone(), job);
+                        tokio::spawn(async move { run_job(session, job).await });
+                    }
+                }
+                ServerToChild::HelloAck { .. } => {}
                 ServerToChild::Ping { seq } => {
                     let _ = session
                         .channel
@@ -250,6 +272,12 @@ pub async fn run_tool_child(options: ToolChildEntryOptions) -> Result<(), Handle
                 ServerToChild::Job { kind, .. } => {
                     if controls.value(TestSwitch::ExitMidJob).as_deref() == Some(kind.as_str()) {
                         exit_on_message(1);
+                        return;
+                    }
+                    // Only start work once the server has confirmed containment: a job started
+                    // earlier can spawn grandchildren that the Job Object never sees.
+                    if !session.contained.load(Ordering::SeqCst) {
+                        lock(&session.waiting_for_containment).push(server.clone());
                         return;
                     }
                     let (session, job) = (session.clone(), server.clone());
@@ -266,6 +294,10 @@ pub async fn run_tool_child(options: ToolChildEntryOptions) -> Result<(), Handle
                     if controls.enabled(TestSwitch::IgnoreCancel) {
                         return;
                     }
+                    // A job still waiting for the containment ack has no running task to abort; it must be
+                    // dropped from the queue, or the cancel would be silently lost and the job would start.
+                    lock(&session.waiting_for_containment)
+                        .retain(|held| !matches!(held, ServerToChild::Job { job_id: waiting, .. } if waiting == job_id));
                     if let Some(controller) = lock(&session.running).get(job_id) {
                         controller.abort();
                     }
@@ -565,6 +597,8 @@ mod tests {
         let send = |message: ServerToChild| {
             let _ = server.send(&ToolChildMessage::Server(message));
         };
+        // Jobs wait for this ack, because until it arrives the child cannot know it is contained.
+        send(ServerToChild::HelloAck { generation: 1 });
         send(ServerToChild::Ping { seq: 7 });
         assert_eq!(
             next(&mut rx).await,
@@ -620,6 +654,45 @@ mod tests {
             .expect("entry ends in time")
             .expect("entry task");
         assert_eq!(exited.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_job_sent_before_the_containment_ack_runs_after_it() {
+        let (server, mut rx, _exited, entry, _dir) = harness().await;
+        assert!(matches!(
+            next(&mut rx).await,
+            ToolChildMessage::Child(ChildToServer::Hello { .. })
+        ));
+        let send = |message: ServerToChild| {
+            let _ = server.send(&ToolChildMessage::Server(message));
+        };
+        send(ServerToChild::Job {
+            job_id: "early".into(),
+            kind: "echo".into(),
+            parent_job_id: None,
+            args: Some(serde_json::json!({"a": 1})),
+            args_ref: None,
+        });
+        // Nothing may answer the job while containment is unconfirmed: the next frame is a ping's pong,
+        // which proves the protocol loop is still draining frames and the job itself is held.
+        send(ServerToChild::Ping { seq: 1 });
+        assert_eq!(
+            next(&mut rx).await,
+            ToolChildMessage::Child(ChildToServer::Pong { seq: 1 })
+        );
+        send(ServerToChild::HelloAck { generation: 1 });
+        assert_eq!(
+            next(&mut rx).await,
+            ToolChildMessage::Child(ChildToServer::Result {
+                job_id: "early".into(),
+                value: serde_json::json!({"a": 1})
+            })
+        );
+        send(ServerToChild::Shutdown);
+        tokio::time::timeout(BOUND, entry)
+            .await
+            .expect("entry ends in time")
+            .expect("entry task");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

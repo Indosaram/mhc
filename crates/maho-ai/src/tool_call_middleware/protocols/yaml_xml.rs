@@ -10,7 +10,13 @@ use crate::types::Tool;
 use crate::utils::validation::validate_tool_arguments;
 
 fn normalize_yaml_content(yaml_content: &str) -> String {
-    let trimmed_leading_newline = yaml_content.strip_prefix('\n').unwrap_or(yaml_content);
+    // A CRLF payload left `\r` on every line, and a trailing `\r` is not YAML line folding but
+    // part of the scalar, so values came back with a stray carriage return. Normalize first.
+    let yaml_content = yaml_content.replace("\r\n", "\n");
+    let trimmed_leading_newline = yaml_content
+        .as_str()
+        .strip_prefix('\n')
+        .unwrap_or(yaml_content.as_str());
     let lines: Vec<&str> = trimmed_leading_newline.split('\n').collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()
@@ -186,6 +192,9 @@ pub fn yaml_xml_format_tool_response(
         format!("tool_name: {tool_name}"),
         "result: |-".to_string(),
     ];
+    // Tool output is often CRLF on Windows; an unmodified `\r` would survive into the YAML block
+    // scalar and reappear in the parsed result.
+    let text_content = text_content.replace("\r\n", "\n");
     lines.extend(text_content.split('\n').map(|line| format!("  {line}")));
     lines.push("</tool_response>".to_string());
     lines.join("\n")
@@ -1354,6 +1363,8 @@ mod tests {
 
 #[cfg(test)]
 mod audit_whitespace_tests {
+    use crate::tool_call_middleware::types::ToolResultContent;
+
     #[test]
     fn closes_tags_with_js_whitespace() {
         let text = "</\u{feff}t\u{a0}>";
@@ -1369,6 +1380,29 @@ mod audit_whitespace_tests {
         assert_eq!(
             super::normalize_yaml_content("  a: 1\n\u{3000}"),
             "a: 1\n\u{3000}"
+        );
+    }
+
+    #[test]
+    fn crlf_content_keeps_no_carriage_returns_in_the_parsed_result() {
+        // Windows tool output arrives as CRLF; before normalization each value kept a trailing `\r`.
+        let normalized = super::normalize_yaml_content("a: 1\r\n  b: 2\r\n");
+        assert!(!normalized.contains('\r'), "{normalized:?}");
+        assert_eq!(normalized, "a: 1\n  b: 2\n");
+    }
+
+    #[test]
+    fn formatted_tool_response_never_embeds_carriage_returns() {
+        let content = vec![ToolResultContent::Text(crate::types::TextContent {
+            text: "line one\r\nline two\r\n".to_owned(),
+            audience: None,
+            text_signature: None,
+        })];
+        let formatted = super::yaml_xml_format_tool_response("tool", "call-1", &content);
+        assert!(!formatted.contains('\r'), "{formatted:?}");
+        assert!(
+            formatted.contains("  line one\n  line two\n"),
+            "{formatted:?}"
         );
     }
 }

@@ -283,7 +283,18 @@ fn detect_capabilities_from_environment(
     }
 
     if process_env::truthy(env, "WEZTERM_PANE") || term_program == "wezterm" {
-        return plain(Some(ImageProtocol::Kitty), true, true);
+        // Bundled ConPTY before 1.22 drops the Kitty graphics APC on Windows, so an image placement
+        // would draw a blank gap. Reporting no image support is what suppresses the placement; the
+        // update hint (`WEZTERM_WINDOWS_IMAGES_HINT`) explains the missing inline images.
+        let images = if crate::wezterm_windows_images::is_old_windows_wezterm(
+            env.get("TERM_PROGRAM_VERSION").map(String::as_str),
+            platform,
+        ) {
+            None
+        } else {
+            Some(ImageProtocol::Kitty)
+        };
+        return plain(images, true, true);
     }
 
     if term_program == "warpterminal"

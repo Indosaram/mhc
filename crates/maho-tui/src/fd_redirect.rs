@@ -1,6 +1,11 @@
 //! Port of senpi `packages/coding-agent/src/modes/interactive/stderr-fd-redirect.ts` (#2284) and
 //! `stdout-fd-redirect.ts` (#2815), pin 903b8336.
 //!
+//! Unix only, matching upstream: `loadStderrFdSyscalls` returns `undefined` on Windows and outside
+//! Bun, so senpi's own fd redirect is a no-op there and the JS-level guard stays in force. This
+//! module is therefore `#[cfg(unix)]` in [`crate::lib`]; on Windows the terminal size is read with
+//! `crossterm::terminal::size`, because stdout is never re-pointed at a log there.
+//!
 //! The process-wide writer seam in [`crate::process_stdio`] only sees writes that go through it.
 //! A child spawned with inherited stdio, or any code that writes fd 1 or fd 2 directly, draws over
 //! the terminal the TUI owns. While the TUI owns the screen, the descriptor is pointed at the debug
