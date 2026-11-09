@@ -237,6 +237,44 @@ fn is_newer_version_evaluates_correctly() {
     assert_eq!(is_newer_version("2026.10.20", "2026.10.20"), Ok(false));
 }
 
+#[test]
+fn release_versions_parse_and_local_labels_do_not() {
+    assert!(parse_version(current_version()).is_ok());
+    assert!(parse_version("2026.11.08").is_ok());
+    assert!(parse_version("dev-owner").is_err());
+}
+
+#[test]
+fn local_labels_resolve_to_the_version_directory_they_run_from() {
+    // A payload built with `MHC_BUILD_VERSION=dev-owner` and dropped into versions/<v>/
+    // reports that label; the update must compare against <v>, not die parsing the label.
+    assert_eq!(
+        resolve_installed_version("dev-owner", Some("2026.11.08")),
+        Ok("2026.11.08".to_owned())
+    );
+    assert_eq!(
+        resolve_installed_version("dev-owner", Some("v2026.11.08")),
+        Ok("v2026.11.08".to_owned())
+    );
+    assert_eq!(
+        resolve_installed_version("dev-owner", None),
+        Err("this mhc build reports version 'dev-owner', which is not a release version, so it cannot update itself; reinstall using the release installer".to_owned())
+    );
+    assert!(resolve_installed_version("dev-owner", Some("not-a-version")).is_err());
+}
+
+#[test]
+fn release_stamps_win_over_the_version_directory() {
+    assert_eq!(
+        resolve_installed_version("2026.11.08", Some("2026.11.01")),
+        Ok("2026.11.08".to_owned())
+    );
+    assert_eq!(
+        resolve_installed_version(" 2026.11.08 ", None),
+        Ok("2026.11.08".to_owned())
+    );
+}
+
 async fn start_mock_release_server(
     payload: String,
     status: &'static str,

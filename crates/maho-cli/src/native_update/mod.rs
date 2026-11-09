@@ -10,14 +10,10 @@ mod retention;
 pub mod signature;
 
 pub async fn update(allow_unsigned: bool) -> Result<(), String> {
+    let current = release::installed_version()?;
     let latest = release::latest().await?;
-    if release::compare_versions(&latest.version, release::current_version())?
-        != std::cmp::Ordering::Greater
-    {
-        maho_core::output_guard::maho_write_stdout(&format!(
-            "mhc {} is up to date.\n",
-            release::current_version()
-        ));
+    if release::compare_versions(&latest.version, &current)? != std::cmp::Ordering::Greater {
+        maho_core::output_guard::maho_write_stdout(&format!("mhc {current} is up to date.\n"));
         return Ok(());
     }
     let installed = install::install(&latest, allow_unsigned).await?;

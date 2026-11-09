@@ -19,6 +19,41 @@ pub fn current_version() -> &'static str {
     option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+/// The version this installation runs as. A build stamp that is not a release version falls back to
+/// the `versions/<v>/` directory the payload runs from, because a locally built payload dropped there
+/// is installed as `<v>`. Both missing means the build cannot update itself; that is reported here
+/// instead of surfacing as a bare parse failure.
+pub fn installed_version() -> Result<String, String> {
+    let stamp = current_version();
+    // Only a build whose stamp is not a release version needs the version directory, so a release
+    // build keeps this path free of filesystem work.
+    let layout_version = if parse_version(stamp).is_ok() {
+        None
+    } else {
+        super::layout::Layout::current()
+            .ok()
+            .map(|layout| layout.version)
+    };
+    resolve_installed_version(stamp, layout_version.as_deref())
+}
+
+pub fn resolve_installed_version(
+    stamp: &str,
+    layout_version: Option<&str>,
+) -> Result<String, String> {
+    if parse_version(stamp).is_ok() {
+        return Ok(stamp.trim().to_owned());
+    }
+    if let Some(version) = layout_version
+        && parse_version(version).is_ok()
+    {
+        return Ok(version.trim().to_owned());
+    }
+    Err(format!(
+        "this mhc build reports version '{stamp}', which is not a release version, so it cannot update itself; reinstall using the release installer"
+    ))
+}
+
 pub fn target() -> Result<&'static str, String> {
     target_from_platform()
 }
@@ -547,7 +582,8 @@ pub async fn available_cached_with(
                 if age < SUCCESS_CACHE_TTL_SECS
                     && let Some(rel) = record.release
                 {
-                    return (compare_versions(&rel.version, current_version())
+                    return (installed_version()
+                        .and_then(|current| compare_versions(&rel.version, &current))
                         == Ok(Ordering::Greater))
                     .then_some(rel);
                 }
@@ -579,7 +615,9 @@ pub async fn available_cached_with(
                 failure_reason: None,
             };
             let _ = write_cache_atomic(cache_path, &record);
-            if compare_versions(&rel.version, current_version()) == Ok(Ordering::Greater) {
+            if installed_version().and_then(|current| compare_versions(&rel.version, &current))
+                == Ok(Ordering::Greater)
+            {
                 Some(rel)
             } else {
                 None
