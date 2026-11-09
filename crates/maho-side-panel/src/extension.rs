@@ -201,17 +201,25 @@ fn session_facts(ctx: &ExtensionContext) -> SessionFacts {
             continue;
         }
         let usage = &message["usage"];
-        let input = usage["input"].as_u64().unwrap_or(0);
-        let output = usage["output"].as_u64().unwrap_or(0);
-        let cache_read = usage["cacheRead"].as_u64().unwrap_or(0);
-        facts.input_tokens += input + cache_read;
-        facts.output_tokens += output;
-        facts.session_cost += usage["cost"]["total"].as_f64().unwrap_or(0.0);
-        if input + cache_read > 0 {
-            facts.cache_hit_rate = Some(cache_read as f64 / (input + cache_read) as f64);
-        }
+        fold_session_usage(&mut facts, usage);
     }
     facts
+}
+
+/// Fold one assistant message's usage into the session facts. The prompt is the whole request, so
+/// the cache-hit rate divides the read tokens by input + cache read + cache write.
+fn fold_session_usage(facts: &mut SessionFacts, usage: &Value) {
+    let input = usage["input"].as_u64().unwrap_or(0);
+    let output = usage["output"].as_u64().unwrap_or(0);
+    let cache_read = usage["cacheRead"].as_u64().unwrap_or(0);
+    let cache_write = usage["cacheWrite"].as_u64().unwrap_or(0);
+    let prompt = input + cache_read + cache_write;
+    facts.input_tokens += prompt;
+    facts.output_tokens += output;
+    facts.session_cost += usage["cost"]["total"].as_f64().unwrap_or(0.0);
+    if prompt > 0 {
+        facts.cache_hit_rate = Some(cache_read as f64 / prompt as f64);
+    }
 }
 
 /// The live session behind the panel.
@@ -666,4 +674,34 @@ impl Extension for SidePanelExtension {
 /// Parses a link URL the panel would claim (re-exported for hosts with a link handler).
 pub fn claim(url: &str) -> Option<Link> {
     Link::parse(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cache_hit_rate_divides_the_read_tokens_by_the_whole_prompt() {
+        let mut facts = SessionFacts::default();
+        fold_session_usage(
+            &mut facts,
+            &json!({ "input": 1000, "output": 10, "cacheRead": 8000, "cacheWrite": 5000,
+                     "cost": { "total": 0.5 } }),
+        );
+        assert_eq!(facts.input_tokens, 14000);
+        assert_eq!(facts.output_tokens, 10);
+        assert_eq!(facts.session_cost, 0.5);
+        assert_eq!(facts.cache_hit_rate, Some(8000.0 / 14000.0));
+    }
+
+    #[test]
+    fn zero_prompt_tokens_leave_the_cache_hit_rate_unset() {
+        let mut facts = SessionFacts::default();
+        fold_session_usage(
+            &mut facts,
+            &json!({ "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }),
+        );
+        assert_eq!(facts.cache_hit_rate, None);
+    }
 }
