@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod facts_queue;
+pub mod description_preflight;
 pub mod failure_backoff;
 pub mod failure_selection;
 pub mod frontmatter;
@@ -88,6 +89,10 @@ pub use frontmatter::{
     describe_frontmatter_violation, describe_header_grammar_violation, describe_header_violation,
     find_tool_call_scaffolding, is_canonical_scalar_source, is_plain_safe_scalar,
     parse_header_line, render_document, render_raw_scalar, render_string_scalar, split_frontmatter,
+};
+pub use description_preflight::{
+    TrimmedDescription, description_length, description_spacing_end, is_oversized,
+    replace_description_line, trim_description,
 };
 pub use git_log::{Commit, LOG_FORMAT, parse_log, parse_log_with_paths, parse_trailers};
 pub use git_status::{Change, StatusEntry, StatusError, changed_paths, parse as parse_status};
