@@ -21,6 +21,7 @@ pub mod legacy;
 pub mod mcp;
 pub mod recall;
 pub mod records;
+pub mod reflection;
 mod schema;
 pub mod store;
 pub mod text;
@@ -32,4 +33,8 @@ pub use legacy::{ImportOptions, ImportReport};
 pub use mcp::ServerConfig;
 pub use recall::{RecallOptions, RecallResult};
 pub use records::{Fact, FactFile, Observation, Observations, Person, PersonCard};
+pub use reflection::{
+    DreamOrigin, DreamPolicy, DreamState, ReflectionEvent, ReflectionOutcome, ReflectionTrigger,
+    RunRecord,
+};
 pub use store::{RememberOptions, Store};
