@@ -28,6 +28,7 @@ pub mod git_tree;
 pub mod journal;
 pub mod paths;
 pub mod normalize;
+pub mod secret_scan_records;
 pub mod payload_cap;
 pub mod kibitzer;
 pub mod ledger;
@@ -62,6 +63,10 @@ pub use failure_backoff::{
     ApplyFailureInput, BACKOFF_MS, DETAIL_MAX_BYTES, FailureFilter, FailureReason, FailureRecord,
     FailureState, FailureTarget, PARK_AT_STREAK, apply_failure, clear_for_retry, clear_on_success,
     delay_for, sanitize_detail, sort_records,
+};
+pub use secret_scan_records::{
+    BlobRecord, FileVersion, SCANNED_BLOB_MODES, SUBMODULE_MODE, index_blobs, introduced_versions,
+    is_scanned_blob, is_submodule, is_zero_sha, parse_blob_records, parse_raw_diff, short_sha,
 };
 pub use normalize::{
     FRONTMATTER_NORMALIZATION_MARKER, FRONTMATTER_NORMALIZATION_SUBJECT, FrontmatterError,
