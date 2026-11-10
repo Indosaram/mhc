@@ -21,6 +21,7 @@ pub mod facts_queue;
 pub mod kibitzer;
 pub mod legacy;
 pub mod mcp;
+pub mod prompt;
 pub mod recall;
 pub mod records;
 pub mod reflection;
@@ -35,6 +36,7 @@ pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
 pub use kibitzer::{DeliveryVia, Kibitzer, Nudge, ToolResultGate};
 pub use legacy::{ImportOptions, ImportReport};
 pub use mcp::ServerConfig;
+pub use prompt::{PromptBudget, SLOT_ORDER, assemble};
 pub use recall::{RecallOptions, RecallResult};
 pub use records::{Fact, FactFile, Observation, Observations, Person, PersonCard};
 pub use reflection::{
