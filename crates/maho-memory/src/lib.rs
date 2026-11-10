@@ -29,6 +29,7 @@ pub mod records;
 pub mod redact;
 pub mod reflection;
 mod schema;
+pub mod select;
 pub mod store;
 pub mod text;
 
@@ -54,5 +55,8 @@ pub use redact::{
 pub use reflection::{
     DreamOrigin, DreamPolicy, DreamState, ReflectionEvent, ReflectionOutcome, ReflectionTrigger,
     RunRecord,
+};
+pub use select::{
+    EXCERPT_CHARS, RRF_K, RecallCandidate, SelectOptions, build_excerpt, select_candidates,
 };
 pub use store::{RememberOptions, Store};
