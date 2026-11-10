@@ -1,5 +1,6 @@
 use crate::commands::{
     doctor::handle_doctor,
+    doctor_checks::{CheckLevel, check_disk_with_limits},
     test_support::{
         FakeContextOptions, FakeDepsOverrides, fake_command_context, fake_deps, temp_identity,
     },
@@ -8,6 +9,60 @@ use std::path::Path;
 
 const NOW_MS: i64 = 1791288000000; // 2026-10-06T12:00:00.000Z
 const HOUR_MS: i64 = 3_600_000;
+
+#[test]
+fn disk_check_reports_the_identity_tree_size_and_file_count() {
+    let (_root, identity) = temp_identity();
+    std::fs::create_dir_all(identity.identity_paths.runtime.join("transcripts")).unwrap();
+    std::fs::write(
+        identity
+            .identity_paths
+            .runtime
+            .join("transcripts/journal.jsonl"),
+        b"0123456789",
+    )
+    .unwrap();
+
+    let check = check_disk_with_limits(&identity, 1024, 4096);
+
+    assert_eq!(check.name, "disk");
+    assert_eq!(check.level, CheckLevel::Ok);
+    assert!(check.detail.contains("1 files"), "{}", check.detail);
+}
+
+#[test]
+fn disk_check_warns_and_names_the_retention_horizons_once_the_tree_crosses_the_warn_limit() {
+    let (_root, identity) = temp_identity();
+    std::fs::create_dir_all(&identity.identity_paths.runtime).unwrap();
+    std::fs::write(
+        identity.identity_paths.runtime.join("bulk.bin"),
+        vec![0u8; 64],
+    )
+    .unwrap();
+
+    let check = check_disk_with_limits(&identity, 16, 4096);
+
+    assert_eq!(check.level, CheckLevel::Warn);
+    assert!(check.detail.contains("transcripts expire after 30d"));
+    assert!(check.detail.contains("parked facts after 14d"));
+    assert!(check.detail.contains("reflection runs after 7d"));
+}
+
+#[test]
+fn disk_check_fails_past_the_fail_limit() {
+    let (_root, identity) = temp_identity();
+    std::fs::create_dir_all(&identity.identity_paths.runtime).unwrap();
+    std::fs::write(
+        identity.identity_paths.runtime.join("bulk.bin"),
+        vec![0u8; 64],
+    )
+    .unwrap();
+
+    assert_eq!(
+        check_disk_with_limits(&identity, 16, 32).level,
+        CheckLevel::Fail
+    );
+}
 
 #[test]
 fn receipt_read_failure_is_not_a_successful_never_summary() {

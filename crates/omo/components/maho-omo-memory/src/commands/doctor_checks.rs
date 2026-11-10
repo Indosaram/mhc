@@ -437,3 +437,66 @@ pub fn check_tokens(repo_dir: &Path, warn_tokens: usize) -> DoctorCheck {
 pub fn repo_dir_of(identity: &MemoryCommandIdentity) -> PathBuf {
     identity.identity_paths.repo.clone()
 }
+
+const DISK_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const DISK_FAIL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+pub fn check_disk(identity: &MemoryCommandIdentity) -> DoctorCheck {
+    check_disk_with_limits(identity, DISK_WARN_BYTES, DISK_FAIL_BYTES)
+}
+
+pub fn check_disk_with_limits(
+    identity: &MemoryCommandIdentity,
+    warn_bytes: u64,
+    fail_bytes: u64,
+) -> DoctorCheck {
+    let root = &identity.identity_paths.root;
+    let (bytes, files) = tree_usage(root);
+    let label = format!(
+        "{} MB across {} files in {}",
+        bytes / (1024 * 1024),
+        files,
+        root.display()
+    );
+    let level = if bytes >= fail_bytes {
+        CheckLevel::Fail
+    } else if bytes >= warn_bytes {
+        CheckLevel::Warn
+    } else {
+        CheckLevel::Ok
+    };
+    DoctorCheck {
+        name: "disk".to_owned(),
+        level,
+        detail: if level == CheckLevel::Ok {
+            label
+        } else {
+            format!(
+                "{label}; transcripts expire after {}d, parked facts after {}d, reflection runs after {}d",
+                crate::memory_retention::TRANSCRIPT_RETENTION_DAYS,
+                crate::memory_retention::FACTS_PARKED_RETENTION_DAYS,
+                crate::memory_retention::REFLECTION_RUN_RETENTION_DAYS
+            )
+        },
+    }
+}
+
+fn tree_usage(root: &Path) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (0, 0);
+    };
+    let mut bytes = 0;
+    let mut files = 0;
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            let (child_bytes, child_files) = tree_usage(&entry.path());
+            bytes += child_bytes;
+            files += child_files;
+        } else {
+            bytes += meta.len();
+            files += 1;
+        }
+    }
+    (bytes, files)
+}

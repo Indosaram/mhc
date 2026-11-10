@@ -264,6 +264,32 @@ fn sweep_journals(context: &MemoryIdentityContext, options: &MemoryMaintenanceOp
             }
         }
     }
+    sweep_expired_runtime(context, options);
+}
+
+fn sweep_expired_runtime(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions) {
+    let retention = crate::memory_retention::RetentionOptions {
+        now_ms: (options.now)(),
+        is_live_session: options.is_live_session.clone(),
+        ..Default::default()
+    };
+    let paths = crate::memory_retention::RetentionPaths {
+        facts_queue: context.identity_paths.facts_queue.clone(),
+        locks: context.identity_paths.locks.clone(),
+        reflection: context.identity_paths.reflection.clone(),
+        transcripts: context.identity_paths.transcripts.clone(),
+    };
+    let report = crate::memory_retention::prune_runtime(&paths, &retention);
+    let Some(logger) = &options.logger else {
+        return;
+    };
+    for error in &report.errors {
+        logger.warn(&format!("omo-senpi memory retention failed: {error}"));
+    }
+    if report.is_empty() {
+        return;
+    }
+    logger.info(&crate::memory_retention::describe(&report, &retention));
 }
 
 fn maintain_locked(

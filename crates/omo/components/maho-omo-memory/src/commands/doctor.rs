@@ -6,7 +6,7 @@ use std::sync::Arc;
 use maho_ext_api::ExtensionApi;
 
 use super::doctor_checks::{
-    CheckLevel, DoctorCheck, check_abandoned_runs, check_frontmatter, check_locks,
+    CheckLevel, DoctorCheck, check_abandoned_runs, check_disk, check_frontmatter, check_locks,
     check_reflection_health, check_repository, check_soul_seed, check_tokens, check_worktrees,
 };
 use super::facts_status::{
@@ -107,6 +107,7 @@ pub async fn handle_doctor(
             deps.now_ms(),
         ));
         checks.push(check_tokens(&identity.identity_paths.repo, warn_tokens));
+        checks.push(check_disk(&identity));
 
         if let Some(facts) = check_facts(deps, &identity) {
             checks.push(facts);

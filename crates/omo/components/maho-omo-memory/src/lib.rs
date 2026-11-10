@@ -93,6 +93,9 @@ pub mod memory_child_model_chain;
 pub mod memory_maintenance;
 pub mod memory_notice_spec;
 pub mod memory_reporter;
+pub mod memory_retention;
+#[cfg(test)]
+mod memory_retention_tests;
 pub mod memory_rpc_bridge;
 pub mod memory_rpc_snapshot_state;
 pub mod memory_rpc_sync;
