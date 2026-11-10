@@ -20,6 +20,7 @@ regex.workspace = true
 aws-lc-rs = "=1.18.1"
 base64.workspace = true
 flate2.workspace = true
+gethostname.workspace = true
 pkcs8 = "=0.10.2"
 ryu-js = "=1.0.3"
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
