@@ -25,6 +25,7 @@ pub mod git_status;
 pub mod git_tree;
 pub mod journal;
 pub mod paths;
+pub mod payload_cap;
 pub mod kibitzer;
 pub mod ledger;
 pub mod legacy;
@@ -53,6 +54,11 @@ pub use bm25::{
 };
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
+pub use payload_cap::{
+    CappedBatch, CappedBatchInput, MAX_FACTS_PAYLOAD_BYTES, OversizedEntry, Payload,
+    PayloadEnvelope, PrimaryHuman, measure_payload_bytes, select_capped_batch,
+    select_capped_batch_with, serialize_payload,
+};
 pub use paths::{
     MemoryPathError, ValidateMemoryPathOptions, is_memory_content_path, validate_memory_path,
     validate_repository_path, validate_repository_path_with_field,
