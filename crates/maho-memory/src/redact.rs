@@ -121,6 +121,10 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+fn is_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 fn eq_ignore_ascii(value: &str, expected: &str) -> bool {
     value.len() == expected.len() && value.eq_ignore_ascii_case(expected)
 }
@@ -177,9 +181,11 @@ fn collect_pem_blocks(value: &str, found: &mut Vec<SecretMatch>) {
 }
 
 fn collect_token_prefixes(value: &str, found: &mut Vec<SecretMatch>) {
-    let bytes = value.as_bytes();
-    for start in 0..bytes.len() {
-        if is_word_byte(bytes[start]) && start > 0 && is_word_byte(bytes[start - 1]) {
+    let mut previous: Option<char> = None;
+    for (start, ch) in value.char_indices() {
+        let previous_is_word = previous.is_some_and(is_word_char);
+        previous = Some(ch);
+        if previous_is_word {
             continue;
         }
         let rest = &value[start..];
@@ -242,37 +248,44 @@ fn token_run(value: &str) -> Option<usize> {
 }
 
 fn collect_authorization_headers(value: &str, found: &mut Vec<SecretMatch>) {
-    let bytes = value.as_bytes();
     let needle = "authorization";
-    for start in 0..bytes.len() {
-        if start > 0 && is_word_byte(bytes[start - 1]) {
-            continue;
-        }
-        let Some(head) = value.get(start..start + needle.len()) else {
+    for (start, _) in value.char_indices() {
+        let Some(head) = value.get(start..).and_then(|rest| rest.get(..needle.len())) else {
             continue;
         };
         if !eq_ignore_ascii(head, needle) {
             continue;
         }
-        let after = start + needle.len();
-        let Some(colon) = value[after..].find(':') else {
+        let Some(after) = start.checked_add(needle.len()) else {
+            continue;
+        };
+        let Some(tail) = value.get(after..) else {
+            continue;
+        };
+        let Some(colon) = tail.find(':') else {
             continue;
         };
         let mut cursor = after + colon + 1;
-        while value[cursor..].starts_with(' ') {
+        while value
+            .get(cursor..)
+            .is_some_and(|rest| rest.starts_with(' '))
+        {
             cursor += 1;
         }
-        let Some(bearer) = value.get(cursor..cursor + 6) else {
+        let Some(bearer) = value.get(cursor..).and_then(|rest| rest.get(..6)) else {
             continue;
         };
         if !eq_ignore_ascii(bearer, "bearer") {
             continue;
         }
         cursor += 6;
-        while value[cursor..].starts_with(' ') {
+        while value
+            .get(cursor..)
+            .is_some_and(|rest| rest.starts_with(' '))
+        {
             cursor += 1;
         }
-        let Some(len) = token_run(&value[cursor..]) else {
+        let Some(len) = value.get(cursor..).and_then(token_run) else {
             continue;
         };
         let candidate = &value[cursor..cursor + len];
@@ -327,8 +340,9 @@ fn solid_credential_name_at(value: &str, start: usize) -> Option<usize> {
 
 fn collect_split_credential_assignments(bytes: &[u8], found: &mut Vec<SecretMatch>) {
     let value = std::str::from_utf8(bytes).unwrap_or_default();
-    for start in 0..bytes.len() {
-        if start > 0 && is_word_byte(bytes[start - 1]) {
+    for (start, _) in value.char_indices() {
+        let previous_is_word = value[..start].chars().next_back().is_some_and(is_word_char);
+        if previous_is_word {
             continue;
         }
         let Some(end) = split_credential_name_end(value, start) else {
@@ -573,6 +587,28 @@ mod tests {
         let text = "token: abc123 and ghp_abcdefghijklmnop";
         let once = redacted(text);
         assert_eq!(redacted(&once), once);
+    }
+
+    #[test]
+    fn scanning_a_non_ascii_value_does_not_panic() {
+        for text in [
+            "한국어 메모리에 저장된 내용",
+            "🚀🚀🚀",
+            "한국어 ghp_abcdefghijklmnop 뒤",
+            "앞 AKIAIOSFODNN7EXAMPLE 뒤",
+            "authorization: bearer 한국어토큰",
+        ] {
+            let _ = scan_secret_like_material(text);
+            let _ = redacted(text);
+            let _ = secret_classes(text);
+        }
+    }
+
+    #[test]
+    fn a_secret_after_non_ascii_text_is_still_masked() {
+        let out = redacted("한국어 ghp_abcdefghijklmnop");
+        assert!(!out.contains("ghp_"));
+        assert!(out.contains(MASK));
     }
 
     #[test]
