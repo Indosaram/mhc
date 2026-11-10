@@ -28,6 +28,7 @@ pub mod git_log;
 pub mod git_status;
 pub mod git_tree;
 pub mod journal;
+pub mod orphan_sweep;
 pub mod paths;
 pub mod normalize;
 pub mod secret_scan_records;
@@ -80,6 +81,13 @@ pub use payload_cap::{
     CappedBatch, CappedBatchInput, MAX_FACTS_PAYLOAD_BYTES, OversizedEntry, Payload,
     PayloadEnvelope, PrimaryHuman, measure_payload_bytes, select_capped_batch,
     select_capped_batch_with, serialize_payload,
+};
+pub use orphan_sweep::{
+    LEGACY_BRANCH_PREFIX, OrphanKind, REFLECTION_BRANCH_PREFIX, REFLECTION_ORPHAN_GRACE_MS,
+    ReflectionLeftovers, ReflectionOrphanReceipt, ReflectionOrphanSelection, ReflectionOwner,
+    RegisteredReflectionWorktree, basename, is_epoch_prefixed, is_inside, is_live,
+    is_reflection_branch, parse_reflection_owner, parse_registered_worktrees,
+    select_reflection_orphans,
 };
 pub use paths::{
     MemoryPathError, ValidateMemoryPathOptions, is_memory_content_path, validate_memory_path,
