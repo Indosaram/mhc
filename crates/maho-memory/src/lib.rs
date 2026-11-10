@@ -16,6 +16,7 @@
 //! ([`banks::Scoping`]). There are no embeddings and no LLM consolidation step in this port.
 pub mod agreements;
 pub mod banks;
+pub mod bm25;
 pub mod extension;
 pub mod facts_queue;
 pub mod kibitzer;
@@ -32,6 +33,10 @@ pub mod text;
 
 pub use agreements::{Agreement, Agreements, Block, Projection, ProjectionError};
 pub use banks::{BankScope, Banks, Scoping};
+pub use bm25::{
+    QueryExpansions, RankedDocument, RecallDocument, expansion_weights, rank_documents,
+    recall_document_terms, recall_terms, tokenize_recall_text,
+};
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
 pub use kibitzer::{DeliveryVia, Kibitzer, Nudge, ToolResultGate};
