@@ -466,15 +466,23 @@ pub fn reconcile_prelaunch_with_signal(
     }
     let within_grace = memory_core::support::time::parse_rfc3339(reserved)
         .is_some_and(|reserved| (context.now_ms)() - reserved <= 60000);
-    if within_grace || host != &recovery.hostname() {
+    // `same_machine` accepts the legacy `unknown` sentinel so reservations written by older builds
+    // (which never resolved a real host name) stay reclaimable instead of pinning the slot forever.
+    if within_grace || !memory_core::support::host::same_machine_for(host, &recovery.hostname()) {
         return Ok(None);
     }
-    let dead = super::run_liveness::is_launcher_dead_with(
-        pid,
-        active.launcher_process_start.as_deref(),
-        |pid| recovery.pid_liveness(pid),
-        |pid| recovery.process_start(pid),
-    );
+    // A reservation with no run directory never reached the supervisor, so its recorded launcher pid
+    // proves nothing: a shutdown dream reserves first and only then tries to launch, and a launcher
+    // that stays alive (or whose pid is reused) would hold the single active slot forever. Age is the
+    // only proof available here, and the grace window above already protects a launch still starting.
+    let never_launched = !dir.exists();
+    let dead = never_launched
+        || super::run_liveness::is_launcher_dead_with(
+            pid,
+            active.launcher_process_start.as_deref(),
+            |pid| recovery.pid_liveness(pid),
+            |pid| recovery.process_start(pid),
+        );
     if !dead {
         return Ok(None);
     }

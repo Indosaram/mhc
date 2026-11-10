@@ -27,6 +27,14 @@ pub trait DreamTriggerSession {
     fn try_reserve(&mut self, request: ReflectionRequest)
     -> Result<ReservationResult, Self::Error>;
     fn launch(&mut self, run: ReservedRun) -> Result<(), Self::Error>;
+    /// Releases a reservation whose launch never produced a run.
+    ///
+    /// `try_reserve` writes the active record before `launch` runs, so a failed or abandoned launch
+    /// would otherwise pin the only active slot with a live launcher pid: reconciliation cannot prove
+    /// that owner dead, and every later reflection is parked behind it forever.
+    fn release_unlaunched(&mut self, _run_id: &str) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 #[derive(Default)]
 pub struct ManualDreamRequest {
@@ -152,6 +160,13 @@ pub fn fire_dream<S: DreamTriggerSession>(
         Err(error) => return Err(error),
     };
     if stopped() {
+        // The reservation is already durable at this point, so abandoning here must release it too.
+        if result.status == "active" {
+            let run_id = result.run.run_id.clone();
+            if let Err(error) = session.release_unlaunched(&run_id) {
+                warn(&error);
+            }
+        }
         return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));
     }
     if result.status == "parked" {
@@ -162,6 +177,10 @@ pub fn fire_dream<S: DreamTriggerSession>(
         && let Err(error) = session.launch(result.run)
     {
         warn(&error);
+        // Free the slot so the failure costs one run, not every run after it.
+        if let Err(release_error) = session.release_unlaunched(&run_id) {
+            warn(&release_error);
+        }
     }
     Ok(DreamFireOutcome::Fired {
         run_id,
@@ -188,6 +207,7 @@ mod tests {
         captured: Vec<String>,
         reserved: Option<ReflectionRequest>,
         launches: usize,
+        released: Vec<String>,
         pending: bool,
         empty: bool,
         launch_fails: bool,
@@ -238,6 +258,10 @@ mod tests {
                 Ok(())
             }
         }
+        fn release_unlaunched(&mut self, run_id: &str) -> Result<(), Error> {
+            self.released.push(run_id.to_owned());
+            Ok(())
+        }
     }
     fn session(root: &std::path::Path) -> Session {
         Session {
@@ -245,6 +269,7 @@ mod tests {
             captured: vec![],
             reserved: None,
             launches: 0,
+            released: vec![],
             pending: false,
             empty: false,
             launch_fails: false,
@@ -359,6 +384,9 @@ mod tests {
         assert!(matches!(result, DreamFireOutcome::Fired { .. }));
         assert_eq!(warnings, 1);
         assert!(session.reserved.is_some());
+        // The failed launch left the run unstarted, so the reservation must not stay active: a live
+        // launcher pid makes it unreclaimable and parks every later reflection behind it.
+        assert_eq!(session.released, ["dream-1"]);
     }
     #[test]
     fn deadline_boundary_stops_before_capture() {
