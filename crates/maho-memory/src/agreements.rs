@@ -242,20 +242,20 @@ impl Block {
         let mut expires = None;
         let mut read_only = false;
         let mut body = source;
-        if let Some(rest) = source.strip_prefix("---\n") {
-            if let Some((front, after)) = rest.split_once("\n---\n") {
-                body = after;
-                for line in front.lines() {
-                    let Some((key, value)) = line.split_once(':') else {
-                        continue;
-                    };
-                    let value = value.trim().trim_matches('"').to_owned();
-                    match key.trim() {
-                        "description" => description = Some(value),
-                        "expires" => expires = Some(value),
-                        "read_only" => read_only = value.eq_ignore_ascii_case("true"),
-                        _ => {}
-                    }
+        if let Some(rest) = source.strip_prefix("---\n")
+            && let Some((front, after)) = rest.split_once("\n---\n")
+        {
+            body = after;
+            for line in front.lines() {
+                let Some((key, value)) = line.split_once(':') else {
+                    continue;
+                };
+                let value = value.trim().trim_matches('"').to_owned();
+                match key.trim() {
+                    "description" => description = Some(value),
+                    "expires" => expires = Some(value),
+                    "read_only" => read_only = value.eq_ignore_ascii_case("true"),
+                    _ => {}
                 }
             }
         }
