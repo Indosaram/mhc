@@ -28,6 +28,7 @@ pub mod mcp;
 pub mod people_store;
 pub mod prompt;
 pub mod recall;
+pub mod recall_wire;
 pub mod receipts;
 pub mod records;
 pub mod redact;
@@ -54,6 +55,7 @@ pub use mcp::ServerConfig;
 pub use people_store::{PeopleBook, WriteOutcome, WriteRefusal};
 pub use prompt::{PromptBudget, SLOT_ORDER, assemble};
 pub use recall::{RecallOptions, RecallResult};
+pub use recall_wire::{SessionRecall, SessionRecallHit, recall_for_session};
 pub use receipts::{
     DETAIL_LIMIT, Receipt, ReceiptEvent, ReceiptKind, ReceiptLog, read_journal, receipts_path,
 };
