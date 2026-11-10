@@ -17,6 +17,7 @@
 pub mod agreements;
 pub mod banks;
 pub mod extension;
+pub mod facts_queue;
 pub mod legacy;
 pub mod mcp;
 pub mod recall;
@@ -29,6 +30,7 @@ pub mod text;
 pub use agreements::{Agreement, Agreements, Block, Projection, ProjectionError};
 pub use banks::{BankScope, Banks, Scoping};
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
+pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
 pub use legacy::{ImportOptions, ImportReport};
 pub use mcp::ServerConfig;
 pub use recall::{RecallOptions, RecallResult};
