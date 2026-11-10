@@ -129,6 +129,15 @@ impl crate::dream_trigger_fire::DreamTriggerSession for RuntimeDreamSession<'_> 
     fn launch(&mut self, run: memory_core::reflection::ReservedRun) -> Result<(), Self::Error> {
         (self.launch)(run).map_err(RuntimeDreamError::Launch)
     }
+    fn release_unlaunched(&mut self, run_id: &str) -> Result<(), Self::Error> {
+        // A launch that never produced a run is a failed run: `Failed` clears the active slot without
+        // advancing the reflected cursor or recording a successful dream.
+        self.runtime
+            .store
+            .complete(run_id, memory_core::reflection::ReflectionOutcome::Failed)
+            .map(|_| ())
+            .map_err(RuntimeDreamError::Reservation)
+    }
 }
 impl MemoryRuntimeWiring {
     pub fn set_last_event_context(&mut self, context: Option<&maho_ext_api::ExtensionContext>) {
