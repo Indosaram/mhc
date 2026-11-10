@@ -26,6 +26,7 @@ pub mod journal;
 pub mod kibitzer;
 pub mod ledger;
 pub mod legacy;
+pub mod lock_record;
 pub mod locks;
 pub mod mcp;
 pub mod people_store;
@@ -59,6 +60,10 @@ pub use journal::{Entry, Event, Journal, JournalError, Replayed};
 pub use kibitzer::{DeliveryVia, Kibitzer, Nudge, ToolResultGate};
 pub use ledger::{LedgerFile, SessionLedger, Surfaced, content_hash, sanitize_session_filename};
 pub use legacy::{ImportOptions, ImportReport};
+pub use lock_record::{
+    CreateLockRecordOptions, LockHost, LockRecord, LockRecordError, create_lock_record,
+    parse_lock_record,
+};
 pub use locks::{
     LockDomain, LockDomainError, facts_queue_lock_path, facts_runs_lock_path,
     memory_writer_lock_path, notice_lock_path, receipts_lock_path, reflection_scheduler_lock_path,
