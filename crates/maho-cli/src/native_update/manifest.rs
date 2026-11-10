@@ -23,11 +23,17 @@ struct Collection {
 #[serde(rename_all = "camelCase")]
 struct Manifest {
     schema_version: u32,
+    /// Absent in the SUL payload, `"mit"` in the MIT profile package.
+    #[serde(default)]
+    profile: Option<String>,
     executables: Vec<Entry>,
     licenses: Vec<Entry>,
-    schema: Entry,
-    skills: Collection,
-    conditional_skills: Collection,
+    #[serde(default)]
+    schema: Option<Entry>,
+    #[serde(default)]
+    skills: Option<Collection>,
+    #[serde(default)]
+    conditional_skills: Option<Collection>,
 }
 
 pub fn relative_path(value: &str) -> Result<PathBuf, String> {
@@ -118,6 +124,12 @@ fn regular_files(
 }
 
 pub fn validate(root: &Path) -> Result<(), String> {
+    validate_for_profile(root, super::signature::PROFILE)
+}
+
+/// Validates a package against the profile that would install it. Split from `validate` so the MIT
+/// shape can be exercised by a default-features test binary, which is itself the SUL profile.
+pub fn validate_for_profile(root: &Path, expected_profile: &str) -> Result<(), String> {
     let manifest_path = root.join("manifest.json");
     let metadata = fs::symlink_metadata(&manifest_path).map_err(|e| format!("manifest: {e}"))?;
     if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
@@ -126,21 +138,41 @@ pub fn validate(root: &Path) -> Result<(), String> {
     let manifest: Manifest =
         serde_json::from_slice(&fs::read(&manifest_path).map_err(|e| e.to_string())?)
             .map_err(|e| format!("invalid package manifest: {e}"))?;
-    if manifest.schema_version != 1
-        || manifest.skills.files.is_empty()
-        || manifest.licenses.is_empty()
+    // A package may only be installed by a binary of the same profile: the MIT profile carries no
+    // SUL executables, so installing it over a full build (or the reverse) would leave the payload
+    // and its manifest disagreeing about which feature set is on disk.
+    let profile = manifest.profile.as_deref().unwrap_or("sul");
+    if profile != expected_profile {
+        return Err(format!(
+            "package is the {profile} profile but this mhc is the {expected_profile} profile"
+        ));
+    }
+    let mit = profile == "mit";
+    if manifest.schema_version != 1 || manifest.licenses.is_empty() {
+        return Err("unsupported or incomplete package manifest".into());
+    }
+    if !mit
+        && manifest
+            .skills
+            .as_ref()
+            .is_none_or(|skills| skills.files.is_empty())
     {
         return Err("unsupported or incomplete package manifest".into());
     }
     let suffix = std::env::consts::EXE_SUFFIX;
-    for name in [
-        "mhc",
-        "mhc-launcher",
-        "ast-grep-mcp",
-        "lsp-daemon",
-        "omo-git-bash",
-        "senpi-desktop-engine",
-    ] {
+    let required: &[&str] = if mit {
+        &["mhc", "mhc-launcher"]
+    } else {
+        &[
+            "mhc",
+            "mhc-launcher",
+            "ast-grep-mcp",
+            "lsp-daemon",
+            "omo-git-bash",
+            "senpi-desktop-engine",
+        ]
+    };
+    for name in required {
         let expected = format!("{name}{suffix}");
         if !manifest
             .executables
@@ -156,9 +188,14 @@ pub fn validate(root: &Path) -> Result<(), String> {
         .executables
         .iter()
         .chain(&manifest.licenses)
-        .chain(std::iter::once(&manifest.schema))
-        .chain(&manifest.skills.files)
-        .chain(&manifest.conditional_skills.files);
+        .chain(manifest.schema.iter())
+        .chain(manifest.skills.iter().flat_map(|skills| &skills.files))
+        .chain(
+            manifest
+                .conditional_skills
+                .iter()
+                .flat_map(|skills| &skills.files),
+        );
     for entry in entries {
         let relative = relative_path(&entry.path)?;
         if !expected.insert(relative.clone()) {
@@ -260,6 +297,53 @@ mod tests {
             fs::read(root.path().join("user-notes.txt"))?,
             b"preserve me"
         );
+        Ok(())
+    }
+
+    /// An MIT package has no skills, schema or SUL siblings, so a validator that still demands them
+    /// makes every MIT install un-updatable. It must validate on its own shape and only on its own
+    /// shape: a profile mismatch in either direction is refused before any file is touched.
+    #[test]
+    fn mit_package_validates_only_against_the_mit_profile() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let write = |name: &str| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let path = root.path().join(name);
+            fs::create_dir_all(path.parent().ok_or("missing parent")?)?;
+            fs::write(&path, b"packaged content")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
+            }
+            Ok(serde_json::json!({
+                "path": name, "sha256": sha256(&path)?, "size": 16, "mode": "644"
+            }))
+        };
+        let executables = ["mhc", "mhc-launcher"]
+            .into_iter()
+            .map(|name| write(&format!("{name}{}", std::env::consts::EXE_SUFFIX)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "profile": "mit",
+            "executables": executables,
+            "licenses": [write("licenses/LICENSE")?],
+        });
+        fs::write(
+            root.path().join("manifest.json"),
+            serde_json::to_vec(&manifest)?,
+        )?;
+        assert_eq!(validate_for_profile(root.path(), "mit"), Ok(()));
+        // The same payload must be refused when the installing binary is the full build, and the
+        // reason must name the profile mismatch rather than a missing SUL sibling.
+        let mismatch = validate_for_profile(root.path(), "sul").unwrap_err();
+        assert!(mismatch.contains("mit profile"), "{mismatch}");
+        // The reverse direction: a full package is not installable by an MIT binary.
+        let sul_root = tempfile::tempdir()?;
+        fixture(sul_root.path())?;
+        let mismatch = validate_for_profile(sul_root.path(), "mit").unwrap_err();
+        assert!(mismatch.contains("sul profile"), "{mismatch}");
         Ok(())
     }
 

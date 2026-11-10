@@ -12,6 +12,8 @@
 #
 # Environment:
 #   MHC_VERSION      release tag to install (default: latest), e.g. v2026.10.19
+#   MHC_PROFILE      payload family: `sul` (default, the full build) or `mit` (same source, built
+#                    without the crates/omo features); selects the -mit release asset
 #   MHC_INSTALL_DIR  install root (default: ~/.local/share/mhc)
 #   MHC_BIN_DIR      where the `mhc` symlink is created (default: ~/.local/bin)
 #   MHC_PACKAGE_DIR  install an already extracted release package directory instead of downloading one
@@ -39,6 +41,16 @@ case "$(uname -s)/$(uname -m)" in
   Darwin/x86_64) target="macos-x86_64" ;;
   *) die "no prebuilt mhc for $(uname -s) $(uname -m); build from source: https://github.com/$repo#build-from-source" ;;
 esac
+
+# MHC_PROFILE selects the payload family: `sul` (default, the full build) or `mit` (the same source
+# built without the crates/omo features). Both ship from the same release under different assets.
+profile="${MHC_PROFILE:-sul}"
+case "$profile" in
+  sul) suffix="" ;;
+  mit) suffix="-mit" ;;
+  *) die "unknown MHC_PROFILE '$profile' (expected sul or mit)" ;;
+esac
+pkg_name="mhc-$target$suffix"
 
 if [ -z "${MHC_PACKAGE_DIR:-}" ]; then
   command -v curl >/dev/null || die "curl is required"
@@ -127,7 +139,7 @@ verify_signature() {
   fi
 }
 
-asset="mhc-$target.tar.gz"
+asset="$pkg_name.tar.gz"
 if [ -n "${MHC_INSTALL_BASE_URL:-}" ]; then
   base="${MHC_INSTALL_BASE_URL%/}"
 elif [ "$version" = latest ]; then
@@ -149,7 +161,7 @@ if command -v flock >/dev/null; then
   flock -n 9 || die "another mhc update or install is running"
 fi
 
-pkg="$work/mhc-$target"
+pkg="$work/$pkg_name"
 if [ -n "$local_package" ]; then
   cp -R "$local_package" "$pkg"
 else
@@ -162,9 +174,12 @@ else
   verify_signature
   tar -xzf "$work/$asset" -C "$work"
 fi
-[ -x "$pkg/mhc" ] || die "archive does not contain mhc-$target/mhc"
-[ -x "$pkg/mhc-launcher" ] || die "archive does not contain mhc-$target/mhc-launcher"
-[ -f "$pkg/manifest.json" ] || die "archive does not contain mhc-$target/manifest.json"
+[ -x "$pkg/mhc" ] || die "archive does not contain $pkg_name/mhc"
+[ -x "$pkg/mhc-launcher" ] || die "archive does not contain $pkg_name/mhc-launcher"
+[ -f "$pkg/manifest.json" ] || die "archive does not contain $pkg_name/manifest.json"
+if [ "$profile" = mit ]; then
+  grep -q '"profile"[[:space:]]*:[[:space:]]*"mit"' "$pkg/manifest.json" || die "archive is not the mit profile"
+fi
 
 new=$(payload_version "$pkg/mhc")
 valid_version "$new" || die "cannot determine the packaged mhc version (got '$new')$(probe_report)"

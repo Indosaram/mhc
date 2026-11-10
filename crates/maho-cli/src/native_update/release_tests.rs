@@ -70,6 +70,26 @@ fn asset_names_map_to_expected_package_archives() {
     assert!(asset_name_for_target("freebsd-x86_64").is_err());
 }
 
+/// The MIT profile publishes under its own asset names; an update from an MIT install must resolve
+/// the MIT archive, never the default one, or the license profile would silently change on update.
+#[test]
+fn asset_names_distinguish_the_mit_profile() {
+    assert_eq!(
+        asset_name_for_target_in_profile("linux-x86_64", "mit"),
+        Ok("mhc-linux-x86_64-mit.tar.gz".to_string())
+    );
+    assert_eq!(
+        asset_name_for_target_in_profile("windows-x86_64", "mit"),
+        Ok("mhc-windows-x86_64-mit.zip".to_string())
+    );
+    assert_eq!(
+        asset_name_for_target_in_profile("macos-aarch64", "sul"),
+        Ok("mhc-macos-aarch64.tar.gz".to_string())
+    );
+    assert!(asset_name_for_target_in_profile("linux-x86_64", "enterprise").is_err());
+    assert!(asset_name_for_target_in_profile("freebsd-x86_64", "mit").is_err());
+}
+
 #[test]
 fn compare_versions_calver_3_part_and_4_part() {
     assert_eq!(

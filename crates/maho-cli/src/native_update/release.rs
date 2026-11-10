@@ -90,12 +90,26 @@ fn target_from_platform() -> Result<&'static str, String> {
 }
 
 pub fn asset_name_for_target(target: &str) -> Result<String, String> {
+    asset_name_for_target_in_profile(target, super::signature::PROFILE)
+}
+
+/// Release asset for one profile. The MIT profile is the same source built with
+/// `--no-default-features`, published beside the default payload as `mhc-<target>-mit`.
+pub fn asset_name_for_target_in_profile(target: &str, profile: &str) -> Result<String, String> {
+    let suffix = match profile {
+        "sul" => "",
+        "mit" => "-mit",
+        other => return Err(format!("unsupported profile for asset lookup: {other}")),
+    };
+    let extension = if target == "windows-x86_64" {
+        "zip"
+    } else {
+        "tar.gz"
+    };
     match target {
-        "linux-x86_64" => Ok("mhc-linux-x86_64.tar.gz".to_owned()),
-        "linux-aarch64" => Ok("mhc-linux-aarch64.tar.gz".to_owned()),
-        "macos-aarch64" => Ok("mhc-macos-aarch64.tar.gz".to_owned()),
-        "macos-x86_64" => Ok("mhc-macos-x86_64.tar.gz".to_owned()),
-        "windows-x86_64" => Ok("mhc-windows-x86_64.zip".to_owned()),
+        "linux-x86_64" | "linux-aarch64" | "macos-aarch64" | "macos-x86_64" | "windows-x86_64" => {
+            Ok(format!("mhc-{target}{suffix}.{extension}"))
+        }
         other => Err(format!("unsupported target for asset lookup: {other}")),
     }
 }

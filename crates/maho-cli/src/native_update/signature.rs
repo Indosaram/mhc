@@ -8,6 +8,10 @@ include!(concat!(env!("OUT_DIR"), "/release_pubkey.rs"));
 /// First release that ships `.minisig` files. Targets at or after it must carry a valid signature.
 pub const FIRST_SIGNED_VERSION: &str = "2026.10.24.1";
 
+/// `"sul"` (default features, every crates/omo feature linked) or `"mit"` (`--no-default-features`).
+/// The release publishes one asset per profile, and an install may only update within its own.
+pub const PROFILE: &str = RELEASE_PROFILE;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignatureError {
     /// This build embeds no public key, so it can never trust an update.
@@ -33,10 +37,10 @@ impl std::fmt::Display for SignatureError {
 
 impl std::error::Error for SignatureError {}
 
-/// The `mhc --version --verbose` identity lines: build channel and the embedded release key.
+/// The `mhc --version --verbose` identity lines: build channel, release key and license profile.
 pub fn build_info() -> String {
     format!(
-        "channel: {RELEASE_CHANNEL}\nrelease-key: {}\n",
+        "channel: {RELEASE_CHANNEL}\nrelease-key: {}\nprofile: {PROFILE}\n",
         RELEASE_PUBKEY.unwrap_or("none")
     )
 }

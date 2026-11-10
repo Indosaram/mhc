@@ -11,6 +11,8 @@
 #
 # Environment:
 #   MHC_VERSION      release tag to install (default: latest), e.g. v2026.10.19
+#   MHC_PROFILE      payload family: `sul` (default, the full build) or `mit` (same source, built
+#                    without the crates/omo features); selects the -mit release asset
 #   MHC_INSTALL_DIR  install root (default: %LOCALAPPDATA%\mhc)
 #   MHC_PACKAGE_DIR  install an already extracted release package directory instead of downloading one
 #   MHC_NO_PATH_UPDATE=1  leave the user PATH untouched
@@ -35,7 +37,16 @@ $updatePath = $env:MHC_NO_PATH_UPDATE -ne '1'
 $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 if ($arch -ne 'X64') { throw "mhc install: no prebuilt mhc for Windows $arch; build from source: https://github.com/$repo#build-from-source" }
 $target = 'windows-x86_64'
-$asset = "mhc-$target.zip"
+# MHC_PROFILE selects the payload family: `sul` (default, the full build) or `mit` (the same source
+# built without the crates/omo features). Both ship from the same release under different assets.
+$mhcProfile = if ($env:MHC_PROFILE) { $env:MHC_PROFILE } else { 'sul' }
+$suffix = switch ($mhcProfile) {
+    { $_ -eq 'sul' -or $_ -eq '' } { '' }
+    'mit' { '-mit' }
+    default { throw "mhc install: unknown MHC_PROFILE '$mhcProfile' (expected sul or mit)" }
+}
+$packageName = "mhc-$target$suffix"
+$asset = "$packageName.zip"
 $base = if ($env:MHC_INSTALL_BASE_URL) { $env:MHC_INSTALL_BASE_URL.TrimEnd('/') } elseif ($version -eq 'latest') { "https://github.com/$repo/releases/latest/download" } else { "https://github.com/$repo/releases/download/$version" }
 
 function Get-PayloadVersion([string]$exe) {
@@ -199,7 +210,7 @@ try {
         throw 'mhc install: another mhc update or install is running'
     }
 
-    $staged = Join-Path $work "mhc-$target"
+    $staged = Join-Path $work $packageName
     if ($localPackage) {
         if (-not (Test-Path -LiteralPath $localPackage -PathType Container)) { throw "mhc install: MHC_PACKAGE_DIR is not a directory: $localPackage" }
         Copy-Item -LiteralPath $localPackage -Destination $staged -Recurse
@@ -222,7 +233,11 @@ try {
         Expand-Archive -Path (Join-Path $work $asset) -DestinationPath $work -Force
     }
     foreach ($name in @('mhc.exe', 'mhc-launcher.exe', 'manifest.json')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $staged $name))) { throw "mhc install: archive does not contain mhc-$target\$name" }
+        if (-not (Test-Path -LiteralPath (Join-Path $staged $name))) { throw "mhc install: archive does not contain $packageName\$name" }
+    }
+    if ($mhcProfile -eq 'mit') {
+        $manifestProfile = (Get-Content -LiteralPath (Join-Path $staged 'manifest.json') -Raw | ConvertFrom-Json).profile
+        if ($manifestProfile -ne 'mit') { throw 'mhc install: archive is not the mit profile' }
     }
 
     $new = Get-PayloadVersion (Join-Path $staged 'mhc.exe')

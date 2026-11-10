@@ -244,6 +244,40 @@ jobs:
             fi
           fi
 
+      # The MIT profile is the same source built with --no-default-features, which unlinks every
+      # crates/omo crate. It ships beside the SUL payload as mhc-<target>-mit so the default install
+      # path is untouched; tools/package-native.mjs --mit verifies the profile before staging.
+      - name: package MIT profile
+        if: env.DO_PACKAGE == 'true' && env.CANDIDATE_PAIR != 'true' && env.CANDIDATE_VERSION == ''
+        run: |
+          mit_name="mhc-${{ matrix.target }}-mit"
+          mit_version="${TAG:+${TAG#v}}"
+          mit_version="${mit_version:-0.0.0-cache}"
+          # Same compilers and glibc floor as the SUL build above: the MIT payload must run on the
+          # same machines the default release supports.
+          if [ "${{ matrix.target }}" = linux-x86_64 ]; then
+            MHC_BUILD_VERSION="$mit_version" cargo zigbuild --release --locked --no-default-features --target x86_64-unknown-linux-gnu.2.28 -p maho-cli --bins
+            cp target/x86_64-unknown-linux-gnu/release/mhc target/x86_64-unknown-linux-gnu/release/mhc-launcher target/release/
+          elif [ "${{ matrix.target }}" = linux-aarch64 ]; then
+            MHC_BUILD_VERSION="$mit_version" cargo zigbuild --release --locked --no-default-features --target aarch64-unknown-linux-gnu.2.28 -p maho-cli --bins
+            cp target/aarch64-unknown-linux-gnu/release/mhc target/aarch64-unknown-linux-gnu/release/mhc-launcher target/release/
+          else
+            MHC_BUILD_VERSION="$mit_version" cargo build --release --locked --no-default-features -p maho-cli --bins
+          fi
+          test -x "target/release/mhc$EXE"
+          test -x "target/release/mhc-launcher$EXE"
+          test "$(target/release/mhc$EXE --version | tr -d '\r')" = "$mit_version"
+          mkdir -p "dist/$mit_name"
+          bun tools/package-native.mjs --mit --binary "target/release/mhc$EXE" --launcher-binary "target/release/mhc-launcher$EXE" \
+            --output "dist/$mit_name"
+          bun tools/package-native.mjs --verify-only "dist/$mit_name"
+          node -e 'const m=require("./dist/"+process.argv[1]+"/manifest.json");if(m.profile!=="mit")throw new Error("staged manifest is not the mit profile");' "$mit_name"
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd dist && 7z a -tzip -bso0 "$mit_name.zip" "$mit_name" && sha256sum "$mit_name.zip" > "$mit_name.zip.sha256")
+          else
+            scripts/package-archive.sh dist "$mit_name"
+          fi
+
       - name: sign candidate archives with the fixture test key
         if: env.DO_PACKAGE == 'true' && (env.CANDIDATE_PAIR == 'true' || env.CANDIDATE_VERSION != '')
         run: |

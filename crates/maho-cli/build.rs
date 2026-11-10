@@ -92,11 +92,18 @@ fn main() {
         Some(key) => format!("Some({key:?})"),
         None => "None".to_owned(),
     };
+    // The feature that links crates/omo/** also selects the release asset family: a package may only
+    // be installed by a binary of the same profile, so the payload has to know which one it is.
+    let profile = if std::env::var_os("CARGO_FEATURE_OMO").is_some() {
+        "sul"
+    } else {
+        "mit"
+    };
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(
         out_dir.join("release_pubkey.rs"),
         format!(
-            "pub const RELEASE_PUBKEY: Option<&str> = {literal};\npub const RELEASE_CHANNEL: &str = {channel:?};\n"
+            "pub const RELEASE_PUBKEY: Option<&str> = {literal};\npub const RELEASE_CHANNEL: &str = {channel:?};\npub const RELEASE_PROFILE: &str = {profile:?};\n"
         ),
     )
     .expect("write release_pubkey.rs");

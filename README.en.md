@@ -62,7 +62,7 @@ Release archives are signed with [minisign](https://jedisct1.github.io/minisign/
 curl -fsSL https://raw.githubusercontent.com/Indosaram/mhc/main/install.sh | sh
 ```
 
-Installs to `~/.local/share/mhc` with `mhc` linked into `~/.local/bin`; run the same command again to upgrade. Pin a version with `MHC_VERSION=v2026.10.19`.
+Installs to `~/.local/share/mhc` with `mhc` linked into `~/.local/bin`; run the same command again to upgrade. Pin a version with `MHC_VERSION=v2026.10.19`. Set `MHC_PROFILE=mit` to install the MIT-licensed build, which is the same source without the SUL-licensed `omo` features (see [docs/MIT-PROFILE.md](docs/MIT-PROFILE.md)).
 
 Windows x86_64 (PowerShell), installs to `%LOCALAPPDATA%\mhc` and adds it to your user PATH:
 
