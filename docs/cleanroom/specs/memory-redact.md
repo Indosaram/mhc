@@ -36,6 +36,13 @@ A value runs to the next whitespace or one of `"'<>,}])` and backtick. A quoted 
 delimiter itself is masked rather than leaked. Values longer than 256 characters are not treated as
 credentials.
 
+## Where it runs
+
+`Store::remember` redacts before anything else — before the duplicate check and before the id is
+derived. Redacting first means an identical credential written twice resolves to the same stored
+row, instead of leaving one masked copy beside one unmasked one. Every write path (the `retain`
+tool, the MCP server, the importer) goes through `remember`, so none of them can bypass the scan.
+
 ## Output
 
 `scan_secret_like_material` returns byte spans, sorted, non-overlapping, each carrying its class.

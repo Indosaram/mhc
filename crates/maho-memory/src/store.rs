@@ -4,6 +4,7 @@
 //! `updateWorking`, `forgetWorking`, `invalidate`, `getWorkingStats`, the scratchpad,
 //! `exportToDict`/`importFromDict`), `core/triples.ts` (`TripleStore.add`/`query`), `db.ts`
 //! (connection pragmas) and `util/ids.ts` (`generateId`, `stableMemoryId`).
+use crate::redact::redact_secret_like_material;
 use crate::schema;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -227,6 +228,8 @@ impl Store {
     /// Stores `content`. Identical content already stored in this session is refreshed instead
     /// (importance raised to the larger value, timestamp/source updated) and keeps its id.
     pub fn remember(&self, content: &str, options: &RememberOptions) -> Result<String> {
+        let content = redact_secret_like_material(content);
+        let content = &content;
         let timestamp = options.timestamp.clone().unwrap_or_else(now_iso);
         let veracity = clamp_veracity(&options.veracity);
         let trust_tier = options
@@ -759,6 +762,33 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory("s1").expect("store")
+    }
+
+    #[test]
+    fn a_credential_never_reaches_the_database() {
+        let store = store();
+        let id = store
+            .remember(
+                "deploy with token: ghp_abcdefghijklmnop and AKIAIOSFODNN7EXAMPLE",
+                &RememberOptions::default(),
+            )
+            .expect("remember");
+        let row = store.get(&id).expect("get").expect("row");
+        assert!(!row.content.contains("ghp_"));
+        assert!(!row.content.contains("AKIA"));
+        assert!(row.content.contains("deploy with"));
+    }
+
+    #[test]
+    fn redaction_happens_before_the_duplicate_check() {
+        let store = store();
+        let first = store
+            .remember("token: abc123def", &RememberOptions::default())
+            .expect("first");
+        let second = store
+            .remember("token: ***", &RememberOptions::default())
+            .expect("second");
+        assert_eq!(first, second);
     }
 
     #[test]
