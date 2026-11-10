@@ -21,6 +21,7 @@ pub mod extension;
 pub mod facts_queue;
 pub mod git_log;
 pub mod git_status;
+pub mod git_tree;
 pub mod journal;
 pub mod kibitzer;
 pub mod ledger;
@@ -49,6 +50,10 @@ pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
 pub use git_log::{Commit, LOG_FORMAT, parse_log, parse_log_with_paths, parse_trailers};
 pub use git_status::{Change, StatusEntry, StatusError, changed_paths, parse as parse_status};
+pub use git_tree::{
+    BlobEntry, SizedEntry, TreeError, parse_cat_file_batch, parse_ls_tree_blobs,
+    parse_ls_tree_sized,
+};
 pub use journal::{Entry, Event, Journal, JournalError, Replayed};
 pub use kibitzer::{DeliveryVia, Kibitzer, Nudge, ToolResultGate};
 pub use ledger::{LedgerFile, SessionLedger, Surfaced, content_hash, sanitize_session_filename};
