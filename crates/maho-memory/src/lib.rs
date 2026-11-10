@@ -49,6 +49,7 @@ pub mod redact;
 pub mod reflection;
 mod schema;
 pub mod select;
+pub mod stale_holder;
 pub mod store;
 pub mod text;
 
@@ -145,5 +146,9 @@ pub use reflection::{
 };
 pub use select::{
     EXCERPT_CHARS, RRF_K, RecallCandidate, SelectOptions, build_excerpt, select_candidates,
+};
+pub use stale_holder::{
+    LockReadError, ProcessLiveness, ReflectionLockProbe, ReflectionLockVerdict,
+    SystemReflectionLockProbe, classify_reflection_lock_holder,
 };
 pub use store::{RememberOptions, Store};
