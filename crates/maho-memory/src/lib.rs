@@ -26,6 +26,7 @@ pub mod people_store;
 pub mod prompt;
 pub mod recall;
 pub mod records;
+pub mod redact;
 pub mod reflection;
 mod schema;
 pub mod store;
@@ -46,6 +47,10 @@ pub use people_store::{PeopleBook, WriteOutcome, WriteRefusal};
 pub use prompt::{PromptBudget, SLOT_ORDER, assemble};
 pub use recall::{RecallOptions, RecallResult};
 pub use records::{Fact, FactFile, Observation, Observations, Person, PersonCard};
+pub use redact::{
+    MASK, SecretClass, SecretMatch, contains_secret_like_material, redact_secret_like_material,
+    scan_secret_like_material, secret_classes,
+};
 pub use reflection::{
     DreamOrigin, DreamPolicy, DreamState, ReflectionEvent, ReflectionOutcome, ReflectionTrigger,
     RunRecord,
