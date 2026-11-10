@@ -26,6 +26,7 @@ pub mod journal;
 pub mod kibitzer;
 pub mod ledger;
 pub mod legacy;
+pub mod lock_acquire;
 pub mod lock_record;
 pub mod locks;
 pub mod mcp;
@@ -60,6 +61,11 @@ pub use journal::{Entry, Event, Journal, JournalError, Replayed};
 pub use kibitzer::{DeliveryVia, Kibitzer, Nudge, ToolResultGate};
 pub use ledger::{LedgerFile, SessionLedger, Surfaced, content_hash, sanitize_session_filename};
 pub use legacy::{ImportOptions, ImportReport};
+pub use lock_acquire::{
+    AcquireError, Freshness, INCOMPLETE_LOCK_GRACE_MS, Liveness, LocalHost, LockContention,
+    WithLockError, freshness, is_held, open_lock_handle, publish, read_owner, release, try_acquire,
+    with_lock,
+};
 pub use lock_record::{
     CreateLockRecordOptions, LockHost, LockRecord, LockRecordError, create_lock_record,
     parse_lock_record,
