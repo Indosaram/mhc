@@ -27,6 +27,7 @@ pub mod git_status;
 pub mod git_tree;
 pub mod journal;
 pub mod paths;
+pub mod normalize;
 pub mod payload_cap;
 pub mod kibitzer;
 pub mod ledger;
@@ -61,6 +62,11 @@ pub use failure_backoff::{
     ApplyFailureInput, BACKOFF_MS, DETAIL_MAX_BYTES, FailureFilter, FailureReason, FailureRecord,
     FailureState, FailureTarget, PARK_AT_STREAK, apply_failure, clear_for_retry, clear_on_success,
     delay_for, sanitize_detail, sort_records,
+};
+pub use normalize::{
+    FRONTMATTER_NORMALIZATION_MARKER, FRONTMATTER_NORMALIZATION_SUBJECT, FrontmatterError,
+    MemoryFrontmatter, NormalizeOutcome, ParsedMemoryFile, normalize_contents, parse_memory_file,
+    render_memory_file, sanitize_frontmatter_value,
 };
 pub use payload_cap::{
     CappedBatch, CappedBatchInput, MAX_FACTS_PAYLOAD_BYTES, OversizedEntry, Payload,
