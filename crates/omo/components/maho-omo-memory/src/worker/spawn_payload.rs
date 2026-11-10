@@ -331,7 +331,9 @@ pub fn prepare_reflection_spawn(
         "--system-prompt".into(),
         persona.to_string_lossy().into_owned(),
         "--tools".into(),
-        "bash,edit".into(),
+        // `read` is part of the reflection contract: the persona tells the child to inspect memory files
+        // and the transcript payload, and `bash` alone would burn the run budget on shell one-liners.
+        "bash,edit,read".into(),
         "--no-extensions".into(),
         "--no-skills".into(),
         "--no-prompt-templates".into(),
@@ -717,6 +719,14 @@ mod tests {
         assert_eq!(first.args[0], "prefix");
         assert_eq!(first.cwd, worktree.dir);
         assert_eq!(first.hard_deadline_at, 900042.0);
+        assert!(
+            first
+                .args
+                .windows(2)
+                .any(|a| a == ["--tools", "bash,edit,read"]),
+            "reflection child must be allowed the read tool its persona instructs it to use: {:?}",
+            first.args
+        );
         assert_eq!(first.env["MEMORY_DIR"], worktree.dir.to_string_lossy());
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&first.paths.transcript).unwrap()).unwrap();
