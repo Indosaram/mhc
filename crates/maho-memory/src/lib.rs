@@ -14,6 +14,7 @@
 //! Banks: the global bank is `<data>/mnemopi.db`, other banks `<data>/banks/<name>/mnemopi.db`;
 //! sessions write to a per-project bank and also recall the global bank by default
 //! ([`banks::Scoping`]). There are no embeddings and no LLM consolidation step in this port.
+pub mod agreements;
 pub mod banks;
 pub mod extension;
 pub mod legacy;
@@ -23,6 +24,7 @@ mod schema;
 pub mod store;
 pub mod text;
 
+pub use agreements::{Agreement, Agreements, Block, Projection, ProjectionError};
 pub use banks::{BankScope, Banks, Scoping};
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use legacy::{ImportOptions, ImportReport};
