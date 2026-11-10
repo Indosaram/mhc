@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod facts_queue;
+pub mod cursor;
 pub mod description_preflight;
 pub mod failure_backoff;
 pub mod failure_selection;
@@ -89,6 +90,13 @@ pub use frontmatter::{
     describe_frontmatter_violation, describe_header_grammar_violation, describe_header_violation,
     find_tool_call_scaffolding, is_canonical_scalar_source, is_plain_safe_scalar,
     parse_header_line, render_document, render_raw_scalar, render_string_scalar, split_frontmatter,
+};
+pub use cursor::{
+    CursorError, REFLECTION_SNAPSHOT_MAX_BYTES, REFLECTION_STATE_SCHEMA_VERSION, ReflectionSnapshot,
+    ReflectionTranscriptState, TranscriptEntry, capture_cursor_snapshot,
+    capture_cursor_snapshot_with_max_bytes, count_completed_steps, derive_state,
+    derive_state_with_total, finalize_cursor, initial_reflection_state, journal_byte_offset,
+    parse_state, reflected_through_byte_offset,
 };
 pub use description_preflight::{
     TrimmedDescription, description_length, description_spacing_end, is_oversized,
