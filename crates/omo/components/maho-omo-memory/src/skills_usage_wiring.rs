@@ -140,6 +140,7 @@ mod tests {
             tool_call_id: "call".into(),
             tool_name: tool.into(),
             input: serde_json::json!({"path":path}),
+            parent_tool_call_id: None,
         }
     }
     #[test]

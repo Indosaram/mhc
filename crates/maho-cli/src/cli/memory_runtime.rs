@@ -2289,6 +2289,7 @@ mod tests {
                         tool_call_id: "call".into(),
                         tool_name: tool.into(),
                         input: input.clone(),
+                        parent_tool_call_id: None,
                     });
                 if let Ok(maho_ext_api::EventResult::ToolCall(result)) =
                     (handler)(&mut event, &self.context).await
@@ -2405,7 +2406,8 @@ mod tests {
             (denied.static_options.skills_usage.resolve_context)(&maho_ext_api::ToolCallEvent {
                 tool_call_id: "s".into(),
                 tool_name: "read".into(),
-                input: Value::Null
+                input: Value::Null,
+                parent_tool_call_id: None,
             })
             .is_none()
         );

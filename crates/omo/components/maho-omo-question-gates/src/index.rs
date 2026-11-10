@@ -91,6 +91,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             tool_name: tool.into(),
             input,
+            parent_tool_call_id: None,
         });
         force_required(&mut payload, &mut |message, details| {
             log.record(message, details)

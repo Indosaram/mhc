@@ -238,8 +238,9 @@ fn event_payloads_have_the_wire_shape_and_reach_every_handler() {
         &["git commit", "git push"],
     );
     full.tool = Some(RequestTool {
-        message_id: "msg-1".into(),
+        message_id: Some("msg-1".into()),
         call_id: "call-1".into(),
+        parent_call_id: None,
     });
     emitter.emit_asked(&full).expect("emit");
     let expected = json!({"id":"test-req-1","sessionID":"test-sess-1","permission":"bash","patterns":["git commit","git push"],"always":["git *"],"metadata":{"command":"git commit -m test"},"tool":{"messageID":"msg-1","callID":"call-1"}});

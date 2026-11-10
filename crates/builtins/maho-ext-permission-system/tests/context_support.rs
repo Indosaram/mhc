@@ -109,10 +109,29 @@ impl ExtensionUi for TestUi {
 
 /// A print-mode context over `session` in `cwd`.
 pub(crate) fn context(session: Arc<dyn SessionManager>, cwd: &Path) -> ExtensionContext {
+    build(Arc::new(TestUi), session, cwd, ExtensionMode::Print, false)
+}
+
+/// A TUI-mode context over `session` in `cwd`, driving `ui`.
+pub(crate) fn context_with_ui(
+    ui: Arc<dyn ExtensionUi>,
+    session: Arc<dyn SessionManager>,
+    cwd: &Path,
+) -> ExtensionContext {
+    build(ui, session, cwd, ExtensionMode::Tui, true)
+}
+
+fn build(
+    ui: Arc<dyn ExtensionUi>,
+    session: Arc<dyn SessionManager>,
+    cwd: &Path,
+    mode: ExtensionMode,
+    has_ui: bool,
+) -> ExtensionContext {
     ExtensionContext {
-        ui: Arc::new(TestUi),
-        mode: ExtensionMode::Print,
-        has_ui: false,
+        ui,
+        mode,
+        has_ui,
         cwd: cwd.to_path_buf(),
         agent_dir: cwd.join(".omo"),
         session_manager: session,

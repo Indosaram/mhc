@@ -64,6 +64,7 @@ fn event(name: &str) -> ToolCallEvent {
         tool_call_id: "call".into(),
         tool_name: name.into(),
         input: json!({"value":"payload"}),
+        parent_tool_call_id: None,
     }
 }
 

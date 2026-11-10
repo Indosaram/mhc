@@ -157,6 +157,7 @@ mod tests {
             tool_call_id: "c1".to_owned(),
             tool_name: "bash".to_owned(),
             input: json!({"command":"pwd"}),
+            parent_tool_call_id: None,
         };
         let input = build_pre_tool_use_hook_input(&event, "/repo", "s1");
         assert_eq!(input["toolInput"], input["tool_input"]);

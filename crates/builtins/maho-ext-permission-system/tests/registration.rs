@@ -317,6 +317,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
         tool_name: "omo_browser_bridge".into(),
         tool_call_id: "c1".into(),
         input: json!({"op": "state"}),
+        parent_tool_call_id: None,
     });
     let bb_res = tool_call_handlers[0](&mut bb_call, &ctx)
         .await
@@ -327,6 +328,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
         tool_name: "dynamic_tool".into(),
         tool_call_id: "c2".into(),
         input: json!({"allow": false}),
+        parent_tool_call_id: None,
     });
     let deny_res = tool_call_handlers[0](&mut dynamic_deny, &ctx)
         .await
@@ -343,6 +345,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
         tool_name: "dynamic_tool".into(),
         tool_call_id: "c3".into(),
         input: json!({"allow": true}),
+        parent_tool_call_id: None,
     });
     let allow_res = tool_call_handlers[0](&mut dynamic_allow, &ctx)
         .await
@@ -353,6 +356,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
         tool_name: "unknown_tool".into(),
         tool_call_id: "c4".into(),
         input: json!({}),
+        parent_tool_call_id: None,
     });
     let unknown_res = tool_call_handlers[0](&mut unknown_call, &ctx)
         .await
@@ -380,6 +384,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
         tool_name: "dynamic_tool".into(),
         tool_call_id: "c5".into(),
         input: json!({"allow": false}),
+        parent_tool_call_id: None,
     });
     let reloaded_res = tool_call_handlers[0](&mut reloaded_call, &ctx)
         .await

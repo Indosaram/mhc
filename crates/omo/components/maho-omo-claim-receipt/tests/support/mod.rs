@@ -570,6 +570,7 @@ impl Harness {
             tool_call_id: "call".to_owned(),
             tool_name: "task".to_owned(),
             input,
+            parent_tool_call_id: None,
         });
         dispatch(&self.api, EventKind::ToolCall, &mut event, &self.ctx).await;
         match event {

@@ -95,6 +95,7 @@ pub fn parse_read_permission(
             rule_aliases: (read_path != external).then(|| vec![read_path.clone()]),
             original_paths: (file_path != external).then(|| vec![file_path.to_owned()]),
             auto_approve_ask: false,
+            wider_always: None,
         },
     ]
 }

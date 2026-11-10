@@ -35,6 +35,7 @@ async fn parsed_tools_persist_always_approval_across_service_reconstruction()
                 always: parsed[0].always.clone(),
                 original_paths: None,
                 metadata: Default::default(),
+                wider_always: None,
                 tool: None,
             };
             let mut service =

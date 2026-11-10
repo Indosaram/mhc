@@ -81,6 +81,7 @@ fn no_ui_requests_are_rejected_when_a_preset_still_requires_confirmation() {
         always: vec!["*".into()],
         original_paths: None,
         metadata: Default::default(),
+        wider_always: None,
         tool: None,
     };
     let reply = handle_no_ui(&request, false, &emitter).expect("admission");

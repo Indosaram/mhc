@@ -126,6 +126,7 @@ impl DispatchAuthorizer for PermissionDispatchAuthorizer {
             tool_call_id: request.tool_call_id.clone(),
             tool_name: request.tool_name.clone(),
             input: request.input.clone(),
+            parent_tool_call_id: None,
         };
         Box::pin(async move {
             if signal.is_aborted() {

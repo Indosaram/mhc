@@ -28,6 +28,8 @@ pub struct PermissionRequest {
     pub rule_aliases: Option<Vec<String>>,
     /// Only a deny decides this request; an ask is approved without prompting.
     pub auto_approve_ask: bool,
+    /// A wider "Allow always" the prompt may offer (senpi#3403, `always-scope.ts`).
+    pub wider_always: Option<crate::always_scope::WiderAlwaysScope>,
 }
 impl From<maho_ext_api::ToolPermissionRequest> for PermissionRequest {
     fn from(request: maho_ext_api::ToolPermissionRequest) -> Self {
@@ -219,6 +221,7 @@ fn external_directory_requests(
             original_paths: original,
             rule_aliases: (!aliases.is_empty()).then_some(aliases),
             auto_approve_ask: false,
+            wider_always: None,
         });
     }
     requests
@@ -241,7 +244,7 @@ fn credential(
     requests
 }
 fn fallback_for_tool(name: &str, input: &Value) -> Vec<PermissionRequest> {
-    let Some((_key, arg)) = [
+    let Some((key, arg)) = [
         "path",
         "file_path",
         "command",
@@ -259,7 +262,10 @@ fn fallback_for_tool(name: &str, input: &Value) -> Vec<PermissionRequest> {
     }) else {
         return fallback(name);
     };
-    vec![request(name, vec![arg.into()], vec![arg.into()])]
+    // "Allow always" keeps the exact arg; a wider scope is a separate, labelled choice (senpi#3403).
+    let mut request = request(name, vec![arg.into()], vec![arg.into()]);
+    request.wider_always = crate::always_scope::wider_always_scope(name, key, arg);
+    vec![request]
 }
 
 /// The targets an "Allow always" answer may store. Stored rules are matched as globs, so a target

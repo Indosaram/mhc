@@ -651,6 +651,7 @@ mod end_to_end {
             tool_call_id: "call-1".to_owned(),
             tool_name: tool.to_owned(),
             input: json!({"command": "ls"}),
+            parent_tool_call_id: None,
         };
         let input = build_pre_tool_use_hook_input(&event, &text(cwd), "session-1");
         let cwd = cwd.to_owned();
