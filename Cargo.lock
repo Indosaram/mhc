@@ -3609,6 +3609,7 @@ dependencies = [
  "maho-ext-btw",
  "maho-ext-builtin-loose",
  "maho-ext-cache-keepalive",
+ "maho-ext-commandcode-provider",
  "maho-ext-compaction",
  "maho-ext-config-reload",
  "maho-ext-cursor-cli-oauth",
@@ -4027,6 +4028,26 @@ dependencies = [
  "maho-tui",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "maho-ext-commandcode-provider"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]

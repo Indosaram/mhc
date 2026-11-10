@@ -606,6 +606,9 @@ fn pi_goal() -> Box<dyn Extension> {
 fn omo_zcode_oauth() -> Box<dyn Extension> {
     Box::new(maho_ext_omo_zcode_oauth::ZcodeOAuth)
 }
+fn commandcode_provider() -> Box<dyn Extension> {
+    Box::new(maho_ext_commandcode_provider::CommandCodeProvider::new())
+}
 /// Installed package entry for a `git:github.com/<owner>/<repo>` user package; the native port
 /// resolves the package's own `node_modules` from here, as the TS entry does via `import.meta.url`.
 fn installed_git_package_entry(owner: &str, repo: &str) -> std::path::PathBuf {
@@ -644,7 +647,7 @@ fn orca_prefill() -> Box<dyn Extension> {
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
 /// `pi-comment-checker` uses the SUL `comment-checker-core` helpers with `omo` and the MIT
 /// `maho-comment-checker` crate without it.
-const USER_FACTORY_COUNT: usize = 13;
+const USER_FACTORY_COUNT: usize = 14;
 static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
     NativeExtension {
         id: "pi-ast-grep",
@@ -700,6 +703,11 @@ static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
         id: "omo-zcode-oauth",
         crate_name: "maho-ext-omo-zcode-oauth",
         factory: omo_zcode_oauth,
+    },
+    NativeExtension {
+        id: "pi-commandcode-provider",
+        crate_name: "maho-ext-commandcode-provider",
+        factory: commandcode_provider,
     },
     NativeExtension {
         id: "pi-comment-checker",

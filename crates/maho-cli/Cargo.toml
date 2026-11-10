@@ -140,6 +140,7 @@ maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checke
 maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
 maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }
 maho-ext-omo-zcode-oauth = { path = "../extensions/maho-ext-omo-zcode-oauth" }
+maho-ext-commandcode-provider = { path = "../extensions/maho-ext-commandcode-provider" }
 maho-ext-orca-prefill = { path = "../extensions/maho-ext-orca-prefill" }
 maho-ext-ferryx-agent-state = { path = "../extensions/maho-ext-ferryx-agent-state" }
 maho-ext-herdr-agent-state = { path = "../extensions/maho-ext-herdr-agent-state" }

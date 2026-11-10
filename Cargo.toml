@@ -99,6 +99,7 @@ members = [
     "crates/extensions/maho-ext-pi-ast-grep",
     "crates/extensions/maho-ext-pi-comment-checker",
     "crates/extensions/maho-ext-pi-nested-agents-md",
+    "crates/extensions/maho-ext-commandcode-provider",
     "crates/extensions/maho-ext-omo-zcode-oauth",
     "crates/extensions/maho-ext-orca-agent-status",
     "crates/extensions/maho-ext-orca-prefill",
