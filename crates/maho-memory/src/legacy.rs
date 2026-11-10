@@ -102,6 +102,58 @@ pub fn default_root(env_home: Option<&str>, home: &Path) -> PathBuf {
     }
 }
 
+/// Directories under the store root that hold memory content.
+const CONTENT_HOMES: [&str; 5] = ["system", "notes", "people", "project", "reference"];
+
+/// One content tree: an identity repository, or the store root itself for a flat store.
+struct ContentRoot {
+    path: PathBuf,
+    /// `agents/<label>/repo` when the tree belongs to one identity; empty for a flat store.
+    label: String,
+}
+
+/// Finds the content trees of a store.
+///
+/// The current layout is `<root>/agents/<safe-id>/repo/`; the older flat layout is `<root>/`
+/// directly. Both are supported so an upgrade in either direction still imports.
+fn content_roots(root: &Path) -> Vec<ContentRoot> {
+    let agents = root.join("agents");
+    if !agents.is_dir() {
+        return vec![ContentRoot {
+            path: root.to_path_buf(),
+            label: String::new(),
+        }];
+    }
+    let mut identities: Vec<PathBuf> = match std::fs::read_dir(&agents) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    identities.sort();
+    let mut roots = Vec::new();
+    for identity in identities {
+        let Some(name) = identity
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let repo = identity.join("repo");
+        if repo.is_dir() {
+            roots.push(ContentRoot {
+                path: repo,
+                label: name,
+            });
+        }
+    }
+    roots
+}
+
 /// A parsed Markdown file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedFile {
@@ -380,6 +432,17 @@ fn modified_iso(path: &Path) -> Option<String> {
     Some(time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
+/// Whether a content-root-relative path is memory content rather than bookkeeping.
+fn is_content(rel: &str) -> bool {
+    if let Some(rest) = rel.strip_prefix("skills/") {
+        // Only `<slug>/SKILL.md` is content; helper files beside it are not.
+        return rest.len() > "/SKILL.md".len() && rest.ends_with("/SKILL.md");
+    }
+    CONTENT_HOMES
+        .iter()
+        .any(|home| rel == *home || rel.starts_with(&format!("{home}/")))
+}
+
 struct Kind {
     importance: f64,
     memory_type: &'static str,
@@ -405,10 +468,20 @@ fn kind_of(path: &str) -> Kind {
             people: false,
         }
     } else if path.starts_with("people/") {
+        let importance = if path.ends_with("/card.md") { 0.8 } else { 0.6 };
         Kind {
-            importance: 0.6,
+            importance,
             memory_type: "person",
             people: true,
+        }
+    } else if path.starts_with("notes/")
+        || path.starts_with("project/")
+        || path.starts_with("reference/")
+    {
+        Kind {
+            importance: 0.7,
+            memory_type: "note",
+            people: false,
         }
     } else {
         Kind {
@@ -483,120 +556,159 @@ pub fn import_at(
     if !report.found {
         return Ok(report);
     }
-    let mut files = Vec::new();
-    collect_files(root, root, &mut report, &mut files);
     let imported_at = format_instant(now_millis).unwrap_or_else(now_iso);
-    for path in files {
-        let rel = relative(root, &path);
-        report.files_scanned += 1;
-        let kind = kind_of(&rel);
-        if kind.people && !options.include_people {
-            report.skipped_people_files += 1;
-            continue;
-        }
-        if std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > MAX_FILE_BYTES {
-            report.warnings.push(Warning {
-                path: rel,
-                reason: "larger than 4 MiB; skipped".into(),
-            });
-            continue;
-        }
-        let text = match std::fs::read(&path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) => {
-                report.warnings.push(Warning {
-                    path: rel,
-                    reason: format!("unreadable: {error}"),
-                });
-                continue;
-            }
-        };
-        let parsed = parse_markdown(&text);
-        if let Some(reason) = &parsed.warning {
-            report.warnings.push(Warning {
-                path: rel.clone(),
-                reason: reason.clone(),
-            });
-        }
-        let expiry = expiry_of(parsed.frontmatter.as_ref());
-        let (valid_until, expires_written) = match &expiry {
-            Expiry::At { millis, written } => (format_instant(*millis), Some(written.clone())),
-            Expiry::Unusable(value) => {
-                report.warnings.push(Warning {
-                    path: rel.clone(),
-                    reason: format!("unusable `expires` value {value:?}; imported without expiry"),
-                });
-                (None, None)
-            }
-            Expiry::Absent => (None, None),
-        };
-        if let Expiry::At { millis, .. } = expiry
-            && millis <= now_millis
-            && !parsed.blocks.is_empty()
-        {
-            report.expired_on_import += 1;
-        }
-        let description = parsed
-            .frontmatter
-            .as_ref()
-            .and_then(|fm| fm.get("description"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned);
-        let timestamp = month_hint(&rel)
-            .or_else(|| modified_iso(&path))
-            .unwrap_or_else(|| imported_at.clone());
-        let mut imported_any = false;
-        for (index, block) in parsed.blocks.iter().enumerate() {
-            let id = sha256_hex16(&format!("{rel}\0{index}\0{}", block.text));
-            if store.contains(&id)? {
-                report.skipped_existing += 1;
-                continue;
-            }
-            let content = match (&description, rel.as_str()) {
-                (Some(name), "system/human.md") if block.text != *name => {
-                    format!("About the user ({name}): {}", block.text)
-                }
-                _ => block.text.clone(),
-            };
-            imported_any = true;
-            report.blocks_imported += 1;
-            if options.dry_run {
-                continue;
-            }
-            let mut metadata = json!({
-                "legacy_path": rel,
-                "section": block.section,
-                "block": index,
-                "frontmatter": parsed.frontmatter,
-                "importer": IMPORTER,
-            });
-            if let (Some(written), Some(map)) = (&expires_written, metadata.as_object_mut()) {
-                map.insert("expires".into(), Value::String(written.clone()));
-            }
-            store.remember(
+    for content in content_roots(root) {
+        let mut files = Vec::new();
+        collect_files(&content.path, &content.path, &mut report, &mut files);
+        for path in files {
+            import_file(
+                store,
+                options,
                 &content,
-                &RememberOptions {
-                    source: "import".into(),
-                    importance: kind.importance,
-                    timestamp: Some(timestamp.clone()),
-                    scope: "global".into(),
-                    veracity: "imported".into(),
-                    trust_tier: Some("IMPORTED".into()),
-                    memory_type: kind.memory_type.into(),
-                    memory_id: Some(id),
-                    valid_until: valid_until.clone(),
-                    metadata: Some(metadata),
-                    ..Default::default()
-                },
+                &path,
+                now_millis,
+                &imported_at,
+                &mut report,
             )?;
-        }
-        if imported_any {
-            report.files_imported += 1;
         }
     }
     Ok(report)
+}
+
+fn import_file(
+    store: &Store,
+    options: &ImportOptions,
+    content: &ContentRoot,
+    path: &Path,
+    now_millis: i64,
+    imported_at: &str,
+    report: &mut ImportReport,
+) -> Result<(), String> {
+    let rel = relative(&content.path, path);
+    // An identity repo has known content homes; a flat `--from <dir>` keeps the historical
+    // "every Markdown file" behaviour so arbitrary folders still import.
+    let keep = if content.label.is_empty() {
+        !rel.starts_with("runtime/") && !rel.starts_with("transient-runs/")
+    } else {
+        is_content(&rel)
+    };
+    if !keep {
+        return Ok(());
+    }
+    report.files_scanned += 1;
+    let kind = kind_of(&rel);
+    if kind.people && !options.include_people {
+        report.skipped_people_files += 1;
+        return Ok(());
+    }
+    let rel = if content.label.is_empty() {
+        rel
+    } else {
+        // Keep identities apart: the same path in two stores is two different memories.
+        format!("{}/{rel}", content.label)
+    };
+    if std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) > MAX_FILE_BYTES {
+        report.warnings.push(Warning {
+            path: rel,
+            reason: "larger than 4 MiB; skipped".into(),
+        });
+        return Ok(());
+    }
+    let text = match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) => {
+            report.warnings.push(Warning {
+                path: rel,
+                reason: format!("unreadable: {error}"),
+            });
+            return Ok(());
+        }
+    };
+    let parsed = parse_markdown(&text);
+    if let Some(reason) = &parsed.warning {
+        report.warnings.push(Warning {
+            path: rel.clone(),
+            reason: reason.clone(),
+        });
+    }
+    let expiry = expiry_of(parsed.frontmatter.as_ref());
+    let (valid_until, expires_written) = match &expiry {
+        Expiry::At { millis, written } => (format_instant(*millis), Some(written.clone())),
+        Expiry::Unusable(value) => {
+            report.warnings.push(Warning {
+                path: rel.clone(),
+                reason: format!("unusable `expires` value {value:?}; imported without expiry"),
+            });
+            (None, None)
+        }
+        Expiry::Absent => (None, None),
+    };
+    if let Expiry::At { millis, .. } = expiry
+        && millis <= now_millis
+        && !parsed.blocks.is_empty()
+    {
+        report.expired_on_import += 1;
+    }
+    let description = parsed
+        .frontmatter
+        .as_ref()
+        .and_then(|fm| fm.get("description"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned);
+    let timestamp = month_hint(&rel)
+        .or_else(|| modified_iso(path))
+        .unwrap_or_else(|| imported_at.to_owned());
+    let mut imported_any = false;
+    for (index, block) in parsed.blocks.iter().enumerate() {
+        let id = sha256_hex16(&format!("{rel}\0{index}\0{}", block.text));
+        if store.contains(&id)? {
+            report.skipped_existing += 1;
+            continue;
+        }
+        let content = match (&description, rel.as_str()) {
+            (Some(name), _) if rel.ends_with("system/human.md") && block.text != *name => {
+                format!("About the user ({name}): {}", block.text)
+            }
+            _ => block.text.clone(),
+        };
+        imported_any = true;
+        report.blocks_imported += 1;
+        if options.dry_run {
+            continue;
+        }
+        let mut metadata = json!({
+            "legacy_path": rel,
+            "section": block.section,
+            "block": index,
+            "frontmatter": parsed.frontmatter,
+            "importer": IMPORTER,
+        });
+        if let (Some(written), Some(map)) = (&expires_written, metadata.as_object_mut()) {
+            map.insert("expires".into(), Value::String(written.clone()));
+        }
+        store.remember(
+            &content,
+            &RememberOptions {
+                source: "import".into(),
+                importance: kind.importance,
+                timestamp: Some(timestamp.clone()),
+                scope: "global".into(),
+                veracity: "imported".into(),
+                trust_tier: Some("IMPORTED".into()),
+                memory_type: kind.memory_type.into(),
+                memory_id: Some(id),
+                valid_until: valid_until.clone(),
+                metadata: Some(metadata),
+                ..Default::default()
+            },
+        )?;
+    }
+    if imported_any {
+        report.files_imported += 1;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -608,6 +720,22 @@ mod tests {
         let path = root.join(rel);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(path, text).expect("write");
+    }
+
+    /// `MemoryRow` does not surface `memory_type`; the JSON export does.
+    fn memory_type_of(store: &Store, id: &str) -> String {
+        store
+            .export_json()
+            .expect("export")
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("working_memory")
+            .iter()
+            .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|row| row.get("memory_type"))
+            .and_then(Value::as_str)
+            .expect("memory_type")
+            .to_owned()
     }
 
     #[test]
@@ -1016,6 +1144,147 @@ mod tests {
         );
         let id = sha256_hex16("notes/a.md\u{0}0\u{0}one");
         assert_eq!(store.get(&id).expect("get").expect("row").valid_until, None);
+    }
+
+    #[test]
+    fn agent_layout_imports_each_identity_repo_as_content() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path().join("memory");
+        write(
+            &root,
+            "agents/alpha/repo/system/human.md",
+            "---\ndescription: Indo\n---\nPrefers Korean replies.\n",
+        );
+        write(
+            &root,
+            "agents/alpha/repo/notes/facts/2026-11.md",
+            "- Deploys happen on Fridays\n",
+        );
+        write(
+            &root,
+            "agents/alpha/repo/project/plan.md",
+            "Ship the importer.\n",
+        );
+        write(
+            &root,
+            "agents/alpha/repo/skills/audit/SKILL.md",
+            "Audit memory.\n",
+        );
+        write(
+            &root,
+            "agents/alpha/repo/skills/audit/notes.txt",
+            "helper, not memory\n",
+        );
+        // Runtime trees beside and inside the store are machinery, not memory.
+        write(
+            &root,
+            "agents/alpha/runtime/reflection/runs/r1/notes.md",
+            "reflection scratch\n",
+        );
+        write(&root, "runtime/transient-runs/x/notes.md", "transient\n");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: root.clone(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+
+        assert_eq!(report.files_scanned, 4, "{report:?}");
+        assert_eq!(report.blocks_imported, 4, "{report:?}");
+        assert_eq!(report.skipped_non_markdown, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.path.contains("runtime")),
+            "runtime must never be scanned: {:?}",
+            report.warnings
+        );
+
+        // Identity label plus content-relative path, so kind_of sees `system/` again.
+        let human_id = sha256_hex16("alpha/system/human.md\u{0}0\u{0}Prefers Korean replies.");
+        let human = store.get(&human_id).expect("get").expect("row");
+        assert_eq!(memory_type_of(&store, &human_id), "identity");
+        assert_eq!(
+            human.content,
+            "About the user (Indo): Prefers Korean replies."
+        );
+
+        let fact_id =
+            sha256_hex16("alpha/notes/facts/2026-11.md\u{0}0\u{0}- Deploys happen on Fridays");
+        let fact = store.get(&fact_id).expect("get").expect("row");
+        assert_eq!(memory_type_of(&store, &fact_id), "fact");
+        assert!((fact.importance - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn two_identities_with_the_same_path_stay_distinct() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path().join("memory");
+        write(&root, "agents/alpha/repo/system/human.md", "Alpha human.\n");
+        write(&root, "agents/beta/repo/system/human.md", "Beta human.\n");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: root.clone(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+
+        assert_eq!(report.files_scanned, 2, "{report:?}");
+        assert_eq!(report.blocks_imported, 2, "{report:?}");
+        assert!(
+            store
+                .get(&sha256_hex16(
+                    "alpha/system/human.md\u{0}0\u{0}Alpha human."
+                ))
+                .expect("get")
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&sha256_hex16("beta/system/human.md\u{0}0\u{0}Beta human."))
+                .expect("get")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn flat_store_without_agents_still_imports() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "system/human.md",
+            "---\ndescription: Ada\n---\nLikes tea.\n",
+        );
+        write(dir.path(), "project/notes.md", "Project note.\n");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+
+        assert_eq!(report.files_scanned, 2, "{report:?}");
+        assert_eq!(report.blocks_imported, 2, "{report:?}");
+        let human_id = sha256_hex16("system/human.md\u{0}0\u{0}Likes tea.");
+        assert!(store.get(&human_id).expect("get").is_some());
+        assert_eq!(memory_type_of(&store, &human_id), "identity");
     }
 
     #[test]

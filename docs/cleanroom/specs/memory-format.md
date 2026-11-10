@@ -8,44 +8,88 @@ migrator only; the new store has its own format (mnemopi's SQLite schema, see
 
 ## Sources this spec was written from
 
-The spec writer did not open any SUL source (`crates/omo/**`, the omo-gated `maho-cli` modules,
-OmO/COMP checkouts). No legacy memory directory exists in the sandbox the work was done in (no
-`~/.omo`, no `MAHO_MEMORY_HOME`), so nothing was observed from real data. Everything below comes
-from the repository's user-facing documents and MIT call sites:
+Earlier revisions of this document were written without access to a real store and therefore
+described a flat layout (`<home>/.git`, `<home>/system/…`) that does not exist. That premise was
+wrong and the importer could not read a real store. This revision was written **from observed
+data**: a live store on a developer machine (`~/.omo/memory`, 274 identities, 2,218 Markdown
+files, 6,577 commits) plus the authoritative layout constants in
+`crates/omo/memory-core/src/identity/layout.rs`. No SUL source text is reproduced; the facts
+below are the observable on-disk contract.
 
-| Fact | Where it is stated |
+| Fact | Where it is stated / observed |
 | --- | --- |
-| Root directory is `~/.omo/memory`, overridable with `MAHO_MEMORY_HOME` | `docs/configuration.md` (environment table) |
-| The store is a "Git-backed persistent memory filesystem, identity profiles"; "Markdown block store, git auto-commit" | `AGENTS.md` (structure and WHERE TO LOOK tables) |
-| Memory is plain files the user owns and may edit by hand; every change is a git commit whose history can be inspected and undone | `crates/maho-interactive/src/tips/catalog/memory_tips.rs` (`memory.memfs-command`, `memory.repository-command`, `memory.recompile-command`), a port of senpi's MIT `memory-tips.ts` |
-| The primary human is described by the card `system/human.md`: its display name is the card's description; YAML frontmatter may carry `aliases`; the seeded name is `Human` | `docs/divergences.md` SD-7 |
-| Facts about the primary human and about the project are written to `notes/facts/<month>.md` | `docs/divergences.md` SD-7 |
-| Third-party people profiles live under `people/<slug>/`; they are written only when `memory.people.enabled` is true (default false) | `docs/divergences.md` SD-7, `README.md`, `README.en.md` |
-| Config keys that shape the store (`memory.enabled`, `memory.people.*`, `memory.projection.max_entries_per_directory`=0, `memory.projection.max_bytes`=40960 (omo v5.1.52 defaults; earlier builds used 40 and 24576), `memory.sync.remote`) | `docs/cleanroom/specs/config-keys.md` § `memory` and § Delta (omo v5.1.52) D1 |
+| Store root is `~/.omo/memory`, overridable with `MAHO_MEMORY_HOME` | `docs/configuration.md`; `identity/layout.rs` (`MEMORY_ROOT_ENV_VAR`, `default_memory_root`) |
+| Content lives at `<root>/agents/<safe-id>/repo/`, not at the root | `identity/layout.rs` (`AGENTS_DIRNAME="agents"`, `REPO_DIRNAME="repo"`); observed on disk |
+| Each identity has a sibling `<root>/agents/<safe-id>/runtime/` that is **not** memory | `identity/layout.rs` (`RUNTIME_DIRNAME`, 14 `RUNTIME_SUBDIRNAMES`); observed |
+| Content homes are `system/`, `reference/`, `notes/`, `people/`, `skills/` | `audit/audit.rs` orphan check (list); `memfs/paths.rs::is_memory_content_path` (list differs — see below) |
+| The path predicate and the audit list disagree | `memfs/paths.rs` accepts only `system/`, `reference/`, `people/` and `skills/<slug>/SKILL.md`; `audit/audit.rs` accepts `system, reference, notes, people, skills` plus `ARCHIVE.md`/`README.md`; neither lists `project/` |
+| `project/` is a content home in practice | observed: 193 files under `project/` in one live identity |
+| `skills/<slug>/SKILL.md` is content; other files under `skills/` are not | `memfs/paths.rs::is_memory_content_path` |
+| The repo is a git work tree with auto-commit; history is real and used | observed: `.git` 56.8 MB, 6,577 commits, 4 of 273 identities had empty repos |
+| `system/human.md` is the primary human's card: `description` is the display name, `kind: person`, `aliases` optional | observed frontmatter in a live store; `memfs/frontmatter.rs` fields |
+| Facts are written to `notes/facts/<month>.md` as list items, plus free-form fact files | observed: `notes/facts/2026-11.md` (list items) and `notes/facts/<topic>.md` |
+| People profiles live under `people/<slug>/` with `card.md` + `observations.md`; gated by `memory.people.enabled` (default false) | `docs/divergences.md` SD-7; observed |
+| Config keys that shape the store | `docs/cleanroom/specs/config-keys.md` § `memory` |
 
 ## Directory layout
 
 ```
-<memory home>/                 MAHO_MEMORY_HOME, else ~/.omo/memory
-  .git/                        git repository (auto-commit); may have a remote (memory.sync.remote)
-  system/
-    human.md                   card for the primary human (identity)
-    *.md                       other system cards (names not documented)
-  notes/
-    facts/
-      <month>.md               extracted facts, one file per month
-    *.md / */*.md              other notes (not documented further)
-  people/
-    <slug>/                    one directory per third-party person (only with people.enabled)
-      *.md
-  ...                          any other directories of Markdown files the user or agent created
+<memory root>/                    MAHO_MEMORY_HOME, else ~/.omo/memory
+  agents/
+    <safe-id>/                    one identity ("agent"); <safe-id> is a filesystem-safe name
+      repo/                       THE memory content: a git work tree
+        .git/                     auto-commit history; may have a remote (memory.sync.remote)
+        system/
+          human.md                primary human card (identity; description = display name)
+          persona.md              agent persona
+          self-aware.md           behavioural observations about the agent
+          boundaries.md           what the user forbade, in their words
+          agreements.md           standing agreements ledger
+          identity.md             optional identity card (created only when one emerges)
+          *.md                    other system cards
+        notes/
+          facts/
+            <YYYY-MM>.md          one facts file per month, list items
+            <topic>.md            free-form fact files
+          *.md
+        people/
+          <slug>/
+            card.md               profile card
+            observations.md       dated observations
+        project/
+          <slug>.md               project notes and task records
+        reference/
+          self/observations.md    reflection observations
+        skills/
+          <slug>/SKILL.md         agent skills (only SKILL.md is memory content)
+      runtime/                    NOT memory: locks, transcripts, reflection, queues, worktrees
+  runtime/                        store-wide runtime (when present)
+  transient-runs/                 NOT memory
 ```
 
-- `<month>` is a calendar month. The exact spelling is not documented; the migrator must accept
-  any file name and only use a name of the form `YYYY-MM` (optionally followed by more text) as a
-  date hint.
-- The tree is the user's own: files may be added, renamed or hand-edited. The migrator must not
-  assume a fixed set of files and must tolerate empty, oversized or malformed files.
+Rules the migrator must honour:
+
+- **Resolve content roots first.** If `<root>/agents/` exists, each `<root>/agents/<id>/repo/` is a
+  content root. Otherwise the store is the older flat layout and `<root>` itself is the content
+  root. Both layouts must import.
+- **Import the union of the content homes the SUL code recognises**, because the two SUL lists
+  disagree and neither includes `project/`, which real stores use:
+  `system/`, `notes/`, `people/`, `project/`, `reference/`, and `skills/<slug>/SKILL.md`.
+  Importing a note the audit would call an orphan loses nothing; skipping `project/` loses real
+  memory.
+- **Paths are content-root relative.** A file at `agents/<id>/repo/system/human.md` has the memory
+  path `system/human.md`. Comparing store-root-relative paths is the defect that made every real
+  file import as an anonymous note.
+- **`runtime/` is never memory**, at the store root or beside an identity's `repo/`.
+- **Identities are kept apart.** The same relative path in two identities is two different
+  memories; imported ids and `legacy_path` metadata carry the identity label.
+- **A flat `--from <dir>` keeps the historical permissive behaviour**: any Markdown file under it
+  imports (except `runtime/` and `transient-runs/`), so importing an arbitrary notes folder still
+  works.
+- `<month>` is a calendar month; only a `YYYY-MM` prefix is used as a date hint, and any file name
+  is accepted.
+- The tree is the user's own: files may be added, renamed or hand-edited. No fixed file set may be
+  assumed; empty, oversized and malformed files must be tolerated.
 - Directories starting with `.` (`.git`, editor and tool state) are not memory content.
 - Non-Markdown files are not memory content (they are counted and skipped).
 
@@ -97,10 +141,10 @@ the legacy store is one per user, not per project:
 | `veracity` | `imported` |
 | `trust_tier` | `IMPORTED` |
 | `scope` | `global` |
-| `importance` | `0.9` for `system/` files, `0.7` for `notes/facts/`, `0.6` otherwise |
+| `importance` | `0.9` for `system/`, `0.8` for a person card, `0.7` for `notes/facts/`, other `notes/`, `project/` and `reference/`, `0.6` otherwise |
 | `memory_type` | `identity` for `system/human.md`, `fact` for `notes/facts/`, `person` for `people/`, `note` otherwise |
 | `timestamp` | the month hint (`YYYY-MM-01T00:00:00.000Z`) when the file name starts with `YYYY-MM`, else the file's modification time, else the import time |
-| `metadata_json` | `{"legacy_path": <relative path>, "section": <heading or null>, "block": <index>, "frontmatter": <mapping or null>, "importer": "maho-memory legacy-v1"}` |
+| `metadata_json` | `{"legacy_path": <identity label + relative path>, "section": <heading or null>, "block": <index>, "frontmatter": <mapping or null>, "importer": "maho-memory legacy-v1"}` |
 | `consolidated_at` | the import time (durable; never trimmed as scratch) |
 
 People profiles: files under `people/` are imported only when the caller opts in
@@ -112,6 +156,8 @@ copied into a new place unless the user enabled people memory.
 
 - Input: the memory home (explicit `--from`, else `MAHO_MEMORY_HOME`, else `~/.omo/memory`).
   A missing directory is not an error: the report says there is nothing to import.
+- Content roots are resolved per the layout rules above; a store with `agents/` imports every
+  `agents/<id>/repo/` and never descends into `runtime/`, and a flat store imports its own root.
 - Read-only on the legacy tree. It never writes, moves, commits or deletes legacy files, and it
   does not run git.
 - Idempotent: rows whose id already exists are skipped and counted as `skipped_existing`.
@@ -121,15 +167,18 @@ copied into a new place unless the user enabled people memory.
 - Symbolic links are not followed (a link is reported and skipped).
 - Files larger than 4 MiB are skipped with a warning.
 
-## Open points (not established from the sources above)
+## Open points (still not established)
 
-- The exact month file name, the names and meaning of other `system/` cards, and any per-project
-  sub-tree are undocumented. The migrator treats them generically.
-- The git history (older versions of a block) is not imported; only the working tree is.
+- Whether `project/` is written by every build or only by some workflows. The migrator imports it
+  as notes either way, because real stores contain it.
+- The git history (older versions of a block) is not imported; only the working tree is. History
+  is available on disk and is used by the SUL store (`compile/changes`, `facts/recovery`,
+  `soul/watermark`, `commands/agreements`), so a future importer could replay it.
 - Whether legacy blocks carry ids or timestamps inside the Markdown is unknown; such text is kept
   verbatim in `content`.
-- Recall ledgers, sync queues, locks or other bookkeeping files the legacy store may keep are not
-  documented; anything that is not a `.md` file is skipped.
+- Runtime bookkeeping (recall ledgers, sync queues, locks, transcripts, facts queues, reflection
+  runs) is deliberately not imported: it describes machinery the MIT store does not have, and it
+  is the bulk of the disk usage on real machines.
 
 
 ## Delta (omo v5.1.52, 2026-10-30)

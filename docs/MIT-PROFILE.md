@@ -113,7 +113,10 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   [--json]` (or `/memory import-legacy`) reads the legacy Markdown store (`$MAHO_MEMORY_HOME`, else
   `~/.omo/memory`) read-only and writes each Markdown block as an imported memory into the global
   bank; re-running skips what is already there, and `people/` files are skipped unless
-  `memory.people.enabled` is true or `--include-people` is given. Format and mapping:
+  `memory.people.enabled` is true or `--include-people` is given. It resolves the real store layout:
+  every `<root>/agents/<id>/repo/` is one content tree (the older flat `<root>/` layout also works),
+  `runtime/` trees are never read, and content homes are `system/`, `notes/`, `people/`, `project/`,
+  `reference/` and `skills/<slug>/SKILL.md`. Format and mapping:
   `docs/cleanroom/specs/memory-format.md`.
 - `<builtin:browser>` (`maho-browser`, ported from the MIT omowright @ a019fdf, pi-cua-integration @
   9ba0c9e and oh-my-pi @ f59bbac; tool behaviour in `docs/cleanroom/specs/browser-tools.md`):
@@ -374,6 +377,41 @@ The `license-audit` job also runs `bun tools/package-native.mjs --self-test`, wh
 
 `tools/license-audit.mjs` also requires every crate under `crates/omo/` to be `LicenseRef-SUL-1.0`
 and every crate under `crates/desktop/` to be MIT.
+
+## Shipping an MIT artifact
+
+The MIT profile is buildable and verifiable today, but the release workflow publishes the default
+(SUL) payload only: `.github/workflows/release.yml` runs `cargo build --release -p maho-cli --bin
+mhc` with default features and stages it with `--skill-source latest`. There is no
+`mhc-mit-<target>` asset, so a commercial MIT binary is produced by the same staging step with a
+no-default-features build:
+
+```sh
+cargo build --release --locked -p maho-cli --no-default-features --bins
+cargo build --release --locked -p maho-senpi-desktop-engine
+bun tools/package-native.mjs --mit --output dist/mit \
+  --binary target/release/mhc \
+  --desktop-engine-binary target/release/senpi-desktop-engine \
+  --mhc-lsp-binary target/release/mhc-lsp
+bun tools/package-native.mjs --verify-only dist/mit
+```
+
+The separator between the two profiles is the **default-features flag**, not the staging flags:
+`--mit` refuses a payload whose `mhc ulw-loop` does not answer "is not available in this build",
+so a default build cannot be mislabelled as MIT, and `--verify-only` rejects a stage that contains
+`licenses/SUL-1.0.md`, skills, the omo schema or a SUL sibling.
+
+What is still missing before an MIT asset can be published alongside the SUL one:
+
+1. a release job matrix entry that builds with `--no-default-features` and stages with `--mit`
+   (the job must not mix in `--skill-source latest` or the omo schema);
+2. an MIT skill set to stage under `skills/` (Phase 4 asset work; the loader already reads a
+   bundled root beside the binary, and until then the MIT payload ships no skills);
+3. asset naming and `install.sh` routing so a commercial user gets the MIT payload from the same
+   release, without the SUL licence or the omo siblings.
+
+`bun tools/package-native.mjs --self-test` covers the staging and `--verify-only` contract
+(115 checks, including MIT stage contents and refusals) in the `license-audit` job.
 
 ## Known leftovers (not linked SUL code)
 
