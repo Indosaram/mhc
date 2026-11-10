@@ -199,7 +199,7 @@ fn publish_exclusive(lock_path: &Path, record: &LockRecord) -> std::io::Result<b
 }
 
 fn is_proven_dead(owner: &LockRecord) -> bool {
-    if owner.hostname != crate::support::host::hostname() {
+    if !crate::support::host::same_machine(&owner.hostname) {
         return false;
     }
     let liveness = get_pid_liveness(owner.pid);

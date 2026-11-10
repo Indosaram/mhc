@@ -5173,6 +5173,7 @@ dependencies = [
  "base64 0.22.1",
  "filetime",
  "flate2",
+ "gethostname",
  "icu_collator",
  "libc",
  "loro",
