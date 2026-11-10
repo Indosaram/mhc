@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod facts_queue;
+pub mod failure_backoff;
 pub mod frontmatter;
 pub mod git_log;
 pub mod git_status;
@@ -54,6 +55,11 @@ pub use bm25::{
 };
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
+pub use failure_backoff::{
+    ApplyFailureInput, BACKOFF_MS, DETAIL_MAX_BYTES, FailureFilter, FailureReason, FailureRecord,
+    FailureState, FailureTarget, PARK_AT_STREAK, apply_failure, clear_for_retry, clear_on_success,
+    delay_for, sanitize_detail, sort_records,
+};
 pub use payload_cap::{
     CappedBatch, CappedBatchInput, MAX_FACTS_PAYLOAD_BYTES, OversizedEntry, Payload,
     PayloadEnvelope, PrimaryHuman, measure_payload_bytes, select_capped_batch,
