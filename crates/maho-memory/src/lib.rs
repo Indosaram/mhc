@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod facts_queue;
+pub mod frontmatter;
 pub mod git_log;
 pub mod git_status;
 pub mod git_tree;
@@ -51,6 +52,13 @@ pub use bm25::{
 };
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
+pub use frontmatter::{
+    MAX_DESCRIPTION_LENGTH, decode_quoted_scalar, decode_scalar_source, decode_string_array,
+    describe_description_violation, describe_frontmatter_grammar_violation,
+    describe_frontmatter_violation, describe_header_grammar_violation, describe_header_violation,
+    find_tool_call_scaffolding, is_canonical_scalar_source, is_plain_safe_scalar,
+    parse_header_line, render_document, render_raw_scalar, render_string_scalar, split_frontmatter,
+};
 pub use git_log::{Commit, LOG_FORMAT, parse_log, parse_log_with_paths, parse_trailers};
 pub use git_status::{Change, StatusEntry, StatusError, changed_paths, parse as parse_status};
 pub use git_tree::{
