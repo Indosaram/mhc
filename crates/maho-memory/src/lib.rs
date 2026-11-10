@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod facts_queue;
+pub mod journal;
 pub mod kibitzer;
 pub mod legacy;
 pub mod mcp;
@@ -41,6 +42,7 @@ pub use bm25::{
 };
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
+pub use journal::{Entry, Event, Journal, JournalError, Replayed};
 pub use kibitzer::{DeliveryVia, Kibitzer, Nudge, ToolResultGate};
 pub use legacy::{ImportOptions, ImportReport};
 pub use mcp::ServerConfig;
