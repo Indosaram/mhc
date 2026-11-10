@@ -9,6 +9,16 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+thread_local! {
+    // Theme registries are recreated by the extension UI. Preserve the startup
+    // terminal query across those instances on the UI thread.
+    static TERMINAL_COLORS: RefCell<maho_tui::terminal_colors::TerminalColors> = RefCell::default();
+}
+
+pub fn set_terminal_colors(colors: &maho_tui::terminal_colors::TerminalColors) {
+    TERMINAL_COLORS.with(|stored| *stored.borrow_mut() = colors.clone());
+}
+
 #[derive(Debug, Clone)]
 pub struct ThemeInfo {
     pub name: String,
@@ -18,6 +28,7 @@ pub struct ThemeRegistry {
     pub current: Theme,
     pub current_name: String,
     custom_directory: PathBuf,
+    terminal_colors: maho_tui::terminal_colors::TerminalColors,
     /// senpi `getThemesDir()`: the shipped builtin theme directory reported as builtin paths.
     builtin_directory: Option<PathBuf>,
     registered: BTreeMap<String, Theme>,
@@ -54,6 +65,7 @@ impl ThemeRegistry {
             current: theme,
             current_name: "dark".into(),
             custom_directory,
+            terminal_colors: TERMINAL_COLORS.with(|colors| colors.borrow().clone()),
             builtin_directory: None,
             registered: BTreeMap::new(),
             watched_name: None,
@@ -101,12 +113,14 @@ impl ThemeRegistry {
         }
     }
     /// senpi `createSystemTheme`: the `system` theme generated from the terminal's reported colors.
-    /// The registry has no terminal-colors channel (the interactive mode owns the OSC query and the
-    /// cached hint), so it generates from no reported colors - the generator's ANSI-index tier - and
-    /// uses the current theme's appearance as the hint. That tier is terminal-independent, so loading
-    /// `system` cannot fail for an environment reason.
     fn generate_system_theme(&self) -> Result<Theme, ThemeError> {
+        let palette = (self.terminal_colors.palette.len() == 16)
+            .then(|| self.terminal_colors.palette.iter().copied().collect::<Option<Vec<_>>>())
+            .flatten();
         let generated = generate_system_theme_colors(&SystemThemeInput {
+            foreground: self.terminal_colors.foreground,
+            background: self.terminal_colors.background,
+            palette,
             appearance_hint: self.current.appearance,
             ..SystemThemeInput::default()
         });

@@ -82,7 +82,9 @@ pub fn resolve_claude_executable(
 pub fn claude_executable_resolver()
 -> maho_ext_anthropic_subscription::executable::ExecutableResolver {
     Arc::new(|| -> anyhow::Result<(PathBuf, Option<maho_ext_anthropic_subscription::executable::ExecutableSource>)> {
-        let override_path = std::env::var_os("CLAUDE_CODE_EXECUTABLE").map(PathBuf::from);
+        // Read through the extension overlay: the claude-code component records a downloaded
+        // executable there, and the resolver must see it without a restart.
+        let override_path = maho_ext_api::process_env::var("CLAUDE_CODE_EXECUTABLE").map(PathBuf::from);
         let resolution = resolve_claude_executable(override_path.as_deref())?;
         match resolution.executable {
             Some(executable) => Ok((executable, resolution.source)),

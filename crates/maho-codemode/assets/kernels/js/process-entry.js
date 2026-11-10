@@ -20,6 +20,7 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { Worker } from "node:worker_threads";
 import { scanDrainText } from "./process-drain-scan.js";
+import { reviveFrameValues } from "./frame-values.js";
 
 // Captured before any cell runs, so a cell that later replaces these never sees a frame being built.
 const stringify = JSON.stringify;
@@ -330,7 +331,7 @@ const tokenReceived = new Promise((resolve) => {
 			return;
 		}
 		if (line.length === 0) return;
-		deliver(JSON.parse(line));
+		deliver(reviveFrameValues(JSON.parse(line)));
 	});
 });
 

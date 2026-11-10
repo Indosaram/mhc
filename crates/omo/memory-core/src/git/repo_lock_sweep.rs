@@ -28,7 +28,7 @@ pub struct LockSnapshot {
     inode: u64,
     modified: Option<SystemTime>,
 }
-fn snapshot(path: &Path) -> Option<LockSnapshot> {
+pub fn snapshot(path: &Path) -> Option<LockSnapshot> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_file() {
         return None;
@@ -145,6 +145,43 @@ pub fn sweep_stranded_git_lock_files(
     drop(activity);
     report
 }
+/// Explicit, confirmed removal of one inspected lock, never an arbitrary file.
+pub fn unlock_stranded_git_lock(
+    repo: &Path,
+    path: &Path,
+    expected: &LockSnapshot,
+    scans: &dyn GitLockScans,
+) -> Result<(), String> {
+    let present = present_lock_files(&repo.join(".git"));
+    if present.get(path) != Some(expected) {
+        return Err("lock is absent, unsupported, or changed since inspection".into());
+    }
+    // The inspected owner must be proven dead before its lock may be removed.
+    if authorized_previous_owner(repo).is_none() {
+        return Err("lock owner is not proven dead".into());
+    }
+    let activity = probe_git_activity_idle(repo);
+    // Mirrors the sweep: an available probe must not report a running git command, and
+    // "unavailable" is not evidence of activity, so the scan and snapshot gates below carry
+    // the proof. The owner-death gate above is what makes removal safe.
+    if matches!(activity, GitActivityProbe::Busy) {
+        return Err("repository git activity is still running".into());
+    }
+    if scans
+        .find_repo_users(repo)
+        .is_none_or(|pids| !pids.is_empty())
+        || scans.find_holders(path).is_none_or(|pids| !pids.is_empty())
+    {
+        return Err("cannot prove that the repository and lock have no active users".into());
+    }
+    if snapshot(path).as_ref() != Some(expected) {
+        return Err("lock changed since inspection; inspect it again".into());
+    }
+    let result = std::fs::remove_file(path).map_err(|error| error.to_string());
+    drop(activity);
+    result
+}
+
 pub fn with_stranded_git_lock_recovery<T>(
     repo: &Path,
     mut run: impl FnMut() -> Result<T, GitError>,
@@ -217,6 +254,48 @@ mod tests {
             previous,
         );
     }
+    #[test]
+    fn explicit_unlock_removes_only_the_inspected_lock_while_users_remain_proof() {
+        let (_root, repo) = fixture();
+        // Removal requires a proven-dead owner; without it the lock must stay put.
+        let lock = repo.join(".git/index.lock");
+        let uninspected = present_lock_files(&repo.join(".git"))
+            .remove(&lock)
+            .expect("present lock");
+        let empty = Scans {
+            users: Some(vec![]),
+            holders: Some(vec![]),
+        };
+        assert_eq!(
+            unlock_stranded_git_lock(&repo, &lock, &uninspected, &empty),
+            Err("lock owner is not proven dead".into())
+        );
+        assert!(lock.exists(), "an unproven owner must keep the lock");
+        authorize(&repo, true);
+        let scans = Scans {
+            users: Some(vec![]),
+            holders: Some(vec![]),
+        };
+        let inspected = present_lock_files(&repo.join(".git"))
+            .remove(&lock)
+            .expect("present lock");
+        let live = Scans {
+            users: Some(vec![123]),
+            holders: Some(vec![]),
+        };
+        assert_eq!(
+            unlock_stranded_git_lock(&repo, &lock, &inspected, &live),
+            Err("cannot prove that the repository and lock have no active users".into())
+        );
+        assert!(lock.exists(), "a live user must keep the lock");
+        unlock_stranded_git_lock(&repo, &lock, &inspected, &scans).expect("unlock");
+        assert!(!lock.exists(), "the inspected lock is removed");
+        assert_eq!(
+            unlock_stranded_git_lock(&repo, &lock, &inspected, &scans),
+            Err("lock is absent, unsupported, or changed since inspection".into())
+        );
+    }
+
     #[test]
     fn owner_proof_and_live_users_are_mandatory_gates() {
         let (_root, repo) = fixture();

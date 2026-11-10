@@ -58,11 +58,12 @@
     },
     {
       "path": "kernels/js/kernel-tools-pump.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "sha256": "91de9cb9d8e28882df08aac045659000285c9914138981befba878d2ea14d731",
+      "sha256": "866d8e0f088d244d96890c0e5eb9f1d6d54f026fac31db5d6f999aac91443f8a",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
+      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump",
+      "change": "reply always carries a value: a tool returning undefined would otherwise serialize the frame without the required field and the host rejects it"
     },
     {
       "path": "kernels/js/kernel-tools-registry.js",
@@ -260,7 +261,7 @@
       "status": "patched",
       "upstreamCommit": "903b83367545bea516f35fc7f7c7cb692847988d",
       "change": "Bun-only direct process entry; marks process mode for the WebView bridge (native views on the child main thread)",
-      "sha256": "a787bdc152a666a25f021044e70437ed1e1f4b878ae269ba86279eac3e20fac3"
+      "sha256": "29e346dd7b3d6665e453e95b867cb9cebf9e384acc7b6e92d1907b0b0534dc0e"
     },
     {
       "path": "kernels/js/process-drain-scan.js",
@@ -293,7 +294,7 @@
       "status": "local",
       "upstreamCommit": null,
       "change": "bun relay process hosting the worker thread (was an inline -e script); its main thread grants webview-connect ports and releases them on worker exit, as senpi worker-slot.ts #publish/retire",
-      "sha256": "3fe0fcec216bdc80b1657f89aff18b31de65a56d7343f3942336e081111e8490"
+      "sha256": "98af5407fca069c92ceeb3b8dee96b0ac98edf064423ac62aa21e3071047f968"
     },
     {
       "path": "kernels/jl/globals.jl",
@@ -558,6 +559,13 @@
       "status": "unported",
       "upstreamCommit": null,
       "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2) (7e9330f865) for the permission core path checks; not in this release range"
+    },
+    {
+      "path": "kernels/js/frame-values.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "shared JSON frame codec: forwards non-JSON values (BigInt, undefined, V8-serialized clone) between the relay, the process entry and the worker so the host never re-encodes them",
+      "sha256": "c1d7b150360ea3e1f08d62881da33904838139a6d93e91392122a3d9776dada5"
     }
   ]
 }

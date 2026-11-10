@@ -742,8 +742,9 @@ impl TaskManager {
         host_pid: i64,
     ) -> Result<(TaskRecord, ManagedStartSpec), crate::state::TaskIdSpaceExhaustedError> {
         let mode = spec.start.execution_mode.unwrap_or_default();
-        let input =
+        let mut input =
             crate::manager::helpers::build_record_input(&spec.start, &spec.plan, task_id, mode);
+        input.config_generation = Some(self.inner.store.config_generation());
         let mut record = create_task_record(input, u64::try_from((self.inner.now)()).ok())?;
         record.task_id = task_id.to_string();
         record.host_pid = Some(host_pid);
@@ -3601,6 +3602,7 @@ impl Inner {
         requested: Option<&crate::manager::names::NameRegistration>,
     ) -> Result<TaskRecord, ClaimError> {
         let input = crate::state::TaskRecordInput {
+            config_generation: Some(self.store.config_generation()),
             owner: owner.cloned(),
             ..build_record_input(spec, plan, "", execution_mode)
         };

@@ -96,8 +96,12 @@ pub fn check_frontmatter(repo_dir: &Path) -> Vec<DoctorCheck> {
     let paths = list_markdown(repo_dir, "");
     let mut failures: Vec<String> = Vec::new();
     for path in &paths {
-        let Ok(content) = std::fs::read_to_string(repo_dir.join(path)) else {
-            continue;
+        let content = match std::fs::read_to_string(repo_dir.join(path)) {
+            Ok(content) => content,
+            Err(error) => {
+                failures.push(format!("{path} (unreadable: {error})"));
+                continue;
+            }
         };
         if let Err(error) = parse_memory_file(&content) {
             failures.push(format!("{path} ({error})"));

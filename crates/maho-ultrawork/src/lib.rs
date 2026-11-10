@@ -15,7 +15,7 @@ mod texts;
 
 pub use classify::{
     Classification, ClassifyInput, KeywordSpan, Route, Stage, Suppression, classify,
-    has_visible_keyword, visible_keyword_spans,
+    classify_with_session_role, has_visible_keyword, visible_keyword_spans,
 };
 pub use engine::{Engine, InputOutcome, InputRequest, TodoResultView};
 pub use extension::{DISABLE_FLAG, UltraworkExtension};

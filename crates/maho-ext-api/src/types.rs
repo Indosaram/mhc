@@ -3599,6 +3599,7 @@ pub struct TreePreparation {
 }
 pub enum EventResult {
     None,
+    Boundary(BoundaryResult),
     ProjectTrust(ProjectTrustEventResult),
     ResourcesDiscover(ResourcesDiscoverResult),
     SessionBefore(SessionBeforeEventResult),

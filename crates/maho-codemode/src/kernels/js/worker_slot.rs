@@ -147,7 +147,8 @@ impl WorkerSlot {
             return Ok(WorkerRetirement::Terminated);
         };
         let children = self.child_pids.drain().collect::<Vec<_>>();
-        if let Some(owner) = worker.pid() {
+        // `pid()` is `None` once the child has been reaped, but the group outlives it.
+        if let Some(owner) = worker.group_pid() {
             super::process_tree_host::terminate_process_trees(
                 &children,
                 super::process_tree_host::TerminateProcessTreesOptions {

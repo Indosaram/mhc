@@ -330,6 +330,15 @@ pub fn omo_components(
             .register(api);
         },
     ));
+    components.push(component(
+        "computer-use",
+        maho_omo_computer_use::ComputerUseComponent::new(
+            maho_omo_computer_use::ComputerUseComponentOptions {
+                env: Some(options.env.clone()),
+                ..Default::default()
+            },
+        ),
+    ));
     let feedback_env = options.env.clone();
     let feedback_state_dir = options.state_dir.clone();
     components.push(OmoSenpiComponent::from_context_register(
@@ -356,6 +365,10 @@ pub fn omo_components(
         "desktop-toolkit",
         maho_omo_desktop_toolkit::DesktopToolkitComponent::default(),
     ));
+    components.push(component(
+        "claude-code",
+        maho_omo_claude_code::ClaudeCodeComponent,
+    ));
     components.push(OmoSenpiComponent::from_context_register(
         "lsp",
         |api, runtime| {
@@ -367,6 +380,10 @@ pub fn omo_components(
         },
     ));
     components.push(task);
+    components.push(component(
+        "thread",
+        maho_omo_gateway::thread::native::NativeThreadComponent,
+    ));
     components.push(memory);
     components.push(component(
         "gateway",
@@ -433,11 +450,14 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "ast-grep",
         "builtin-mcps",
         "x-search",
+        "computer-use",
         "feedback",
         "browser-bridge",
         "desktop-toolkit",
+        "claude-code",
         "lsp",
         "task",
+        "thread",
         "memory",
         "gateway",
         "config-watch",

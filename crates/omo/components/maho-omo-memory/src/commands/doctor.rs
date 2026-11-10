@@ -108,6 +108,30 @@ pub async fn handle_doctor(
         ));
         checks.push(check_tokens(&identity.identity_paths.repo, warn_tokens));
         checks.push(check_disk(&identity));
+        match memory_core::audit::audit::audit_memory_repo(
+            &identity.identity_paths.repo,
+            &memory_core::audit::audit::MemoryAuditOptions::default(),
+        ) {
+            Ok(report) if report.issues.is_empty() => checks.push(DoctorCheck {
+                name: "audit".to_owned(),
+                level: CheckLevel::Ok,
+                detail: "no structural findings".to_owned(),
+            }),
+            Ok(report) => checks.extend(report.issues.into_iter().map(|issue| DoctorCheck {
+                name: format!("audit:{}", issue.code),
+                level: if matches!(issue.code.as_str(), "file_unreadable" | "frontmatter_invalid") {
+                    CheckLevel::Fail
+                } else {
+                    CheckLevel::Warn
+                },
+                detail: format!("{}: {}", issue.path, issue.detail),
+            })),
+            Err(error) => checks.push(DoctorCheck {
+                name: "audit:unreadable".to_owned(),
+                level: CheckLevel::Fail,
+                detail: error.to_string(),
+            }),
+        }
 
         if let Some(facts) = check_facts(deps, &identity) {
             checks.push(facts);

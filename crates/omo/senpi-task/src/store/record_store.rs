@@ -138,6 +138,7 @@ pub struct TaskRecordStore {
     task_changes:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TaskChangeSignal>>>,
     list_cache: ListCache,
+    config_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// A task's commit sequence plus the condvar that wakes its waiters.
@@ -159,14 +160,84 @@ enum WriteMode {
 impl TaskRecordStore {
     pub fn new(config: &StateDirConfig) -> Self {
         let state_dir = resolve_state_dir(config);
-        Self {
+        let store = Self {
             list_cache: shared_list_cache(&state_dir),
             state_dir,
             record_listener: Default::default(),
             mutation_listener: Default::default(),
             write_listener: Default::default(),
             task_changes: Default::default(),
+            config_generation: Default::default(),
+        };
+        let mut options = omo_config_core::default_load_options();
+        options.cwd = Some(config.project_dir.to_string_lossy().into_owned());
+        let resolved = omo_config_core::load_omo_config(&options);
+        if let Err(error) = store.bind_config(&Value::Object(resolved.config)) {
+            utils::logger::log(
+                "senpi-task failed to record config generation mismatches",
+                Some(&serde_json::json!({ "error": error.to_string() })),
+            );
         }
+        store
+    }
+
+    /// A content-addressed generation of the resolved omo config, shared by store clones.
+    /// Zero is the initial generation before a host binds its configuration.
+    pub fn config_generation(&self) -> u64 {
+        self.config_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn bind_config(&self, config: &Value) -> Result<(), StoreError> {
+        use sha2::{Digest, Sha256};
+        // Sort objects recursively: JSON key order is not a configuration change.
+        fn canonical(value: &Value) -> Value {
+            match value {
+                Value::Object(entries) => Value::Object(
+                    entries
+                        .iter()
+                        .map(|(key, value)| (key.clone(), canonical(value)))
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                        .into_iter()
+                        .collect(),
+                ),
+                Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
+                other => other.clone(),
+            }
+        }
+        let hash = Sha256::digest(canonical(config).to_string().as_bytes());
+        // Keep the generation exactly representable by JSON/JavaScript numbers.
+        let generation = hash[..6]
+            .iter()
+            .fold(0_u64, |acc, byte| (acc << 8) | u64::from(*byte))
+            + 1;
+        if self
+            .config_generation
+            .swap(generation, std::sync::atomic::Ordering::AcqRel)
+            == generation
+        {
+            return Ok(());
+        }
+        for record in self.list()?.records {
+            if let Some(stored) = record.config_generation
+                && stored != generation
+            {
+                self.append_event(
+                    &record.task_id,
+                    &PersistedTaskEvent {
+                        event_type:
+                            crate::workpool::types::WorkpoolErrorCode::ConfigGenerationMismatch
+                                .as_str()
+                                .into(),
+                        payload: serde_json::json!({
+                            "stored_generation": stored,
+                            "current_generation": generation,
+                        }),
+                    },
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn resident_figures(&self) -> TaskRecordStoreResidentFigures {

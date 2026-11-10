@@ -48,8 +48,13 @@ impl Extension for UltraworkExtension {
         });
 
         let (engine, off) = (self.engine.clone(), Arc::clone(&disabled));
+        let session_role = api.profile.session_context.get("role").cloned();
         let on_input: ExtensionHandler = Arc::new(move |event, ctx| {
             let (engine, off) = (engine.clone(), Arc::clone(&off));
+            let session_role = session_role.clone().filter(|role| !role.is_empty())
+                .or_else(|| std::env::var_os("SENPI_TASK_MEMBER").map(|_| "member".into()))
+                .or_else(|| std::env::var("OMO_SENPI_TASK_RPC_CHILD").ok()
+                    .filter(|value| value == "1").map(|_| "child".into()));
             Box::pin(async move {
                 let input = match event {
                     ExtensionEvent::Input(typed) => typed,
@@ -59,7 +64,7 @@ impl Extension for UltraworkExtension {
                     return Ok(EventResult::Input(InputEventResult::Continue));
                 }
                 let session = session_of(ctx);
-                let outcome = engine.on_input(
+                let outcome = engine.on_input_with_session_role(
                     InputRequest {
                         session: &session,
                         text: &input.text,
@@ -67,6 +72,7 @@ impl Extension for UltraworkExtension {
                         streaming: input.streaming_behavior.is_some(),
                     },
                     false,
+                    session_role.as_deref(),
                 );
                 Ok(EventResult::Input(match outcome.transformed_text {
                     Some(text) => InputEventResult::Transform {

@@ -312,6 +312,57 @@ fn line_of(value: &Value) -> String {
     serialize_json_line(value).unwrap_or_else(|_| format!("{value}\n"))
 }
 
+// Bound both the number and size of queued records. A saturated connection is closed
+// rather than awaiting capacity in the reader/authentication pump.
+const MAX_PENDING_BYTES: usize = MAX_RPC_LINE_CHARACTERS * 4;
+
+/// A peer that stops draining its socket must not pin the writer task forever: the queued
+/// byte budget is finite, and the pump closes the connection once it is spent.
+const WRITE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+struct PublicWriter {
+    sender: tokio::sync::mpsc::Sender<(Vec<u8>, tokio::sync::OwnedSemaphorePermit)>,
+    budget: Arc<tokio::sync::Semaphore>,
+}
+
+impl PublicWriter {
+    fn try_send(&self, bytes: Vec<u8>) -> Result<(), ()> {
+        let count = u32::try_from(bytes.len()).map_err(|_| ())?;
+        let permit = self
+            .budget
+            .clone()
+            .try_acquire_many_owned(count)
+            .map_err(|_| ())?;
+        self.sender.try_send((bytes, permit)).map_err(|_| ())
+    }
+
+    async fn closed(&self) {
+        self.sender.closed().await;
+    }
+}
+
+fn public_writer<W>(mut writer: W) -> PublicWriter
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (sender, mut receiver) =
+        tokio::sync::mpsc::channel::<(Vec<u8>, tokio::sync::OwnedSemaphorePermit)>(8);
+    tokio::spawn(async move {
+        while let Some((bytes, _permit)) = receiver.recv().await {
+            // Keep the byte budget charged until the in-flight write completes.
+            let written = tokio::time::timeout(WRITE_STALL_TIMEOUT, writer.write_all(&bytes)).await;
+            if !matches!(written, Ok(Ok(()))) {
+                return;
+            }
+        }
+        let _ = writer.shutdown().await;
+    });
+    PublicWriter {
+        sender,
+        budget: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_BYTES)),
+    }
+}
+
 /// senpi `PublicRpcConnection.stream`: drives the filter on `socket` and returns the admitted duplex. The router
 /// reads released frames from it; whatever it writes passes `response` on its way to the client. Released frames
 /// already queued when the peer goes away are still delivered, then the view ends.
@@ -326,8 +377,10 @@ where
     let (view, far) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         let mut auth = PublicRpcConnection::new(endpoint, require_token);
-        let (mut socket_read, mut socket_write) = tokio::io::split(socket);
-        let (mut far_read, mut far_write) = tokio::io::split(far);
+        let (mut socket_read, socket_write) = tokio::io::split(socket);
+        let (mut far_read, far_write) = tokio::io::split(far);
+        let socket_output = public_writer(socket_write);
+        let mut router_output = Some(public_writer(far_write));
         let mut lines = match JsonlLineReader::new(MAX_RPC_LINE_CHARACTERS) {
             Ok(lines) => lines,
             Err(_) => return,
@@ -348,20 +401,30 @@ where
                     if auth.active { continue; }
                     if let Err(reason) = auth.deadline() { auth.drop_connection(reason); break 'pump; }
                 }
+                () = socket_output.closed() => break 'pump,
                 read = socket_read.read(&mut chunk), if input_open => {
                     let count = read.unwrap_or_default();
                     if count == 0 {
                         auth.closed();
                         input_open = false;
+                        let mut forwarded = Vec::new();
                         for record in lines.finish() {
                             if let LineRecord::Line(line) = record
                                 && let PublicLine::Forward(line) = auth.line(&line)
-                                && far_write.write_all(format!("{line}\n").as_bytes()).await.is_err()
-                            { break 'pump; }
+                            {
+                                forwarded.extend_from_slice(line.as_bytes());
+                                forwarded.push(b'\n');
+                            }
                         }
-                        let _ = far_write.shutdown().await;
+                        if let Some(sender) = router_output.take()
+                            && !forwarded.is_empty()
+                            && sender.try_send(forwarded).is_err()
+                        { break 'pump; }
                         continue;
                     }
+                    let mut forwarded = Vec::new();
+                    let mut replies = Vec::new();
+                    let mut refused = false;
                     // Feed a coalesced chunk one LF segment at a time: proof verification can remove the 8 KiB
                     // budget before a large authenticated command in that same chunk.
                     for segment in chunk[..count].split_inclusive(|byte| *byte == b'\n') {
@@ -378,21 +441,27 @@ where
                                 }
                                 LineRecord::Line(line) => match auth.line(&line) {
                                     PublicLine::Forward(line) => {
-                                        if far_write.write_all(format!("{line}\n").as_bytes()).await.is_err() { break 'pump; }
+                                        forwarded.extend_from_slice(line.as_bytes());
+                                        forwarded.push(b'\n');
                                     }
                                     PublicLine::Reply(reply) => {
-                                        if socket_write.write_all(reply.as_bytes()).await.is_err() { break 'pump; }
+                                        replies.extend_from_slice(reply.as_bytes());
                                     }
                                     PublicLine::Refuse(reply) => {
-                                        let _ = socket_write.write_all(reply.as_bytes()).await;
-                                        let _ = socket_write.shutdown().await;
-                                        break 'pump;
+                                        replies.extend_from_slice(reply.as_bytes());
+                                        refused = true;
                                     }
                                     PublicLine::Ignore => {}
                                 },
                             }
                         }
+                        if refused { break; }
                     }
+                    if !forwarded.is_empty()
+                        && router_output.as_ref().is_none_or(|sender| sender.try_send(forwarded).is_err())
+                    { break 'pump; }
+                    if !replies.is_empty() && socket_output.try_send(replies).is_err() { break 'pump; }
+                    if refused { break 'pump; }
                 }
                 read = far_read.read(&mut back) => {
                     let count = read.unwrap_or_default();
@@ -400,17 +469,20 @@ where
                         let rest = std::mem::take(&mut outgoing);
                         if !rest.is_empty() {
                             let output = auth.response(&String::from_utf8_lossy(&rest));
-                            let _ = socket_write.write_all(output.as_bytes()).await;
+                            if socket_output.try_send(output.into_bytes()).is_err() { break 'pump; }
                         }
-                        let _ = socket_write.shutdown().await;
                         break 'pump;
                     }
                     // Bytes, not text: a UTF-8 sequence split across reads stays whole until its record completes.
+                    if outgoing.len() + count > MAX_PENDING_BYTES {
+                        auth.drop_connection("pending output over the byte limit");
+                        break 'pump;
+                    }
                     outgoing.extend_from_slice(&back[..count]);
                     if let Some(end) = outgoing.iter().rposition(|byte| *byte == b'\n') {
                         let complete: Vec<u8> = outgoing.drain(..=end).collect();
                         let output = auth.response(&String::from_utf8_lossy(&complete));
-                        if !output.is_empty() && socket_write.write_all(output.as_bytes()).await.is_err() { break 'pump; }
+                        if !output.is_empty() && socket_output.try_send(output.into_bytes()).is_err() { break 'pump; }
                     }
                 }
             }

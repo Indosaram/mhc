@@ -35,7 +35,9 @@ use maho_ext_api::{
     EventKind, EventResult, ExtensionApi, ExtensionEvent, InputDisposition, InputSource,
     StreamingBehavior,
 };
-use maho_ultrawork::{Classification, ClassifyInput, Stage, Suppression, classify, snapshot};
+use maho_ultrawork::{
+    Classification, ClassifyInput, Stage, Suppression, classify_with_session_role, snapshot,
+};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -50,13 +52,21 @@ struct PromptClassification {
     stage: &'static str,
     suppression_reason: &'static str,
 }
-fn classify_prompt(text: &str, source: InputSource, session: &str) -> PromptClassification {
-    let c: Classification = classify(ClassifyInput {
-        text,
-        source,
-        snapshot: snapshot(session),
-        disabled: false,
-    });
+fn classify_prompt(
+    text: &str,
+    source: InputSource,
+    session: &str,
+    session_role: Option<&str>,
+) -> PromptClassification {
+    let c: Classification = classify_with_session_role(
+        ClassifyInput {
+            text,
+            source,
+            snapshot: snapshot(session),
+            disabled: false,
+        },
+        session_role,
+    );
     PromptClassification {
         matched_ulw: c.short_form_seen,
         matched_ultrawork: c.long_form_seen,
@@ -77,6 +87,7 @@ fn classify_prompt(text: &str, source: InputSource, session: &str) -> PromptClas
             Some(Suppression::EmbeddedDirective) => "embedded_directive",
             Some(Suppression::HandledBySkill) => "skill_expansion",
             Some(Suppression::SkillWithoutKeyword) => "skill_name_only",
+            Some(Suppression::ChildSession) => "child_session",
         },
     }
 }
@@ -118,6 +129,23 @@ pub fn register_omo_native_prompt_telemetry(
     hash: Arc<dyn Fn(&str) -> String + Send + Sync>,
     capture: crate::omo_native_parallel_summary::SummaryCapture,
 ) {
+    // Resolve the delegated role the same way the ultrawork extension does, so telemetry
+    // reports suppression for the prompts a child session actually loses.
+    let session_role: Option<String> = api
+        .profile
+        .session_context
+        .get("role")
+        .cloned()
+        .filter(|role| !role.is_empty())
+        .or_else(|| {
+            std::env::var_os("SENPI_TASK_MEMBER").map(|_| "member".to_string())
+        })
+        .or_else(|| {
+            std::env::var("OMO_SENPI_TASK_RPC_CHILD")
+                .ok()
+                .filter(|value| value == "1")
+                .map(|_| "child".to_string())
+        });
     let state = Arc::new(Mutex::new(PromptState::default()));
     let inputs = Arc::clone(&state);
     api.on(
@@ -142,7 +170,12 @@ pub fn register_omo_native_prompt_telemetry(
                     state.pending.insert(
                         input.input_id.clone(),
                         PendingPrompt {
-                            classification: classify_prompt(&input.text, input.source, id),
+                            classification: classify_prompt(
+                                &input.text,
+                                input.source,
+                                id,
+                                session_role.as_deref(),
+                            ),
                             source: input.source,
                             ordinal,
                             length: input.text.encode_utf16().count(),

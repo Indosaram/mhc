@@ -1,14 +1,11 @@
 //! Lifecycle decisions: what to inject on a prompt, a turn start, a compaction and a todo result.
 
-use crate::classify::{Classification, ClassifyInput, Stage, classify};
+use crate::classify::{Classification, ClassifyInput, Stage, classify_with_session_role};
 use crate::state::{PendingDirective, Sessions};
 use crate::texts::{directive_message, inline_block, reminder_message, todo_advisory};
 use maho_ext_api::{CustomMessage, InputSource};
 use serde_json::Value;
 use std::sync::Arc;
-
-/// Minimum number of items in a freshly created list before the sizing advisory fires.
-const TODO_REMINDER_MIN_ITEMS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct InputRequest<'a> {
@@ -56,13 +53,25 @@ impl Engine {
     }
 
     pub fn on_input(&self, request: InputRequest<'_>, disabled: bool) -> InputOutcome {
+        self.on_input_with_session_role(request, disabled, None)
+    }
+
+    pub fn on_input_with_session_role(
+        &self,
+        request: InputRequest<'_>,
+        disabled: bool,
+        session_role: Option<&str>,
+    ) -> InputOutcome {
         let snapshot = self.sessions.snapshot(request.session);
-        let classification = classify(ClassifyInput {
-            text: request.text,
-            source: request.source,
-            snapshot,
-            disabled,
-        });
+        let classification = classify_with_session_role(
+            ClassifyInput {
+                text: request.text,
+                source: request.source,
+                snapshot,
+                disabled,
+            },
+            session_role,
+        );
         let mut outcome = InputOutcome {
             classification,
             transformed_text: None,
@@ -125,8 +134,7 @@ impl Engine {
         let snapshot = self.sessions.snapshot(view.session);
         // After a compaction the session counts as armed until the next mention re-arms it.
         let armed = snapshot.armed || snapshot.compaction_pending;
-        if details.get("op").and_then(Value::as_str) != Some("init")
-            || task_count(details) < TODO_REMINDER_MIN_ITEMS
+        if !matches!(details.get("op").and_then(Value::as_str), Some("init" | "append"))
             || !armed
         {
             return None;
@@ -135,17 +143,4 @@ impl Engine {
             .latch_todo_reminder(view.session)
             .then(todo_advisory)
     }
-}
-
-fn task_count(details: &Value) -> usize {
-    details
-        .get("phases")
-        .and_then(Value::as_array)
-        .map_or(0, |phases| {
-            phases
-                .iter()
-                .filter_map(|phase| phase.get("tasks").and_then(Value::as_array))
-                .map(Vec::len)
-                .sum()
-        })
 }

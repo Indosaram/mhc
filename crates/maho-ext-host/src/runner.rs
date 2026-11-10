@@ -2282,6 +2282,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let kind = event.kind();
         let mut result = EventResult::None;
+        let mut boundary = maho_ext_api::BoundaryResult::default();
         if kind == EventKind::SessionShutdown
             && self.has_handlers(kind)
             && let Some(resolve) = &self.shutdown_budget
@@ -2349,6 +2350,21 @@ impl ExtensionRunner {
             };
             self.runtime.assert_active()?;
             match handled {
+                Ok(EventResult::Boundary(next))
+                    if matches!(kind, EventKind::TurnEnd | EventKind::AgentBeforeSettle) =>
+                {
+                    if let ExtensionEvent::AgentBeforeSettle { entries, should_continue, .. } = &mut event {
+                        for draft in next.entries.unwrap_or_default() {
+                            entries.push(serde_json::to_value(draft).map_err(|error| ExtensionFailure::new(error.to_string()))?);
+                        }
+                        *should_continue |= next.should_continue == Some(true);
+                    } else {
+                        boundary.entries.get_or_insert_with(Vec::new).extend(next.entries.unwrap_or_default());
+                        if next.should_continue == Some(true) {
+                            boundary.should_continue = Some(true);
+                        }
+                    }
+                }
                 Ok(next) => {
                     if kind.is_session_before()
                         && let EventResult::SessionBefore(before) = &next
@@ -2365,6 +2381,14 @@ impl ExtensionRunner {
         }
         if quit_deadline.is_some() {
             (self.shutdown_warn_ms, self.shutdown_timeout_ms) = (base_warn_ms, base_timeout_ms);
+        }
+        if let ExtensionEvent::AgentBeforeSettle { entries, should_continue, .. } = event {
+            boundary.entries = Some(entries.into_iter().map(serde_json::from_value).collect::<Result<_, _>>()
+                .map_err(|error| ExtensionFailure::new(format!("invalid boundary draft: {error}")))?);
+            boundary.should_continue = Some(should_continue);
+        }
+        if matches!(kind, EventKind::TurnEnd | EventKind::AgentBeforeSettle) {
+            return Ok(EventResult::Boundary(boundary));
         }
         Ok(result)
     }

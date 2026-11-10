@@ -135,6 +135,10 @@ impl WorkerHost {
     pub fn pid(&self) -> Option<u32> {
         self.process.pid()
     }
+    /// Process-group leader id, retained after the child is reaped so descendants can be killed.
+    pub fn group_pid(&self) -> Option<u32> {
+        self.process.group_pid()
+    }
     pub async fn post_message(&mut self, message: &Value) -> Result<(), ProcessError> {
         self.process.send(message).await.map(|_| ())
     }

@@ -1764,12 +1764,13 @@ impl InteractiveMode {
                 Some(ticket) => Some(ticket.result()?),
                 None => None,
             };
-            Some((scheme.flatten(), detection.background.result()?.background))
+            Some((scheme.flatten(), detection.background.result()?))
         });
-        if let Some((scheme, background)) = settled
+        if let Some((scheme, colors)) = settled
             && let Some(detection) = self.theme_detection.take()
         {
-            self.finish_terminal_theme_detection(detection, scheme, background);
+            crate::theme::registry::set_terminal_colors(&colors);
+            self.finish_terminal_theme_detection(detection, scheme, colors.background);
         }
         let reports = std::mem::take(&mut *self.terminal_color_scheme_reports.borrow_mut());
         for scheme in reports {

@@ -42,7 +42,9 @@ export function createKernelToolPump({ getRuntime, emit, nestedInvokes }) {
 						controller.signal,
 					),
 			);
-			emit({ type: "kernel-tool-invoke-reply", requestId: message.requestId, ok: true, value });
+			// The reply protocol requires `value` to be present; a tool returning
+			// undefined would otherwise serialize the frame without the key.
+			emit({ type: "kernel-tool-invoke-reply", requestId: message.requestId, ok: true, value: value ?? null });
 		} catch (error) {
 			emit({ type: "kernel-tool-invoke-reply", requestId: message.requestId, ok: false, error: pumpError(error) });
 		} finally {

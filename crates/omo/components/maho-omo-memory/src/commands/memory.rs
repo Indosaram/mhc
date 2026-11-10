@@ -70,7 +70,7 @@ fn render_name_section(title: &str, paths: &[String]) -> Vec<String> {
 pub async fn handle_memory(
     deps: &MemoryCommandDeps,
     ctx: &CommandContext,
-    _args: &str,
+    args: &str,
 ) -> CommandResponse {
     let identity = match require_identity(deps, ctx) {
         Ok(identity) => identity,
@@ -89,7 +89,54 @@ pub async fn handle_memory(
         );
     }
 
+    let args = args.trim();
+    if args == "unlock" || args.starts_with("unlock ") {
+        return unlock_memory(deps, ctx, &identity, args[6..].trim()).await;
+    }
     render_memory_view(deps, ctx, &identity)
+}
+
+async fn unlock_memory(
+    deps: &MemoryCommandDeps,
+    ctx: &CommandContext,
+    identity: &MemoryCommandIdentity,
+    raw_path: &str,
+) -> CommandResponse {
+    use memory_core::git::{lock_scans::ProductionLockScans, repo_lock_sweep};
+    if raw_path.is_empty() {
+        return respond(ctx, "usage: /memory unlock <path>", NotifyLevel::Error);
+    }
+    if ctx.session_id.as_deref().and_then(|id| (deps.resolve_context)(id))
+        .is_some_and(|context| context.memory_write_denied)
+    {
+        return respond(ctx, crate::write_policy::memory_write_denied_message("memory unlock"), NotifyLevel::Error);
+    }
+    let repo = match identity.identity_paths.repo.canonicalize() {
+        Ok(repo) => repo,
+        Err(error) => return respond(ctx, error.to_string(), NotifyLevel::Error),
+    };
+    let requested = std::path::Path::new(raw_path);
+    let path = if requested.is_absolute() { requested.to_path_buf() } else { repo.join(requested) };
+    // Canonicalize only the parent: a symlink lock itself is never removable.
+    let path = match path.parent().and_then(|parent| parent.canonicalize().ok()).zip(path.file_name()) {
+        Some((parent, name)) => parent.join(name),
+        None => return respond(ctx, "cannot resolve lock path", NotifyLevel::Error),
+    };
+    let locks = repo_lock_sweep::present_lock_files(&repo.join(".git"));
+    let Some(snapshot) = locks.get(&path) else {
+        return respond(ctx, "path is not a supported regular git lock in this memory repository", NotifyLevel::Error);
+    };
+    if !ctx.is_interactive() {
+        return respond(ctx, "memory unlock requires interactive confirmation", NotifyLevel::Error);
+    }
+    let message = format!("Remove {}? Confirm that no git command or memory session is using this lock. Active users and changes will be checked again before removal.", path.display());
+    if !ctx.ui.confirm("Unlock memory repository", &message).await {
+        return respond(ctx, "memory unlock cancelled", NotifyLevel::Info);
+    }
+    match repo_lock_sweep::unlock_stranded_git_lock(&repo, &path, snapshot, &ProductionLockScans) {
+        Ok(()) => respond(ctx, format!("removed {}", path.display()), NotifyLevel::Info),
+        Err(error) => respond(ctx, format!("lock kept: {error}"), NotifyLevel::Error),
+    }
 }
 
 fn render_memory_view(

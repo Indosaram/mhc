@@ -411,6 +411,9 @@ fn detect_startup_theme_with_registered(
     let mut pending = passthrough;
     pending.append(&mut input.borrow_mut());
     *input.borrow_mut() = pending;
+    if let Some(colors) = colors.result() {
+        maho_interactive::theme::registry::set_terminal_colors(&colors);
+    }
     let terminal_theme = detect_terminal_theme_for_auto(
         scheme.result().flatten().map(|scheme| match scheme {
             TerminalColorScheme::Light => TerminalTheme::Light,
@@ -526,6 +529,7 @@ pub fn create_system_theme(
     terminal: maho_interactive::theme::TerminalTheme,
     mode: ColorMode,
 ) -> Result<Theme, String> {
+    maho_interactive::theme::registry::set_terminal_colors(colors);
     use maho_interactive::theme::system_theme::{
         SYSTEM_THEME_NAME, SystemColor, SystemThemeInput, generate_system_theme_colors,
     };
@@ -588,6 +592,7 @@ impl StartupThemes {
     }
     /// senpi `setTerminalColors`.
     fn set_terminal_colors(&mut self, colors: maho_tui::terminal_colors::TerminalColors) {
+        maho_interactive::theme::registry::set_terminal_colors(&colors);
         self.colors = colors;
         self.colors_pending = false;
     }

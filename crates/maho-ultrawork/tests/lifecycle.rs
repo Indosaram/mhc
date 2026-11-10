@@ -197,14 +197,17 @@ fn mass_mode_attaches_inline_block_without_file_reads() {
 }
 
 #[test]
-fn todo_reminder_needs_armed_session_init_and_three_items() {
+fn todo_reminder_fires_on_armed_session_init_or_append() {
     let engine = engine();
     assert!(!todo(&engine, "s", &init(3)), "unarmed");
     engine.sessions().mark_armed("s");
-    assert!(!todo(&engine, "s", &init(2)), "two items");
+    assert!(todo(&engine, "s", &init(2)), "armed init fires at any size");
+    assert!(!todo(&engine, "s", &init(5)), "single latch");
+    engine.on_compaction("s");
     let mut append = init(4);
     append["op"] = json!("append");
-    assert!(!todo(&engine, "s", &append), "append");
+    assert!(todo(&engine, "s", &append), "append fires after rearm");
+    engine.on_compaction("s");
     let errored = init(4);
     let view = TodoResultView {
         session: "s",
@@ -220,7 +223,10 @@ fn todo_reminder_needs_armed_session_init_and_three_items() {
         details: Some(&errored),
     };
     assert!(engine.on_tool_result(other, false).is_none(), "other tool");
-    assert!(todo(&engine, "s", &init(3)), "three items fire");
+    assert!(
+        todo(&engine, "s", &init(1)),
+        "a single-item init also fires"
+    );
     assert!(!todo(&engine, "s", &init(5)), "single latch");
 }
 

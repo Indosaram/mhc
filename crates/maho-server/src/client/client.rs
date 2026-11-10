@@ -15,6 +15,12 @@ use std::{
 use tokio::sync::{mpsc, oneshot, watch};
 
 type Reply = oneshot::Sender<Result<Option<Value>, ClientError>>;
+/// A request's id, its reply receiver, and the encoded frame awaiting transport send.
+type RequestRegistration = (
+    String,
+    oneshot::Receiver<Result<Option<Value>, ClientError>>,
+    Vec<u8>,
+);
 type ConnectionListener = Arc<dyn Fn(ConnectionStateChange) + Send + Sync>;
 type AttachmentListener = Arc<dyn Fn(Option<Value>) + Send + Sync>;
 type ListenerErrorObserver = Arc<dyn Fn(ClientError) + Send + Sync>;
@@ -55,6 +61,21 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// A listener panic must not disappear: report it to the configured observer.
+fn report_listener_panic(state: &Mutex<State>, panic: Box<dyn std::any::Any + Send>) {
+    let observer = lock(state).listener_error.clone();
+    let Some(observer) = observer else {
+        return;
+    };
+    let detail = panic
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned());
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        observer(ClientError::ListenerPanic(detail))
+    }));
 }
 
 impl Client {
@@ -117,7 +138,13 @@ impl Client {
                     };
                     if before != after {
                         for listener in listeners {
-                            listener(after.clone());
+                            if let Err(panic) =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    listener(after.clone())
+                                }))
+                            {
+                                report_listener_panic(&message_state, panic);
+                            }
                         }
                     }
                     Ok(())
@@ -146,7 +173,13 @@ impl Client {
                         drop(state);
                         if detached {
                             for listener in listeners {
-                                listener(None);
+                                if let Err(panic) =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        listener(None)
+                                    }))
+                                {
+                                    report_listener_panic(&change_state, panic);
+                                }
                             }
                         }
                         attachment_changes.send_if_modified(|v| {
@@ -165,7 +198,13 @@ impl Client {
                         .cloned()
                         .collect::<Vec<_>>();
                     for listener in listeners {
-                        listener(change.clone());
+                        if let Err(panic) =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                listener(change.clone())
+                            }))
+                        {
+                            report_listener_panic(&change_state, panic);
+                        }
                     }
                 }),
             },
@@ -265,13 +304,23 @@ impl Client {
     pub fn report_listener_error(&self, error: ClientError) {
         let observer = lock(&self.state).listener_error.clone();
         if let Some(observer) = observer {
-            observer(error);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(error)));
         }
     }
     pub async fn request(
         &self,
         target: Value,
         call: Value,
+        cancellation: Option<watch::Receiver<Option<ClientError>>>,
+    ) -> Result<Option<Value>, ClientError> {
+        self.request_with_subscription(target, call, None, cancellation)
+            .await
+    }
+    async fn request_with_subscription(
+        &self,
+        target: Value,
+        call: Value,
+        subscription: Option<maho_chord::types::JsString>,
         mut cancellation: Option<watch::Receiver<Option<ClientError>>>,
     ) -> Result<Option<Value>, ClientError> {
         if let Some(cancel) = &cancellation
@@ -279,41 +328,59 @@ impl Client {
         {
             return Err(reason);
         }
-        let (id, rx) = self.begin_request(target.clone(), call, None).await?;
+        let (id, rx, frame) = self.begin_request(target.clone(), call, subscription)?;
+        let connection = self.connection.clone();
+        let state = self.state.clone();
+        let request_id = id.clone();
+        // Keep an in-flight write alive: dropping it could leave a partial wire frame.
+        let send = tokio::spawn(async move {
+            if let Err(error) = connection.send(&frame).await {
+                if let Some(pending) = lock(&state).pending.remove(&request_id)
+                    && let Some(reply) = pending.reply
+                {
+                    let _ = reply.send(Err(error));
+                }
+                return false;
+            }
+            true
+        });
         if let Some(cancel) = cancellation.as_mut() {
             tokio::select! {
-                result=rx=>result.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?,
+                biased;
                 reason=async {
-                    // A dropped sender never aborts, matching an AbortSignal that is never fired.
                     let changed=cancel.wait_for(|v| v.is_some()).await.map(|value| value.clone());
                     match changed { Ok(value)=>value, Err(_)=>std::future::pending().await }
                 }=>{
                     let reason=reason.unwrap_or_else(|| ClientError::Disconnected("The operation was aborted".into()));
-                    if let Some(request)=lock(&self.state).pending.get_mut(&id) { request.reply=None; }
-                    if self.connected() {
-                        let frame=encode_client_message(&json!({"type":"cancel","id":id,"target":target}),self.connection.max_frame_length())?;
-                        self.connection.send(&frame).await?;
+                    if let Some(request)=lock(&self.state).pending.get_mut(&id) {
+                        request.reply=None;
+                        request.subscription=None;
                     }
+                    let connection = self.connection.clone();
+                    tokio::spawn(async move {
+                        // Serialize cancellation after the request without delaying the caller.
+                        if matches!(send.await, Ok(true)) {
+                            match encode_client_message(&json!({"type":"cancel","id":id,"target":target}), connection.max_frame_length()) {
+                                Ok(frame) => { if let Err(error) = connection.send(&frame).await { connection.fail(error); } }
+                                Err(error) => connection.fail(error.into()),
+                            }
+                        }
+                    });
                     Err(reason)
-                }
+                },
+                result=rx=>result.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?,
             }
         } else {
             rx.await
                 .map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?
         }
     }
-    async fn begin_request(
+    fn begin_request(
         &self,
         target: Value,
         call: Value,
         subscription: Option<maho_chord::types::JsString>,
-    ) -> Result<
-        (
-            String,
-            oneshot::Receiver<Result<Option<Value>, ClientError>>,
-        ),
-        ClientError,
-    > {
+    ) -> Result<RequestRegistration, ClientError> {
         let (tx, rx) = oneshot::channel();
         let id = {
             let mut state = lock(&self.state);
@@ -338,8 +405,7 @@ impl Client {
                 subscription,
             },
         );
-        self.connection.send(&frame).await?;
-        Ok((id, rx))
+        Ok((id, rx, frame))
     }
     pub async fn service_catalogue(&self, target: Value) -> Result<Value, ClientError> {
         let result = self
@@ -370,7 +436,7 @@ impl Client {
         target: Value,
         service_id: &maho_chord::types::JsString,
         mode: maho_chord::types::ServiceMode,
-        mut cancellation: Option<watch::Receiver<Option<ClientError>>>,
+        cancellation: Option<watch::Receiver<Option<ClientError>>>,
     ) -> Result<ServiceSubscription, ClientError> {
         if let Some(reason) = cancellation
             .as_ref()
@@ -399,24 +465,12 @@ impl Client {
             );
             id
         };
-        let result=async {
-            let call=super::service_wire::create_service_subscribe_call(&id,service_id,mode)?;
-            let (request_id,reply)=self.begin_request(target.clone(),call,Some(id.clone())).await?;
-            if let Some(signal)=cancellation.as_mut() {
-                tokio::select! {
-                    result=reply=>result.map_err(|_|ClientError::Disconnected("Client is disconnected".into()))?,
-                    reason=async {
-                        // A dropped sender never aborts, matching an AbortSignal that is never fired.
-                        let changed=signal.wait_for(|v|v.is_some()).await.map(|v|v.clone());
-                        match changed { Ok(value)=>value, Err(_)=>std::future::pending().await }
-                    }=>{
-                        if let Some(pending)=lock(&self.state).pending.get_mut(&request_id) {pending.reply=None;pending.subscription=None;}
-                        if self.connected() {let frame=encode_client_message(&json!({"type":"cancel","id":request_id,"target":target}),self.connection.max_frame_length())?;self.connection.send(&frame).await?;}
-                        Err(reason.unwrap_or_else(||ClientError::Disconnected("The operation was aborted".into())))
-                    }
-                }
-            } else {reply.await.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?}
-        }.await;
+        let result = async {
+            let call = super::service_wire::create_service_subscribe_call(&id, service_id, mode)?;
+            self.request_with_subscription(target.clone(), call, Some(id.clone()), cancellation)
+                .await
+        }
+        .await;
         match result {
             Ok(Some(snapshot)) => Ok(ServiceSubscription {
                 id,

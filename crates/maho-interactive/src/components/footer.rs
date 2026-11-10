@@ -472,7 +472,7 @@ impl FooterComponent {
             .session_name
             .as_deref()
             .filter(|n| !n.is_empty())
-            .map(|n| FooterGroup::run("session ", ThemeColor::Muted).with(n, ThemeColor::Muted));
+            .map(|n| FooterGroup::run(n, ThemeColor::Muted));
         let cost = self.cost_group();
         let ctx = self.context_group();
         let cache = self.cache_group();
@@ -743,6 +743,19 @@ mod tests {
         snapshot.cost = 0.004;
         snapshot.subagent_cost = None;
         assert!(plain(&snapshot, 160)[0].contains("$0.004   ctx"));
+    }
+
+    #[test]
+    fn session_name_renders_without_a_label() {
+        let snapshot = FooterSnapshot {
+            cwd: "/tmp/project".into(),
+            branch: Some("main".into()),
+            session_name: Some("parity".into()),
+            ..Default::default()
+        };
+        let line = &plain(&snapshot, 200)[0];
+        assert!(line.contains("main   parity"), "{line}");
+        assert!(!line.contains("session "), "{line}");
     }
 
     #[test]

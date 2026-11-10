@@ -101,10 +101,12 @@ impl Connection {
             });
             id
         };
-        (self.options.on_state_change)(ConnectionStateChange {
-            state: ConnectionState::Connecting,
-            error: None,
-        });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.options.on_state_change)(ConnectionStateChange {
+                state: ConnectionState::Connecting,
+                error: None,
+            });
+        }));
         let weak = Arc::downgrade(self);
         let close_weak = weak.clone();
         let error_weak = weak.clone();
@@ -207,10 +209,12 @@ impl Connection {
                 Ok(()) | Err(_) => {}
             }
         }
-        (self.options.on_state_change)(ConnectionStateChange {
-            state: ConnectionState::Disconnected,
-            error: Some(error),
-        });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.options.on_state_change)(ConnectionStateChange {
+                state: ConnectionState::Disconnected,
+                error: Some(error),
+            });
+        }));
         if let Some(transport) = active.transport {
             transport.close();
         }
@@ -302,14 +306,19 @@ impl Connection {
                         }
                     }
                 }
-                (self.options.on_handshake)(&message)?;
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    (self.options.on_handshake)(&message)
+                }))
+                .map_err(|_| ClientError::Protocol("Handshake listener panicked".into()))??;
                 if !self.current(id) {
                     return Ok(());
                 }
-                (self.options.on_state_change)(ConnectionStateChange {
-                    state: ConnectionState::Connected,
-                    error: None,
-                });
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    (self.options.on_state_change)(ConnectionStateChange {
+                        state: ConnectionState::Connected,
+                        error: None,
+                    });
+                }));
                 let handshake = {
                     let mut inner = self.lock();
                     match &mut inner.lifecycle {
@@ -332,7 +341,10 @@ impl Connection {
                 {
                     return Err(ClientError::Protocol("Unexpected handshake message".into()));
                 }
-                (self.options.on_message)(message)
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    (self.options.on_message)(message)
+                }))
+                .map_err(|_| ClientError::Protocol("Message listener panicked".into()))?
             }
         }
     }

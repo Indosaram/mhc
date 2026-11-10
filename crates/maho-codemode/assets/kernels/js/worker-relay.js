@@ -6,10 +6,11 @@
 // usage: bun worker-relay.js <worker entry> <cwd> <parallel pool width>
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
+import { encodeFrameValues, reviveFrameValues } from "./frame-values.js";
 
 const [entry, cwd, poolWidth] = process.argv.slice(2);
 const worker = new Worker(entry, { workerData: { cwd, parallelPoolWidth: Number(poolWidth) } });
-const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+const write = (message) => process.stdout.write(`${JSON.stringify(encodeFrameValues(message))}\n`);
 
 // Loaded on the first WebView a cell asks for, so starting a kernel never pays for the service.
 let webViews;
@@ -38,5 +39,5 @@ worker.on("exit", async (code) => {
 	process.stdout.write("", () => process.exit(code));
 });
 const input = createInterface({ input: process.stdin });
-input.on("line", (line) => worker.postMessage(JSON.parse(line)));
+input.on("line", (line) => worker.postMessage(reviveFrameValues(JSON.parse(line))));
 input.on("close", () => worker.terminate());

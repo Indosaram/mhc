@@ -164,6 +164,7 @@ pub fn register_memory_static(
         },
     );
     crate::write_policy::register_memory_write_guard(api, options.resolve_context.clone());
+    crate::memory_usage::register_memory_usage(api, options.skills_usage.clone(), options.warn.clone());
     crate::guard::register_memory_guard(
         api,
         options.resolve_context.clone(),

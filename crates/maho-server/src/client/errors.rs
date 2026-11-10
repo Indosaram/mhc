@@ -17,6 +17,8 @@ pub enum ClientError {
     Protocol(String),
     #[error("{0}")]
     InvalidOptions(String),
+    #[error("listener panicked: {0}")]
+    ListenerPanic(String),
 }
 
 impl From<crate::protocol::codec::ProtocolValidationError> for ClientError {

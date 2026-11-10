@@ -20,6 +20,7 @@ pub mod extension_transaction;
 pub mod gateway_replies;
 pub mod lazy_live_surface;
 pub mod live_surface;
+pub mod native;
 pub mod provenance;
 pub mod provenance_config;
 pub mod provenance_record;

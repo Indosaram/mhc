@@ -79,6 +79,12 @@ pub struct TaskTool<'a> {
 }
 
 pub fn create_task_tool(deps: TaskToolDeps<'_>) -> TaskTool<'_> {
+    if let Err(error) = deps.execute.manager.store().bind_config(deps.omo_config) {
+        utils::logger::log(
+            "senpi-task failed to bind config generation",
+            Some(&serde_json::json!({ "error": error.to_string() })),
+        );
+    }
     let description = build_task_tool_description(&DescriptionInput {
         omo_config: deps.omo_config,
         agents: deps.agents,

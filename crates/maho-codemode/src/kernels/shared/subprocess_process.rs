@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::Child;
 use tokio::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,8 +33,11 @@ pub enum ProcessError {
 
 pub struct SubprocessProcess {
     child: Child,
-    input: ChildStdin,
-    output: mpsc::Receiver<Value>,
+    /// Captured at spawn: `Child::id` goes `None` once the child is reaped, and the group
+    /// survives a crash.
+    group_pid: Option<u32>,
+    input: mpsc::UnboundedSender<String>,
+    output: mpsc::Receiver<Result<Value, ProcessError>>,
     crash_cause: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
     readers: Vec<tokio::task::JoinHandle<()>>,
     retiring: bool,
@@ -69,7 +72,8 @@ impl SubprocessProcess {
         #[cfg(unix)]
         command.process_group(0);
         let mut child = command.spawn()?;
-        let input = child
+        let group_pid = child.id();
+        let mut input = child
             .stdin
             .take()
             .ok_or_else(|| ProcessError::Startup("stdin unavailable".into()))?;
@@ -83,6 +87,19 @@ impl SubprocessProcess {
             .ok_or_else(|| ProcessError::Startup("stderr unavailable".into()))?;
         let (sender, output) = mpsc::channel(256);
         let error_sender = sender.clone();
+        let write_errors = sender.downgrade();
+        // Match child.stdin.write: enqueue in order without waiting for pipe capacity.
+        let (input_sender, mut writes) = mpsc::unbounded_channel::<String>();
+        let writer_task = tokio::spawn(async move {
+            while let Some(frame) = writes.recv().await {
+                if let Err(error) = input.write_all(frame.as_bytes()).await {
+                    if let Some(sender) = write_errors.upgrade() {
+                        let _ = sender.send(Err(ProcessError::Io(error))).await;
+                    }
+                    return;
+                }
+            }
+        });
         let crash_cause = std::sync::Arc::new(std::sync::Mutex::new(None));
         let stderr_crash_cause = crash_cause.clone();
         let stderr_token = token.clone();
@@ -95,13 +112,13 @@ impl SubprocessProcess {
                             Some(token) => super::super::js::process_worker::decode_process_frame(&line, token),
                             None => decode_bridge_frame(&line, None).unwrap_or_else(|error| serde_json::json!({"type":"text","stream":"stderr","data":format!("{error}\n")})),
                         };
-                        if sender.send(message).await.is_err() {
+                        if sender.send(Ok(message)).await.is_err() {
                             return;
                         }
                     }
                     Ok(None) => return,
                     Err(error) => {
-                        if sender.send(serde_json::json!({"type":"init-failed","error":{"message":error.to_string()}})).await.is_err() { return; }
+                        if sender.send(Ok(serde_json::json!({"type":"init-failed","error":{"message":error.to_string()}}))).await.is_err() { return; }
                         return;
                     }
                 }
@@ -128,7 +145,7 @@ impl SubprocessProcess {
                                     Some(cause);
                             }
                         }
-                        if error_sender.send(serde_json::json!({"type":"text","stream":"stderr","data":String::from_utf8_lossy(&chunk[..length])})).await.is_err() { return; }
+                        if error_sender.send(Ok(serde_json::json!({"type":"text","stream":"stderr","data":String::from_utf8_lossy(&chunk[..length])}))).await.is_err() { return; }
                     }
                     Err(error) => {
                         maho_ext_api::diagnostic(&format!("kernel stderr read failed: {error}"));
@@ -139,10 +156,11 @@ impl SubprocessProcess {
         });
         Ok(Self {
             child,
-            input,
+            group_pid,
+            input: input_sender,
             output,
             crash_cause,
-            readers: vec![stdout_task, stderr_task],
+            readers: vec![stdout_task, stderr_task, writer_task],
             retiring: false,
         })
     }
@@ -150,11 +168,14 @@ impl SubprocessProcess {
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
     }
+    /// The process-group leader id, retained after reaping so descendants can still be killed.
+    pub fn group_pid(&self) -> Option<u32> {
+        self.group_pid
+    }
     pub async fn send_token(&mut self, token: &str) -> Result<(), ProcessError> {
         self.input
-            .write_all(format!("{token}\n").as_bytes())
-            .await?;
-        self.input.flush().await?;
+            .send(format!("{token}\n"))
+            .map_err(|_| ProcessError::Closed)?;
         Ok(())
     }
     pub async fn wait(&mut self) -> Result<std::process::ExitStatus, ProcessError> {
@@ -171,9 +192,8 @@ impl SubprocessProcess {
             return Ok(false);
         }
         self.input
-            .write_all(encode_bridge_frame(message)?.as_bytes())
-            .await?;
-        self.input.flush().await?;
+            .send(encode_bridge_frame(message)?)
+            .map_err(|_| ProcessError::Closed)?;
         Ok(true)
     }
     pub async fn next_message(&mut self) -> Result<Value, ProcessError> {
@@ -181,10 +201,12 @@ impl SubprocessProcess {
             return Err(ProcessError::Exited);
         }
         match self.output.recv().await {
-            Some(message) => Ok(message),
+            Some(message) => message,
             None => {
                 let status = self.child.wait().await?;
                 let cause = self.crash_cause.lock().expect("JS crash cause lock").take();
+                // A crashed kernel still owns its group: reap descendants before reporting the exit.
+                self.sweep_group(self.group_pid).await;
                 match cause {
                     Some(cause) => Err(super::super::js::worker_host::error_from_bridge(&cause)),
                     None => Err(ProcessError::ExitedWithStatus(status)),
@@ -196,6 +218,14 @@ impl SubprocessProcess {
         self.retiring = true;
         for task in &self.readers {
             task.abort();
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.group_pid
+            && let Some(pid) = i32::try_from(pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
     }
     pub async fn terminate(
@@ -250,7 +280,20 @@ impl SubprocessProcess {
     }
     async fn signal(&mut self, signal: &str) -> Result<(), ProcessError> {
         #[cfg(not(unix))]
-        let _ = signal;
+        {
+            let _ = signal;
+            if let Some(pid) = self.child.id() {
+                super::super::js::process_tree_host::terminate_process_trees(
+                    &[pid],
+                    super::super::js::process_tree_host::TerminateProcessTreesOptions {
+                        grace_ms: 0,
+                        kill_wait_ms: Some(500),
+                        owner_pid: None,
+                    },
+                )
+                .await;
+            }
+        }
         #[cfg(unix)]
         if let Some(pid) = self.child.id() {
             use rustix::process::Signal;
@@ -292,6 +335,15 @@ impl Drop for SubprocessProcess {
     fn drop(&mut self) {
         for task in &self.readers {
             task.abort();
+        }
+        // Dropping a crashed kernel must not leave its descendants alive.
+        #[cfg(unix)]
+        if let Some(pid) = self.group_pid
+            && let Some(pid) = i32::try_from(pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
     }
 }

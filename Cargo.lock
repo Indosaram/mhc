@@ -4762,6 +4762,7 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "indexmap",
+ "libc",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
@@ -5262,7 +5263,9 @@ dependencies = [
  "maho-omo-builtin-mcps",
  "maho-omo-bundled-skills",
  "maho-omo-claim-receipt",
+ "maho-omo-claude-code",
  "maho-omo-comment-checker",
+ "maho-omo-computer-use",
  "maho-omo-config-core",
  "maho-omo-config-startup",
  "maho-omo-config-watch",
@@ -5368,6 +5371,22 @@ dependencies = [
  "maho-omo-start-work-continuation",
  "regex",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "maho-omo-claude-code"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "maho-ext-api",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
  "tokio",
 ]
 

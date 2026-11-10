@@ -98,12 +98,23 @@ impl PipeFallbackSession {
         if let Some(cwd) = &options.cwd {
             command.current_dir(cwd);
         }
-        // Upstream detaches on POSIX so the child leads its own group and no tty-reading program races
-        // the TUI's stdin; its own process group is the safe std equivalent available here.
+        // Match detached:true on POSIX: a new session has no controlling terminal,
+        // so programs opening /dev/tty cannot steal keystrokes from the TUI.
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            command.process_group(0);
+            #[allow(unsafe_code)]
+            // SAFETY: setsid() is async-signal-safe and runs only in the child
+            // between fork and exec. The hook does not allocate or acquire locks.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
         }
         #[cfg(windows)]
         {

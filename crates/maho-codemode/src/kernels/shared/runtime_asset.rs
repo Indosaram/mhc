@@ -61,6 +61,13 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
         )),
     ),
     (
+        "kernels/js/frame-values.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/frame-values.js"
+        )),
+    ),
+    (
         "kernels/js/worker-relay.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

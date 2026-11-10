@@ -29,6 +29,7 @@ pub enum Route {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suppression {
     Disabled,
+    ChildSession,
     ExtensionSource,
     NoVisibleKeyword,
     CompoundIdentifier,
@@ -119,8 +120,19 @@ pub fn visible_keyword_spans(text: &str) -> Vec<KeywordSpan> {
 }
 
 pub fn classify(input: ClassifyInput<'_>) -> Classification {
+    classify_with_session_role(input, None)
+}
+
+/// Known delegated roles suppress arming, including explicit skill expansion.
+pub fn classify_with_session_role(
+    input: ClassifyInput<'_>,
+    session_role: Option<&str>,
+) -> Classification {
     if input.disabled {
         return Classification::suppressed(Scan::default(), Route::None, Suppression::Disabled);
+    }
+    if session_role.is_some_and(|role| !role.is_empty()) {
+        return Classification::suppressed(Scan::default(), Route::None, Suppression::ChildSession);
     }
     let (body, skill_route) = match skill_command(input.text) {
         Some(("ultrawork", args)) => {

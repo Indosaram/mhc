@@ -38,6 +38,7 @@ pub async fn consume_response(
     metadata: &ResponseMetadataSlot,
     recovery: bool,
 ) -> Result<AssistantMessage, SessionError> {
+    let mut partial = None;
     let consume = async {
         use maho_ai::types::AssistantMessageEvent;
         use maho_ai::utils::assistant_message_frame::AssistantMessageFrameEncoder;
@@ -99,6 +100,7 @@ pub async fn consume_response(
                     continue;
                 }
             };
+            partial = Some(message.clone());
             let payload = if start {
                 HarnessEventPayload::MessageStart {
                     run_id: Some(drive.operation_id.clone()),
@@ -183,8 +185,44 @@ pub async fn consume_response(
                 Some(signal) => signal.cancelled().await,
                 None => std::future::pending::<()>().await,
             }
-        } => Err(session_invariant_error("Assistant response consumption was aborted")),
-        outcome = consume => outcome,
+        } => None,
+        outcome = consume => Some(outcome),
+    };
+    let outcome = match outcome {
+        Some(outcome) => outcome,
+        None => {
+            let reason = drive.gate.signal().reason().ok_or_else(|| {
+                session_invariant_error(
+                    "Assistant response consumption stopped without an abort reason",
+                )
+            })?;
+            let Some(abort) =
+                reason.payload::<crate::harness::execution::effect_gate::AbortRequested>()
+            else {
+                return Err(session_invariant_error(reason.to_string()));
+            };
+            // Durable cancellation must finish before publish_response observes control.
+            abort.cancellation.wait().await;
+            let identity = match intent {
+                OperationState::AssistantEffectPending(s) => {
+                    &s.assistant.generation_context.configuration.model
+                }
+                OperationState::DeferredEffectPending(s) => &s.deferred.configuration.model,
+                _ => {
+                    return Err(session_invariant_error(
+                        "Assistant response requires an effect-pending state",
+                    ));
+                }
+            };
+            let mut message = super::recovery::interrupted_assistant_message(
+                identity,
+                partial,
+                super::retry::now_ms(),
+            );
+            message.stop_reason = StopReason::Aborted;
+            message.error_message = Some("Assistant request was cancelled".into());
+            Ok(message)
+        }
     };
     let cancellation = stream
         .cancel()

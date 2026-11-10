@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 #[path = "monitor_invocation.rs"]
 mod monitor_invocation;
@@ -1098,6 +1098,7 @@ pub struct AgentSessionInner {
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
     extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
+    boundary_context_changed: AtomicBool,
     /// Bumped each time a runner is installed, so a renderer snapshot keyed on it (with the
     /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
     extension_runner_epoch: AtomicU64,
@@ -4699,6 +4700,7 @@ impl AgentSession {
                 model_registry,
                 state: Mutex::new(state),
                 extension_runner: tokio::sync::Mutex::new(None),
+                boundary_context_changed: AtomicBool::new(false),
                 extension_runner_epoch: AtomicU64::new(0),
                 handler_turn_scope: Arc::new(AtomicU64::new(0)),
                 deadline_tracker: std::sync::OnceLock::new(),
@@ -4859,6 +4861,27 @@ impl AgentSession {
             })
         }));
         *lock(&session.agent_subscription) = Some(subscription);
+
+        let weak = Arc::downgrade(&session.inner);
+        session.agent.set_finish_turn(Some(Arc::new(move |turn, _signal| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let session = AgentSession { inner: weak.upgrade()? };
+                let event = maho_ext_api::ExtensionEvent::TurnEnd {
+                    turn_index: session.state().turn_index,
+                    message: AgentMessage::Llm(maho_ai::types::Message::Assistant(Arc::new(turn.message))),
+                    tool_results: turn.tool_results,
+                };
+                match session.emit_boundary(event).await {
+                    Ok(true) => Some(maho_agent::types::AgentTurnDecision::Continue),
+                    Ok(false) => None,
+                    Err(error_message) => {
+                        session.emit(AgentSessionEvent::ContinuationError { error_message });
+                        Some(maho_agent::types::AgentTurnDecision::End)
+                    }
+                }
+            })
+        })));
 
         let weak = Arc::downgrade(&session.inner);
         session
@@ -5581,7 +5604,8 @@ impl AgentSession {
             AgentEvent::AgentStart => EventKind::AgentStart,
             AgentEvent::AgentEnd { .. } => EventKind::AgentEnd,
             AgentEvent::TurnStart => EventKind::TurnStart,
-            AgentEvent::TurnEnd { .. } => EventKind::TurnEnd,
+            // Already dispatched by finish_turn, where the continuation decision is actionable.
+            AgentEvent::TurnEnd { .. } => return,
             AgentEvent::MessageStart { .. } => EventKind::MessageStart,
             AgentEvent::MessageUpdate { .. } => EventKind::MessageUpdate,
             AgentEvent::MessageEnd { .. } => EventKind::MessageEnd,
@@ -5680,6 +5704,40 @@ impl AgentSession {
             .as_ref()
             .filter(|runner| runner.has_handlers(kind) || runner.runtime.assert_active().is_err())
             .cloned()
+    }
+
+    async fn emit_boundary(&self, event: maho_ext_api::ExtensionEvent) -> Result<bool, String> {
+        let Some(mut runner) = self.extension_runner_for(event.kind()).await else {
+            return Ok(false);
+        };
+        let result = Box::pin(runner.emit(event)).await.map_err(|error| error.to_string())?;
+        let maho_ext_api::EventResult::Boundary(result) = result else {
+            return Ok(false);
+        };
+        let drafts = result.entries.unwrap_or_default();
+        let changed = !drafts.is_empty();
+        for draft in drafts {
+            let mut entry = serde_json::to_value(draft).map_err(|error| error.to_string())?;
+            let id = uuid::Uuid::new_v4().to_string();
+            entry["id"] = json!(id);
+            entry["parentId"] = self.with_session_manager(|manager| json!(manager.leaf_id()));
+            entry["timestamp"] = json!(chrono::Utc::now().to_rfc3339());
+            if entry["type"] == "compaction" && entry["firstKeptEntryId"].is_null() {
+                entry["firstKeptEntryId"] = json!(id);
+            }
+            self.with_session_manager_mut(|manager| manager.append_entry_raw(entry));
+            self.emit_entry_appended(&id);
+        }
+        if changed {
+            let messages = self.with_session_manager(|manager| manager.current_context().messages)
+                .into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            self.agent.set_messages(messages);
+            self.state().context_usage_cache = None;
+            self.state().message_revision += 1;
+            self.boundary_context_changed.store(true, Ordering::SeqCst);
+        }
+        Ok(result.should_continue == Some(true))
     }
 
     async fn dispatch_extension_event(&self, event: maho_ext_api::ExtensionEvent) {
@@ -9993,6 +10051,36 @@ impl AgentSession {
             .await;
             self.end_unhandled_retry();
             outcome?;
+            if self.agent.signal().is_none() {
+                let messages = self.messages();
+                let outcome = if self.state().user_aborted {
+                    "aborted"
+                } else if messages.iter().rev().find_map(AgentMessage::as_assistant)
+                    .is_some_and(|message| matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)) {
+                    "error"
+                } else {
+                    "completed"
+                };
+                let can_continue = outcome == "completed";
+                let should_continue = self.emit_boundary(maho_ext_api::ExtensionEvent::AgentBeforeSettle {
+                    entries: Vec::new(),
+                    should_continue: false,
+                    context: json!({
+                        "outcome": outcome,
+                        "canContinue": can_continue,
+                        "contextEntries": self.with_session_manager(|manager| manager.branch(None)),
+                        "contextMessages": messages,
+                        "pendingMessages": [],
+                    }),
+                }).await?;
+                if should_continue && can_continue && !self.state().user_aborted {
+                    if let Err(error) = heap_future(|| self.agent.continue_boundary()).await {
+                        self.settle_refused_continuation(error);
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
             // senpi `retryExhaustionAllowsQueuedContinuation`: provider-timeout retries skip their
             // first queue poll so steering cannot be consumed by another doomed retry request. Once
             // the retry owner stops retrying, hand that retained queue back to the continuation
@@ -17938,8 +18026,9 @@ impl AgentSession {
                                 });
                             }
                         };
+                    let boundary_changed = session.boundary_context_changed.swap(false, Ordering::SeqCst);
                     if previous.is_none() {
-                        let messages = if compacted_before_callback {
+                        let messages = if compacted_before_callback || boundary_changed {
                             session.messages()
                         } else {
                             turn.context.messages
@@ -17960,7 +18049,7 @@ impl AgentSession {
                             failure: None,
                         });
                     }
-                    let messages = if compacted_before_callback {
+                    let messages = if compacted_before_callback || boundary_changed {
                         session.messages()
                     } else {
                         turn.context.messages.clone()

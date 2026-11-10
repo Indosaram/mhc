@@ -66,12 +66,21 @@ pub fn crash_cause_from(stderr: &str, token: &str) -> Option<serde_json::Value> 
 fn revive_frame_values(value: &mut serde_json::Value, token: &str) {
     match value {
         serde_json::Value::Object(fields) => {
+            // serde_json has neither BigInt nor undefined. A field whose value is the
+            // authenticated undefined marker is dropped, as the pinned process-frame
+            // contract requires; a BigInt marker keeps its payload for JS-side revival.
             fields.retain(|_, value| {
                 value.as_object().is_none_or(|object| {
                     !(object.len() == 1
                         && object.contains_key(&format!("\0senpi:undefined:{token}")))
                 })
             });
+            if fields.len() == 1
+                && let Some(payload) = fields.remove(&format!("\0senpi:bigint:{token}"))
+            {
+                fields.insert("\0senpi:bigint".to_owned(), payload);
+                return;
+            }
             for value in fields.values_mut() {
                 revive_frame_values(value, token);
             }

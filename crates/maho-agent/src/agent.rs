@@ -885,6 +885,27 @@ impl Agent {
         Ok(())
     }
 
+    /// Explicit extension boundary continuation, including an assistant-only transcript tail.
+    pub async fn continue_boundary(&self) -> Result<(), AgentContinueError> {
+        if lock(&self.inner.active_run).is_some() {
+            return Err(AgentContinueError::AlreadyProcessing);
+        }
+        if !self.has_messages() {
+            return Err(AgentContinueError::NoMessages);
+        }
+        self.run_with_lifecycle(|signal| async move {
+            Box::pin(run_agent_loop(
+                Vec::new(),
+                self.create_context_snapshot(),
+                self.create_loop_config(PromptRunOptions::default()),
+                agent_event_sink(self.clone()),
+                signal,
+                Some(self.stream_function()),
+            )).await;
+        }).await;
+        Ok(())
+    }
+
     fn normalize_prompt_input(&self, input: AgentPromptInput) -> Vec<AgentMessage> {
         match input {
             AgentPromptInput::Messages(messages) => messages,

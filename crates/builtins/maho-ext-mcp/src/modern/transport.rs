@@ -301,13 +301,28 @@ impl ModernHttpTransport {
             let done = chunk.is_none();
             if let Some(chunk) = chunk {
                 bytes.extend_from_slice(&chunk);
-                // Decode only complete UTF-8 sequences; keep a split code point for the next chunk.
-                let valid = match std::str::from_utf8(&bytes) {
-                    Ok(_) => bytes.len(),
-                    Err(error) => error.valid_up_to(),
-                };
-                buffer.push_str(&String::from_utf8_lossy(&bytes[..valid]));
-                bytes.drain(..valid);
+                // Retain only an incomplete trailing code point. Permanently malformed
+                // sequences become replacement characters, as in a streaming TextDecoder.
+                let mut consumed = 0;
+                while consumed < bytes.len() {
+                    match std::str::from_utf8(&bytes[consumed..]) {
+                        Ok(text) => {
+                            buffer.push_str(text);
+                            consumed = bytes.len();
+                        }
+                        Err(error) => {
+                            let valid_end = consumed + error.valid_up_to();
+                            buffer.push_str(&String::from_utf8_lossy(&bytes[consumed..valid_end]));
+                            consumed = valid_end;
+                            let Some(invalid_len) = error.error_len() else {
+                                break;
+                            };
+                            buffer.push('\u{fffd}');
+                            consumed += invalid_len;
+                        }
+                    }
+                }
+                bytes.drain(..consumed);
             } else {
                 buffer.push_str(&String::from_utf8_lossy(&bytes));
                 bytes.clear();
