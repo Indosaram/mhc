@@ -24,6 +24,7 @@ pub mod git_log;
 pub mod git_status;
 pub mod git_tree;
 pub mod journal;
+pub mod paths;
 pub mod kibitzer;
 pub mod ledger;
 pub mod legacy;
@@ -52,6 +53,10 @@ pub use bm25::{
 };
 pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
 pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
+pub use paths::{
+    MemoryPathError, ValidateMemoryPathOptions, is_memory_content_path, validate_memory_path,
+    validate_repository_path, validate_repository_path_with_field,
+};
 pub use frontmatter::{
     MAX_DESCRIPTION_LENGTH, decode_quoted_scalar, decode_scalar_source, decode_string_array,
     describe_description_violation, describe_frontmatter_grammar_violation,
