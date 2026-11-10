@@ -64,15 +64,38 @@ pub struct Request {
     )]
     pub original_paths: Option<Vec<String>>,
     pub metadata: Map<String, Value>,
+    /// A wider "Allow always" scope the prompt may offer (senpi#3403), for a tool without its own
+    /// permission parser.
+    #[serde(
+        rename = "widerAlways",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub wider_always: Option<WiderAlways>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<RequestTool>,
 }
+/// The wider "Allow always" choice: this label, these patterns when chosen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WiderAlways {
+    pub label: String,
+    pub patterns: Vec<String>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestTool {
-    #[serde(rename = "messageID")]
-    pub message_id: String,
+    /// The message that raised the request. senpi carries it for RPC clients that correlate by
+    /// message; the engine here does not hand tools a message id, so it is absent.
+    #[serde(rename = "messageID", default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     #[serde(rename = "callID")]
     pub call_id: String,
+    /// The calling tool's id when another tool (a codemode script) issued this call.
+    #[serde(
+        rename = "parentCallID",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_call_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReplyInput {
@@ -101,6 +124,7 @@ impl Request {
             always,
             original_paths: None,
             metadata,
+            wider_always: None,
             tool: None,
         }
     }

@@ -607,6 +607,7 @@ async fn registered_restoration_is_bounded_accepted_only_and_once() {
                 tool_call_id: path.into(),
                 tool_name: "read".into(),
                 input: serde_json::json!({"path":path}),
+                parent_tool_call_id: None,
             });
             for handler in &api.registered.handlers[&EventKind::ToolCall] {
                 handler(&mut event, &ctx)

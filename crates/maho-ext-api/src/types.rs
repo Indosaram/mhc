@@ -1888,6 +1888,11 @@ pub struct ExtensionUiDialogOptions {
     pub ephemeral: bool,
     pub signal: Option<AbortSignal>,
     pub timeout_ms: Option<u64>,
+    /// The tool call this dialog is about (senpi `dialogCall`), absent for a dialog that is not a
+    /// permission request.
+    pub tool_call_id: Option<String>,
+    /// Set with `tool_call_id` when another tool (a codemode script) issued that call.
+    pub parent_tool_call_id: Option<String>,
     /// The key a host hands `maho_core::mcp_form_types::mark_mcp_form_presented` once this dialog is
     /// actually on screen (senpi keys the callback by the dialog options object). Not an RPC field.
     pub presented: Option<DialogPresentedKey>,
@@ -2996,6 +3001,9 @@ pub struct ToolCallEvent {
     pub tool_call_id: String,
     pub tool_name: String,
     pub input: JsonValue,
+    /// Set when another tool (a codemode script) issued this call: senpi
+    /// `ToolCallEventBase.parentToolCallId`.
+    pub parent_tool_call_id: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ToolCallEventResult {

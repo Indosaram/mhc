@@ -1105,6 +1105,7 @@ async fn tool_call_mutations_chain_and_reach_caller() {
         tool_call_id: "call".into(),
         tool_name: "bash".into(),
         input: JsonValue::Null,
+        parent_tool_call_id: None,
     };
     runner(vec![extension("a", EventKind::ToolCall, handler)])
         .emit_tool_call(&mut event)
@@ -1136,6 +1137,7 @@ async fn tool_call_block_short_circuits_and_reports_blocked_hook() {
         tool_call_id: "call".into(),
         tool_name: "bash".into(),
         input: JsonValue::Null,
+        parent_tool_call_id: None,
     };
     assert_eq!(
         runner
@@ -1161,6 +1163,7 @@ async fn tool_call_errors_propagate_like_upstream() {
         tool_call_id: "call".into(),
         tool_name: "bash".into(),
         input: JsonValue::Null,
+        parent_tool_call_id: None,
     };
     assert_eq!(
         runner.emit_tool_call(&mut event).await.unwrap_err().message,
@@ -1192,6 +1195,7 @@ async fn invalidating_tool_hook_does_not_publish_mutated_input() {
         tool_call_id: "call".into(),
         tool_name: "bash".into(),
         input: JsonValue::Null,
+        parent_tool_call_id: None,
     };
     assert_eq!(
         runner.emit_tool_call(&mut event).await.unwrap_err().message,

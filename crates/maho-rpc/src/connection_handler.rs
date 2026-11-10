@@ -1661,6 +1661,17 @@ impl maho_tui::tui::Component for FactoryComponent {
     }
 }
 type LiveRenderer = crate::widget_line_renderer::LiveComponentRenderer<FactoryComponent>;
+/// senpi `dialogCall`: the tool call a dialog is about, as wire fields. Absent for a dialog that is
+/// not a permission request.
+fn dialog_frame(opts: &maho_ext_api::ExtensionUiDialogOptions, frame: &mut serde_json::Value) {
+    let Some(tool_call_id) = opts.tool_call_id.as_ref() else {
+        return;
+    };
+    frame["toolCallId"] = tool_call_id.clone().into();
+    if let Some(parent) = opts.parent_tool_call_id.as_ref() {
+        frame["parentToolCallId"] = parent.clone().into();
+    }
+}
 impl RpcExtensionUi {
     pub fn new(
         out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
@@ -1833,6 +1844,7 @@ impl RpcExtensionUi {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         request["type"] = "extension_ui_request".into();
         request["id"] = id.clone().into();
+        dialog_frame(opts, &mut request);
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4733,6 +4745,46 @@ mod connection_events_tests {
         assert_eq!(resolved[0]["outcome"], "timed_out");
         assert_eq!(resolved[0]["requestId"], "req_timeout");
         capable.release().await;
+    }
+}
+#[cfg(test)]
+mod dialog_frame_tests {
+    use super::*;
+
+    #[test]
+    fn a_bound_dialog_names_the_call_and_its_caller() {
+        let opts = maho_ext_api::ExtensionUiDialogOptions {
+            tool_call_id: Some("call-1".into()),
+            parent_tool_call_id: Some("eval-1".into()),
+            ..Default::default()
+        };
+        let mut frame = serde_json::json!({"type":"extension_ui_request","method":"select"});
+        dialog_frame(&opts, &mut frame);
+        assert_eq!(frame["toolCallId"], "call-1");
+        assert_eq!(frame["parentToolCallId"], "eval-1");
+        assert_eq!(frame["method"], "select");
+    }
+
+    #[test]
+    fn a_top_level_call_has_no_parent_field() {
+        let opts = maho_ext_api::ExtensionUiDialogOptions {
+            tool_call_id: Some("call-1".into()),
+            ..Default::default()
+        };
+        let mut frame = serde_json::json!({"type":"extension_ui_request"});
+        dialog_frame(&opts, &mut frame);
+        assert_eq!(frame["toolCallId"], "call-1");
+        assert!(frame.get("parentToolCallId").is_none());
+    }
+
+    #[test]
+    fn an_unbound_dialog_adds_no_fields() {
+        let mut frame = serde_json::json!({"type":"extension_ui_request"});
+        dialog_frame(
+            &maho_ext_api::ExtensionUiDialogOptions::default(),
+            &mut frame,
+        );
+        assert_eq!(frame, serde_json::json!({"type":"extension_ui_request"}));
     }
 }
 #[cfg(test)]

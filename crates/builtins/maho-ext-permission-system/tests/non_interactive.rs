@@ -24,6 +24,7 @@ fn request(permission: &str, patterns: &[&str]) -> Request {
         always: vec![],
         original_paths: None,
         metadata: Default::default(),
+        wider_always: None,
         tool: None,
     }
 }

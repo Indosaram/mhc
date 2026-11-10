@@ -12,6 +12,7 @@ fn request(id: &str) -> Request {
         always: vec!["git *".into()],
         original_paths: None,
         metadata: Default::default(),
+        wider_always: None,
         tool: None,
     }
 }

@@ -77,31 +77,53 @@ pub async fn show_permission_prompt(ctx: &ExtensionContext, request: &Request) -
         request.permission,
         format_request_for_display(request)
     );
-    let options = ["Allow once", "Allow always", "Deny", "Deny with feedback"].map(str::to_owned);
-    let choice = ctx
-        .ui
-        .select(&title, &options, ExtensionUiDialogOptions::default())
-        .await;
-    let (reply, message) = match choice.as_deref() {
-        Some("Allow once") => (Reply::Once, None),
-        Some("Allow always") => (Reply::Always, None),
+    // senpi `showPermissionPrompt`: the wider scope is a separate labelled choice, never a silent
+    // widening of "Allow always" (senpi#3403).
+    let wider = request.wider_always.as_ref();
+    let mut labels = vec!["Allow once".to_owned(), "Allow always".to_owned()];
+    if let Some(wider) = wider {
+        labels.push(wider.label.clone());
+    }
+    labels.push("Deny".into());
+    labels.push("Deny with feedback".into());
+    // Clients bind the dialog to the call it approves by this id; with several calls of one tool in
+    // flight (the engine prepares a message's calls before running them), nothing else says which.
+    let call = ExtensionUiDialogOptions {
+        tool_call_id: request.tool.as_ref().map(|tool| tool.call_id.clone()),
+        parent_tool_call_id: request
+            .tool
+            .as_ref()
+            .and_then(|tool| tool.parent_call_id.clone()),
+        ..Default::default()
+    };
+    let choice = ctx.ui.select(&title, &labels, call.clone()).await;
+    let (reply, message, always) = match choice.as_deref() {
+        Some("Allow once") => (Reply::Once, None, None),
+        Some("Allow always") => (Reply::Always, None, None),
         Some("Deny with feedback") => (
             Reply::Reject,
             ctx.ui
                 .input(
                     "Feedback",
                     Some("Why are you denying this permission? (optional)"),
-                    ExtensionUiDialogOptions::default(),
+                    call,
                 )
                 .await
                 .filter(|message| !message.is_empty()),
+            None,
         ),
-        _ => (Reply::Reject, None),
+        // A labelled wider scope stores its own patterns, not the request's exact-arg ones.
+        Some(chosen) if wider.is_some_and(|scope| scope.label == chosen) => (
+            Reply::Always,
+            None,
+            wider.map(|scope| scope.patterns.clone()),
+        ),
+        _ => (Reply::Reject, None, None),
     };
     ReplyInput {
         request_id: request.id.clone(),
         reply,
         message,
-        always: None,
+        always,
     }
 }

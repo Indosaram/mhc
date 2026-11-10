@@ -126,6 +126,17 @@ async fn authorize_tool_call(
             metadata,
         );
         request.original_paths = parsed.original_paths;
+        request.wider_always = parsed.wider_always.map(|scope| types::WiderAlways {
+            label: scope.label,
+            patterns: scope.patterns,
+        });
+        // senpi pins the requesting call on the request, so a client binds the dialog to the call it
+        // approves: with several calls of one tool in flight nothing else names which.
+        request.tool = Some(types::RequestTool {
+            message_id: None,
+            call_id: event.tool_call_id.clone(),
+            parent_call_id: event.parent_tool_call_id.clone(),
+        });
         let ask = service::AskOptions {
             auto_approve_ask: parsed.auto_approve_ask,
             rule_aliases: parsed.rule_aliases,

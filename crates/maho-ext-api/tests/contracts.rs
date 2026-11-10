@@ -7,6 +7,7 @@ fn public_tool_guards_and_default_profile_preserve_contract_values() {
         tool_call_id: "call".into(),
         tool_name: "bash".into(),
         input: JsonValue::Null,
+        parent_tool_call_id: None,
     };
     assert!(is_tool_call_event_type("bash", &call));
     assert!(!is_tool_call_event_type("read", &call));

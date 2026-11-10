@@ -16350,7 +16350,12 @@ impl AgentSession {
         let hook_result = {
             let mut guard = self.extension_runner.lock().await.clone();
             if let Some(runner) = guard.as_mut() {
-                let mut event = ToolCallEvent { tool_call_id: prepared.id.clone(), tool_name: prepared.name.clone(), input };
+                // The tool that issued this call through a codemode script, when there is one: a
+                // permission dialog names it so a client can bind the prompt to a nested call.
+                let parent_tool_call_id = NESTED_TOOL_SCOPE
+                    .try_with(|scope| scope.0.clone())
+                    .ok();
+                let mut event = ToolCallEvent { tool_call_id: prepared.id.clone(), tool_name: prepared.name.clone(), input, parent_tool_call_id };
                 let hook = runner.emit_tool_call(&mut event);
                 let result = if let Some(signal) = &options.signal {
                     tokio::select! {
@@ -16446,6 +16451,7 @@ impl AgentSession {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
             input,
+            parent_tool_call_id: NESTED_TOOL_SCOPE.try_with(|scope| scope.0.clone()).ok(),
         };
         match runner.emit_tool_call(&mut event).await {
             Ok(result) => Some((result.unwrap_or_default(), event.input)),
