@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod facts_anchor;
+pub mod facts_note;
 pub mod facts_parked;
 pub mod facts_person_routing;
 pub mod facts_queue;
