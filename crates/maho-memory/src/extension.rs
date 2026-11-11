@@ -178,6 +178,21 @@ impl MemoryContext {
         Ok(None)
     }
 
+    /// Drops rows past the retention windows in every bank this session has, and reports each bank's count.
+    pub fn prune(
+        &self,
+        policy: &crate::retention::RetentionPolicy,
+    ) -> Result<Vec<(String, crate::store::PruneReport)>, String> {
+        let mut reports = Vec::new();
+        for bank in self.existing_banks() {
+            let report = self.open(bank)?.prune(policy)?;
+            if report.working > 0 || report.episodic > 0 {
+                reports.push((bank.to_owned(), report));
+            }
+        }
+        Ok(reports)
+    }
+
     /// One line per bank with its counts.
     pub fn status_text(&self) -> String {
         let mut out = format!(
@@ -490,8 +505,24 @@ pub fn run_command(
                 Err(error) => error,
             }
         }
+        Some("prune") => match memory.prune(&crate::retention::RetentionPolicy::default()) {
+            Ok(reports) if reports.is_empty() => "Nothing to prune.".into(),
+            Ok(reports) => {
+                let lines: Vec<String> = reports
+                    .iter()
+                    .map(|(bank, report)| {
+                        format!(
+                            "{bank}: {} working, {} episodic",
+                            report.working, report.episodic
+                        )
+                    })
+                    .collect();
+                format!("Pruned {}.", lines.join("; "))
+            }
+            Err(error) => error,
+        },
         Some(other) => format!(
-            "Unknown /memory subcommand '{other}'. Use: status, search <query>, import-legacy [--dry-run] [--include-people]"
+            "Unknown /memory subcommand '{other}'. Use: status, search <query>, prune, import-legacy [--dry-run] [--include-people]"
         ),
     }
 }
@@ -640,6 +671,20 @@ mod tests {
         );
         assert!(run_command(&memory, &legacy, false, "").contains("Write bank:"));
         assert!(run_command(&memory, &legacy, false, "bogus").starts_with("Unknown"));
+    }
+
+    #[test]
+    fn command_prune_reports_nothing_on_a_fresh_bank() {
+        let dir = tempfile::tempdir().expect("dir");
+        let memory = context(dir.path());
+        let legacy = dir.path().join("legacy");
+        memory
+            .retain("a fresh note", None, false, "s")
+            .expect("retain");
+        assert_eq!(
+            run_command(&memory, &legacy, false, "prune"),
+            "Nothing to prune."
+        );
     }
 
     #[test]
