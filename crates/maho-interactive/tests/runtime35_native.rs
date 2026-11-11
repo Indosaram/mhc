@@ -5605,7 +5605,7 @@ async fn theme_switch_recolors_existing_transcript_and_keeps_the_status_line() {
 }
 
 #[test]
-fn unloadable_theme_setting_falls_back_to_dark_and_shows_an_error() {
+fn unloadable_theme_setting_falls_back_to_system_and_shows_an_error() {
     use maho_tui::tui::Component;
     let (mut mode, _directory, _session) = native_mode_with_session_and_provider_retaining_session(
         None,
@@ -5620,11 +5620,19 @@ fn unloadable_theme_setting_falls_back_to_dark_and_shows_an_error() {
             serde_json::json!("no-such-theme"),
         ),
     );
-    assert_eq!(mode.active_theme().name, "dark");
+    assert_eq!(
+        mode.active_theme().name,
+        maho_interactive::theme::system_theme::SYSTEM_THEME_NAME
+    );
     assert!(
         mode.render(80)
             .join("\n")
             .contains("Failed to load theme \"no-such-theme\"")
+    );
+    assert!(
+        mode.render(80)
+            .join("\n")
+            .contains("Fell back to the system theme.")
     );
 }
 

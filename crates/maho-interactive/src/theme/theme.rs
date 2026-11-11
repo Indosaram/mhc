@@ -333,6 +333,14 @@ fn resolve(
 }
 pub fn hex_to_rgb(hex: &str) -> Result<[u8; 3], ThemeError> {
     let value = hex.strip_prefix('#').unwrap_or(hex);
+    // senpi `parseColor` accepts `#RGB` (each digit doubled) and `#RRGGBB`.
+    let expanded;
+    let value = if value.len() == 3 && value.is_ascii() {
+        expanded = value.chars().flat_map(|c| [c, c]).collect::<String>();
+        expanded.as_str()
+    } else {
+        value
+    };
     if value.len() != 6 || !value.is_ascii() {
         return Err(ThemeError::Invalid(format!("Invalid hex color: {hex}")));
     }

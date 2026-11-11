@@ -115,7 +115,13 @@ impl ThemeRegistry {
     /// senpi `createSystemTheme`: the `system` theme generated from the terminal's reported colors.
     fn generate_system_theme(&self) -> Result<Theme, ThemeError> {
         let palette = (self.terminal_colors.palette.len() == 16)
-            .then(|| self.terminal_colors.palette.iter().copied().collect::<Option<Vec<_>>>())
+            .then(|| {
+                self.terminal_colors
+                    .palette
+                    .iter()
+                    .copied()
+                    .collect::<Option<Vec<_>>>()
+            })
             .flatten();
         let generated = generate_system_theme_colors(&SystemThemeInput {
             foreground: self.terminal_colors.foreground,
@@ -181,12 +187,14 @@ impl ThemeRegistry {
 
     fn scan_available_themes(&self) -> Vec<ThemeInfo> {
         let mut themes: BTreeMap<String, Option<PathBuf>> =
-            ["dark", "light", "grok-day", "grok-night"]
+            [SYSTEM_THEME_NAME, "dark", "light", "grok-day", "grok-night"]
                 .into_iter()
                 .map(|n| {
+                    // The system theme is generated, so it has no file (senpi `getAvailableThemes`).
                     let path = self
                         .builtin_directory
                         .as_ref()
+                        .filter(|_| n != SYSTEM_THEME_NAME)
                         .map(|directory| directory.join(format!("{n}.json")));
                     (n.into(), path)
                 })
@@ -210,8 +218,15 @@ impl ThemeRegistry {
             .into_iter()
             .map(|(name, path)| ThemeInfo { name, path })
             .collect();
-        // senpi `a.name.localeCompare(b.name)`: case-insensitive, lowercase first on ties.
+        // senpi `a.name.localeCompare(b.name)`: case-insensitive, lowercase first on ties, with the
+        // generated `system` theme always first (`theme.ts:506-509`).
         themes.sort_by(|a, b| {
+            if a.name == SYSTEM_THEME_NAME {
+                return std::cmp::Ordering::Less;
+            }
+            if b.name == SYSTEM_THEME_NAME {
+                return std::cmp::Ordering::Greater;
+            }
             a.name
                 .to_lowercase()
                 .cmp(&b.name.to_lowercase())

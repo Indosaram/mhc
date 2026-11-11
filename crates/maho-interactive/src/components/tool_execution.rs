@@ -501,6 +501,7 @@ impl ToolExecutionComponent {
             "result": state.result.map(|result| serde_json::json!({
                 "content": result.content,
                 "details": result.details,
+                "isError": result.is_error,
             })),
             "imageWidthCells": self.image_width_cells,
             "toolCallId": self.identity.tool_call_id,

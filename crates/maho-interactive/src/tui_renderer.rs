@@ -198,6 +198,23 @@ impl InteractiveTui {
         }
     }
 
+    /// senpi `createInteractiveTui`'s `wheelScrollLines` option: how many lines one wheel event
+    /// scrolls in fullscreen. `"auto"` keeps the gesture accelerator; a number pins the step.
+    pub fn set_fullscreen_wheel_scroll_lines(
+        &mut self,
+        lines: crate::components::settings_selector::FullscreenWheelScrollLines,
+    ) {
+        use crate::components::settings_selector::FullscreenWheelScrollLines;
+        if let Self::Fullscreen(tui) = self {
+            match lines {
+                FullscreenWheelScrollLines::Auto => tui.set_wheel_scroll_auto(),
+                FullscreenWheelScrollLines::Lines(n) => {
+                    tui.set_wheel_scroll_lines(i64::from(n));
+                }
+            }
+        }
+    }
+
     pub fn base(&self) -> &TuiBase {
         match self {
             Self::Regular(t) => &t.base,

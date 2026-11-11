@@ -41,6 +41,17 @@ impl WorkingTipCache {
         self.cached = None;
     }
 
+    /// Whether this turn's tip was already resolved, so a caller can skip the settings read that
+    /// feeds `resolve`.
+    pub fn is_resolved(&self) -> bool {
+        self.cached.is_some()
+    }
+
+    /// The line resolved for this turn, without computing one.
+    pub fn cached(&self) -> Option<WorkingTipLine> {
+        self.cached.clone().flatten()
+    }
+
     pub fn resolve(
         &mut self,
         compute: impl FnOnce() -> Option<WorkingTipLine>,

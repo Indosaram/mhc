@@ -1001,10 +1001,22 @@ mod tests {
         let names: Vec<&str> = themes.iter().map(|theme| theme.name.as_str()).collect();
         assert_eq!(
             names,
-            ["dark", "grok-day", "grok-night", "light", "Package"]
+            [
+                "system",
+                "dark",
+                "grok-day",
+                "grok-night",
+                "light",
+                "Package"
+            ]
         );
         assert_eq!(
             themes[0].path.as_deref(),
+            None,
+            "the system theme is generated, so it has no file"
+        );
+        assert_eq!(
+            themes[1].path.as_deref(),
             Some(std::path::Path::new("/shipped/theme/dark.json"))
         );
         assert!(ExtensionUiActions::get_theme(ui.as_ref(), "Package").is_some());

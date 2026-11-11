@@ -520,6 +520,8 @@ pub async fn run(
             }
             // senpi `applyFullscreenScrollbarSetting`.
             if let Some(transcript) = &transcript { transcript.borrow_mut().set_scrollbar(fullscreen_scrollbar(&session)); }
+            // senpi `createInteractiveTui`'s `wheelScrollLines` option.
+            screen.set_fullscreen_wheel_scroll_lines(mode.fullscreen_wheel_scroll_lines());
             mode.poll_terminal_theme(&mut screen, &mut terminal);
             mode.pump_turn().await;
             // senpi `showHardwareCursor` / `clearOnShrink` (re-applied on settings changes), the

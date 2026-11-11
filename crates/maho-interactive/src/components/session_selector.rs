@@ -1013,6 +1013,10 @@ pub enum SessionSelectorMode {
 pub enum PendingAction {
     Select(String),
     Cancel,
+    ToggleScope,
+    ToggleSort,
+    ToggleNameFilter,
+    Rename(String),
 }
 
 pub type SessionSelectHandler = SessionPathHandler;
@@ -1183,6 +1187,25 @@ impl SessionSelectorComponent {
         list.on_cancel = Some(Box::new(move || {
             *pending_cancel.borrow_mut() = Some(PendingAction::Cancel);
         }));
+        // senpi wires the list's toggle/rename callbacks to the component's own handlers
+        // (`session-selector.ts:749-752`); without them Tab, sort, named-filter and rename are
+        // unreachable keys.
+        let pending_scope = Rc::clone(&self.pending);
+        list.on_toggle_scope = Some(Box::new(move || {
+            *pending_scope.borrow_mut() = Some(PendingAction::ToggleScope);
+        }));
+        let pending_sort = Rc::clone(&self.pending);
+        list.on_toggle_sort = Some(Box::new(move || {
+            *pending_sort.borrow_mut() = Some(PendingAction::ToggleSort);
+        }));
+        let pending_filter = Rc::clone(&self.pending);
+        list.on_toggle_name_filter = Some(Box::new(move || {
+            *pending_filter.borrow_mut() = Some(PendingAction::ToggleNameFilter);
+        }));
+        let pending_rename = Rc::clone(&self.pending);
+        list.on_rename_session = Some(Box::new(move |path| {
+            *pending_rename.borrow_mut() = Some(PendingAction::Rename(path.to_owned()));
+        }));
     }
 
     fn drain_pending(&mut self) {
@@ -1190,6 +1213,22 @@ impl SessionSelectorComponent {
         match action {
             Some(PendingAction::Select(path)) => (self.on_select)(&path),
             Some(PendingAction::Cancel) => (self.on_cancel)(),
+            Some(PendingAction::ToggleScope) => self.toggle_scope(),
+            Some(PendingAction::ToggleSort) => self.toggle_sort_mode(),
+            Some(PendingAction::ToggleNameFilter) => self.toggle_name_filter(),
+            Some(PendingAction::Rename(path)) => {
+                // senpi only enters rename while the scope's load is settled.
+                if self.load_inflight(self.scope) || !self.can_rename {
+                    return;
+                }
+                let name = match self.scope {
+                    SessionScope::All => self.all_sessions.as_ref(),
+                    SessionScope::Current => self.current_sessions.as_ref(),
+                }
+                .and_then(|sessions| sessions.iter().find(|s| s.path == path).cloned())
+                .and_then(|session| session.name);
+                self.enter_rename_mode(&path, name.as_deref());
+            }
             None => {}
         }
     }
@@ -1502,6 +1541,11 @@ impl Component for SessionSelectorComponent {
         if self.mode == SessionSelectorMode::Rename {
             if self.keybindings.matches(data, "tui.select.cancel") {
                 self.exit_rename_mode();
+                return;
+            }
+            if self.keybindings.matches(data, "tui.select.confirm") {
+                let value = self.rename_input.get_value().to_owned();
+                self.confirm_rename(&value);
                 return;
             }
             self.rename_input.handle_input(data);

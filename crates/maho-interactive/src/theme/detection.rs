@@ -39,7 +39,10 @@ pub fn detect_terminal_theme_for_auto(
     background: Option<[u8; 3]>,
     colorfgbg: Option<&str>,
 ) -> TerminalTheme {
-    color_scheme
-        .or_else(|| background.map(get_theme_for_rgb_color))
+    // senpi `detectTerminalTheme`: the reported background decides first; without one, the
+    // terminal's light/dark report, then COLORFGBG, then dark.
+    background
+        .map(get_theme_for_rgb_color)
+        .or(color_scheme)
         .unwrap_or_else(|| detect_terminal_background_from_env(colorfgbg).theme)
 }

@@ -89,6 +89,20 @@ pub fn blend_working_status_shimmer_rgb_color(
         b: blend(highlight.b, base.b),
     }
 }
+/// senpi `parseAnsiRgbForeground`: the RGB triplet of a truecolor foreground escape, if any.
+pub fn parse_ansi_rgb_foreground(ansi: &str) -> Option<[f64; 3]> {
+    let start = ansi.find("\x1b[38;2;")? + "\x1b[38;2;".len();
+    let rest = &ansi[start..];
+    let end = rest.find('m')?;
+    let mut parts = rest[..end].split(';');
+    let mut next = || parts.next().and_then(|value| value.parse::<f64>().ok());
+    let (r, g, b) = (next()?, next()?, next()?);
+    // Nothing may follow the blue channel.
+    if parts.next().is_some() {
+        return None;
+    }
+    Some([r, g, b])
+}
 pub type ShimmerStyle = dyn Fn(&str, f64) -> String;
 pub struct WorkingStatusTextFrameStyle<'a> {
     pub base: &'a dyn Fn(&str) -> String,

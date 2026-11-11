@@ -5,7 +5,7 @@ use crate::components::{
     extension_editor::editor_theme,
 };
 use crate::components::{
-    tool_execution::{ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation},
+    tool_execution::{ToolExecutionComponent, ToolExecutionOptions},
     tool_execution_types::ToolExecutionResult,
 };
 use crate::grok::chrome::InteractiveChrome;
@@ -951,6 +951,8 @@ pub struct InteractiveMode {
     verbose: bool,
     /// senpi `this.chrome`.
     chrome: Option<crate::grok::chrome::GrokChrome>,
+    /// senpi's chrome-owned footer, built once from `chrome.createFooter`.
+    chrome_footer: Option<Box<dyn crate::grok::chrome::InteractiveFooter>>,
     footer: Option<Box<dyn Component>>,
     footer_data: Arc<maho_core::footer_data_provider::FooterDataProvider>,
     /// When `tick` last polled the footer's git branch and provider count.
@@ -1026,6 +1028,10 @@ pub struct InteractiveMode {
     working_started_ms: Option<f64>,
     working_message: Option<String>,
     working_visible: bool,
+    /// senpi `turnWorkingTip`: one working tip per turn, resolved once and reset at turn start.
+    turn_working_tip: crate::tips::working_tip::WorkingTipCache,
+    /// senpi `sessionShownTipIds`: tips already shown in this session are not repeated.
+    session_shown_tip_ids: std::collections::HashSet<String>,
     /// Set when a prompt naming a glow keyword is submitted; the editor keeps its neon border until the agent
     /// run ends (the prompt future can settle before the run does) or the submission fails.
     keyword_turn_glow: bool,
@@ -1825,7 +1831,15 @@ impl InteractiveMode {
             background.map(|rgb| [rgb.r, rgb.g, rgb.b]),
             colorfgbg.as_deref(),
         );
-        let detected = scheme.map_or(background_detection.theme, terminal_theme_for_scheme);
+        // senpi `detectTerminalTheme`: the reported background decides first; without one, the
+        // terminal's light/dark report, then COLORFGBG, then dark.
+        let detected = if background.is_some() {
+            background_detection.theme
+        } else if let Some(scheme) = scheme {
+            terminal_theme_for_scheme(scheme)
+        } else {
+            background_detection.theme
+        };
         self.terminal_theme = detected;
         // A cache that cannot be written must never break a launch.
         let _ = crate::theme::terminal_theme_cache::write_terminal_theme_hint(
@@ -1900,7 +1914,11 @@ impl InteractiveMode {
             || theme.export_colors() != self.theme.export_colors();
         self.theme = theme;
         *self.mermaid_theme.borrow_mut() = self.theme.clone();
-        self.editor.editor.border_color = editor_theme(&self.theme).border_color;
+        self.editor.editor.border_color = match &self.chrome {
+            // senpi `getEditorTheme()`: the chrome owns the editor theme.
+            Some(chrome) => chrome.get_editor_theme().border_color,
+            None => editor_theme(&self.theme).border_color,
+        };
         self.editor_border_key = None;
         *self
             .extension_ui
@@ -1948,12 +1966,14 @@ impl InteractiveMode {
                 true
             }
             Err(error) => {
-                if let Ok(theme) = self.load_theme("dark") {
+                // senpi `setTheme` catch: an unloadable theme falls back to the system theme.
+                if let Ok(theme) = self.load_theme(crate::theme::system_theme::SYSTEM_THEME_NAME) {
                     self.install_theme(theme);
+                    self.theme_registry_bound = true;
                 }
                 if show_error {
                     self.show_error(&format!(
-                        "Failed to load theme \"{name}\": {error}\nFell back to dark theme."
+                        "Failed to load theme \"{name}\": {error}\nFell back to the system theme."
                     ));
                 }
                 false
@@ -2141,6 +2161,48 @@ impl InteractiveMode {
     /// senpi's `getStartupExpansionState`: the constructor's `verbose` or the tool-output toggle.
     pub fn get_startup_expansion_state(&self) -> bool {
         self.verbose || self.tools_expanded
+    }
+
+    /// senpi's `resolveTurnWorkingTip`: the turn's working tip, resolved once per turn.
+    fn resolve_turn_working_tip(&mut self) -> Option<crate::tips::working_tip::WorkingTipLine> {
+        if self.turn_working_tip.is_resolved() {
+            return self.turn_working_tip.cached();
+        }
+        let now_ms = self.clock_ms();
+        let (tips_enabled, history) = self.session.with_settings_manager(|settings| {
+            (
+                settings.get_bool("tips").unwrap_or(true),
+                tips_history(settings),
+            )
+        });
+        let shown = self.session_shown_tip_ids.clone();
+        let keys = crate::components::keybinding_hints::key_text;
+        // senpi `turnWorkingTip.resolve(compute, (tip) => this.recordShownTip(tip.tipId))`: the tip is
+        // recorded on the first resolve of the turn, never again while the cached line is reused.
+        let mut newly_resolved: Option<String> = None;
+        let tip = self.turn_working_tip.resolve(
+            || {
+                crate::tips::working_tip::resolve_working_tip_line(
+                    crate::tips::working_tip::WorkingTipOptions {
+                        tips_enabled,
+                        history: &history,
+                        session_shown_tip_ids: &shown,
+                        now: now_ms,
+                        definitions: crate::tips::registry::TIP_DEFINITIONS.as_slice(),
+                        keys: &keys,
+                        has_command: None,
+                    },
+                )
+            },
+            Some(&mut |tip: &crate::tips::working_tip::WorkingTipLine| {
+                newly_resolved = Some(tip.tip_id.clone());
+            }),
+        );
+        if let Some(tip_id) = newly_resolved {
+            self.session_shown_tip_ids.insert(tip_id.clone());
+            self.set_tip_shown(&tip_id, now_ms);
+        }
+        tip
     }
 
     /// senpi's `recordShownTip`: merge `tipId -> now` into the global `tipsHistory` record.
@@ -2522,6 +2584,19 @@ impl InteractiveMode {
                 settings.get_show_terminal_progress(),
             )
         })
+    }
+
+    /// senpi `applyFullscreenWheelScrollLinesSetting`: the setting is stored as a string and read
+    /// back through the same parser the `/settings` row uses.
+    pub fn fullscreen_wheel_scroll_lines(
+        &self,
+    ) -> crate::components::settings_selector::FullscreenWheelScrollLines {
+        use crate::components::settings_selector::FullscreenWheelScrollLines;
+        self.session
+            .with_settings_manager(|settings| settings.get_string("fullscreenWheelScrollLines"))
+            .as_deref()
+            .and_then(FullscreenWheelScrollLines::from_setting)
+            .unwrap_or(FullscreenWheelScrollLines::Auto)
     }
 
     /// senpi `getFullscreenExitOutput`.
@@ -2992,6 +3067,7 @@ impl InteractiveMode {
             custom_header: None,
             verbose: options.verbose,
             chrome: options.chrome,
+            chrome_footer: None,
             footer: None,
             widgets: Vec::new(),
             terminal_title: None,
@@ -3017,6 +3093,8 @@ impl InteractiveMode {
             working_started_ms: None,
             working_message: None,
             working_visible: true,
+            turn_working_tip: crate::tips::working_tip::WorkingTipCache::new(),
+            session_shown_tip_ids: std::collections::HashSet::new(),
             editor_host: host,
             hidden_thinking_label: "Thinking...".into(),
             history_expansion: Vec::new(),
@@ -4484,6 +4562,42 @@ impl InteractiveMode {
                 self.show_status(format!("Session compacted {times}"));
             }
         }
+        // senpi `renderProjectTrustWarningIfNeeded`, called by `renderInitialMessages`.
+        self.render_project_trust_warning_if_needed();
+    }
+
+    /// senpi `renderProjectTrustWarningIfNeeded`: an untrusted project with resources that require
+    /// trust gets a warning line after the replayed transcript.
+    fn render_project_trust_warning_if_needed(&mut self) {
+        let cwd = self
+            .session
+            .with_session_manager(|manager| manager.cwd().to_owned());
+        if self
+            .session
+            .with_settings_manager(|settings| settings.is_project_trusted())
+            || !maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, None)
+        {
+            return;
+        }
+        use crate::components::exploration_transcript_container::TranscriptChild;
+        if !self.chat.children().is_empty() {
+            self.chat
+                .add_child(TranscriptChild::Other(Rc::new(RefCell::new(
+                    maho_tui::components::spacer::Spacer::new(1),
+                ))));
+        }
+        let text = self.theme.fg(
+            crate::theme::ThemeColor::Warning,
+            &format!(
+                "This project is not trusted. Project {} resources and packages are ignored. Use /trust to save a trust decision, then restart {}.",
+                maho_core::config::config_dir_name(),
+                maho_core::config::app_command()
+            ),
+        );
+        self.chat
+            .add_child(TranscriptChild::Other(Rc::new(RefCell::new(
+                maho_tui::components::text::Text::with_padding(text, 1, 0),
+            ))));
     }
 
     /// The transcript state `rebuild_history` and the compaction rebuild both start from.
@@ -7028,6 +7142,7 @@ impl InteractiveMode {
         if self.working_started_ms.is_none() {
             self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0);
             self.provisional_working = true;
+            self.turn_working_tip.reset_for_new_turn();
         }
         if text.trim_start().starts_with('/') || text.trim_start().starts_with('!') {
             return;
@@ -14458,6 +14573,7 @@ impl InteractiveMode {
         let base = |text: &str| self.theme.fg(crate::theme::ThemeColor::Dim, text);
         let glow = |text: &str| self.theme.fg(crate::theme::ThemeColor::Text, text);
         let highlight = |text: &str| self.theme.bold(&glow(text));
+        let shimmer = self.working_status_shimmer();
         Some(crate::working_status::format_working_status_message_frame(
             self.working_message.as_deref().unwrap_or("Working"),
             elapsed / 1000.0,
@@ -14467,10 +14583,52 @@ impl InteractiveMode {
                 base: &base,
                 glow: &glow,
                 highlight: &highlight,
-                shimmer: None,
+                shimmer: shimmer
+                    .as_ref()
+                    .map(|f| &**f as &crate::working_status::ShimmerStyle),
             },
             &base,
         ))
+    }
+
+    /// senpi `formatWorkingStatusShimmerText`: in truecolor the working text blends the theme's dim
+    /// and text colors per character; a 256-color terminal keeps the stepped dim/text/bold ramp.
+    fn working_status_shimmer(&self) -> Option<Box<crate::working_status::ShimmerStyle>> {
+        if self.theme.get_color_mode() != crate::theme::ColorMode::Truecolor {
+            return None;
+        }
+        let light_theme = self.theme.name.to_lowercase().contains("light");
+        let (default_base, default_text) = if light_theme {
+            ([118., 118., 118.], [17., 17., 17.])
+        } else {
+            ([102., 102., 102.], [229., 229., 231.])
+        };
+        let parse = |ansi: String| crate::working_status::parse_ansi_rgb_foreground(&ansi);
+        let highlight =
+            parse(self.theme.get_fg_ansi(crate::theme::ThemeColor::Dim)).unwrap_or(default_base);
+        let base =
+            parse(self.theme.get_fg_ansi(crate::theme::ThemeColor::Text)).unwrap_or(default_text);
+        Some(Box::new(move |text: &str, intensity: f64| {
+            let color = crate::working_status::blend_working_status_shimmer_rgb_color(
+                crate::working_status::WorkingStatusRgbColor {
+                    r: highlight[0],
+                    g: highlight[1],
+                    b: highlight[2],
+                },
+                crate::working_status::WorkingStatusRgbColor {
+                    r: base[0],
+                    g: base[1],
+                    b: base[2],
+                },
+                intensity * 0.9,
+            );
+            format!(
+                "\x1b[1m\x1b[38;2;{};{};{}m{text}\x1b[39m\x1b[22m",
+                color.r.round() as u8,
+                color.g.round() as u8,
+                color.b.round() as u8
+            )
+        }))
     }
 
     fn tool_component(
@@ -14495,7 +14653,7 @@ impl InteractiveMode {
                 options,
                 renderers,
                 &self.host_cwd(),
-                ToolExecutionPresentation::Classic,
+                self.tool_presentation(),
                 None,
                 self.theme.clone(),
             )));
@@ -14509,6 +14667,17 @@ impl InteractiveMode {
             self.pending_tools.insert(id.into(), component.clone());
             component
         })
+    }
+
+    /// senpi `this.chrome.toolPresentation()`: the chrome the mode was launched with decides how a
+    /// tool card draws. Without a chrome the classic presentation stays.
+    fn tool_presentation(&self) -> crate::components::tool_execution::ToolExecutionPresentation {
+        match &self.chrome {
+            Some(chrome) if chrome.tool_presentation() == "grok" => {
+                crate::components::tool_execution::ToolExecutionPresentation::Grok
+            }
+            _ => crate::components::tool_execution::ToolExecutionPresentation::Classic,
+        }
     }
 
     /// senpi's `getRegisteredToolDefinition`: the session's registered definition for the resolved
@@ -14611,13 +14780,28 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
             options,
             renderers,
             &self.host_cwd(),
-            ToolExecutionPresentation::Classic,
+            self.tool_presentation(),
             None,
             self.theme.clone(),
         )
     }
     fn add_pending(&mut self, id: &str, component: Rc<RefCell<ToolExecutionComponent>>) {
         self.pending_tools.insert(id.into(), component);
+    }
+}
+
+/// senpi's `GrokFooterSession` adapter over the mode's own state.
+struct ModeGrokFooterSession {
+    cwd: String,
+    model_id: Option<String>,
+}
+
+impl crate::grok::footer::GrokFooterSession for ModeGrokFooterSession {
+    fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+    fn model_id(&self) -> Option<String> {
+        self.model_id.clone()
     }
 }
 
@@ -15117,7 +15301,7 @@ impl InteractiveMode {
             indicator.borrow().kind
                 == crate::components::status_indicator::StatusIndicatorKind::Compaction
         });
-        let embedded = active.filter(|indicator| {
+        let embedded = active.clone().filter(|indicator| {
             indicator.borrow().kind
                 != crate::components::status_indicator::StatusIndicatorKind::Compaction
         });
@@ -15137,7 +15321,27 @@ impl InteractiveMode {
                 })
             })
         };
+        // senpi `showWorkingIndicator` reads `indicator.kind === "working"` before deciding whether the
+        // status row carries the working tip.
+        let working_indicator_visible = match (&indicator, &active) {
+            (Some(_), Some(active)) => {
+                active.borrow().kind
+                    == crate::components::status_indicator::StatusIndicatorKind::Working
+            }
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
         self.editor.set_working_status_indicator(indicator);
+        // senpi `showWorkingIndicator`: the spinner lives in the editor border, so the status row only
+        // carries the working tip instead of a second spinner line. `appendTipLine` adds a sibling
+        // spacer and a `Text(line, 1, 0)`, which wraps and pads the tip's own lines.
+        if working_indicator_visible && let Some(tip) = self.resolve_turn_working_tip() {
+            lines.push(String::new());
+            let text =
+                crate::theme::Theme::fg(&self.theme, crate::theme::ThemeColor::Dim, &tip.line);
+            let mut component = maho_tui::components::text::Text::with_padding(text, 1, 0);
+            lines.extend(component.render(width));
+        }
         lines.push(String::new());
         for component in &self.pending_bash_components {
             lines.extend(component.borrow_mut().render(width));
@@ -15205,6 +15409,26 @@ impl InteractiveMode {
             .clone();
         lines.extend(if let Some(custom) = &mut self.footer {
             custom.render(width)
+        } else if let Some(chrome) = &self.chrome {
+            // senpi `InteractiveMode` with a chrome: the chrome's footer replaces the standard one.
+            if self.chrome_footer.is_none() {
+                let session: std::rc::Rc<dyn crate::grok::footer::GrokFooterSession> =
+                    std::rc::Rc::new(ModeGrokFooterSession {
+                        cwd: self.host_cwd(),
+                        model_id: Some(self.host_model().id),
+                    });
+                self.chrome_footer = Some(chrome.create_footer(session, self.theme.clone()));
+            }
+            let auto_compact = self.host_auto_compaction_enabled();
+            let delegated = self.compaction_delegated;
+            match &mut self.chrome_footer {
+                Some(chrome_footer) => {
+                    chrome_footer.set_auto_compact_enabled(auto_compact);
+                    chrome_footer.set_compaction_delegated(delegated);
+                    chrome_footer.render(width)
+                }
+                None => footer.render(width, &self.theme).expect("footer layout"),
+            }
         } else {
             footer.render(width, &self.theme).expect("footer layout")
         });
