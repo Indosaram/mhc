@@ -83,6 +83,7 @@ pub mod redact;
 pub mod reflection;
 pub mod reflection_completion;
 pub mod reflection_machine;
+pub mod reflection_reservation;
 pub mod reminders;
 pub mod retention;
 mod schema;
