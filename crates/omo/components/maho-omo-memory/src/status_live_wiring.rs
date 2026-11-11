@@ -98,6 +98,63 @@ impl MemoryFooterStatusLive {
     pub fn set_sync_status(&mut self, sync_status: Option<SyncStatusReader>) {
         self.sync_status = sync_status;
     }
+    fn probe<'a>(
+        context: &'a MemoryIdentityContext,
+        session_id: &'a str,
+        active: bool,
+        now_ms: i64,
+        repos: &'a mut BTreeMap<PathBuf, GitMemoryRepo>,
+        sync_status: Option<&'a SyncStatusReader>,
+    ) -> Probe<'a> {
+        Probe {
+            context,
+            session_id,
+            active,
+            now_ms,
+            repos,
+            sync_status,
+        }
+    }
+    /// Paints this session's spinner for the run it launched. Sessions the run does not read never
+    /// reach here, so an idle session sharing the identity keeps its plain `mem:` line.
+    pub fn activate(
+        &mut self,
+        context: Option<&MemoryIdentityContext>,
+        session_id: Option<&str>,
+        run_id: &str,
+        _now_ms: i64,
+        ui: Option<&mut dyn MemoryFooterUi>,
+    ) {
+        let (Some(context), Some(session_id), Some(ui)) = (context, session_id, ui) else {
+            return;
+        };
+        let identity = context.identity.clone();
+        self.live.activate(session_id, &identity, run_id, ui);
+    }
+    /// Ends this session's spinner for `run_id` and restores its `mem:` line.
+    pub fn settle(
+        &mut self,
+        context: Option<&MemoryIdentityContext>,
+        session_id: Option<&str>,
+        run_id: &str,
+        now_ms: i64,
+        ui: Option<&mut dyn MemoryFooterUi>,
+    ) {
+        let (Some(context), Some(session_id), Some(ui)) = (context, session_id, ui) else {
+            return;
+        };
+        let identity = context.identity.clone();
+        let mut probe = Self::probe(
+            context,
+            session_id,
+            false,
+            now_ms,
+            &mut self.repos,
+            self.sync_status.as_ref(),
+        );
+        self.live
+            .settle(session_id, &identity, run_id, ui, &mut probe);
+    }
     pub fn sync_active(
         &mut self,
         context: Option<&MemoryIdentityContext>,
@@ -106,20 +163,20 @@ impl MemoryFooterStatusLive {
         now_ms: i64,
         ui: Option<&mut dyn MemoryFooterUi>,
     ) {
-        let (Some(context), Some(session_id)) = (context, session_id) else {
+        let (Some(context), Some(session_id), Some(ui)) = (context, session_id, ui) else {
             return;
         };
-        let sync_status = self.sync_status.clone();
-        let mut probe = Probe {
+        let identity = context.identity.clone();
+        let mut probe = Self::probe(
             context,
             session_id,
             active,
             now_ms,
-            repos: &mut self.repos,
-            sync_status: sync_status.as_ref(),
-        };
+            &mut self.repos,
+            self.sync_status.as_ref(),
+        );
         self.live
-            .set_active(Some(&context.identity), active, ui, &mut probe);
+            .set_active(session_id, &identity, active, ui, &mut probe);
     }
     pub fn refresh(
         &mut self,
@@ -129,22 +186,28 @@ impl MemoryFooterStatusLive {
         now_ms: i64,
         ui: Option<&mut dyn MemoryFooterUi>,
     ) {
-        let (Some(context), Some(session_id)) = (context, session_id) else {
+        let (Some(context), Some(session_id), Some(ui)) = (context, session_id, ui) else {
             return;
         };
-        let sync_status = self.sync_status.clone();
-        let mut probe = Probe {
+        let identity = context.identity.clone();
+        let mut probe = Self::probe(
             context,
             session_id,
             active,
             now_ms,
-            repos: &mut self.repos,
-            sync_status: sync_status.as_ref(),
-        };
-        self.live.refresh(Some(&context.identity), ui, &mut probe);
+            &mut self.repos,
+            self.sync_status.as_ref(),
+        );
+        self.live.refresh(session_id, &identity, ui, &mut probe);
     }
-    pub fn tick(&mut self, ui: &mut dyn MemoryFooterUi) {
-        self.live.tick(ui);
+    pub fn tick_session(&mut self, session: &str, ui: &mut dyn MemoryFooterUi) {
+        self.live.tick_session(session, ui);
+    }
+    pub fn animating_sessions(&self) -> Vec<String> {
+        self.live.animating_sessions()
+    }
+    pub fn stop_session(&mut self, session: &str) {
+        self.live.stop_session(session);
     }
     pub fn is_animating(&self) -> bool {
         self.live.is_animating()
@@ -159,6 +222,7 @@ impl MemoryFooterStatusLive {
         self.live.is_disposed()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +276,36 @@ mod tests {
         wiring.refresh(Some(&context), Some("session"), false, now, Some(&mut ui));
         assert_eq!(ui.0.last().unwrap(), "mem:agent just now*");
         assert_eq!(wiring.repos.len(), 1);
+    }
+    #[test]
+    fn one_session_activates_without_touching_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(dir.path(), "agent");
+        let engine = crate::engine_session::prepare_memory_engine_session(
+            "agent",
+            &paths,
+            Default::default(),
+        )
+        .unwrap();
+        let now = engine.repo.head_commit_timestamp().unwrap().unwrap() * 1000;
+        let context = MemoryIdentityContext::new(
+            "agent".into(),
+            paths,
+            crate::binding::MemorySessionBinding {
+                identity: "agent".into(),
+                repo_path_hash: "hash".into(),
+                bound_at: 1.0,
+            },
+        );
+        let mut wiring = MemoryFooterStatusLive::default();
+        let mut busy = Ui::default();
+        let mut idle = Ui::default();
+        wiring.activate(Some(&context), Some("busy"), "run", now, Some(&mut busy));
+        assert_eq!(wiring.animating_sessions(), ["busy"]);
+        assert_eq!(busy.0, ["mem:agent ⠋ reflecting"]);
+        assert!(idle.0.is_empty());
+        wiring.settle(Some(&context), Some("idle"), "run", now, Some(&mut idle));
+        assert!(!idle.0.iter().any(|line| line.ends_with("reflecting")));
+        assert_eq!(wiring.animating_sessions(), ["busy"]);
     }
 }

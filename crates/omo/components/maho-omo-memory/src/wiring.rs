@@ -11,10 +11,13 @@ pub struct MemoryWiring {
     pub maintenance: crate::memory_maintenance::MemoryMaintenance,
     evaluators: Vec<Box<dyn crate::shutdown_drain::ShutdownEvaluator>>,
     pub seams: crate::wiring_types::MemoryWiringSeams,
-    live_host: Option<(
-        std::sync::Arc<maho_ext_api::ExtensionApi>,
-        std::sync::Arc<dyn maho_ext_api::ExtensionUi>,
-    )>,
+    live_hosts: std::collections::BTreeMap<
+        String,
+        (
+            std::sync::Arc<maho_ext_api::ExtensionApi>,
+            std::sync::Arc<dyn maho_ext_api::ExtensionUi>,
+        ),
+    >,
     footer_ticker: bool,
     pub provenance_by_session: std::collections::HashMap<String, maho_ext_api::ForkProvenance>,
     /// Which sessions this run accepted input from and which finished their initial reconciliation.
@@ -32,7 +35,7 @@ pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
         maintenance: crate::memory_maintenance::MemoryMaintenance::new(Default::default()),
         evaluators: vec![],
         seams: Default::default(),
-        live_host: None,
+        live_hosts: Default::default(),
         footer_ticker: false,
         provenance_by_session: Default::default(),
         user_activity: Default::default(),
@@ -147,15 +150,20 @@ pub fn spawn_footer_ticker(
                     crate::status_live::FRAME_INTERVAL_MS,
                 ));
                 let mut guard = ticker.blocking_lock();
-                let ui = guard.live_host.as_ref().map(|(_, ui)| ui.clone());
-                match ui {
-                    Some(ui) if guard.reflection_live.footer.is_animating() => {
-                        guard.reflection_live.footer.tick(&mut NativeFooter(ui))
-                    }
-                    _ => {
-                        guard.footer_ticker = false;
-                        return;
-                    }
+                let sessions = guard.reflection_live.footer.animating_sessions();
+                if sessions.is_empty() {
+                    guard.footer_ticker = false;
+                    return;
+                }
+                for session in sessions {
+                    let Some((_, ui)) = guard.live_hosts.get(&session).cloned() else {
+                        guard.reflection_live.footer.stop_session(&session);
+                        continue;
+                    };
+                    guard
+                        .reflection_live
+                        .footer
+                        .tick_session(&session, &mut NativeFooter(ui));
                 }
             }
         });
@@ -378,7 +386,10 @@ impl MemoryWiring {
                             .collect::<Vec<_>>();
                         let mut wiring = wiring.lock().await;
                         let mut ui = NativeFooter(context.ui.clone());
-                        wiring.live_host = Some((api.clone(), context.ui.clone()));
+                        wiring.live_hosts.insert(
+                            session.to_owned(),
+                            (api.clone(), context.ui.clone()),
+                        );
                         let mut live = NativeBindLive {
                             api: maho_ext_api::ExtensionApi::new(
                                 api.registered.clone(),
@@ -669,22 +680,39 @@ impl MemoryWiring {
         now: i64,
         warn: &dyn Fn(&str),
     ) -> bool {
-        let Some((api, ui)) = self.live_host.clone() else {
-            self.reflection_live
-                .active_runs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .start(identity, run, details);
-            return false;
+        let conversations = details.conversation_ids.clone();
+        let run_id = run.to_owned();
+        let identity = identity.to_owned();
+        // An unscoped run paints for the identity's bound sessions; a scoped run only for the
+        // sessions it reads.
+        let sessions: Vec<String> = if conversations.is_empty() {
+            self.sessions_for(&identity)
+        } else {
+            conversations
         };
-        if let Err(error) = self.reflection_live.on_reflection_launched(
-            identity,
-            run,
-            details,
-            &api,
-            now,
-            Some(&mut NativeFooter(ui)),
-        ) {
+        self.reflection_live
+            .active_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .start(&identity, &run_id, details);
+        let mut api = None;
+        for session in &sessions {
+            let Some((session_api, ui)) = self.live_hosts.get(session).cloned() else {
+                continue;
+            };
+            api = Some(session_api);
+            let context = self.runtime.resolve_context(session).cloned();
+            self.reflection_live.footer.activate(
+                context.as_ref(),
+                Some(session),
+                &run_id,
+                now,
+                Some(&mut NativeFooter(ui)),
+            );
+        }
+        if let Some(api) = api
+            && let Err(error) = self.reflection_live.sync_rpc(&api, now)
+        {
             warn(&format!("memory rpc sync failed: {error}"));
         }
         let start = self.reflection_live.footer.is_animating() && !self.footer_ticker;
@@ -700,25 +728,62 @@ impl MemoryWiring {
         run: &str,
         now: i64,
     ) -> Result<(), String> {
-        let Some((api, ui)) = self.live_host.clone() else {
-            self.reflection_live
+        let identity = identity.to_owned();
+        let run_id = run.to_owned();
+        let sessions: Vec<String> = {
+            let mut runs = self
+                .reflection_live
                 .active_runs
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .settle(identity, run);
-            return Ok(());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let conversations = runs
+                .current(&identity)
+                .filter(|active| active.run_id == run_id)
+                .map(|active| active.details.conversation_ids.clone())
+                .unwrap_or_default();
+            runs.settle(&identity, &run_id);
+            if conversations.is_empty() {
+                self.sessions_for(&identity)
+            } else {
+                conversations
+            }
         };
-        self.reflection_live.on_live_reflection_completed(
-            identity,
-            run,
-            &api,
-            now,
-            Some(&mut NativeFooter(ui)),
-        )
+        let mut api = None;
+        for session in &sessions {
+            let Some((session_api, ui)) = self.live_hosts.get(session).cloned() else {
+                self.reflection_live.footer.stop_session(session);
+                continue;
+            };
+            api = Some(session_api);
+            let context = self.runtime.resolve_context(session).cloned();
+            self.reflection_live.footer.settle(
+                context.as_ref(),
+                Some(session),
+                &run_id,
+                now,
+                Some(&mut NativeFooter(ui)),
+            );
+        }
+        match api {
+            Some(api) => self.reflection_live.sync_rpc(&api, now),
+            None => Ok(()),
+        }
+    }
+    /// The bound sessions that resolve this identity, for runs that recorded no conversations.
+    fn sessions_for(&self, identity: &str) -> Vec<String> {
+        self.live_hosts
+            .keys()
+            .filter(|session| {
+                self.runtime
+                    .resolve_context(session)
+                    .is_some_and(|context| context.identity == identity)
+            })
+            .cloned()
+            .collect()
     }
     /// Memory-write hook (pin `wiring.ts:133` onMemoryWrite: reflectionLive.syncRpc).
     pub fn sync_rpc(&mut self, now: i64) -> Result<(), String> {
-        let Some((api, _)) = self.live_host.clone() else {
+        let Some((api, _)) = self.live_hosts.values().next().cloned() else {
             return Ok(());
         };
         self.reflection_live.sync_rpc(&api, now)
@@ -746,7 +811,9 @@ impl MemoryWiring {
             .and_then(|session| self.runtime.resolve_context(session))
             .map(|context| context.identity_paths.repo.as_path() == repo)
             .unwrap_or(false);
-        let host = self.live_host.clone();
+        let host = session
+            .as_deref()
+            .and_then(|session| self.live_hosts.get(session).cloned());
         let notice = if active_repo {
             host.as_ref().map(|(_, ui)| NativeSyncNotice(ui.clone()))
         } else {
@@ -842,7 +909,7 @@ impl MemoryWiring {
         if !self.stale_lock_notices_shown.insert(key) {
             return Ok(());
         }
-        if let Some((_, ui)) = self.live_host.clone() {
+        if let Some((_, ui)) = self.live_hosts.get(session).cloned() {
             ui.notify(&notice, maho_ext_api::NotificationType::Warning);
         }
         Ok(())
@@ -950,6 +1017,8 @@ impl MemoryWiring {
             facts.set_provenance(session, None);
         }
         self.runtime.contexts.remove(session);
+        self.live_hosts.remove(session);
+        self.reflection_live.footer.stop_session(session);
         self.reflection_live.unbind(session);
         self.user_activity.reset(session);
         self.provenance_by_session.remove(session);

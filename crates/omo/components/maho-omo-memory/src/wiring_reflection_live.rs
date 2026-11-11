@@ -164,8 +164,9 @@ impl MemoryReflectionLiveWiring {
         }
         self.contexts.insert(session.into(), context);
         let context = self.contexts.get(session);
-        let active =
-            context.is_some_and(|context| lock(&self.active_runs).is_active(&context.identity));
+        let active = context.is_some_and(|context| {
+            lock(&self.active_runs).is_active_for_session(&context.identity, session)
+        });
         self.footer.sync_active(
             context,
             Some(session),
@@ -177,7 +178,8 @@ impl MemoryReflectionLiveWiring {
             },
         );
         if drained {
-            self.footer.refresh(context, Some(session), active, now, ui);
+            self.footer
+                .refresh(context, Some(session), active, now, ui);
         }
         self.sync_rpc(api, now)
     }
@@ -190,9 +192,39 @@ impl MemoryReflectionLiveWiring {
         now: i64,
         ui: Option<&mut dyn MemoryFooterUi>,
     ) -> Result<(), String> {
-        lock(&self.active_runs).start(identity, run, details);
-        self.sync_footer(now, ui);
+        let conversations = self.record_launch(identity, run, details);
+        // An unscoped run (no recorded conversations) keeps painting for the session bound to it.
+        let sessions: Vec<String> = if conversations.is_empty() {
+            self.session.iter().cloned().collect()
+        } else {
+            conversations
+        };
+        let mut ui = ui;
+        for session in sessions.iter().filter(|id| self.contexts.contains_key(*id)) {
+            let context = self.contexts.get(session);
+            self.footer.activate(
+                context,
+                Some(session),
+                run,
+                now,
+                match ui.as_mut() {
+                    Some(ui) => Some(&mut **ui),
+                    None => None,
+                },
+            );
+        }
         self.sync_rpc(api, now)
+    }
+    /// Records the launch and returns the sessions the run reads (empty when it named none).
+    pub fn record_launch(
+        &mut self,
+        identity: &str,
+        run: &str,
+        details: ActiveReflectionRunDetails,
+    ) -> Vec<String> {
+        let conversations = details.conversation_ids.clone();
+        lock(&self.active_runs).start(identity, run, details);
+        conversations
     }
     pub fn on_live_reflection_completed(
         &mut self,
@@ -202,16 +234,36 @@ impl MemoryReflectionLiveWiring {
         now: i64,
         ui: Option<&mut dyn MemoryFooterUi>,
     ) -> Result<(), String> {
-        lock(&self.active_runs).settle(identity, run);
-        self.sync_footer(now, ui);
+        let sessions = self.settle_run(identity, run);
+        let mut ui = ui;
+        for session in sessions {
+            let context = self.contexts.get(&session);
+            self.footer.settle(
+                context,
+                Some(&session),
+                run,
+                now,
+                match ui.as_mut() {
+                    Some(ui) => Some(&mut **ui),
+                    None => None,
+                },
+            );
+        }
         self.sync_rpc(api, now)
     }
-    fn sync_footer(&mut self, now: i64, ui: Option<&mut dyn MemoryFooterUi>) {
-        let session = self.session.as_deref();
-        let context = session.and_then(|session| self.contexts.get(session));
-        let active =
-            context.is_some_and(|context| lock(&self.active_runs).is_active(&context.identity));
-        self.footer.sync_active(context, session, active, now, ui);
+    /// Settles the run and returns the sessions whose spinner must be cleared.
+    pub fn settle_run(&mut self, identity: &str, run: &str) -> Vec<String> {
+        let mut runs = lock(&self.active_runs);
+        let conversations = runs
+            .current(identity)
+            .filter(|active| active.run_id == run)
+            .map(|active| active.details.conversation_ids.clone())
+            .unwrap_or_default();
+        runs.settle(identity, run);
+        if conversations.is_empty() {
+            return self.session.iter().cloned().collect();
+        }
+        conversations
     }
     pub fn on_settled(
         &mut self,
@@ -236,9 +288,11 @@ impl MemoryReflectionLiveWiring {
         crate::worker::run_liveness::throw_if_aborted(signal)?;
         let context = self.contexts.get(session);
         let identity = context.map(|context| context.binding.clone());
-        let active =
-            context.is_some_and(|context| lock(&self.active_runs).is_active(&context.identity));
-        self.footer.refresh(context, Some(session), active, now, ui);
+        let active = context.is_some_and(|context| {
+            lock(&self.active_runs).is_active_for_session(&context.identity, session)
+        });
+        self.footer
+            .refresh(context, Some(session), active, now, ui);
         let unchanged = self
             .contexts
             .get(session)
@@ -504,6 +558,7 @@ mod tests {
                 category: "quick".into(),
                 model: None,
                 started_at: finished.into(),
+                conversation_ids: Vec::new(),
             },
         );
         let mut live = Live::default();
@@ -560,6 +615,7 @@ mod tests {
                 category: "quick".into(),
                 model: None,
                 started_at: "now".into(),
+                conversation_ids: Vec::new(),
             },
         );
         let snapshot = handler(serde_json::Value::Null).await.unwrap();
@@ -623,6 +679,7 @@ mod tests {
                     category: "quick".into(),
                     model: Some("p/m".into()),
                     started_at: "now".into(),
+                    conversation_ids: Vec::new(),
                 },
                 &api,
                 now,
@@ -642,7 +699,7 @@ mod tests {
         wiring.shutdown(Some("agent"));
         assert!(!wiring.active_runs.lock().unwrap().is_active("agent"));
         let before = ui.0.len();
-        wiring.footer.tick(&mut ui);
+        wiring.footer.tick_session("session", &mut ui);
         assert_eq!(before, ui.0.len());
     }
     #[test]
@@ -692,6 +749,7 @@ mod tests {
                     category: "quick".into(),
                     model: None,
                     started_at: "now".into(),
+                    conversation_ids: Vec::new(),
                 },
                 &api,
                 now,
@@ -700,7 +758,69 @@ mod tests {
             .unwrap();
         assert!(wiring.footer.is_animating());
         assert_eq!(ui.0.last().unwrap(), "mem:agent ⠋ reflecting");
-        wiring.footer.tick(&mut ui);
+        wiring.footer.tick_session("two", &mut ui);
         assert_eq!(ui.0.last().unwrap(), "mem:agent ⠙ reflecting");
+    }
+    #[test]
+    fn a_run_reading_one_conversation_never_paints_an_idle_session() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let engine = crate::engine_session::prepare_memory_engine_session(
+            "agent",
+            &paths,
+            Default::default(),
+        )
+        .unwrap();
+        let now = engine.repo.head_commit_timestamp().unwrap().unwrap() * 1000;
+        let context = MemoryIdentityContext::new(
+            "agent".into(),
+            paths,
+            crate::binding::MemorySessionBinding {
+                identity: "agent".into(),
+                repo_path_hash: "hash".into(),
+                bound_at: 0.0,
+            },
+        );
+        let api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let mut wiring = MemoryReflectionLiveWiring::default();
+        let mut busy = Ui::default();
+        let mut idle = Ui::default();
+        wiring.attach("busy");
+        wiring
+            .bind("busy", context.clone(), &api, now, Some(&mut busy), None)
+            .unwrap();
+        wiring.attach("idle");
+        wiring
+            .bind("idle", context, &api, now, Some(&mut idle), None)
+            .unwrap();
+        wiring
+            .on_reflection_launched(
+                "agent",
+                "run",
+                ActiveReflectionRunDetails {
+                    trigger: "manual".into(),
+                    category: "quick".into(),
+                    model: None,
+                    started_at: "now".into(),
+                    conversation_ids: vec!["busy".into()],
+                },
+                &api,
+                now,
+                Some(&mut busy),
+            )
+            .unwrap();
+        assert_eq!(wiring.footer.animating_sessions(), ["busy"]);
+        assert_eq!(busy.0.last().unwrap(), "mem:agent ⠋ reflecting");
+        assert!(!idle.0.iter().any(|line| line.ends_with("reflecting")));
+        wiring
+            .on_live_reflection_completed("agent", "run", &api, now, Some(&mut busy))
+            .unwrap();
+        assert!(wiring.footer.animating_sessions().is_empty());
+        assert!(!idle.0.iter().any(|line| line.ends_with("reflecting")));
     }
 }

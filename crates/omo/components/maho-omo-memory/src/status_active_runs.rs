@@ -7,6 +7,8 @@ pub struct ActiveReflectionRunDetails {
     pub category: String,
     pub model: Option<String>,
     pub started_at: String,
+    /// The conversations the run read (`ReflectionRequest.conversationIds`); empty when unrecorded.
+    pub conversation_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +48,31 @@ impl ActiveReflectionRuns {
         self.by_identity.remove(identity);
     }
 
+    /// Drops the runs this session launched. A run with no recorded conversations keeps the legacy
+    /// behaviour of belonging to whoever is bound.
+    pub fn clear_session(&mut self, session: &str) {
+        self.by_identity.retain(|_, runs| {
+            runs.retain(|run| {
+                !run.details.conversation_ids.is_empty()
+                    && !run.details.conversation_ids.iter().any(|id| id == session)
+            });
+            !runs.is_empty()
+        });
+    }
+
+    /// Whether this session is one the run reads; an unscoped run stays visible to its identity's
+    /// sessions so older reserved records keep painting.
+    pub fn current_for_session(&self, identity: &str, session: &str) -> Option<&ActiveReflectionRun> {
+        self.current(identity).filter(|run| {
+            run.details.conversation_ids.is_empty()
+                || run.details.conversation_ids.iter().any(|id| id == session)
+        })
+    }
+
+    pub fn is_active_for_session(&self, identity: &str, session: &str) -> bool {
+        self.current_for_session(identity, session).is_some()
+    }
+
     pub fn is_active(&self, identity: &str) -> bool {
         self.current(identity).is_some()
     }
@@ -64,6 +91,7 @@ mod tests {
             category: "quick".into(),
             model: None,
             started_at: "2026-08-12T00:00:00.000Z".into(),
+            conversation_ids: Vec::new(),
         }
     }
     fn started() -> ActiveReflectionRuns {

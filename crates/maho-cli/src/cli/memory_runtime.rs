@@ -1134,6 +1134,8 @@ impl MemoryRuntime {
             .and_then(|value| value.as_str().map(str::to_owned))
             .unwrap_or_default();
         let now = memory_core::support::time::now_millis();
+        // The run reads only these conversations, so only their footers may animate for it.
+        let conversation_ids = run.request.conversation_ids.clone();
         let details = maho_omo_memory::status_active_runs::ActiveReflectionRunDetails {
             trigger,
             category,
@@ -1142,6 +1144,7 @@ impl MemoryRuntime {
                 .reserved_at
                 .clone()
                 .unwrap_or_else(|| memory_core::support::time::format_rfc3339_millis(now)),
+            conversation_ids,
         };
         let start_ticker = self.wiring.blocking_lock().on_reflection_launched(
             identity,
