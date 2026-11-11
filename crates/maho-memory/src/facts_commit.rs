@@ -27,6 +27,49 @@ pub fn commit_message(
     message
 }
 
+/// How a recovery attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactsRecoveryResult {
+    Committed {
+        sha: String,
+        affected_paths: Vec<String>,
+    },
+    /// Someone else changed the repository mid-apply. The plan's state was rolled back.
+    ParentDirty { detail: Option<String> },
+}
+
+impl FactsRecoveryResult {
+    pub fn outcome(&self) -> &str {
+        match self {
+            Self::Committed { .. } => "committed",
+            Self::ParentDirty { .. } => "parent_dirty",
+        }
+    }
+
+    pub fn sha(&self) -> Option<&str> {
+        match self {
+            Self::Committed { sha, .. } => Some(sha),
+            Self::ParentDirty { .. } => None,
+        }
+    }
+
+    /// Empty when nothing was committed: a dirty parent wrote no paths, so a caller must not report progress
+    /// from this on an attempt that changed nothing.
+    pub fn affected_paths(&self) -> &[String] {
+        match self {
+            Self::Committed { affected_paths, .. } => affected_paths,
+            Self::ParentDirty { .. } => &[],
+        }
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Committed { .. } => None,
+            Self::ParentDirty { detail } => detail.as_deref(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +148,48 @@ mod tests {
         let evicted = message.find("Omo-Agreement-Evicted: a").expect("evicted");
         assert!(batch < stripped, "{message}");
         assert!(stripped < evicted, "{message}");
+    }
+
+    fn committed() -> FactsRecoveryResult {
+        FactsRecoveryResult::Committed {
+            sha: "abc123".to_owned(),
+            affected_paths: vec!["notes/facts/2026-11.md".to_owned()],
+        }
+    }
+
+    fn parent_dirty(detail: Option<&str>) -> FactsRecoveryResult {
+        FactsRecoveryResult::ParentDirty {
+            detail: detail.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_committed_result_exposes_its_sha_and_paths() {
+        let result = committed();
+        assert_eq!(result.outcome(), "committed");
+        assert_eq!(result.sha(), Some("abc123"));
+        assert_eq!(result.affected_paths(), ["notes/facts/2026-11.md"]);
+        assert_eq!(result.detail(), None);
+    }
+
+    #[test]
+    fn a_dirty_parent_reports_no_sha_and_no_paths() {
+        for result in [
+            parent_dirty(None),
+            parent_dirty(Some("Foreign entry retained at a")),
+        ] {
+            assert_eq!(result.outcome(), "parent_dirty");
+            assert_eq!(result.sha(), None);
+            assert!(result.affected_paths().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_dirty_parent_keeps_its_detail() {
+        assert_eq!(
+            parent_dirty(Some("Foreign entry retained at notes/a.md")).detail(),
+            Some("Foreign entry retained at notes/a.md")
+        );
+        assert_eq!(parent_dirty(None).detail(), None);
     }
 }
