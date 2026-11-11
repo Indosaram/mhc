@@ -120,7 +120,7 @@ pub fn wire_host_prewarm(api: &mut ExtensionApi, engine: Arc<HostPrewarmEngine>)
                             .insert(session, ())
                             .is_none()
                     {
-                        warm_own_host(engine.as_ref());
+                        spawn_warm(engine);
                     }
                 }
                 Ok(EventResult::None)
@@ -149,7 +149,7 @@ pub fn wire_host_prewarm(api: &mut ExtensionApi, engine: Arc<HostPrewarmEngine>)
                             .insert(session, ())
                             .is_none()
                         {
-                            warm_own_host(engine.as_ref());
+                            spawn_warm(engine);
                         }
                         Ok(EventResult::None)
                     })
@@ -158,6 +158,13 @@ pub fn wire_host_prewarm(api: &mut ExtensionApi, engine: Arc<HostPrewarmEngine>)
         }
     }
     handle
+}
+
+/// Warm on the blocking pool: `warm_host` joins the host assembly thread, and on the CLI's
+/// current-thread runtime that join froze the interactive loop for the length of a host boot on the
+/// first prompt. The handler returns at once and the host is up by the time a task needs it.
+fn spawn_warm(engine: std::sync::Arc<HostPrewarmEngine>) {
+    tokio::task::spawn_blocking(move || warm_own_host(engine.as_ref()));
 }
 
 fn warm_own_host(engine: &HostPrewarmEngine) {
