@@ -68,6 +68,7 @@ pub mod persona_assets;
 pub mod project_corpus;
 pub mod prompt;
 pub mod prompt_render;
+pub mod random_ids;
 pub mod recall;
 pub mod recall_gate;
 pub mod recall_planner;
