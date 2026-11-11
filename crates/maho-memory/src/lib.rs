@@ -45,6 +45,7 @@ pub mod failure_selection;
 pub mod frontmatter;
 pub mod frontmatter_entries;
 pub mod fs_resilience;
+pub mod git_encoding;
 pub mod git_layout;
 pub mod git_log;
 pub mod git_status;
