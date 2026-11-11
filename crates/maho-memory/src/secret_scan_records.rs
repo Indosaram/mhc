@@ -125,6 +125,17 @@ pub fn parse_blob_records(output: &[u8]) -> Result<Vec<BlobRecord>, String> {
     Ok(records)
 }
 
+/// UTF-8 when valid, otherwise Latin-1 (one character per byte).
+///
+/// Screening a non-UTF-8 blob with `from_utf8` lossily would replace invalid bytes with U+FFFD and let a binary
+/// carry an ASCII credential past the scanner. Latin-1 keeps every byte distinct.
+pub fn screenable_text(body: &[u8]) -> String {
+    match std::str::from_utf8(body) {
+        Ok(text) => text.to_owned(),
+        Err(_) => body.iter().map(|byte| *byte as char).collect(),
+    }
+}
+
 pub fn index_blobs(records: Vec<BlobRecord>) -> std::collections::BTreeMap<String, BlobRecord> {
     let mut index = std::collections::BTreeMap::new();
     for record in records {
@@ -139,6 +150,28 @@ mod tests {
 
     const RAW: &str =
         ":100644 100644 aaa bbb M\u{0}notes/a.md\u{0}:000000 120000 000 ccc A\u{0}link\u{0}";
+
+    #[test]
+    fn valid_utf8_screens_as_itself() {
+        assert_eq!(screenable_text("héllo".as_bytes()), "héllo");
+    }
+
+    #[test]
+    fn invalid_utf8_keeps_every_byte_distinct() {
+        let text = screenable_text(&[0xff, b'A', 0x00]);
+        assert_eq!(text.chars().count(), 3);
+        assert!(text.contains('A'));
+    }
+
+    #[test]
+    fn a_binary_cannot_hide_an_ascii_credential() {
+        let mut body = b"AKIA".to_vec();
+        body.push(0xff);
+        body.extend_from_slice(b"SECRET");
+        let text = screenable_text(&body);
+        assert!(text.contains("AKIA"), "{text:?}");
+        assert!(text.contains("SECRET"), "{text:?}");
+    }
 
     #[test]
     fn a_raw_diff_record_parses_its_destination() {
