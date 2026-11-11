@@ -85,6 +85,7 @@ mod schema;
 pub mod secret_scan_records;
 pub mod seeds;
 pub mod select;
+pub mod session_provider;
 pub mod soul_paths;
 pub mod stale_holder;
 pub mod store;
