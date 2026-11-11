@@ -41,6 +41,7 @@ pub mod git_tree;
 pub mod journal;
 pub mod orphan_sweep;
 pub mod paths;
+pub mod persona_assets;
 pub mod normalize;
 pub mod secret_scan_records;
 pub mod payload_cap;
