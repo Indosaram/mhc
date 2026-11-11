@@ -52,6 +52,10 @@ const CHILD_SENTINELS: [&str; 2] = ["SENPI_MEMORY_REFLECTION", "SENPI_MEMORY_FAC
 pub type CreateRepo =
     Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
 
+/// Work that must run off the interactive thread (the recall collection's git read and corpus
+/// scan). Send + 'static so it can cross to a blocking pool.
+pub type BlockingTask = Box<dyn FnOnce() + Send + 'static>;
+
 pub struct MemoryRecallWiringOptions {
     pub resolve_context: crate::prompt::PromptContextResolver,
     /// The resolved settings, fail-open: an `Err` falls back to defaults, never disables recall.
@@ -64,6 +68,11 @@ pub struct MemoryRecallWiringOptions {
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
     pub append_entry: AppendEntry,
     pub spawn: KibitzerWakeSpawn,
+    /// Runs BLOCKING work off the interactive thread. The recall collection is a git read plus a
+    /// corpus scan, dispatched from the turn's first poll on the current-thread runtime that also
+    /// paints and reads input; the handler must hand it to this seam and return, never run it (nor
+    /// merely `spawn` it, which keeps polling on that same thread).
+    pub offload_blocking: Arc<dyn Fn(BlockingTask) + Send + Sync>,
     pub timers: Arc<dyn KibitzerSidecarTimers>,
     pub now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
     pub random: Arc<dyn Fn() -> f64 + Send + Sync>,
@@ -451,35 +460,56 @@ impl KibitzerHookSink for MemoryRecallWiring {
         }
     }
 
-    fn on_before_agent_start(&self, session_id: &str, prompt: &str, entries: &[Value]) {
+    fn on_before_agent_start(
+        self: Arc<Self>,
+        session_id: &str,
+        prompt: &str,
+        branch_len: usize,
+        entries: &[Value],
+    ) {
         self.delivery.mark_running(session_id);
         let Some(context) = (self.options.resolve_context)(session_id) else {
             return;
         };
         let sidecar = self.sidecar_for(session_id, &context);
-        // The branch snapshot is captured BEFORE the prompt that follows it; the cursor is the branch
-        // length, so the events stream shares ONE cursor basis with the candidate collector.
-        let cursor = entries.len();
+        // The branch snapshot is captured BEFORE the prompt that follows it; the cursor is the TRUE
+        // branch length (not the bounded capture's length), so the events stream shares ONE cursor
+        // basis with the candidate collector.
+        let cursor = branch_len;
         let _ = sidecar.on_branch(entries, cursor);
         let _ = sidecar.on_prompt(prompt, cursor);
-        let extra = vec![prompt.to_owned()];
-        let Some(candidates) = self.collect_candidates(session_id, entries, &extra) else {
-            return;
-        };
-        // `task_summary` stays None: `on_prompt` already remembered the task line from the prompt.
-        let input = KibitzerOfferInput {
-            candidates: candidates.candidates,
-            surfaced: candidates.surfaced,
-            max_items: candidates.max_items,
-            task_summary: None,
-        };
-        // The offer runs on the retained host executor, never inline: the handler must return before
-        // the host disposes the context, and the wake does real child I/O.
+        // The collection is a git read plus a corpus scan, i.e. BLOCKING work. It must not run on
+        // the interactive thread: `on_before_agent_start` is dispatched from the turn's first poll,
+        // which on the current-thread runtime in `main.rs` is also the thread that paints and reads
+        // input, so running it here (or merely `spawn`ing it, which keeps polling on that same
+        // thread) froze the UI for as long as the memory repo took - measured at 0.8 s on a fresh
+        // session and 2.1 s on a 24 MB one, during which a keystroke was not read at all.
+        // `spawn_blocking` moves it to the blocking pool, so the handler returns before the read
+        // starts. `entries` is copied because the host disposes it when this handler returns; the
+        // copy is bounded by the capture, not by the branch length.
+        let wiring = Arc::clone(&self);
+        let session_id = session_id.to_owned();
+        let prompt = prompt.to_owned();
+        let entries = entries.to_vec();
         let warn = Arc::clone(&self.options.warn);
-        (self.options.spawn)(Box::pin(async move {
-            if let Err(error) = sidecar.offer(input).await {
-                warn(&format!("omo-senpi kibitzer offer failed: {error}"));
-            }
+        let spawn = Arc::clone(&self.options.spawn);
+        (self.options.offload_blocking)(Box::new(move || {
+            let extra = vec![prompt];
+            let Some(candidates) = wiring.collect_candidates(&session_id, &entries, &extra) else {
+                return;
+            };
+            // `task_summary` stays None: `on_prompt` already remembered the task line from the prompt.
+            let input = KibitzerOfferInput {
+                candidates: candidates.candidates,
+                surfaced: candidates.surfaced,
+                max_items: candidates.max_items,
+                task_summary: None,
+            };
+            spawn(Box::pin(async move {
+                if let Err(error) = sidecar.offer(input).await {
+                    warn(&format!("omo-senpi kibitzer offer failed: {error}"));
+                }
+            }));
         }));
     }
 

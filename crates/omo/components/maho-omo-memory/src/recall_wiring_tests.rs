@@ -64,6 +64,7 @@ fn tool_call_offer_harness() -> (
         GitMemoryRepo::open(repo_directory.clone(), "agent").map_err(|error| error.to_string())
     });
     options.spawn = spawn.spawner();
+    options.offload_blocking = spawn.blocking();
     (wiring, context, spawn, root)
 }
 
@@ -71,7 +72,16 @@ fn tool_call_offer_harness() -> (
 fn matching_tool_call_offers_without_a_prompt_candidate() {
     let (wiring, context, spawn, _root) = tool_call_offer_harness();
     let _sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
+    Arc::clone(&wiring).on_before_agent_start(
+        SESSION,
+        "unrelated chatter with no corpus token",
+        0,
+        &[],
+    );
+    // The handler hands its collection to the blocking seam instead of running it inline; draining
+    // runs it to completion, which is where the (absent) candidate set is decided.
+    spawn.drain_blocking();
+    spawn.drain();
     assert_eq!(spawn.queued(), 0);
     wiring.on_tool_call(
         SESSION,
@@ -139,17 +149,36 @@ fn tool_hooks_reuse_the_turn_recall_settings_and_a_config_edit_applies_next_turn
     // A tool hook with no turn-cached value resolves fresh.
     call(&wiring);
     assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (1, 1));
-    wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
+    Arc::clone(&wiring).on_before_agent_start(
+        SESSION,
+        "unrelated chatter with no corpus token",
+        0,
+        &[],
+    );
+    // The handler must NOT do the collection inline: that work is a git read plus a corpus scan on
+    // the thread that paints and reads input. It hands the collection to the blocking seam and
+    // returns; the resolve happens only when that task actually runs.
+    assert_eq!(resolves.load(Ordering::SeqCst), 1);
+    assert_eq!(spawn.blocking_queued(), 1);
+    spawn.drain_blocking();
+    spawn.drain();
     assert_eq!(resolves.load(Ordering::SeqCst), 2);
     // A mid-turn config edit does not reach this turn's tool hooks, which never re-resolve.
     disabled.store(true, Ordering::SeqCst);
     call(&wiring);
     call(&wiring);
-    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (2, 3));
+    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (2, 2));
     // The next turn resolves the edit; its tool hooks then see recall disabled.
-    wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
+    Arc::clone(&wiring).on_before_agent_start(
+        SESSION,
+        "unrelated chatter with no corpus token",
+        0,
+        &[],
+    );
+    spawn.drain_blocking();
+    spawn.drain();
     call(&wiring);
-    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (3, 3));
+    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (3, 0));
 }
 
 /// One poll with a no-op waker; the caller decides whether Pending is expected.
@@ -177,6 +206,7 @@ fn poll_ready_once<F: Future + ?Sized>(mut future: Pin<Box<F>>) -> F::Output {
 #[derive(Default)]
 struct ManualSpawn {
     queue: Mutex<Vec<Pin<Box<dyn Future<Output = ()> + Send>>>>,
+    blocking_queue: Mutex<Vec<BlockingTask>>,
 }
 
 impl ManualSpawn {
@@ -195,6 +225,38 @@ impl ManualSpawn {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
+    }
+
+    fn blocking(self: &Arc<Self>) -> Arc<dyn Fn(BlockingTask) + Send + Sync> {
+        let me = Arc::clone(self);
+        Arc::new(move |task| {
+            me.blocking_queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(task)
+        })
+    }
+
+    fn blocking_queued(&self) -> usize {
+        self.blocking_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    fn drain_blocking(&self) {
+        loop {
+            let next = {
+                self.blocking_queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop()
+            };
+            match next {
+                Some(task) => task(),
+                None => break,
+            }
+        }
     }
 
     fn drain(&self) {
@@ -404,6 +466,7 @@ fn harness(resolve_available: bool, with_coordinator: bool) -> Harness {
         send_message: Arc::new(|_message: KibitzerSteerMessage| Ok(())),
         append_entry: Arc::new(|_kind: &str, _data: Value| {}),
         spawn: spawn.spawner(),
+        offload_blocking: spawn.blocking(),
         timers: Arc::new(InertTimers),
         now_ms: Arc::new(|| 0),
         random: Arc::new(|| 0.0),
@@ -749,6 +812,7 @@ fn capture_harness(
         send_message: Arc::new(|_message: KibitzerSteerMessage| Ok(())),
         append_entry: Arc::new(|_kind: &str, _data: Value| {}),
         spawn: spawn.spawner(),
+        offload_blocking: spawn.blocking(),
         timers: Arc::new(InertTimers),
         now_ms: Arc::new(|| 0),
         random: Arc::new(|| 0.0),
@@ -787,7 +851,12 @@ fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_pr
     let entries = vec![
         serde_json::json!({ "type": "message", "message": { "role": "assistant", "content": "BRANCH-ASSISTANT-MARKER" } }),
     ];
-    wiring.on_before_agent_start(SESSION, "CURRENT-PROMPT-MARKER", &entries);
+    Arc::clone(&wiring).on_before_agent_start(
+        SESSION,
+        "CURRENT-PROMPT-MARKER",
+        entries.len(),
+        &entries,
+    );
     let sidecar = wiring.sidecar_for(SESSION, &context);
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
