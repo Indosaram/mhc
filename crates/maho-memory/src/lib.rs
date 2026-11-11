@@ -48,6 +48,7 @@ pub mod git_layout;
 pub mod git_log;
 pub mod git_status;
 pub mod git_tree;
+pub mod host_identity;
 pub mod identity_layout;
 pub mod journal;
 pub mod kibitzer;
