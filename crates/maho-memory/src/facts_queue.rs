@@ -529,6 +529,21 @@ pub fn admit_batch(batch: &FactsBatch, consumed: &Consumed) -> Result<(), Enqueu
     Ok(())
 }
 
+/// The context row a batch inherits: the last entry before the batch's start that is not a reasoning row.
+///
+/// The extractor is given this row so it can tell which message the extracted facts answer. A reasoning row is
+/// skipped because it is the model thinking to itself, not something the person said or was told; using it
+/// would attribute facts to a turn nobody can see. Intervening rows of other kinds are *not* skipped — the
+/// nearest visible row is the real context, even when reasoning sits between it and the batch.
+pub fn lead_of(entries: &[BatchEntry], start_index: usize) -> Option<BatchEntry> {
+    entries
+        .get(..start_index.min(entries.len()))?
+        .iter()
+        .rev()
+        .find(|entry| entry.kind != "reasoning")
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,5 +877,64 @@ mod tests {
             let millis = parse_instant_ms(at).expect("instant");
             assert_eq!(format_ms(millis), at);
         }
+    }
+
+    fn row(kind: &str) -> BatchEntry {
+        BatchEntry {
+            kind: kind.to_owned(),
+            text: Some(format!("{kind} text")),
+            name: None,
+            args_text: None,
+            result_text: None,
+            result_ok: None,
+            captured_at: None,
+            source_line_id: None,
+            source_message_id: Some(format!("{kind}-id")),
+        }
+    }
+
+    #[test]
+    fn a_batch_at_the_start_has_no_lead() {
+        assert_eq!(lead_of(&[], 0), None);
+        assert_eq!(lead_of(&[row("assistant")], 0), None);
+    }
+
+    #[test]
+    fn the_lead_is_the_entry_immediately_before_the_start() {
+        let entries = vec![row("user"), row("assistant"), row("user")];
+        assert_eq!(lead_of(&entries, 2), Some(row("assistant")));
+    }
+
+    #[test]
+    fn reasoning_rows_are_skipped() {
+        let entries = vec![row("user"), row("reasoning"), row("assistant")];
+        assert_eq!(lead_of(&entries, 2), Some(row("user")));
+    }
+
+    #[test]
+    fn a_visible_row_behind_reasoning_still_wins() {
+        let entries = vec![row("assistant"), row("reasoning"), row("user")];
+        assert_eq!(lead_of(&entries, 3), Some(row("user")));
+    }
+
+    #[test]
+    fn only_reasoning_before_the_batch_means_no_lead() {
+        let entries = vec![row("reasoning"), row("reasoning"), row("user")];
+        assert_eq!(lead_of(&entries, 2), None);
+    }
+
+    #[test]
+    fn only_entries_before_the_start_are_considered() {
+        let entries = vec![row("user"), row("assistant"), row("user")];
+        assert_eq!(
+            lead_of(&entries, 1).expect("lead").source_message_id,
+            Some("user-id".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_start_beyond_the_end_uses_the_whole_transcript() {
+        let entries = vec![row("user"), row("assistant")];
+        assert_eq!(lead_of(&entries, 99), Some(row("assistant")));
     }
 }
