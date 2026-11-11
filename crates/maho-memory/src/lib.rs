@@ -17,6 +17,7 @@
 pub mod agreements;
 pub mod banks;
 pub mod bm25;
+pub mod expiry;
 pub mod extension;
 pub mod fact_display;
 pub mod facts_abort;
