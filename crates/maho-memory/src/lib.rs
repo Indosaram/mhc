@@ -97,6 +97,7 @@ pub mod soul_paths;
 pub mod stale_holder;
 pub mod store;
 pub mod text;
+pub mod time_format;
 pub mod transcript_search;
 
 pub use agreements::{Agreement, Agreements, Block, Projection, ProjectionError};

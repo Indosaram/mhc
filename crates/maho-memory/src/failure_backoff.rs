@@ -6,6 +6,8 @@
 //! the retry permanently because waiting cannot help.
 use std::collections::HashSet;
 
+use crate::time_format::{format_millis_or_empty, parse_millis};
+
 /// Wait after the first, second, third, and fourth consecutive failure.
 ///
 /// The schedule stops growing at the fourth step: an entry that reaches the fifth failure is parked
@@ -271,7 +273,7 @@ fn next_record(
     let next_eligible_at = if parks {
         None
     } else {
-        Some(format_millis(now_millis + delay_for(streak)))
+        Some(format_millis_or_empty(now_millis + delay_for(streak)))
     };
     let parked_at = if parks {
         Some(
@@ -302,19 +304,6 @@ fn next_record(
         parked_at,
     }
 }
-
-fn parse_millis(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|time| time.timestamp_millis())
-}
-
-fn format_millis(millis: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::facts_queue::FactsBatch;
+use crate::time_format::parse_millis;
 
 /// The ceiling for one launched payload (128 KiB).
 pub const MAX_FACTS_PAYLOAD_BYTES: usize = 131_072;
@@ -287,13 +288,6 @@ fn order_conversations(
     });
     buckets
 }
-
-fn parse_millis(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|time| time.timestamp_millis())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

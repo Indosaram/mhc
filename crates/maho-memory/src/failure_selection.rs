@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::facts_queue::FactsBatch;
 use crate::failure_backoff::{FailureRecord, FailureState};
+use crate::time_format::parse_millis;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SkipReason {
@@ -122,12 +123,6 @@ fn drop_reason(record: Option<&FailureRecord>, now_millis: i64) -> Option<SkipRe
         return Some(SkipReason::Backoff);
     };
     (now_millis < next_millis).then_some(SkipReason::Backoff)
-}
-
-fn parse_millis(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|time| time.timestamp_millis())
 }
 
 #[cfg(test)]
