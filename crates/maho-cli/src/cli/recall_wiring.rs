@@ -24,7 +24,7 @@ use maho_omo_memory::kibitzer_sidecar_admission::{
 };
 use maho_omo_memory::prompt::PromptContextResolver;
 use maho_omo_memory::recall_drain::PendingNudgesPort;
-use maho_omo_memory::recall_wiring::{MemoryRecallWiring, MemoryRecallWiringOptions};
+use maho_omo_memory::recall_wiring::{BlockingTask, MemoryRecallWiring, MemoryRecallWiringOptions};
 use memory_core::git::{GitMemoryRepo, GitMemoryRepoOptions};
 use memory_core::locks::recall_wake_domain::RecallWakeError;
 use memory_core::recall::RecallLedger;
@@ -203,6 +203,16 @@ pub fn create_memory_recall_wiring(
         })
     };
     let timers: Arc<dyn KibitzerSidecarTimers> = CliSidecarTimers::new(executor.clone());
+    // The recall collection is a synchronous git read plus a corpus scan. `on_before_agent_start`
+    // runs it from the turn's first poll, on the runtime's own thread - which the interactive mode
+    // runs current-thread, so that thread also paints and reads input. `executor.spawn` would keep
+    // polling the same future on that thread; only the blocking pool actually frees it.
+    let offload_blocking: Arc<dyn Fn(BlockingTask) + Send + Sync> = {
+        let executor = executor.clone();
+        Arc::new(move |task| {
+            executor.spawn_blocking(task);
+        })
+    };
     // The retained NATIVE blocking executor: the machine-wide wake lease acquire runs on it, off the
     // reactor, and a dropped waiting future never cancels the worker (`CliBlockingExecutor`).
     let blocking_executor: Arc<dyn KibitzerBlockingExecutor> =
@@ -268,6 +278,7 @@ pub fn create_memory_recall_wiring(
         send_message,
         append_entry,
         spawn,
+        offload_blocking,
         timers,
         now_ms,
         random,

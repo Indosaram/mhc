@@ -15,6 +15,44 @@ use crate::recall_transcript_mentions::RECALL_PATH_ENTRY_WINDOW;
 pub type KibitzerGateResolver =
     Arc<dyn Fn(&maho_ext_api::ExtensionContext) -> KibitzerToolResultGate + Send + Sync>;
 
+/// The hard ceiling on what `before_agent_start` reads back from the branch. The hook runs inside the
+/// turn's first poll on the single-threaded interactive runtime, so it must never scan a whole long
+/// branch: the readers only take the newest entries, and past this many the newest entries are all
+/// they would have used anyway.
+const RECALL_BEFORE_AGENT_START_ENTRY_CAP: usize = RECALL_PATH_ENTRY_WINDOW * 4;
+
+/// The `before_agent_start` branch capture: the TRUE branch length (the events cursor every consumer
+/// shares) and the bounded entries behind it.
+///
+/// Bounded, not whole-branch: this runs inside the turn's first poll on the single-threaded
+/// interactive runtime, so cloning the full branch froze paint AND input for as long as the branch
+/// was long (measured 0.8 s fresh, 2.1 s on a 138 MB session). Every reader only looks at the newest
+/// entries - `user_texts` and `judge_transcript` take the newest `RECALL_TEXT_WINDOW` of their kind,
+/// and the mention exclusion takes the newest `RECALL_PATH_ENTRY_WINDOW` - so the capture reads back
+/// exactly the decisive entries, capped at `RECALL_BEFORE_AGENT_START_ENTRY_CAP`.
+fn capture_before_agent_start_branch(
+    session_manager: &dyn maho_ext_api::SessionManager,
+) -> (usize, Vec<Value>) {
+    let (mut users, mut turns, mut assistant) = (0usize, 0usize, false);
+    let mut examined = 0usize;
+    let mut satisfied = |entry: &Value| {
+        // Hard ceiling: the host keeps walking back until this predicate says "done", so a branch with
+        // thousands of tool entries between the decisive ones would otherwise scan all of it - trading
+        // one unbounded clone for another. Past the cap the newest entries are all the readers take.
+        examined += 1;
+        if examined >= RECALL_BEFORE_AGENT_START_ENTRY_CAP {
+            return true;
+        }
+        let one = std::slice::from_ref(entry);
+        assistant = assistant || decides_assistant(entry);
+        users += user_texts(one).len();
+        turns += judge_transcript(one).len();
+        assistant && users >= RECALL_TEXT_WINDOW && turns >= RECALL_TEXT_WINDOW
+    };
+    let (len, tail) = session_manager.get_branch_tail(RECALL_PATH_ENTRY_WINDOW, &mut satisfied);
+    (len, tail.into_iter().map(|entry| entry.data).collect())
+}
+
 pub fn default_gate_resolver() -> KibitzerGateResolver {
     Arc::new(|context| KibitzerToolResultGate {
         has_pending_messages: context.has_pending_messages().unwrap_or(false),
@@ -240,7 +278,20 @@ impl ToolBranchTailCache {
 /// newest mention window and the decisive summary entries of that snapshot plus its true length. `prompt` is the `before_agent_start` event's
 /// OWN prompt, passed so it is never inferred from a stale transcript.
 pub trait KibitzerHookSink: Send + Sync {
-    fn on_before_agent_start(&self, session_id: &str, prompt: &str, entries: &[Value]);
+    /// The `before_agent_start` capture: `entries` is only as long as the readers need (never the
+    /// whole branch), while `branch_len` is the TRUE branch length the events cursor is derived from.
+    ///
+    /// `self` is an `Arc` because the handler returns before the expensive half runs: the cheap
+    /// bookkeeping happens inline (the host disposes `entries` when the handler returns), and the
+    /// candidate collection - a git read plus a corpus scan - is handed to the host executor so it
+    /// cannot block the turn's first poll on the single-threaded interactive runtime.
+    fn on_before_agent_start(
+        self: Arc<Self>,
+        session_id: &str,
+        prompt: &str,
+        branch_len: usize,
+        entries: &[Value],
+    );
     fn on_tool_call(
         &self,
         session_id: &str,
@@ -290,20 +341,24 @@ pub fn register_kibitzer_hooks(
             Arc::new(move |event, context| {
                 let sink = sink.clone();
                 let session_id = context.session_manager.session_id();
-                // Capture the REAL branch snapshot synchronously, while the ctx is alive: the host
-                // disposes the context when the handler returns. The consumer derives the events cursor
-                // from this branch LENGTH - never a synthetic monotonic counter.
-                let entries: Vec<Value> = if kind == maho_ext_api::EventKind::BeforeAgentStart
+                // Capture the branch synchronously, while the ctx is alive: the host disposes the
+                // context when the handler returns. The consumer derives the events cursor from this
+                // branch LENGTH - never a synthetic monotonic counter.
+                //
+                // Bounded, not whole-branch: `before_agent_start` runs inside the turn's first poll on
+                // the single-threaded interactive runtime, so cloning the full branch here froze paint
+                // AND input for as long as the branch was long (2.1 s on a 138 MB session). Every reader
+                // only looks at the newest entries: `user_texts` and `judge_transcript` each take the
+                // newest `RECALL_TEXT_WINDOW`, and the mention exclusion takes the newest
+                // `RECALL_PATH_ENTRY_WINDOW`. Read back exactly that far - the decisive entries and the
+                // mention window - and keep the TRUE branch length as the events cursor.
+                let (branch_len, entries): (usize, Vec<Value>) = if kind
+                    == maho_ext_api::EventKind::BeforeAgentStart
                     && sink.wants_branch(kind, session_id)
                 {
-                    context
-                        .session_manager
-                        .get_branch()
-                        .into_iter()
-                        .map(|entry| entry.data)
-                        .collect()
+                    capture_before_agent_start_branch(context.session_manager.as_ref())
                 } else {
-                    Vec::new()
+                    (0, Vec::new())
                 };
                 // The tool hooks fire per tool call: capture only the mention window and decisive summary
                 // every consumer reads (see `BranchTail`) plus the TRUE branch length as the cursor.
@@ -322,7 +377,7 @@ pub fn register_kibitzer_hooks(
                         tails.forget(session_id);
                     }
                     ToolBranchView {
-                        len: entries.len(),
+                        len: branch_len,
                         window: Vec::new(),
                         summary: Vec::new(),
                     }
@@ -362,6 +417,7 @@ pub fn register_kibitzer_hooks(
                         maho_ext_api::EventKind::BeforeAgentStart => sink.on_before_agent_start(
                             session_id,
                             prompt.as_deref().unwrap_or(""),
+                            branch_len,
                             &entries,
                         ),
                         maho_ext_api::EventKind::ToolCall => {
@@ -699,6 +755,39 @@ mod tests {
         assert_eq!(
             session.branch.take_reads(),
             vec![RECALL_PATH_ENTRY_WINDOW, RECALL_PATH_ENTRY_WINDOW]
+        );
+    }
+
+    /// `before_agent_start` runs inside the turn's first poll on the single-threaded interactive
+    /// runtime: the turn cannot paint or read input until it returns. A whole-branch clone there
+    /// froze the UI for as long as the branch was long (2.1 s on a 138 MB session), so the capture
+    /// must read back a bounded window - and report the TRUE branch length so the events cursor is
+    /// still the branch length the collectors share.
+    #[test]
+    fn before_agent_start_capture_is_bounded_but_keeps_the_true_branch_length() {
+        let branch = Branch::new();
+        // A long branch with the shape that could tempt a full scan: many tool entries between the
+        // few decisive ones, and an assistant decision far from the head.
+        branch.push(json!({"id": "u0", "type": "message", "message": {"role": "user", "content": "first prompt"}}));
+        branch.push(json!({"id": "a0", "type": "message", "message": {"role": "assistant", "content": "plan"}}));
+        for next in 0..4000 {
+            branch.push(json!({"id": format!("t{next}"), "type": "message", "message": {"role": "toolResult", "content": format!("out {next}")}}));
+        }
+        branch.take_reads();
+        let (len, entries) = capture_before_agent_start_branch(&branch);
+        assert_eq!(len, 4002, "the cursor must stay the true branch length");
+        assert!(
+            entries.len() <= RECALL_BEFORE_AGENT_START_ENTRY_CAP,
+            "the capture must read back a bounded window, materialized {}",
+            entries.len()
+        );
+        // The whole branch is never materialized for this hook.
+        let reads = branch.take_reads();
+        assert!(
+            reads
+                .iter()
+                .all(|read| *read <= RECALL_BEFORE_AGENT_START_ENTRY_CAP),
+            "before_agent_start must not read the whole branch: {reads:?}"
         );
     }
 }

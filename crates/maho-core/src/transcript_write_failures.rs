@@ -26,6 +26,13 @@ impl TranscriptWriteFailures {
         }
         self.run_failure.get_or_insert(failure);
     }
+    /// Whether any write was refused, without touching the transcript.
+    ///
+    /// Callers that would have to materialize the whole transcript to apply refusals use this to skip
+    /// that work entirely in the common case where nothing was refused.
+    pub fn has_refusals(&self) -> bool {
+        !self.refused.is_empty()
+    }
     pub fn refusal(&self, message: &AgentMessage) -> Option<&WriteFailure> {
         self.refused
             .iter()
