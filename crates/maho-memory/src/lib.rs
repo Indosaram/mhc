@@ -24,6 +24,7 @@ pub mod facts_note;
 pub mod facts_parked;
 pub mod facts_person_routing;
 pub mod facts_queue;
+pub mod facts_queue_scan;
 pub mod facts_schema;
 pub mod cursor;
 pub mod description_preflight;
