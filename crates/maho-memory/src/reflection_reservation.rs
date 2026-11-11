@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::reflection_machine::ReservedRun;
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ReservationState {
-    pub active: Option<ReservedRun>,
-    pub pending: Option<ReservedRun>,
-}
+use crate::reflection_machine::{
+    JournalSnapshot, ReflectionOutcome, ReflectionRequest, ReservedRun, TriggerConfig,
+    complete_transition, reserve_transition,
+};
+
+pub use crate::reflection_machine::ReservationState;
 
 #[derive(Debug)]
 pub enum ReservationStateError {
@@ -51,7 +52,7 @@ pub struct ReservationPaths {
 }
 
 impl ReservationPaths {
-        pub fn under(reflection_dir: &Path) -> Self {
+    pub fn under(reflection_dir: &Path) -> Self {
         Self {
             active: reflection_dir.join("active.lock"),
             pending: reflection_dir.join("pending.json"),
@@ -138,6 +139,184 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Reserva
     file.sync_all()?;
     std::fs::rename(&temp_path, path)?;
     Ok(())
+}
+
+/// Identity of the process that reserved a run, recorded on the run itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReflectionLauncherIdentity {
+    pub pid: u32,
+    pub hostname: String,
+    pub process_start: Option<String>,
+}
+
+/// What a reservation attempt produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservationResult {
+    pub status: String,
+    pub run: ReservedRun,
+}
+
+/// What completing a run produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionResult {
+    pub outcome: ReflectionOutcome,
+    pub launch: Option<ReservedRun>,
+}
+
+#[derive(Debug)]
+pub enum ReservationError {
+    Io(std::io::Error),
+    State(ReservationStateError),
+    CorruptState(String),
+    TransitionFailed(String),
+}
+
+impl std::fmt::Display for ReservationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "reservation store io error: {error}"),
+            Self::State(error) => error.fmt(formatter),
+            Self::CorruptState(message) => {
+                write!(formatter, "corrupt reservation state: {message}")
+            }
+            Self::TransitionFailed(message) => write!(formatter, "transition failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ReservationError {}
+
+impl From<std::io::Error> for ReservationError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<ReservationStateError> for ReservationError {
+    fn from(error: ReservationStateError) -> Self {
+        Self::State(error)
+    }
+}
+
+/// Holds the reservation without taking an OS lock.
+///
+/// Callers that must exclude other processes wrap [`ReservationStore::reserve`] and
+/// [`ReservationStore::complete`] in `lock_acquire::with_lock`. Keeping the lock out of this type is what
+/// lets the transitions be tested on a plain directory.
+pub struct ReservationStore {
+    paths: ReservationPaths,
+    config: TriggerConfig,
+    now_iso: Box<dyn Fn() -> String + Send + Sync>,
+    create_run_id: Box<dyn Fn() -> String + Send + Sync>,
+    launcher_identity: Box<dyn Fn() -> ReflectionLauncherIdentity + Send + Sync>,
+}
+
+impl ReservationStore {
+    pub fn new(paths: ReservationPaths, config: TriggerConfig) -> Self {
+        Self {
+            paths,
+            config,
+            now_iso: Box::new(|| {
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string()
+            }),
+            create_run_id: Box::new(crate::random_ids::random_uuid),
+            launcher_identity: Box::new(default_launcher_identity),
+        }
+    }
+
+    pub fn with_now_iso(mut self, now: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.now_iso = Box::new(now);
+        self
+    }
+
+    pub fn with_run_id(mut self, create: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.create_run_id = Box::new(create);
+        self
+    }
+
+    pub fn with_launcher_identity(
+        mut self,
+        launcher: impl Fn() -> ReflectionLauncherIdentity + Send + Sync + 'static,
+    ) -> Self {
+        self.launcher_identity = Box::new(launcher);
+        self
+    }
+
+    pub fn read_state(&self) -> Result<ReservationState, ReservationError> {
+        Ok(read_state(&self.paths)?)
+    }
+
+    pub fn reserve(
+        &self,
+        request: ReflectionRequest,
+    ) -> Result<ReservationResult, ReservationError> {
+        let run_id = (self.create_run_id)();
+        let current = self.read_state()?;
+        let (mut state, status) = reserve_transition(current, request, run_id);
+        if status == "active"
+            && let Some(active) = &mut state.active
+        {
+            self.stamp_launch_owner(active);
+        }
+        write_state(&self.paths, &state)?;
+        let run = if status == "active" {
+            state
+                .active
+                .ok_or_else(|| ReservationError::TransitionFailed("No active run".to_string()))?
+        } else {
+            state
+                .pending
+                .ok_or_else(|| ReservationError::TransitionFailed("No pending run".to_string()))?
+        };
+        Ok(ReservationResult {
+            status: status.to_string(),
+            run,
+        })
+    }
+
+    /// Complete the active run, then promote a pending run when its trigger still holds.
+    ///
+    /// `journals` decides whether the pending run launches, so a caller that cannot supply the snapshot for
+    /// every conversation must not call this: an empty map silently drops the pending run instead of
+    /// reporting that it could not be evaluated.
+    pub fn complete(
+        &self,
+        run_id: &str,
+        outcome: ReflectionOutcome,
+        journals: &BTreeMap<String, JournalSnapshot>,
+    ) -> Result<CompletionResult, ReservationError> {
+        let current = self.read_state()?;
+        let transition =
+            complete_transition(current, run_id, outcome, journals, &self.config)
+                .map_err(|error| ReservationError::TransitionFailed(error.to_string()))?;
+        write_state(&self.paths, &transition.state)?;
+        Ok(CompletionResult {
+            outcome,
+            launch: transition.launch,
+        })
+    }
+
+    fn stamp_launch_owner(&self, run: &mut ReservedRun) {
+        let launcher = (self.launcher_identity)();
+        run.reserved_at = Some((self.now_iso)());
+        run.launcher_pid = Some(launcher.pid);
+        run.launcher_hostname = Some(launcher.hostname);
+        run.launcher_process_start = launcher.process_start;
+    }
+}
+
+fn default_launcher_identity() -> ReflectionLauncherIdentity {
+    let pid = std::process::id();
+    ReflectionLauncherIdentity {
+        pid,
+        hostname: crate::host_identity::hostname(),
+        process_start: {
+            use crate::lock_record::LockHost;
+            crate::host_identity::SystemLockHost.process_start(pid)
+        },
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -275,10 +454,7 @@ mod tests {
         let paths = ReservationPaths::under(&dir);
         std::fs::write(&paths.active, "{not json").unwrap();
         let error = read_state(&paths).unwrap_err();
-        assert!(matches!(
-            error,
-            ReservationStateError::Corrupt { .. }
-        ));
+        assert!(matches!(error, ReservationStateError::Corrupt { .. }));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -311,6 +487,92 @@ mod tests {
         let raw = std::fs::read_to_string(dir.join("dream").join("state.json")).unwrap();
         assert!(raw.contains("last_dream_at"));
         assert!(raw.contains("r9"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    fn request(ids: &[&str]) -> ReflectionRequest {
+        ReflectionRequest {
+            trigger: ReflectionTrigger::Manual,
+            origin: None,
+            conversation_ids: ids.iter().map(|id| id.to_string()).collect(),
+            snapshots: Vec::new(),
+            focus: None,
+            recent_n: None,
+            target_doc: None,
+        }
+    }
+
+    fn store(dir: &Path) -> ReservationStore {
+        ReservationStore::new(ReservationPaths::under(dir), TriggerConfig::default())
+    }
+
+    #[test]
+    fn the_first_reservation_takes_the_active_slot() {
+        let dir = tempdir("store-active");
+        let result = store(&dir).reserve(request(&["c1"])).unwrap();
+        assert_eq!(result.status, "active");
+        assert_eq!(result.run.run_id.len(), 36);
+        assert!(result.run.reserved_at.is_some());
+        assert!(result.run.launcher_pid.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_second_reservation_waits_as_pending() {
+        let dir = tempdir("store-pending");
+        let store = store(&dir);
+        store.reserve(request(&["c1"])).unwrap();
+        let second = store.reserve(request(&["c2"])).unwrap();
+        assert_eq!(second.status, "pending");
+        let state = store.read_state().unwrap();
+        assert_eq!(state.active.unwrap().run_id.len(), 36);
+        assert!(state.pending.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_fixed_run_id_is_recorded_as_given() {
+        let dir = tempdir("store-id");
+        let store = store(&dir).with_run_id(|| "fixed-id".to_string());
+        let result = store.reserve(request(&["c1"])).unwrap();
+        assert_eq!(result.run.run_id, "fixed-id");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_launcher_identity_is_stamped_on_the_active_run_only() {
+        let dir = tempdir("store-stamp");
+        let store = store(&dir)
+            .with_now_iso(|| "2026-11-11T00:00:00.000Z".to_string())
+            .with_launcher_identity(|| ReflectionLauncherIdentity {
+                pid: 4242,
+                hostname: "unit-host".to_string(),
+                process_start: Some("proc-start:7".to_string()),
+            });
+        let first = store.reserve(request(&["c1"])).unwrap();
+        assert_eq!(first.run.launcher_pid, Some(4242));
+        assert_eq!(first.run.launcher_hostname.as_deref(), Some("unit-host"));
+        assert_eq!(
+            first.run.reserved_at.as_deref(),
+            Some("2026-11-11T00:00:00.000Z")
+        );
+
+        let second = store.reserve(request(&["c2"])).unwrap();
+        assert_eq!(second.status, "pending");
+        assert!(second.run.launcher_pid.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completing_an_unknown_run_does_not_corrupt_the_store() {
+        let dir = tempdir("store-unknown");
+        let store = store(&dir);
+        store.reserve(request(&["c1"])).unwrap();
+        let journals = BTreeMap::new();
+        let result = store.complete("no-such-run", ReflectionOutcome::Merged, &journals);
+        // Either it refuses or it leaves the active run alone; it must never write a broken state.
+        let state = store.read_state().unwrap();
+        assert!(state.active.is_some());
+        assert!(result.is_err() || state.active.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

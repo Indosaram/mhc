@@ -45,23 +45,35 @@ end state (no file) holds either way.
 `write_dream_state` records `{last_dream_at, last_run_id}` at `<runtime>/dream/state.json` after a completed
 dream run, using the same atomic write.
 
+## `ReservationStore`: the coordinator
+
+`ReservationStore` joins the ported pieces: it reads state, calls `reserve_transition` or
+`complete_transition` from `reflection_machine`, stamps the launcher identity, and writes state back.
+
+It does **not** take an OS lock. Callers that must exclude other processes wrap `reserve` and `complete` in
+`lock_acquire::with_lock`. Keeping the lock out is what lets every transition here be tested against a plain
+directory, with an injected clock, run id, and launcher identity.
+
+The launcher identity is stamped on the **active** run only. A pending run records no owner because it has not
+started: claiming a pid for it would make the liveness reaper treat a run that never launched as live, or as
+dead, depending on when it looked.
+
+`complete` takes the journal snapshots as a parameter rather than resolving them internally. Completion decides
+whether the pending run launches from those snapshots, so a caller that cannot supply one per conversation must
+not call it: an empty map does not fail loudly, it silently drops the pending run.
+
 ## Scope boundary
 
-This module owns **serialization and persistence**. It does not take a scheduler lock, does not evaluate state
-machine transitions, and does not spawn git. Upstream keeps those in one 492-line type; splitting them is what
-makes the persistence rules testable without a repository, a clock, or a lock.
+This module owns persistence and coordination. It evaluates no trigger policy (that is `reflection_machine`),
+spawns no agent, and touches no git. Upstream keeps lock, persistence, transitions and journalling in one
+492-line type; splitting them is what makes each rule testable without a repository, a clock, or a lock.
 
-The remaining upstream half — acquiring the scheduler lock around a transition, and resolving the transcript
-journal through `get_journal` — sits on top of this module. Two signature differences are real and are why the
-full store is not a mechanical port:
+Two upstream signature differences remain, and both are absorbed by callers rather than by this module:
 
 1. Upstream `with_lock(path, record, options, body)` vs this crate's
-   `with_lock(path, record, liveness, local, now, body)` — the MIT form injects what upstream packs into
-   `AcquireLockOptions`. There is exactly one call site in the upstream store, so this is a small adaptation,
-   not a redesign.
+   `with_lock(path, record, liveness, local, now, body)` — this crate injects what upstream packs into
+   `AcquireLockOptions`.
 2. Upstream `journal::store::TranscriptJournal` exposes `get_state()`/`set_pending_compaction()`; this crate's
-   `journal::Journal` is an in-memory replay log. The journal is reached only through the injected
-   `get_journal` closure, so callers can supply the right type without changing this module.
+   `journal::Journal` is an in-memory replay log, so the snapshot map is passed in.
 
-Identity is not a blocker: `MemoryIdentityPaths` already carries `reflection`, `locks` and `runtime`, which is
-all the paths the store needs.
+Identity is not a constraint: `MemoryIdentityPaths` already carries `reflection`, `locks` and `runtime`.
