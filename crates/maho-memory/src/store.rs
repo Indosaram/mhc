@@ -178,6 +178,13 @@ pub struct Triple {
     pub confidence: f64,
 }
 
+/// Rows [`Store::prune`] dropped.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+pub struct PruneReport {
+    pub working: u64,
+    pub episodic: u64,
+}
+
 /// Counters of [`Store::import_json`].
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct ImportStats {
@@ -449,6 +456,54 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(sql_err)
+    }
+
+    /// Drops rows the retention policy allows, and reports what went.
+    ///
+    /// Only rows this session owns are considered: a bank shared by several sessions must not lose another
+    /// session's memory because this one stopped using it. Rows at or above the policy's keep-importance, and
+    /// rows still marked valid in the future, are never touched.
+    pub fn prune(&self, policy: &crate::retention::RetentionPolicy) -> Result<PruneReport> {
+        let policy = policy.clone().clamped();
+        let cutoff = |days: i64| {
+            (chrono::Utc::now() - chrono::Duration::days(days))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string()
+        };
+        let now = now_iso();
+        let mut report = PruneReport::default();
+        for (table, days) in [
+            ("working_memory", policy.working_days),
+            ("episodic_memory", policy.episodic_days),
+        ] {
+            // `timestamp` is ISO-8601 and `created_at` is SQLite's own format, so both go through
+            // julianday rather than a string comparison that would only be right for one of them.
+            let sql = format!(
+                "DELETE FROM {table}
+                 WHERE session_id = ?1
+                   AND julianday(COALESCE(timestamp, created_at)) < julianday(?2)
+                   AND (valid_until IS NULL OR julianday(valid_until) <= julianday(?3))
+                   AND CAST(ROUND(COALESCE(importance, 0.5) * 1000.0) AS INTEGER) < ?4"
+            );
+            let removed = self
+                .conn
+                .execute(
+                    &sql,
+                    params![
+                        self.session_id,
+                        cutoff(days),
+                        now,
+                        policy.episodic_keep_importance as i64
+                    ],
+                )
+                .map_err(sql_err)?;
+            if table == "working_memory" {
+                report.working = removed as u64;
+            } else {
+                report.episodic = removed as u64;
+            }
+        }
+        Ok(report)
     }
 
     /// Row counts of this bank.
@@ -770,6 +825,112 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory("s1").expect("store")
+    }
+
+    fn aged(days: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::days(days))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string()
+    }
+
+    fn remember_at(store: &Store, content: &str, days: i64, importance: f64) -> String {
+        store
+            .remember(
+                content,
+                &RememberOptions {
+                    timestamp: Some(aged(days)),
+                    importance,
+                    ..RememberOptions::default()
+                },
+            )
+            .expect("remember")
+    }
+
+    #[test]
+    fn prune_drops_an_old_working_row() {
+        let store = store();
+        remember_at(&store, "old note", 40, 0.5);
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(report.working, 1);
+        assert_eq!(store.stats().expect("stats").working, 0);
+    }
+
+    #[test]
+    fn prune_keeps_a_recent_working_row() {
+        let store = store();
+        remember_at(&store, "fresh note", 1, 0.5);
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(report.working, 0);
+        assert_eq!(store.stats().expect("stats").working, 1);
+    }
+
+    #[test]
+    fn prune_never_drops_a_pinned_row() {
+        let store = store();
+        remember_at(&store, "pinned", 9_999, 0.99);
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(report.working, 0);
+    }
+
+    #[test]
+    fn prune_never_drops_another_sessions_row() {
+        let store = store();
+        let other = Store::open_in_memory("s2").expect("other");
+        remember_at(&other, "theirs", 400, 0.5);
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(report.working, 0);
+        assert_eq!(other.stats().expect("stats").working, 1);
+    }
+
+    #[test]
+    fn prune_never_drops_a_row_still_valid() {
+        let store = store();
+        store
+            .remember(
+                "still valid",
+                &RememberOptions {
+                    timestamp: Some(aged(400)),
+                    valid_until: Some(aged(-30)),
+                    ..RememberOptions::default()
+                },
+            )
+            .expect("remember");
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(report.working, 0);
+    }
+
+    #[test]
+    fn prune_with_a_zero_window_still_keeps_a_day() {
+        let store = store();
+        remember_at(&store, "today", 0, 0.5);
+        let policy = crate::retention::RetentionPolicy {
+            working_days: 0,
+            ..crate::retention::RetentionPolicy::default()
+        };
+        let report = store.prune(&policy).expect("prune");
+        assert_eq!(report.working, 0);
+    }
+
+    #[test]
+    fn prune_reports_what_it_removed() {
+        let store = store();
+        remember_at(&store, "a", 100, 0.1);
+        remember_at(&store, "b", 100, 0.1);
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(report.working, 2);
+        assert_eq!(report.episodic, 0);
     }
 
     #[test]

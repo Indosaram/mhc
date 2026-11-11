@@ -80,6 +80,7 @@ pub mod reflection;
 pub mod reflection_completion;
 pub mod reflection_machine;
 pub mod reminders;
+pub mod retention;
 mod schema;
 pub mod secret_scan_records;
 pub mod seeds;
