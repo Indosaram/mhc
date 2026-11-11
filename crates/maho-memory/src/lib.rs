@@ -77,6 +77,7 @@ pub mod receipts;
 pub mod records;
 pub mod redact;
 pub mod reflection;
+pub mod reflection_completion;
 pub mod reflection_machine;
 pub mod reminders;
 mod schema;
