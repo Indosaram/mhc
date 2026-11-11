@@ -2,8 +2,10 @@
 
 - License: MIT.
 - Method: **P** (port of MIT originals) for the store, recall, MCP server and agent tools; **C**
-  (clean-room, from `docs/cleanroom/specs/memory-format.md`) for the legacy importer
-  (`src/legacy.rs`), which has no MIT original.
+  (clean-room, from the specs under `docs/cleanroom/specs/`) for the legacy importer
+  (`src/legacy.rs`), which has no MIT original, and for the Phase 1-7 clean-room modules listed
+  below, which reimplement behaviour of the SUL crate `crates/omo/memory-core` from its specs
+  without copying its source.
 - Origin (license verified as MIT before reading): `can1357/oh-my-pi` @
   `f59bbac3d56e8b485fef466388b1cb5be4b93123` (root LICENSE: MIT, Copyright 2025 Mario Zechner,
   2025-2026 Can Bölük, 2026 Stencil Labs, Inc.; `packages/mnemopi/package.json` `"license": "MIT"`,
@@ -40,9 +42,22 @@
   change reports, Hindsight and other backends.
 - No SUL source (`crates/omo/**`, including `memory-core` and `maho-omo-memory`; the omo-gated
   `maho-cli` memory modules `memory_runtime`, `recall_wiring`, `kibitzer_*`, `facts_child`) was
-  opened. The legacy format spec was written from user docs and MIT call sites only (see the spec's
-  source table).
+  opened **while writing the legacy importer or the MIT-original port above**. The legacy format
+  spec was written from user docs and MIT call sites only (see the spec's source table).
 - Tests were written for this crate; no upstream or OmO fixtures were reused.
+
+## Phase 1-7 clean-room modules (method C)
+
+- Scope: the modules this crate gained from the Phase 1-7 memory clean-room track, each described by
+  a spec under `docs/cleanroom/specs/memory-*.md`.
+- Method: **C** (clean-room). Each module was written from its spec plus the MIT tree. Behaviour was
+  cross-checked by reading `crates/omo/memory-core` (SUL) as a **behaviour reference only** — what
+  the observable contract is, not how it is expressed. No SUL source text was copied; these modules
+  are a different shape from their references (flat module names rather than nested directories,
+  different types, independently written fixtures).
+- Where a reference's own architecture does not exist in this crate, the port stops and the spec
+  records why, rather than recreating a module with no caller.
+- Tests were written for this crate; no SUL or upstream fixtures were reused.
 
 ## memory-format-5152 (method C)
 
