@@ -17,6 +17,7 @@
 pub mod agreements;
 pub mod banks;
 pub mod bm25;
+pub mod broken_links;
 pub mod expiry;
 pub mod extension;
 pub mod fact_display;
@@ -52,6 +53,7 @@ pub mod legacy;
 pub mod lock_acquire;
 pub mod lock_record;
 pub mod locks;
+pub mod lookalike_keys;
 pub mod mcp;
 pub mod people_store;
 pub mod person_index;
