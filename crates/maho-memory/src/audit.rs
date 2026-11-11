@@ -254,7 +254,10 @@ mod tests {
     #[test]
     fn invalid_frontmatter_is_reported() {
         let report = audit_files(
-            &corpus(&[("system/a.md", "---\ndescription: d\ndescription: again\n---\nbody")]),
+            &corpus(&[(
+                "system/a.md",
+                "---\ndescription: d\ndescription: again\n---\nbody",
+            )]),
             &MemoryAuditOptions::default(),
         );
         assert_eq!(report.counts["frontmatter_invalid"], 1);
