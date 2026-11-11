@@ -30,6 +30,7 @@ pub mod facts_anchor;
 pub mod facts_batch_range;
 pub mod facts_commit;
 pub mod facts_extraction;
+pub mod facts_failures_schema;
 pub mod facts_note;
 pub mod facts_parked;
 pub mod facts_person_routing;
