@@ -18,6 +18,7 @@ Commands:
   status                         Banks for this directory and their sizes
   search <query>                 Recall memories for this directory
   remember [--global] <text>     Store a memory in this project's bank (or the global bank)
+  prune                          Drop rows past the retention windows (30d working, 90d episodic)
   import-legacy [--from <dir>] [--dry-run] [--include-people] [--json]
                                  Import the legacy Markdown memory store (default:
                                  $MAHO_MEMORY_HOME or ~/.omo/memory) into the global bank
@@ -170,6 +171,20 @@ pub fn run_memory_command(args: &[String]) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Some("prune") => {
+            let reports = memory.prune(&maho_memory::retention::RetentionPolicy::default())?;
+            if reports.is_empty() {
+                print("Nothing to prune.");
+            } else {
+                for (bank, report) in &reports {
+                    print(&format!(
+                        "{bank}: {} working, {} episodic dropped",
+                        report.working, report.episodic
+                    ));
+                }
+            }
+            Ok(0)
+        }
         Some("mcp") => run_mcp(rest).map(|()| 0),
         Some(other) => Err(format!(
             "unknown memory command '{other}' (see `mhc memory --help`)"
@@ -187,7 +202,14 @@ mod tests {
 
     #[test]
     fn usage_names_every_command() {
-        for command in ["status", "search", "remember", "import-legacy", "mcp"] {
+        for command in [
+            "status",
+            "search",
+            "remember",
+            "prune",
+            "import-legacy",
+            "mcp",
+        ] {
             assert!(super::USAGE.contains(command));
         }
     }
