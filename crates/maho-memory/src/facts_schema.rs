@@ -429,9 +429,11 @@ mod tests {
     #[test]
     fn a_corrupt_consumed_file_is_an_empty_watermark() {
         assert!(parse_consumed("nope").consumed.is_empty());
-        assert!(parse_consumed(r#"{"version":9,"consumed":{}}"#)
-            .consumed
-            .is_empty());
+        assert!(
+            parse_consumed(r#"{"version":9,"consumed":{}}"#)
+                .consumed
+                .is_empty()
+        );
     }
 
     #[test]

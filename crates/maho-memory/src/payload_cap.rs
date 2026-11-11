@@ -272,7 +272,9 @@ fn order_conversations(
     let mut buckets: Vec<Vec<&FactsBatch>> = groups.into_iter().map(|(_, bucket)| bucket).collect();
     buckets.sort_by(|left, right| {
         let left_wait = left.first().map_or(0, |entry| waited_ms(entry, now_millis));
-        let right_wait = right.first().map_or(0, |entry| waited_ms(entry, now_millis));
+        let right_wait = right
+            .first()
+            .map_or(0, |entry| waited_ms(entry, now_millis));
         let left_starved = left_wait >= starvation_ms;
         let right_starved = right_wait >= starvation_ms;
 

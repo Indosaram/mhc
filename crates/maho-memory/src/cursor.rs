@@ -19,7 +19,7 @@ pub const REFLECTION_SNAPSHOT_MAX_BYTES: usize = 131_072;
 /// unit of progress: one assistant message with content is one completed step.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TranscriptEntry {
-        pub kind: String,
+    pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub captured_at: String,

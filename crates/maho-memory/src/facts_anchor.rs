@@ -55,9 +55,7 @@ pub fn anchor_candidates(inputs: &AnchorInputs, conversation_id: &str) -> Vec<St
 
 /// Built once per transcript instead of once per candidate: four watermarks plus a thousand retained
 /// batches would otherwise walk the same transcript five thousand times.
-pub fn last_canonical_positions(
-    entries: &[crate::cursor::TranscriptEntry],
-) -> BTreeMap<&str, i64> {
+pub fn last_canonical_positions(entries: &[crate::cursor::TranscriptEntry]) -> BTreeMap<&str, i64> {
     let mut positions = BTreeMap::new();
     for (index, entry) in entries.iter().enumerate() {
         if entry.is_canonical() {

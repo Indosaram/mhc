@@ -33,7 +33,12 @@ pub struct AliasTie {
 /// NFKC first: the same name can arrive composed or decomposed depending on the input method, and raw
 /// byte comparison would treat those as two people.
 pub fn fold_alias(value: &str) -> String {
-    value.nfkc().collect::<String>().to_lowercase().trim().to_owned()
+    value
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_owned()
 }
 
 /// Longest matching name wins; ties go to the smallest slug (byte order). The callback sees a tie
@@ -93,7 +98,7 @@ pub fn is_self_reference(name: &str) -> bool {
 }
 
 /// The trailing comment is dropped because a captured observation often ends with one, and the same fact
-/// recorded with and without it must not become two entries. 
+/// recorded with and without it must not become two entries.
 pub fn normalize_observation_text(text: &str) -> String {
     let folded: String = text.nfkc().collect::<String>().to_lowercase();
     let collapsed = folded.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -184,8 +189,14 @@ mod tests {
     #[test]
     fn an_unknown_name_resolves_to_nothing() {
         let index = vec![person("indo", &["Indosaram"])];
-        assert_eq!(resolve_person_slug(&index, &claim("Nobody", &[]), None), None);
-        assert_eq!(resolve_person_slug(&[], &claim("Indosaram", &[]), None), None);
+        assert_eq!(
+            resolve_person_slug(&index, &claim("Nobody", &[]), None),
+            None
+        );
+        assert_eq!(
+            resolve_person_slug(&[], &claim("Indosaram", &[]), None),
+            None
+        );
     }
 
     #[test]
@@ -211,7 +222,10 @@ mod tests {
 
     #[test]
     fn a_tie_goes_to_the_smallest_slug() {
-        let index = vec![person("zeta", &["Same Name"]), person("alpha", &["Same Name"])];
+        let index = vec![
+            person("zeta", &["Same Name"]),
+            person("alpha", &["Same Name"]),
+        ];
         assert_eq!(
             resolve_person_slug(&index, &claim("Same Name", &[]), None),
             Some("alpha".to_owned())
@@ -220,7 +234,10 @@ mod tests {
 
     #[test]
     fn a_tie_is_reported_with_every_winner() {
-        let index = vec![person("zeta", &["Same Name"]), person("alpha", &["Same Name"])];
+        let index = vec![
+            person("zeta", &["Same Name"]),
+            person("alpha", &["Same Name"]),
+        ];
         let mut seen: Vec<AliasTie> = Vec::new();
         let mut record = |tie: &AliasTie| seen.push(tie.clone());
         let resolved = resolve_person_slug(&index, &claim("Same Name", &[]), Some(&mut record));
@@ -242,10 +259,7 @@ mod tests {
 
     #[test]
     fn the_longest_name_of_one_person_is_the_one_weighted() {
-        let index = vec![
-            person("a", &["Indo"]),
-            person("b", &["Indosaram", "Indo"]),
-        ];
+        let index = vec![person("a", &["Indo"]), person("b", &["Indosaram", "Indo"])];
         assert_eq!(
             resolve_person_slug(&index, &claim("Indosaram", &[]), None),
             Some("b".to_owned())
@@ -278,7 +292,10 @@ mod tests {
 
     #[test]
     fn normalization_folds_case_and_collapses_whitespace() {
-        assert_eq!(normalize_observation_text("  Likes   Coffee  "), "likes coffee");
+        assert_eq!(
+            normalize_observation_text("  Likes   Coffee  "),
+            "likes coffee"
+        );
     }
 
     #[test]
@@ -296,7 +313,10 @@ mod tests {
             normalize_observation_text("likes coffee <!-- captured 2026 -->"),
             "likes coffee"
         );
-        assert_eq!(normalize_observation_text("likes coffee..."), "likes coffee");
+        assert_eq!(
+            normalize_observation_text("likes coffee..."),
+            "likes coffee"
+        );
     }
 
     #[test]
@@ -324,6 +344,9 @@ mod tests {
 
     #[test]
     fn korean_text_is_preserved() {
-        assert_eq!(normalize_observation_text("한국어를 좋아함."), "한국어를 좋아함");
+        assert_eq!(
+            normalize_observation_text("한국어를 좋아함."),
+            "한국어를 좋아함"
+        );
     }
 }

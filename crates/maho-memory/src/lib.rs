@@ -19,8 +19,10 @@ pub mod audit;
 pub mod banks;
 pub mod bm25;
 pub mod broken_links;
-pub mod expiry;
 pub mod consent;
+pub mod cursor;
+pub mod description_preflight;
+pub mod expiry;
 pub mod extension;
 pub mod fact_display;
 pub mod facts_abort;
@@ -34,8 +36,6 @@ pub mod facts_person_routing;
 pub mod facts_queue;
 pub mod facts_queue_scan;
 pub mod facts_schema;
-pub mod cursor;
-pub mod description_preflight;
 pub mod failure_backoff;
 pub mod failure_selection;
 pub mod frontmatter;
@@ -44,12 +44,6 @@ pub mod git_log;
 pub mod git_status;
 pub mod git_tree;
 pub mod journal;
-pub mod orphan_sweep;
-pub mod paths;
-pub mod persona_assets;
-pub mod normalize;
-pub mod secret_scan_records;
-pub mod payload_cap;
 pub mod kibitzer;
 pub mod ledger;
 pub mod legacy;
@@ -58,8 +52,13 @@ pub mod lock_record;
 pub mod locks;
 pub mod lookalike_keys;
 pub mod mcp;
+pub mod normalize;
+pub mod orphan_sweep;
+pub mod paths;
+pub mod payload_cap;
 pub mod people_store;
 pub mod person_index;
+pub mod persona_assets;
 pub mod project_corpus;
 pub mod prompt;
 pub mod recall;
@@ -71,16 +70,17 @@ pub mod recall_wire;
 pub mod receipts;
 pub mod records;
 pub mod redact;
-pub mod reminders;
 pub mod reflection;
+pub mod reminders;
 mod schema;
+pub mod secret_scan_records;
 pub mod seeds;
 pub mod select;
 pub mod soul_paths;
 pub mod stale_holder;
-pub mod transcript_search;
 pub mod store;
 pub mod text;
+pub mod transcript_search;
 
 pub use agreements::{Agreement, Agreements, Block, Projection, ProjectionError};
 pub use banks::{BankScope, Banks, Scoping};
@@ -88,49 +88,9 @@ pub use bm25::{
     QueryExpansions, RankedDocument, RecallDocument, expansion_weights, rank_documents,
     recall_document_terms, recall_terms, tokenize_recall_text,
 };
-pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
-pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
-pub use failure_selection::{LaunchSelection, SkipReason, select_launchable, selection_key};
-pub use failure_backoff::{
-    ApplyFailureInput, BACKOFF_MS, DETAIL_MAX_BYTES, FailureFilter, FailureReason, FailureRecord,
-    FailureState, FailureTarget, PARK_AT_STREAK, apply_failure, clear_for_retry, clear_on_success,
-    delay_for, sanitize_detail, sort_records,
-};
-pub use secret_scan_records::{
-    BlobRecord, FileVersion, SCANNED_BLOB_MODES, SUBMODULE_MODE, index_blobs, introduced_versions,
-    is_scanned_blob, is_submodule, is_zero_sha, parse_blob_records, parse_raw_diff, short_sha,
-};
-pub use normalize::{
-    FRONTMATTER_NORMALIZATION_MARKER, FRONTMATTER_NORMALIZATION_SUBJECT, FrontmatterError,
-    MemoryFrontmatter, NormalizeOutcome, ParsedMemoryFile, normalize_contents, parse_memory_file,
-    render_memory_file, sanitize_frontmatter_value,
-};
-pub use payload_cap::{
-    CappedBatch, CappedBatchInput, MAX_FACTS_PAYLOAD_BYTES, OversizedEntry, Payload,
-    PayloadEnvelope, PrimaryHuman, measure_payload_bytes, select_capped_batch,
-    select_capped_batch_with, serialize_payload,
-};
-pub use orphan_sweep::{
-    LEGACY_BRANCH_PREFIX, OrphanKind, REFLECTION_BRANCH_PREFIX, REFLECTION_ORPHAN_GRACE_MS,
-    ReflectionLeftovers, ReflectionOrphanReceipt, ReflectionOrphanSelection, ReflectionOwner,
-    RegisteredReflectionWorktree, basename, is_epoch_prefixed, is_inside, is_live,
-    is_reflection_branch, parse_reflection_owner, parse_registered_worktrees,
-    select_reflection_orphans,
-};
-pub use paths::{
-    MemoryPathError, ValidateMemoryPathOptions, is_memory_content_path, validate_memory_path,
-    validate_repository_path, validate_repository_path_with_field,
-};
-pub use frontmatter::{
-    MAX_DESCRIPTION_LENGTH, decode_quoted_scalar, decode_scalar_source, decode_string_array,
-    describe_description_violation, describe_frontmatter_grammar_violation,
-    describe_frontmatter_violation, describe_header_grammar_violation, describe_header_violation,
-    find_tool_call_scaffolding, is_canonical_scalar_source, is_plain_safe_scalar,
-    parse_header_line, render_document, render_raw_scalar, render_string_scalar, split_frontmatter,
-};
 pub use cursor::{
-    CursorError, REFLECTION_SNAPSHOT_MAX_BYTES, REFLECTION_STATE_SCHEMA_VERSION, ReflectionSnapshot,
-    ReflectionTranscriptState, TranscriptEntry, capture_cursor_snapshot,
+    CursorError, REFLECTION_SNAPSHOT_MAX_BYTES, REFLECTION_STATE_SCHEMA_VERSION,
+    ReflectionSnapshot, ReflectionTranscriptState, TranscriptEntry, capture_cursor_snapshot,
     capture_cursor_snapshot_with_max_bytes, count_completed_steps, derive_state,
     derive_state_with_total, finalize_cursor, initial_reflection_state, journal_byte_offset,
     parse_state, reflected_through_byte_offset,
@@ -138,6 +98,21 @@ pub use cursor::{
 pub use description_preflight::{
     TrimmedDescription, description_length, description_spacing_end, is_oversized,
     replace_description_line, trim_description,
+};
+pub use extension::{MemoryContext, MemoryExtension, TOOL_NAMES};
+pub use facts_queue::{Claims, Consumed, EnqueueRefusal, FactsBatch, Failures};
+pub use failure_backoff::{
+    ApplyFailureInput, BACKOFF_MS, DETAIL_MAX_BYTES, FailureFilter, FailureReason, FailureRecord,
+    FailureState, FailureTarget, PARK_AT_STREAK, apply_failure, clear_for_retry, clear_on_success,
+    delay_for, sanitize_detail, sort_records,
+};
+pub use failure_selection::{LaunchSelection, SkipReason, select_launchable, selection_key};
+pub use frontmatter::{
+    MAX_DESCRIPTION_LENGTH, decode_quoted_scalar, decode_scalar_source, decode_string_array,
+    describe_description_violation, describe_frontmatter_grammar_violation,
+    describe_frontmatter_violation, describe_header_grammar_violation, describe_header_violation,
+    find_tool_call_scaffolding, is_canonical_scalar_source, is_plain_safe_scalar,
+    parse_header_line, render_document, render_raw_scalar, render_string_scalar, split_frontmatter,
 };
 pub use git_log::{Commit, LOG_FORMAT, parse_log, parse_log_with_paths, parse_trailers};
 pub use git_status::{Change, StatusEntry, StatusError, changed_paths, parse as parse_status};
@@ -164,6 +139,27 @@ pub use locks::{
     run_finalization_lock_path, skills_usage_lock_path, transcript_state_lock_path,
 };
 pub use mcp::ServerConfig;
+pub use normalize::{
+    FRONTMATTER_NORMALIZATION_MARKER, FRONTMATTER_NORMALIZATION_SUBJECT, FrontmatterError,
+    MemoryFrontmatter, NormalizeOutcome, ParsedMemoryFile, normalize_contents, parse_memory_file,
+    render_memory_file, sanitize_frontmatter_value,
+};
+pub use orphan_sweep::{
+    LEGACY_BRANCH_PREFIX, OrphanKind, REFLECTION_BRANCH_PREFIX, REFLECTION_ORPHAN_GRACE_MS,
+    ReflectionLeftovers, ReflectionOrphanReceipt, ReflectionOrphanSelection, ReflectionOwner,
+    RegisteredReflectionWorktree, basename, is_epoch_prefixed, is_inside, is_live,
+    is_reflection_branch, parse_reflection_owner, parse_registered_worktrees,
+    select_reflection_orphans,
+};
+pub use paths::{
+    MemoryPathError, ValidateMemoryPathOptions, is_memory_content_path, validate_memory_path,
+    validate_repository_path, validate_repository_path_with_field,
+};
+pub use payload_cap::{
+    CappedBatch, CappedBatchInput, MAX_FACTS_PAYLOAD_BYTES, OversizedEntry, Payload,
+    PayloadEnvelope, PrimaryHuman, measure_payload_bytes, select_capped_batch,
+    select_capped_batch_with, serialize_payload,
+};
 pub use people_store::{PeopleBook, WriteOutcome, WriteRefusal};
 pub use prompt::{PromptBudget, SLOT_ORDER, assemble};
 pub use recall::{RecallOptions, RecallResult};
@@ -179,6 +175,10 @@ pub use redact::{
 pub use reflection::{
     DreamOrigin, DreamPolicy, DreamState, ReflectionEvent, ReflectionOutcome, ReflectionTrigger,
     RunRecord,
+};
+pub use secret_scan_records::{
+    BlobRecord, FileVersion, SCANNED_BLOB_MODES, SUBMODULE_MODE, index_blobs, introduced_versions,
+    is_scanned_blob, is_submodule, is_zero_sha, parse_blob_records, parse_raw_diff, short_sha,
 };
 pub use select::{
     EXCERPT_CHARS, RRF_K, RecallCandidate, SelectOptions, build_excerpt, select_candidates,
