@@ -4,6 +4,7 @@
 //! the supplied state, so the same inputs always produce the same reservation.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,13 @@ pub enum DreamOrigin {
     Pressure,
 }
 
+impl DreamOrigin {
+    /// Whether the origin comes from the store's own scheduler rather than a person asking.
+    pub fn is_automatic(self) -> bool {
+        matches!(self, Self::Idle | Self::Shutdown | Self::Pressure)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReflectionOutcome {
     #[serde(rename = "merged")]
@@ -52,6 +60,35 @@ pub enum ReflectionOutcome {
     Failed,
     #[serde(rename = "timed_out")]
     TimedOut,
+}
+
+impl ReflectionOutcome {
+    /// Whether the run did not land its work, so the journal must not be advanced.
+    pub fn is_failure(self) -> bool {
+        matches!(
+            self,
+            Self::ParentDirty
+                | Self::MergeConflict
+                | Self::DirtyUncommitted
+                | Self::Failed
+                | Self::TimedOut
+        )
+    }
+}
+
+impl fmt::Display for ReflectionOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Merged => "merged",
+            Self::NoChanges => "no_changes",
+            Self::ParentDirty => "parent_dirty",
+            Self::MergeConflict => "merge_conflict",
+            Self::DirtyUncommitted => "dirty_uncommitted",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+        };
+        f.write_str(name)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
