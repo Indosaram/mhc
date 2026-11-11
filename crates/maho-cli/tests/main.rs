@@ -103,6 +103,9 @@ pub mod list_models;
 pub mod management_http;
 #[path = "mcp_local_presenter.rs"]
 pub mod mcp_local_presenter;
+#[cfg(not(feature = "omo"))]
+#[path = "memory_cli_shipped.rs"]
+pub mod memory_cli_shipped;
 #[cfg(feature = "omo")]
 #[path = "memory_recall_entry.rs"]
 pub mod memory_recall_entry;
