@@ -170,37 +170,51 @@ pub struct Block {
 }
 
 fn split_frontmatter(text: &str) -> (Option<Value>, &str, Option<String>) {
-    let mut lines = text.split_inclusive('\n');
-    let Some(first) = lines.next() else {
-        return (None, text, None);
-    };
-    if first.trim_end_matches(['\r', '\n']) != "---" {
-        return (None, text, None);
-    }
-    let mut offset = first.len();
-    for line in lines {
-        if line.trim_end_matches(['\r', '\n']) == "---" {
-            let yaml = &text[first.len()..offset];
-            let body = &text[offset + line.len()..];
-            return match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
-                Ok(value @ serde_yaml::Value::Mapping(_)) => {
-                    (serde_json::to_value(value).ok(), body, None)
-                }
-                Ok(serde_yaml::Value::Null) => (None, body, None),
-                _ => (
-                    None,
-                    text,
-                    Some("frontmatter is not a YAML mapping; read as body".into()),
-                ),
-            };
+    let mut frontmatter: Option<Value> = None;
+    let mut warning: Option<String> = None;
+    let mut rest = text;
+    // Real stores contain files with two stacked frontmatter blocks, so each leading block is
+    // stripped the same way. Only the first block that parses as a mapping is kept as frontmatter.
+    loop {
+        let mut lines = rest.split_inclusive('\n');
+        let Some(first) = lines.next() else {
+            break;
+        };
+        if first.trim_end_matches(['\r', '\n']) != "---" {
+            break;
         }
-        offset += line.len();
+        let mut offset = first.len();
+        let mut closed = None;
+        for line in lines {
+            if line.trim_end_matches(['\r', '\n']) == "---" {
+                closed = Some((offset, line.len()));
+                break;
+            }
+            offset += line.len();
+        }
+        let Some((close_offset, close_len)) = closed else {
+            // No closing delimiter means no reliable point to cut at, so everything left is body.
+            warning.get_or_insert_with(|| "frontmatter is not closed; read as body".into());
+            break;
+        };
+        let yaml = &rest[first.len()..close_offset];
+        let body = &rest[close_offset + close_len..];
+        match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+            Ok(value @ serde_yaml::Value::Mapping(_)) => {
+                if frontmatter.is_none() {
+                    frontmatter = serde_json::to_value(value).ok();
+                }
+            }
+            Ok(serde_yaml::Value::Null) => {}
+            _ => {
+                warning.get_or_insert_with(|| {
+                    "frontmatter is not a YAML mapping; skipped, body kept".into()
+                });
+            }
+        }
+        rest = body;
     }
-    (
-        None,
-        text,
-        Some("frontmatter is not closed; read as body".into()),
-    )
+    (frontmatter, rest, warning)
 }
 
 /// Parses an `expires` value into epoch milliseconds (UTC).
@@ -1144,6 +1158,81 @@ mod tests {
         );
         let id = sha256_hex16("notes/a.md\u{0}0\u{0}one");
         assert_eq!(store.get(&id).expect("get").expect("row").valid_until, None);
+    }
+
+    #[test]
+    fn unparseable_frontmatter_never_becomes_memory_content() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/a.md",
+            "---\ndescription: Host (maho-win) deployment: paths and pairing\n---\nThe real note.\n",
+        );
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "the unreadable frontmatter is reported"
+        );
+        let rows = store.recent(10).expect("rows");
+        assert_eq!(rows.len(), 1);
+        let content = &rows[0].content;
+        assert!(
+            !content.contains("---"),
+            "YAML delimiters must not be stored as memory content: {content}"
+        );
+        assert!(
+            !content.contains("description:"),
+            "an unparseable frontmatter must not be promoted to content: {content}"
+        );
+        assert!(
+            content.contains("The real note."),
+            "the body survives: {content}"
+        );
+    }
+
+    #[test]
+    fn stacked_frontmatter_blocks_are_all_stripped() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/a.md",
+            "---\ndescription: Tart VM live-web E2E: no guest internet\n---\n---\ndescription: Tart VM has no outbound internet (vmnet NAT broken)\n---\n\n# Heading\n\nThe real note.\n",
+        );
+        let store = Store::open_in_memory("import").expect("store");
+        import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        let rows = store.recent(10).expect("rows");
+        assert_eq!(rows.len(), 1);
+        let content = &rows[0].content;
+        assert!(
+            !content.contains("---"),
+            "a second frontmatter block leaked into content: {content}"
+        );
+        assert!(
+            !content.contains("description:"),
+            "a second frontmatter block leaked into content: {content}"
+        );
+        assert!(
+            content.contains("The real note."),
+            "the body survives: {content}"
+        );
     }
 
     #[test]

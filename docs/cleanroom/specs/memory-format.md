@@ -107,8 +107,20 @@ aliases: [<name>, ...]         # optional, list of alternative names (system/hum
 ```
 
 - Frontmatter is present only when the file's first line is exactly `---`; it ends at the next
-  line that is exactly `---`. A file whose frontmatter does not close, or does not parse as a YAML
-  mapping, is read as body-only (the whole text is body) and reported as a warning.
+  line that is exactly `---`. A file whose frontmatter does not close is read as body-only (the
+  whole text is body), because no closing delimiter means no reliable point to cut at, and a
+  warning is reported.
+- A file whose frontmatter *closes but does not parse* as a YAML mapping is cut at the closing
+  delimiter: the frontmatter is dropped and the body after it is imported, with one warning. The
+  frontmatter text is **never** promoted to memory content. Real stores contain such files
+  (`description: Foo: bar` is not valid YAML), and reading them whole turned the YAML delimiters
+  and the description line into a memory that could be recalled and searched — 138 of 18 454
+  imported blocks on a real store. Only the body carries meaning to a reader; the unparseable
+  header is a formatting defect in the legacy file, not a memory.
+- Frontmatter blocks may be **stacked**: a real file can open with two complete `---` … `---`
+  blocks before the body. Each leading block is stripped in turn, and the first one that parses as
+  a mapping becomes the file's frontmatter. Stripping only the first block leaves the second one at
+  the head of the body, which reintroduces the leak above for 69 blocks on a real store.
 - The body is free Markdown. The documents call the store a "block store": the unit of memory is
   a block of text inside a file. The block boundaries are not documented, so the migrator uses the
   Markdown structure as the block boundary (next section).
