@@ -41,6 +41,15 @@ synonym was needed to find is the one document it cannot see.
 Ranks in the widened result are re-assigned from the combined order, because the two lists were scored on
 different scales and only their relative positions are comparable.
 
+## The excerpt shows the word that found the document
+
+Each candidate's excerpt is centered on the first query term that appears in its body. The term list used
+for centering includes the caller's added terms, not just the query's own.
+
+Without the added terms, a memory reached only through a synonym shows a window on text that does not
+contain the word the search used: the reader sees unrelated prose and cannot tell why the memory was
+returned. The list falls back to the body head only when no term matches at all.
+
 ## Defect this slice fixes
 
 `recall_strategy.rs` (253 lines) was fully ported and completely unreferenced: `select_candidates` always fused
@@ -50,6 +59,9 @@ failed, because no test pinned a strategy — the behavior was uniform and there
 The wiring adds two tests that were impossible before: a corpus that resolves to each of the three strategies,
 and a pinned `Substring`/`Bm25` pair that both return matching documents. The expansion test that had been
 passing by accident now exercises the widening pass that existed upstream and was missing here.
+
+A second defect was found by testing the real path rather than the helper: a document found only through an
+added term had its excerpt centered on the query words, which do not occur in it at all.
 
 ## Scope boundary
 

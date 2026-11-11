@@ -155,24 +155,32 @@ fn rank_to_scores(scored: &[Scored]) -> Vec<(usize, f64)> {
         .collect()
 }
 
-/// Whether the caller's added terms contribute anything the query did not already contain.
-fn adds_terms(expansions: Option<&QueryExpansions>) -> bool {
+/// Every text the caller added to the search, in the order they were supplied.
+fn expansion_texts(expansions: Option<&QueryExpansions>) -> Vec<String> {
     let Some(expansions) = expansions else {
-        return false;
+        return Vec::new();
     };
-    [
+    let mut texts: Vec<String> = Vec::new();
+    for values in [
         &expansions.synonyms,
         &expansions.keywords,
         &expansions.related,
     ]
     .into_iter()
     .flatten()
-    .flatten()
-    .any(|text| !text.trim().is_empty())
-        || expansions
-            .note_line
-            .as_ref()
-            .is_some_and(|line| !line.trim().is_empty())
+    {
+        texts.extend(values.iter().cloned());
+    }
+    if let Some(note_line) = &expansions.note_line {
+        texts.push(note_line.clone());
+    }
+    texts.retain(|text| !text.trim().is_empty());
+    texts
+}
+
+/// Whether the caller's added terms contribute anything the query did not already contain.
+fn adds_terms(expansions: Option<&QueryExpansions>) -> bool {
+    !expansion_texts(expansions).is_empty()
 }
 
 /// A widened search: documents holding every query word first, then the widened BM25 order.
@@ -322,6 +330,19 @@ pub fn select_candidates(
         unwidened
     };
 
+    // Terms the excerpt may center on: the query's own, then the added ones. A memory reached only
+    // through a synonym has none of the query words in its body, so centering on the query terms
+    // alone would show the reader a window on text that does not explain why it was returned.
+    let mut excerpt_terms = terms.clone();
+    for expansion in expansion_texts(options.expansions.as_ref()) {
+        for term in recall_terms(&expansion) {
+            let term = normalize(&term);
+            if !term.is_empty() && !excerpt_terms.contains(&term) {
+                excerpt_terms.push(term);
+            }
+        }
+    }
+
     fused
         .into_iter()
         .take(options.max_items)
@@ -330,7 +351,7 @@ pub fn select_candidates(
             RecallCandidate {
                 path: document.path.clone(),
                 description: document.description.clone(),
-                excerpt: build_excerpt(&document.body, &terms),
+                excerpt: build_excerpt(&document.body, &excerpt_terms),
                 score,
             }
         })
@@ -682,6 +703,77 @@ mod tests {
                 score: 0.0
             }])
             .is_empty()
+        );
+    }
+    #[test]
+    fn a_cjk_excerpt_is_centered_on_the_matched_characters() {
+        let body = format!("{} 한국어 문서 내용 {}", "가".repeat(300), "나".repeat(300));
+        let excerpt = build_excerpt(&body, &[normalize("한국어")]);
+        assert!(
+            excerpt.contains("한국어"),
+            "a CJK match must appear in its own excerpt, got {excerpt:?}"
+        );
+        assert!(excerpt.chars().count() <= EXCERPT_CHARS);
+    }
+
+    #[test]
+    fn an_expanded_term_centers_the_excerpt_when_the_query_word_is_absent() {
+        // The document was found through an added synonym only, so the excerpt must show the
+        // synonym; otherwise the reader sees a window on unrelated text and cannot tell why the
+        // memory was returned.
+        let body = format!(
+            "{} worker process here {}",
+            "x".repeat(300),
+            "y".repeat(300)
+        );
+        let excerpt = build_excerpt(&body, &[normalize("worker")]);
+        assert!(excerpt.contains("worker"), "got {excerpt:?}");
+    }
+    #[test]
+    fn a_cjk_query_through_the_real_path_shows_the_query_in_the_excerpt() {
+        let body = format!("{} 한국어 문서 내용 {}", "가".repeat(300), "나".repeat(300));
+        let documents = [document("k.md", &body)];
+        let candidates = select_candidates(
+            &documents,
+            &["한국어".to_owned()],
+            &SelectOptions {
+                max_items: 1,
+                strategy: Some(RecallStrategy::Bm25),
+                ..SelectOptions::default()
+            },
+        );
+        assert_eq!(candidates.len(), 1, "the document must be found");
+        let excerpt = &candidates[0].excerpt;
+        assert!(
+            excerpt.contains("한국어"),
+            "a BM25 hit on CJK must show the matched text, got {excerpt:?}"
+        );
+    }
+    #[test]
+    fn a_document_found_only_through_an_expansion_shows_the_expanded_word() {
+        let body = format!(
+            "{} worker process here {}",
+            "x".repeat(300),
+            "y".repeat(300)
+        );
+        let documents = [document("w.md", &body)];
+        let candidates = select_candidates(
+            &documents,
+            &["daemon".to_owned()],
+            &SelectOptions {
+                max_items: 1,
+                expansions: Some(QueryExpansions {
+                    synonyms: Some(vec!["worker".to_owned()]),
+                    ..QueryExpansions::default()
+                }),
+                ..SelectOptions::default()
+            },
+        );
+        assert_eq!(candidates.len(), 1, "the synonym must find the document");
+        let excerpt = &candidates[0].excerpt;
+        assert!(
+            excerpt.contains("worker"),
+            "a document reached through an added term must show that term, got {excerpt:?}"
         );
     }
 }
