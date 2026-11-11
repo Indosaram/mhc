@@ -5,6 +5,7 @@
 //! run plus one entry per adjacent pair, so a search for two characters finds a longer phrase
 //! without a word segmenter. Query terms weigh 1.0; synonym, keyword and related terms weigh less,
 //! and a document that matches every query unit is lifted above the ranked list.
+use crate::english_stem::stem_english_token;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const K1: f64 = 1.5;
@@ -165,7 +166,11 @@ pub fn recall_document_terms(document: &RecallDocument) -> DocumentTermsInput {
         .len()
         .saturating_sub(tokens.standalone_han_characters);
     DocumentTermsInput {
-        terms: tokens.tokens,
+        terms: tokens
+            .tokens
+            .iter()
+            .map(|token| stem_english_token(token))
+            .collect(),
         length,
     }
 }
@@ -173,6 +178,9 @@ pub fn recall_document_terms(document: &RecallDocument) -> DocumentTermsInput {
 /// Query and document terms, lowercased and CJK-expanded.
 pub fn recall_terms(text: &str) -> Vec<String> {
     tokenize_recall_text(text)
+        .iter()
+        .map(|token| stem_english_token(token))
+        .collect()
 }
 
 /// Terms added to a query, each with the weight it contributes.
@@ -298,8 +306,9 @@ fn query_units(queries: &[String]) -> Vec<String> {
     for query in queries {
         for run in runs(query) {
             for piece in run.pieces {
-                if !units.contains(&piece) {
-                    units.push(piece);
+                let term = stem_english_token(&piece);
+                if !units.contains(&term) {
+                    units.push(term);
                 }
             }
         }
@@ -529,7 +538,8 @@ mod tests {
             ..QueryExpansions::default()
         };
         let weights = expansion_weights(Some(&expansions), &query_terms);
-        assert_eq!(weights.get("service").copied(), Some(WEIGHT_SYNONYMS));
+        let key = stem_english_token("service");
+        assert_eq!(weights.get(&key).copied(), Some(WEIGHT_SYNONYMS));
     }
 
     #[test]
@@ -584,5 +594,26 @@ mod tests {
         let mut first_scores = scores;
         first_scores.sort_by(|left, right| right.partial_cmp(left).expect("ordered"));
         assert_eq!(first_scores, second_scores);
+    }
+
+    #[test]
+    fn a_plural_query_finds_a_singular_document() {
+        let documents = [
+            document("a", "the memory system"),
+            document("b", "unrelated words"),
+        ];
+        let ranked = rank_documents(&documents, &["memories".to_owned()], None);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].position, 0);
+    }
+
+    #[test]
+    fn an_inflected_query_finds_the_base_word() {
+        let documents = [
+            document("a", "we recorded the decision"),
+            document("b", "nothing here"),
+        ];
+        let ranked = rank_documents(&documents, &["recording".to_owned()], None);
+        assert_eq!(ranked.len(), 1);
     }
 }
