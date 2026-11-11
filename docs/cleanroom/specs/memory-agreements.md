@@ -114,3 +114,27 @@ reflection/dream runs, kibitzer. Those are separate specs.
   yet 193 live files sit there. The importer reads the union; the clean room should state the union
   explicitly rather than inherit the mismatch.
 - `by:` values other than `agent` were not observed. Treat the field as open.
+
+## 6. Not ported: agreement mutation
+
+The reference package has `agreements/{types,format,record,mutate}.rs` with typed enums
+(`AgreementScope`, `AgreementAuthor`, `AgreementStatus`), a reword/ack/drop implementation, and
+`add_human_agreement` / `ack_agreement` / `drop_agreement`. None of it is reproduced in this crate.
+
+That code is not missing from the product: it backs the `/agreements` command in
+`crates/omo/components/maho-omo-memory/src/commands/agreements.rs`, which is where the person's own
+edits to `system/agreements.md` are applied. That command is part of the omo build and works today.
+
+The MIT profile here has no command surface for agreements at all — nothing constructs an
+`AgreementItem`, and nothing consumes `Agreements` outside this module's own tests. Porting the
+mutation functions would create a second writer of the same file with no caller, and two writers of
+`system/agreements.md` that disagree is worse than one: `by: human` items are exactly the ones the
+reference refuses to let automation edit.
+
+`agreements.rs` here stays a **reader and projection**: it parses the file, reports break-count
+mismatches, blocks work on `needs-human`, and projects system blocks into the prompt. That is the
+whole surface this profile needs.
+
+Revisit when the MIT profile gains an agreements command. At that point the writer should be
+designed against the same guard the reference uses (automation may not edit a human item), not
+inherited by copy.
