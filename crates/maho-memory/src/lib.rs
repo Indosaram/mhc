@@ -64,6 +64,7 @@ pub mod project_corpus;
 pub mod prompt;
 pub mod recall;
 pub mod recall_gate;
+pub mod recall_planner;
 pub mod recall_render;
 pub mod recall_strategy;
 pub mod recall_wire;
