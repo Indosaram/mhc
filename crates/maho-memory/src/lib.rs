@@ -64,6 +64,7 @@ pub mod recall_wire;
 pub mod receipts;
 pub mod records;
 pub mod redact;
+pub mod reminders;
 pub mod reflection;
 mod schema;
 pub mod seeds;
