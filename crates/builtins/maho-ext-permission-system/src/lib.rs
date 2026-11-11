@@ -324,10 +324,12 @@ impl Extension for PermissionSystem {
                     let mut guard = lock_state(&state);
                     if let Some(policy) = guard.as_mut() {
                         let approved = policy.service.get_approved();
+                        // A reload can compact the store, moving this index past the end; the
+                        // storage layer dedupes, so re-offering known rules costs nothing.
                         storage::append_approved(
                             &ctx.agent_dir,
                             &ctx.cwd,
-                            &approved[policy.initial_approved..],
+                            approved.get(policy.initial_approved..).unwrap_or_default(),
                         )
                         .map_err(|error| ExtensionFailure::new(error.to_string()))?;
                         for request in policy.service.list() {

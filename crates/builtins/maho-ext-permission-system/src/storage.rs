@@ -1,13 +1,19 @@
 use crate::types::{Action, Rule, Ruleset};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 const USER_ANSWER_SOURCE: &str = "user-answer";
 const LEGACY_FILE: &str = ".omo/permissions-approved.jsonl";
+/// The store is shared by every mhc process working in the same project and is reread on every
+/// decision whose file version moved. Cap it so a runaway writer can never make a session repay a
+/// multi-gigabyte parse (mhc incident 2026-11-11: 2.3 GB, 21M lines, 82% torn by concurrent
+/// appends, every reload re-appending the whole ruleset).
+const MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 struct StoredRule {
@@ -86,11 +92,30 @@ fn is_symlink(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Reads at most [`MAX_STORE_BYTES`] from the end of the store. Recent approvals are the ones a
+/// decision needs, and a bounded read keeps an oversized or corrupt file from stalling startup.
+fn read_bounded(path: &Path) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut bytes = Vec::new();
+    if len > MAX_STORE_BYTES {
+        file.seek(SeekFrom::Start(len - MAX_STORE_BYTES)).ok()?;
+    }
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if len <= MAX_STORE_BYTES {
+        return Some(text);
+    }
+    // The seek landed mid-record: drop the torn first line.
+    let start = text.find('\n').map_or(text.len(), |index| index + 1);
+    Some(text[start..].to_owned())
+}
+
 fn read_stored(path: &Path, require_source: bool) -> Ruleset {
     if is_symlink(path) {
         return Vec::new();
     }
-    let Ok(content) = fs::read_to_string(path) else {
+    let Some(content) = read_bounded(path) else {
         return Vec::new();
     };
     content
@@ -152,6 +177,86 @@ pub fn load_approved(agent_dir: &Path, project_dir: &Path) -> Ruleset {
     read_stored(&store, true)
 }
 
+/// An exclusive advisory lock over one store, so concurrent mhc processes append whole records
+/// instead of interleaving partial lines. The lock lives beside the store (`<store>.lock`) because
+/// the store itself is replaced atomically on compaction.
+struct StoreLock(fs::File);
+
+impl StoreLock {
+    fn acquire(store: &Path) -> io::Result<Self> {
+        let path = PathBuf::from(format!("{}.lock", store.display()));
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)?;
+        match file.lock() {
+            Ok(()) => Ok(Self(file)),
+            // A filesystem without advisory locks still behaves as before, unlocked.
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => Ok(Self(file)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn rule_key(rule: &Rule) -> (String, String, Action) {
+    (rule.permission.clone(), rule.pattern.clone(), rule.action)
+}
+
+fn append_new_rules(path: &Path, rules: &[Rule]) -> io::Result<()> {
+    let existing: HashSet<(String, String, Action)> =
+        read_stored(path, true).iter().map(rule_key).collect();
+    let mut seen = existing;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    for rule in rules {
+        // A reload re-offers every rule it knows; only genuinely new approvals are persisted.
+        if !seen.insert(rule_key(rule)) {
+            continue;
+        }
+        let mut stored = StoredRule::from(rule);
+        stored.source = Some(USER_ANSWER_SOURCE.to_owned());
+        serde_json::to_writer(&mut file, &stored)?;
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+/// Rewrites the store as its distinct rules. Called with the store lock held: the caller owns the
+/// guard so the read, the rewrite, and the rename cannot interleave with another appender.
+fn rewrite_unique(agent_dir: &Path, project_dir: &Path, path: &Path) -> io::Result<()> {
+    let mut unique = Vec::<(String, Rule)>::new();
+    let mut seen = HashSet::new();
+    for rule in load_approved(agent_dir, project_dir) {
+        let key = format!("{}:{}", rule.permission, rule.pattern);
+        if seen.insert(key) {
+            unique.push((rule.permission.clone(), rule));
+        }
+    }
+    let temp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
+    {
+        let mut file = fs::File::create(&temp)?;
+        for (_, rule) in &unique {
+            let mut stored = StoredRule::from(rule);
+            stored.source = Some(USER_ANSWER_SOURCE.to_owned());
+            serde_json::to_writer(&mut file, &stored)?;
+            file.write_all(b"\n")?;
+        }
+        file.sync_all()?;
+    }
+    fs::rename(&temp, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temp);
+    })
+}
+
 pub fn append_approved(agent_dir: &Path, project_dir: &Path, rules: &[Rule]) -> io::Result<()> {
     if rules.is_empty() {
         return Ok(());
@@ -164,15 +269,10 @@ pub fn append_approved(agent_dir: &Path, project_dir: &Path, rules: &[Rule]) -> 
         ));
     }
     fs::create_dir_all(path.parent().expect("store parent"))?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    for rule in rules {
-        let mut stored = StoredRule::from(rule);
-        stored.source = Some(USER_ANSWER_SOURCE.to_owned());
-        serde_json::to_writer(&mut file, &stored)?;
-        file.write_all(b"\n")?;
+    let _lock = StoreLock::acquire(&path)?;
+    append_new_rules(&path, rules)?;
+    if fs::metadata(&path)?.len() > MAX_STORE_BYTES {
+        rewrite_unique(agent_dir, project_dir, &path)?;
     }
     Ok(())
 }
@@ -193,22 +293,9 @@ pub fn clear_approved(agent_dir: &Path, project_dir: &Path) -> io::Result<()> {
 
 pub fn compact_approved(agent_dir: &Path, project_dir: &Path) -> io::Result<()> {
     let path = approved_store_path(agent_dir, project_dir);
-    if !path.exists() {
+    if !path.exists() || is_symlink(&path) {
         return Ok(());
     }
-    let mut unique = Vec::<(String, Rule)>::new();
-    for rule in load_approved(agent_dir, project_dir) {
-        let key = format!("{}:{}", rule.permission, rule.pattern);
-        if let Some(entry) = unique.iter_mut().find(|entry| entry.0 == key) {
-            entry.1 = rule;
-        } else {
-            unique.push((key, rule));
-        }
-    }
-    clear_approved(agent_dir, project_dir)?;
-    append_approved(
-        agent_dir,
-        project_dir,
-        &unique.into_iter().map(|(_, rule)| rule).collect::<Vec<_>>(),
-    )
+    let _lock = StoreLock::acquire(&path)?;
+    rewrite_unique(agent_dir, project_dir, &path)
 }

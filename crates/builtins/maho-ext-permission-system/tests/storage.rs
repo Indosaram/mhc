@@ -237,3 +237,80 @@ fn old_storage_roundtrip_and_compaction() {
         [rule("bash", "git *", Action::Allow)]
     );
 }
+
+/// A reload re-offers every approval it knows (mhc incident 2026-11-11); only new rules may grow
+/// the store, otherwise each reload rewrites the file it just read.
+#[test]
+fn reoffered_approvals_do_not_grow_the_store() {
+    let (agent, project) = fixture();
+    let rules = [
+        rule("bash", "git status", Action::Allow),
+        rule("bash", "cd *", Action::Allow),
+    ];
+    append_approved(agent.path(), project.path(), &rules).unwrap();
+    let store = approved_store_path(agent.path(), project.path());
+    let after_first = fs::metadata(&store).unwrap().len();
+    for _ in 0..50 {
+        append_approved(agent.path(), project.path(), &rules).unwrap();
+    }
+    assert_eq!(fs::metadata(&store).unwrap().len(), after_first);
+    assert_eq!(load_approved(agent.path(), project.path()), rules);
+}
+
+/// Concurrent sessions append to one store; the lock must keep whole records from interleaving.
+#[test]
+fn concurrent_appends_keep_whole_records() {
+    let (agent, project) = fixture();
+    let mut workers = Vec::new();
+    for index in 0..8 {
+        let agent = agent.path().to_path_buf();
+        let project = project.path().to_path_buf();
+        workers.push(std::thread::spawn(move || {
+            for round in 0..25 {
+                append_approved(
+                    &agent,
+                    &project,
+                    &[rule(
+                        "bash",
+                        &format!("echo worker-{index}-round-{round} *"),
+                        Action::Allow,
+                    )],
+                )
+                .unwrap();
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().expect("worker");
+    }
+    assert_eq!(load_approved(agent.path(), project.path()).len(), 200);
+}
+
+/// A store already past the cap is rewritten to its distinct rules instead of being reread forever.
+#[test]
+fn oversized_store_is_compacted_on_append() {
+    let (agent, project) = fixture();
+    let store = approved_store_path(agent.path(), project.path());
+    fs::create_dir_all(store.parent().unwrap()).unwrap();
+    let padding = "x".repeat(1024);
+    let mut content = String::new();
+    for index in 0..9_000 {
+        content.push_str(&format!(
+            "{{\"permission\":\"bash\",\"pattern\":\"git status {index} {padding}\",\"action\":\"allow\",\"source\":\"user-answer\"}}\n"
+        ));
+    }
+    fs::write(&store, &content).unwrap();
+    assert!(fs::metadata(&store).unwrap().len() > 8 * 1024 * 1024);
+    append_approved(
+        agent.path(),
+        project.path(),
+        &[rule("bash", "git status", Action::Allow)],
+    )
+    .unwrap();
+    assert!(fs::metadata(&store).unwrap().len() < 8 * 1024 * 1024);
+    // The last 8 MiB of the oversized file is what the bounded read sees, so the rewrite keeps
+    // those rules and drops the unreachable head rather than growing without bound.
+    let rules = load_approved(agent.path(), project.path());
+    assert!(rules.contains(&rule("bash", "git status", Action::Allow)));
+    assert!(!rules.is_empty());
+}
