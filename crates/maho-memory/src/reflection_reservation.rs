@@ -288,9 +288,8 @@ impl ReservationStore {
         journals: &BTreeMap<String, JournalSnapshot>,
     ) -> Result<CompletionResult, ReservationError> {
         let current = self.read_state()?;
-        let transition =
-            complete_transition(current, run_id, outcome, journals, &self.config)
-                .map_err(|error| ReservationError::TransitionFailed(error.to_string()))?;
+        let transition = complete_transition(current, run_id, outcome, journals, &self.config)
+            .map_err(|error| ReservationError::TransitionFailed(error.to_string()))?;
         write_state(&self.paths, &transition.state)?;
         Ok(CompletionResult {
             outcome,
