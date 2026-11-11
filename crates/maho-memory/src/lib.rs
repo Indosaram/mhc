@@ -72,6 +72,7 @@ pub mod seeds;
 pub mod select;
 pub mod soul_paths;
 pub mod stale_holder;
+pub mod transcript_search;
 pub mod store;
 pub mod text;
 
