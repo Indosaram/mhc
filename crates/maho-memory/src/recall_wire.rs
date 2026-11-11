@@ -59,6 +59,7 @@ pub fn recall_for_session(
             surfaced: already_current,
             exclude_paths: None,
             expansions: None,
+            strategy: None,
         },
     );
 

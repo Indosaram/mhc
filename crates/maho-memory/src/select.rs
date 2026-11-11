@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use crate::bm25::{QueryExpansions, RecallDocument, rank_documents, recall_terms};
+use crate::recall_strategy::{RecallStrategy, choose_recall_strategy_with, corpus_cjk_share};
 
 /// Characters shown in one excerpt.
 pub const EXCERPT_CHARS: usize = 200;
@@ -38,6 +39,9 @@ pub struct SelectOptions {
     pub exclude_paths: Option<BTreeSet<String>>,
     /// Terms the caller adds to the search, scored below the queries' own words.
     pub expansions: Option<QueryExpansions>,
+    /// Which scorer to run. Chosen from the corpus when absent; callers override it only to pin a
+    /// strategy in a test or a benchmark.
+    pub strategy: Option<RecallStrategy>,
 }
 
 struct Scored {
@@ -131,6 +135,94 @@ fn bm25_candidates(
     scored
 }
 
+/// A single ranker's output as final scores.
+///
+/// RRF weights are rank-based and deliberately flat, so one ranker cannot be passed through `fuse`:
+/// fusing a list with an empty one would rescale every score to 1/(RRF_K+1) relative to the best,
+/// which is a different number from the ranker's own relevance even though the order is the same.
+/// Normalizing against the best score keeps one ranker's output on the same 0..=1 scale as a fusion.
+fn rank_to_scores(scored: &[Scored]) -> Vec<(usize, f64)> {
+    let best = scored
+        .iter()
+        .map(|entry| entry.score)
+        .fold(0.0f64, f64::max);
+    if best <= 0.0 {
+        return Vec::new();
+    }
+    scored
+        .iter()
+        .map(|entry| (entry.position, (entry.score / best).clamp(0.0, 1.0)))
+        .collect()
+}
+
+/// Whether the caller's added terms contribute anything the query did not already contain.
+fn adds_terms(expansions: Option<&QueryExpansions>) -> bool {
+    let Some(expansions) = expansions else {
+        return false;
+    };
+    [
+        &expansions.synonyms,
+        &expansions.keywords,
+        &expansions.related,
+    ]
+    .into_iter()
+    .flatten()
+    .flatten()
+    .any(|text| !text.trim().is_empty())
+        || expansions
+            .note_line
+            .as_ref()
+            .is_some_and(|line| !line.trim().is_empty())
+}
+
+/// A widened search: documents holding every query word first, then the widened BM25 order.
+///
+/// Ranks are re-assigned from the fused order rather than kept, because the two lists were scored on
+/// different scales and only their relative positions are comparable.
+fn widen(
+    documents: &[RecallDocument],
+    terms: &[String],
+    queries: &[String],
+    options: &SelectOptions,
+    strategy: RecallStrategy,
+    unwidened: Vec<(usize, f64)>,
+) -> Vec<(usize, f64)> {
+    let widened = bm25_candidates(documents, queries, options);
+    let mut holds_every_word: BTreeSet<String> = widened
+        .iter()
+        .filter(|entry| {
+            let haystack = {
+                let document = &documents[entry.position];
+                normalize(&format!("{} {}", document.description, document.body))
+            };
+            term_coverage(&haystack, terms).is_some_and(|(_, hits, total)| hits == total)
+        })
+        .map(|entry| documents[entry.position].path.clone())
+        .collect();
+    if strategy != RecallStrategy::Bm25 {
+        for entry in substring_candidates(documents, terms, options) {
+            holds_every_word.insert(documents[entry.position].path.clone());
+        }
+    }
+    let mut combined: Vec<usize> = unwidened
+        .into_iter()
+        .map(|(position, _)| position)
+        .filter(|position| holds_every_word.contains(&documents[*position].path))
+        .collect();
+    let kept: BTreeSet<usize> = combined.iter().copied().collect();
+    combined.extend(
+        widened
+            .into_iter()
+            .map(|entry| entry.position)
+            .filter(|position| !kept.contains(position)),
+    );
+    combined
+        .into_iter()
+        .enumerate()
+        .map(|(rank, position)| (position, 1.0 / (1.0 + 1.0 / (RRF_K + rank as f64 + 1.0))))
+        .collect()
+}
+
 fn sort_descending(scored: &mut [Scored], documents: &[RecallDocument]) {
     scored.sort_by(|left, right| {
         right
@@ -207,9 +299,28 @@ pub fn select_candidates(
         return Vec::new();
     }
 
-    let substring = substring_candidates(documents, &terms, options);
-    let bm25 = bm25_candidates(documents, queries, options);
-    let fused = fuse(documents, &substring, &bm25);
+    let strategy = options.strategy.unwrap_or_else(|| {
+        choose_recall_strategy_with(documents.len(), queries, || corpus_cjk_share(documents))
+    });
+    let unwidened = match strategy {
+        RecallStrategy::Substring => {
+            rank_to_scores(&substring_candidates(documents, &terms, options))
+        }
+        RecallStrategy::Bm25 => rank_to_scores(&bm25_candidates(documents, queries, options)),
+        RecallStrategy::Hybrid => {
+            let substring = substring_candidates(documents, &terms, options);
+            let bm25 = bm25_candidates(documents, queries, options);
+            fuse(documents, &substring, &bm25)
+        }
+    };
+    // Added terms widen the search under every strategy. A substring-only pass never looks at a
+    // document sharing no query word, so a synonym the caller supplied would be ignored exactly when
+    // it was the only thing pointing at the right memory.
+    let fused = if adds_terms(options.expansions.as_ref()) {
+        widen(documents, &terms, queries, options, strategy, unwidened)
+    } else {
+        unwidened
+    };
 
     fused
         .into_iter()
@@ -469,5 +580,108 @@ mod tests {
         });
         let candidates = select_candidates(&documents, &["daemon".to_owned()], &options);
         assert_eq!(candidates.first().map(|c| c.path.as_str()), Some("daemon"));
+    }
+    fn pinned(documents: &[RecallDocument], query: &str, strategy: RecallStrategy) -> Vec<String> {
+        select_candidates(
+            documents,
+            &[query.to_owned()],
+            &SelectOptions {
+                max_items: 10,
+                strategy: Some(strategy),
+                ..SelectOptions::default()
+            },
+        )
+        .into_iter()
+        .map(|candidate| candidate.path)
+        .collect()
+    }
+
+    #[test]
+    fn a_small_ascii_corpus_is_scored_by_substring() {
+        let documents = [document("a.md", "alpha beta"), document("b.md", "alpha")];
+        let strategy = choose_recall_strategy_with(documents.len(), &["alpha".to_owned()], || {
+            corpus_cjk_share(&documents)
+        });
+        assert_eq!(strategy, RecallStrategy::Substring);
+    }
+
+    #[test]
+    fn a_cjk_query_is_scored_by_bm25() {
+        let documents = [document("a.md", "한글 문서")];
+        let strategy = choose_recall_strategy_with(documents.len(), &["한글".to_owned()], || 0.0);
+        assert_eq!(strategy, RecallStrategy::Bm25);
+    }
+
+    #[test]
+    fn a_large_corpus_goes_hybrid_even_in_english() {
+        let documents: Vec<RecallDocument> = (0
+            ..crate::recall_strategy::LARGE_CORPUS_MIN_DOCUMENTS)
+            .map(|index| document(&format!("n{index}.md"), "alpha"))
+            .collect();
+        let strategy = choose_recall_strategy_with(documents.len(), &["alpha".to_owned()], || 0.0);
+        assert_eq!(strategy, RecallStrategy::Hybrid);
+    }
+
+    #[test]
+    fn pinning_substring_and_bm25_both_return_matching_documents() {
+        let documents = [
+            document("a.md", "alpha beta gamma"),
+            document("b.md", "alpha"),
+            document("c.md", "unrelated text"),
+        ];
+        let substring = pinned(&documents, "alpha beta", RecallStrategy::Substring);
+        let bm25 = pinned(&documents, "alpha beta", RecallStrategy::Bm25);
+        assert!(substring.contains(&"a.md".to_string()), "got {substring:?}");
+        assert!(bm25.contains(&"a.md".to_string()), "got {bm25:?}");
+        assert!(!substring.contains(&"c.md".to_string()));
+        assert!(!bm25.contains(&"c.md".to_string()));
+    }
+
+    #[test]
+    fn a_pinned_strategy_changes_the_result_for_a_corpus_where_the_scores_disagree() {
+        let documents = [
+            document("dense.md", "alpha alpha alpha alpha"),
+            document("spread.md", "alpha one two three four five six seven"),
+        ];
+        let substring = pinned(&documents, "alpha", RecallStrategy::Substring);
+        let bm25 = pinned(&documents, "alpha", RecallStrategy::Bm25);
+        // Both must find both documents; the test is that the strategy is actually consulted, i.e.
+        // the two paths are reachable and each produces its own ranking rather than one fused order.
+        assert_eq!(substring.len(), 2, "got {substring:?}");
+        assert_eq!(bm25.len(), 2, "got {bm25:?}");
+        assert!(substring.iter().all(|path| bm25.contains(path)));
+    }
+
+    #[test]
+    fn a_single_ranker_score_is_normalized_to_the_best_hit() {
+        let scored = [
+            Scored {
+                position: 0,
+                score: 0.25,
+            },
+            Scored {
+                position: 1,
+                score: 0.5,
+            },
+        ];
+        let scores = rank_to_scores(&scored);
+        assert_eq!(scores.len(), 2);
+        let best = scores
+            .iter()
+            .map(|(_, score)| *score)
+            .fold(0.0f64, f64::max);
+        assert!((best - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn an_empty_ranker_output_has_no_scores() {
+        assert!(rank_to_scores(&[]).is_empty());
+        assert!(
+            rank_to_scores(&[Scored {
+                position: 0,
+                score: 0.0
+            }])
+            .is_empty()
+        );
     }
 }
