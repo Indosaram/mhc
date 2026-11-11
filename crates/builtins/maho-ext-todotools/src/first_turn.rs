@@ -50,7 +50,7 @@ pub fn should_arm_first_turn(input: &FirstTurnInput<'_>) -> bool {
     !input.branch_entries.iter().any(is_request_entry)
 }
 
-fn is_request_entry(entry: &Value) -> bool {
+pub(crate) fn is_request_entry(entry: &Value) -> bool {
     let content = if entry.get("type").and_then(Value::as_str) == Some("message")
         && entry.pointer("/message/role").and_then(Value::as_str) == Some("user")
     {
