@@ -44,6 +44,7 @@ pub mod fs_resilience;
 pub mod git_log;
 pub mod git_status;
 pub mod git_tree;
+pub mod identity_layout;
 pub mod journal;
 pub mod kibitzer;
 pub mod ledger;
