@@ -99,10 +99,13 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   (lexical hybrid recall: FTS5 rank, keyword/word-form relevance, synonyms, importance, recency,
   trust weights), `memory_get` and `memory_forget`; a memory section in the system prompt; on the
   first prompt of a session the best matches are recalled into a hidden `<memories>` message; and
-  `/memory` (`status`, `search <query>`, `import-legacy [--dry-run] [--include-people]`). Sessions
+  `/memory` (`status`, `search <query>`, `prune`, `import-legacy [--dry-run] [--include-people]`). Sessions
   write to a per-project bank and also recall the global bank (`MAHO_MEMORY_SCOPING` =
   `per-project-tagged` (default) | `per-project` | `global`). `memory.enabled: false` in the omo
-  config turns it off. Shell: `mhc memory status|search|remember [--global]|import-legacy|mcp`.
+  config turns it off. Shell: `mhc memory status|search|remember [--global]|prune|import-legacy|mcp`.
+  `prune` (both surfaces) drops rows past the retention windows — 30 days for working memory, 90 for
+  episodic — and never touches a row this session does not own, one still valid, or one at or above
+  the keep-importance threshold (0.9). See `docs/cleanroom/specs/memory-retention.md`.
   The memory MCP server (`mhc memory mcp`, `mhc --memory-mcp`, and the legacy `--omo-memory-mcp`
   entry) serves the `mnemopi_*` tools (remember, recall, get, update, forget, invalidate, stats,
   scratchpad, triples, export/import) over stdio; `--bank`, `MNEMOPI_MCP_BANK` and
