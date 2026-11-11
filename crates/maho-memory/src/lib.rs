@@ -40,6 +40,7 @@ pub mod facts_schema;
 pub mod failure_backoff;
 pub mod failure_selection;
 pub mod frontmatter;
+pub mod frontmatter_entries;
 pub mod fs_resilience;
 pub mod git_batch;
 pub mod git_layout;
