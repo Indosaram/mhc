@@ -68,3 +68,34 @@ would let the sidecar put text in front of the user by getting itself rejected.
 
 A rejected nudge does not consume the cap: the budget counts accepted nudges, so one bad hint cannot starve the
 rest of the batch. Order is preserved — the sidecar ranked them.
+
+## Not ported: the pending-nudge file layer
+
+The reference module also persists pending nudges to disk: `RecallNudge::new`, `PendingNudgesFile`,
+`PendingNudges::{new,write,take,delete}`, `parse_pending_file`, `temporary_path`, `remove_quietly`, plus
+`PENDING_NUDGES_VERSION` and `PENDING_TTL_MS`. None of it is reproduced here.
+
+That layer is not part of the gate's decision. It is the transport between the process that generates a nudge and
+the process that inserts it, and in this crate there is no such split: a caller holds nudges in memory and passes
+them to `validate_nudges`. Porting the file format would add a second, unexercised writer with no reader — the
+kind of module that looks complete, passes its own tests, and is never called.
+
+Its dependencies confirm the same thing. The reference file layer reads through the SUL git repository type and a
+shared `support::time` module; the MIT crate has neither, so a port would have to recreate them first. Writing
+file-handle plumbing ahead of the code that needs it is the wrong order.
+
+Revisit only when something in this crate actually has to survive a process boundary between generating a nudge
+and admitting it. At that point the format should be designed against the real handoff rather than inherited.
+
+## Not ported: the corpus cache provider
+
+The reference also holds `recall/provider.rs`: a cached corpus of recall documents keyed off a git repository,
+with figures for memory accounting. It is a caching strategy over a repository abstraction this crate does not
+have. `recall_strategy` here already operates on an explicitly supplied document slice
+(`choose_recall_strategy(documents, queries)`), which is what makes it testable without a repository or a clock.
+
+## Verification
+
+`crates/maho-memory/src/recall_gate.rs` covers every hint-shape reason, both addressing contracts, the
+offered/surfaced/first-occurrence rules of `validate_nudges`, and the cap accounting. The persistence layer has no
+tests here because it has no implementation here; that is the decision recorded above, not an oversight.
