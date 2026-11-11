@@ -40,6 +40,14 @@ pub fn sha256_hex16(value: &str) -> String {
         .collect()
 }
 
+/// Full 64-character SHA-256, used where the digest stands in for a file's content.
+pub fn sha256_hex(value: &str) -> String {
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A fresh id for `content` written at `timestamp` (`generateId`: content, time and a per-process

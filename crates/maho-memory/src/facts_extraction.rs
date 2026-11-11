@@ -6,31 +6,39 @@
 
 use chrono::NaiveDate;
 
+use serde::{Deserialize, Serialize};
+
 use crate::fact_display::ClaimReceipt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Someone a person-scoped fact is filed under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsPersonReference {
     pub name: String,
     pub aliases: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Receipts are kept as the parsed value rather than typed: `ClaimReceipt` is a parse gate, and re-serializing
+/// it would rewrite the fields the model sent into a shape this crate invented, changing the batch hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "lowercase")]
 pub enum FactsExtractionRecord {
     Project {
         text: String,
         date: String,
-        receipt: Option<ClaimReceipt>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<serde_json::Value>,
     },
     Person {
         person: FactsPersonReference,
         text: String,
         date: String,
-        receipt: Option<ClaimReceipt>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<serde_json::Value>,
     },
 }
 
 impl FactsExtractionRecord {
-    pub fn receipt(&self) -> Option<&ClaimReceipt> {
+    pub fn receipt(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Project { receipt, .. } | Self::Person { receipt, .. } => receipt.as_ref(),
         }
@@ -112,7 +120,9 @@ pub fn parse_facts_extraction_record(
     let receipt = object
         .get("receipt")
         .map(|value| {
-            ClaimReceipt::parse(value).ok_or_else(|| invalid(index, "receipt is malformed"))
+            ClaimReceipt::parse(value)
+                .ok_or_else(|| invalid(index, "receipt is malformed"))
+                .map(|_| value.clone())
         })
         .transpose()?;
 
@@ -216,6 +226,49 @@ fn invalid(index: usize, message: impl std::fmt::Display) -> FactsExtractionVali
     FactsExtractionValidationError {
         message: format!("facts extraction line {}: {message}", index + 1),
     }
+}
+
+/// A batch id the recovery envelope may be named after: UUID v4 in canonical 8-4-4-4-12 form.
+///
+/// Uppercase hex is accepted, because a model that upper-cases its id still produced a unique id; only the
+/// shape and the version/variant bits are contractual.
+pub fn is_uuid_v4(batch_id: &str) -> bool {
+    let bytes = batch_id.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        let is_dash = matches!(index, 8 | 13 | 18 | 23);
+        if is_dash != (*byte == b'-') {
+            return false;
+        }
+    }
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matches!(index, 8 | 13 | 18 | 23))
+        .all(|(_, byte)| byte.is_ascii_hexdigit())
+        && bytes[14] == b'4'
+        && matches!(bytes[19], b'8' | b'9' | b'a' | b'b' | b'A' | b'B')
+}
+
+/// The hash a recovery envelope pins, so an applied batch can be proven to match the one that was planned.
+///
+/// Agreement records join the hash only when present: batches without them keep the hash they had before
+/// agreements existed, so an in-flight recovery envelope written by an older build still validates.
+/// The hash a recovery envelope pins, so an applied batch can be proven to match the one that was planned.
+///
+/// An empty agreement list hashes the same as no agreements at all, and that shape is a bare array — not an
+/// object wrapping one. Both details are load-bearing: a recovery envelope written before agreements existed
+/// must still validate against a batch re-read after an upgrade.
+pub fn records_hash(records: &[FactsExtractionRecord], agreements: &[serde_json::Value]) -> String {
+    let json = if agreements.is_empty() {
+        serde_json::to_string(records)
+    } else {
+        serde_json::to_string(&serde_json::json!({ "records": records, "agreements": agreements }))
+    }
+    .unwrap_or_default();
+    crate::store::sha256_hex(&json)
 }
 
 #[cfg(test)]
@@ -411,10 +464,7 @@ mod tests {
         let mut value = project("t", "2026-11-01");
         value["receipt"] = receipt_json();
         let record = parse_facts_extraction_record(&value, 0).expect("parses");
-        assert_eq!(
-            record.receipt(),
-            Some(&ClaimReceipt::Agent { downgraded: false })
-        );
+        assert_eq!(record.receipt(), Some(&receipt_json()));
     }
 
     #[test]
@@ -523,5 +573,98 @@ mod tests {
             project("", "2026-11-01")
         );
         assert!(parse_facts_extraction_jsonl(&raw).is_err());
+    }
+
+    #[test]
+    fn a_canonical_uuid_v4_is_accepted() {
+        for id in [
+            "0f7f5b3c-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "9A2B4C6D-1234-4ABC-9DEF-0123456789AB",
+        ] {
+            assert!(is_uuid_v4(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_uuid_of_the_wrong_version_is_refused() {
+        assert!(!is_uuid_v4("0f7f5b3c-1a2b-1c3d-8e4f-5a6b7c8d9e0f"));
+        assert!(!is_uuid_v4("0f7f5b3c-1a2b-5c3d-8e4f-5a6b7c8d9e0f"));
+    }
+
+    #[test]
+    fn a_uuid_with_a_bad_variant_is_refused() {
+        assert!(!is_uuid_v4("0f7f5b3c-1a2b-4c3d-1e4f-5a6b7c8d9e0f"));
+        assert!(!is_uuid_v4("0f7f5b3c-1a2b-4c3d-ce4f-5a6b7c8d9e0f"));
+    }
+
+    #[test]
+    fn a_mis_shaped_uuid_is_refused() {
+        for id in [
+            "",
+            "not-a-uuid",
+            "0f7f5b3c1a2b4c3d8e4f5a6b7c8d9e0f",
+            "0f7f5b3c-1a2b-4c3d-8e4f-5a6b7c8d9e0",
+            "0f7f5b3c-1a2b-4c3d-8e4f-5a6b7c8d9e0f0",
+            "0f7f5b3c_1a2b_4c3d_8e4f_5a6b7c8d9e0f",
+            "0f7f5b3c-1a2b-4c3d-8e4f-5a6b7c8d9e0g",
+        ] {
+            assert!(!is_uuid_v4(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn the_records_hash_is_stable_for_the_same_records() {
+        let records = vec![
+            parse_facts_extraction_record(&project("a", "2026-11-01"), 0).expect("a"),
+            parse_facts_extraction_record(&project("b", "2026-11-02"), 1).expect("b"),
+        ];
+        assert_eq!(records_hash(&records, &[]), records_hash(&records, &[]));
+    }
+
+    #[test]
+    fn the_records_hash_changes_when_a_record_changes() {
+        let first = vec![parse_facts_extraction_record(&project("a", "2026-11-01"), 0).expect("a")];
+        let second =
+            vec![parse_facts_extraction_record(&project("b", "2026-11-01"), 0).expect("b")];
+        assert_ne!(records_hash(&first, &[]), records_hash(&second, &[]));
+    }
+
+    #[test]
+    fn the_records_hash_is_order_sensitive() {
+        let a = parse_facts_extraction_record(&project("a", "2026-11-01"), 0).expect("a");
+        let b = parse_facts_extraction_record(&project("b", "2026-11-01"), 0).expect("b");
+        assert_ne!(
+            records_hash(&[a.clone(), b.clone()], &[]),
+            records_hash(&[b, a], &[])
+        );
+    }
+
+    #[test]
+    fn an_empty_batch_still_hashes() {
+        let hash = records_hash(&[], &[]);
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn agreements_join_the_hash_only_when_the_list_is_non_empty() {
+        let records =
+            vec![parse_facts_extraction_record(&project("a", "2026-11-01"), 0).expect("a")];
+        let bare = records_hash(&records, &[]);
+        let agreement = serde_json::json!({ "text": "never deploy on fridays" });
+        assert_ne!(
+            bare,
+            records_hash(&records, std::slice::from_ref(&agreement))
+        );
+    }
+
+    #[test]
+    fn a_batch_without_agreements_hashes_as_a_bare_array() {
+        // Pinned against the pre-agreement shape: an envelope planned before agreements existed must still
+        // validate, so the bare case must not be an object wrapping the records.
+        let records =
+            vec![parse_facts_extraction_record(&project("a", "2026-11-01"), 0).expect("a")];
+        let expected = crate::store::sha256_hex(&serde_json::to_string(&records).expect("json"));
+        assert_eq!(records_hash(&records, &[]), expected);
     }
 }

@@ -53,3 +53,28 @@ agent-claimed fact to unattributed.
 The date is validated before the scope, so a record with both a bad date and a missing scope reports the date.
 That order is pinned by a test: it is what a caller sees when a model drops the `scope` key and gets its date
 wrong, and reporting the later complaint first would send it to fix a field it will not be judged on.
+
+## Receipt storage
+
+The receipt is **validated by** `ClaimReceipt` but **stored as** the value the model sent. Re-serializing the
+parsed enum would rewrite it into this crate's shape and change the batch hash, so a batch re-read after an
+upgrade would no longer match the recovery envelope that planned it.
+
+## Batch id
+
+`is_uuid_v4` accepts canonical 8-4-4-4-12 form, upper- or lower-case hex, and requires the version nibble to be
+`4` and the variant nibble to be one of `8 9 a b`. Uppercase is accepted: a model that upper-cases its id still
+produced a unique id, and only shape plus version/variant bits are contractual.
+
+## Records hash
+
+`records_hash(records, agreements)` is what a recovery envelope pins so an applied batch can be proven to match
+the planned one.
+
+- With agreements: `{"records": […], "agreements": […]}`.
+- With none: a **bare array** of records, not an object wrapping them, and an empty agreement list hashes
+  exactly like no agreements at all.
+
+Both details are load-bearing. A recovery envelope written before agreements existed must still validate
+against a batch re-read after an upgrade, which fails if the bare case is wrapped or if `[]` is treated as
+present. The hash is order-sensitive: two facts swapped between batches is a different batch.
