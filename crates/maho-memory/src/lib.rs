@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod broken_links;
 pub mod expiry;
+pub mod consent;
 pub mod extension;
 pub mod fact_display;
 pub mod facts_abort;
