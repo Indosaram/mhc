@@ -18,6 +18,7 @@ pub mod agreements;
 pub mod audit;
 pub mod banks;
 pub mod bm25;
+pub mod bm25_store;
 pub mod broken_links;
 pub mod completion_repair;
 pub mod consent;

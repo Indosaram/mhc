@@ -158,6 +158,40 @@ pub struct RecallDocument {
     pub body: String,
 }
 
+/// SHA-1 of the exact text a document's terms are made from.
+pub type DocumentKey = [u8; 20];
+
+/// One document's terms outside the process dictionary: the ids index a term list the holder
+/// carries alongside them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredDocumentTerms {
+    /// Term ids, ascending so a lookup can bisect.
+    pub ids: Vec<u32>,
+    /// The count of each id, in the same order.
+    pub counts: Vec<u32>,
+    /// The BM25 length used for length normalization.
+    pub length: usize,
+}
+
+/// SHA-1 of the `description\nbody` a document's terms are made from.
+///
+/// The digest covers exactly the text `recall_document_terms` tokenizes, so a stored entry is
+/// either this document's terms or it is not matched at all. SHA-1 is used because the value is a
+/// cache key, never a security boundary; a collision would only cost one unnecessary re-tokenize.
+pub fn document_key(document: &RecallDocument) -> DocumentKey {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(document.description.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(document.body.as_bytes());
+    let digest = hasher.finalize();
+    let mut key = [0u8; 20];
+    for (slot, byte) in key.iter_mut().zip(digest.iter()) {
+        *slot = *byte;
+    }
+    key
+}
+
 /// The terms of one document.
 pub fn recall_document_terms(document: &RecallDocument) -> DocumentTermsInput {
     let tokens = tokenize(&format!("{}\n{}", document.description, document.body));
