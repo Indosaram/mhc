@@ -7793,7 +7793,7 @@ impl AgentSession {
             self.agent.set_messages(kept);
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run();
+        self.hydrate_runtime_messages_for_run_offloaded().await;
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
         self.agent
@@ -14961,9 +14961,45 @@ impl AgentSession {
             .runtime_messages_tokenized
             .swap(false, Ordering::SeqCst)
         {
-            let messages =
-                self.materialize_resident_messages(self.agent.state().messages().to_vec());
-            self.agent.set_messages(messages);
+            self.rehydrate_parked_transcript();
+        }
+    }
+
+    /// Re-inline every spilled tool result into the parked transcript.
+    ///
+    /// Idle parking tokenizes the transcript and moves the large strings to the resident store, so a
+    /// run must restore them before the provider request. That work is proportional to the whole
+    /// conversation: on a 132 MB session it blocked the interactive thread for ~2.5 s of the ~2.6 s
+    /// post-Enter freeze, which is why prompt paths await `hydrate_runtime_messages_for_run_offloaded`
+    /// instead of calling this inline.
+    fn rehydrate_parked_transcript(&self) {
+        let messages = self.materialize_resident_messages(self.agent.state().messages().to_vec());
+        self.agent.set_messages(messages);
+    }
+
+    /// `hydrate_runtime_messages_for_run` on the blocking pool, awaited before the provider request.
+    ///
+    /// `swap(false)` happens on the caller's thread so a concurrent reader cannot start a second
+    /// pass. The snapshot is taken inside the blocking task as well: `Agent::state` deep-clones the
+    /// message list, and leaving that on the interactive thread kept most of the freeze.
+    async fn hydrate_runtime_messages_for_run_offloaded(&self) {
+        if !self
+            .runtime_messages_tokenized
+            .swap(false, Ordering::SeqCst)
+        {
+            return;
+        }
+        let session = self.clone();
+        let rehydrated = tokio::task::spawn_blocking(move || {
+            let messages = session.agent.state().messages().to_vec();
+            session.materialize_resident_messages(messages)
+        })
+        .await;
+        match rehydrated {
+            Ok(messages) => self.agent.set_messages(messages),
+            // A panicked or cancelled blocking task must not silently drop the transcript: fall back
+            // to the inline path, whose failure mode is the one callers already handle.
+            Err(_) => self.rehydrate_parked_transcript(),
         }
     }
 
@@ -17774,7 +17810,7 @@ impl AgentSession {
             }
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run();
+        self.hydrate_runtime_messages_for_run_offloaded().await;
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         if let Err(error) = self
@@ -19757,7 +19793,7 @@ impl AgentSession {
         }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run();
+        self.hydrate_runtime_messages_for_run_offloaded().await;
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         // Boxed: the agent run and its retry/compaction recovery futures are large enough that
