@@ -1076,10 +1076,7 @@ impl Extension for TerminalExtension {
                     let maho_ext_api::types::ExtensionEvent::BeforeAgentStart(event) = event else {
                         return Ok(EventResult::None);
                     };
-                    let eval_only = sender
-                        .get_all_tools()?
-                        .iter()
-                        .any(|tool| tool.name == "eval");
+                    let eval_only = sender.has_tool("eval")?;
                     Ok(EventResult::BeforeAgentStart(
                         maho_ext_api::types::BeforeAgentStartEventResult {
                             system_prompt: Some(format!(

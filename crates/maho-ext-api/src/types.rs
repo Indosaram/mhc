@@ -4248,6 +4248,15 @@ pub trait ExtensionActions: Send + Sync {
         data: Option<JsonValue>,
     ) -> Result<(), ExtensionFailure>;
     fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure>;
+    /// Whether a tool by this name exists. Callers that only need presence must ask this instead
+    /// of scanning `get_all_tools`, which materializes every definition (a per-turn cost measured at
+    /// part of the post-Enter freeze on large sessions).
+    fn has_tool(&self, name: &str) -> Result<bool, ExtensionFailure> {
+        Ok(self
+            .get_all_tools()?
+            .iter()
+            .any(|tool| tool.name == name))
+    }
     /// `send_user_message` with the origin captured at call admission.
     fn send_user_message_with_origin(
         &self,
@@ -6818,6 +6827,10 @@ impl ExtensionApi {
     }
     pub fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
         self.runtime.actions()?.get_all_tools()
+    }
+
+    pub fn has_tool(&self, name: &str) -> Result<bool, ExtensionFailure> {
+        self.runtime.actions()?.has_tool(name)
     }
     pub fn set_session_name(&self, name: &str) -> Result<(), ExtensionFailure> {
         self.runtime.session_actions()?.set_session_name(name)

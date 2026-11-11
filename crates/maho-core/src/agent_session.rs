@@ -3361,6 +3361,9 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
         Ok(self.session()?.get_all_tools())
     }
+    fn has_tool(&self, name: &str) -> Result<bool, maho_ext_api::ExtensionFailure> {
+        Ok(self.session()?.has_tool(name))
+    }
 }
 
 impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
@@ -15333,6 +15336,14 @@ impl AgentSession {
 
     pub fn get_active_tool_names(&self) -> Vec<String> {
         self.agent.tool_names()
+    }
+
+    /// Presence check that never materializes tool definitions: `get_all_tools` rebuilds every
+    /// `ToolInfo` (parameters, descriptions), which the terminal extension triggered on each
+    /// `BeforeAgentStart` only to learn whether `eval` existed.
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.agent.tool_names().iter().any(|tool| tool == name)
+            || self.state().tool_definitions.contains_key(name)
     }
 
     /// A runtime extension flag value (constructor input in TS).
