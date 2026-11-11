@@ -39,3 +39,27 @@ Errors are returned rather than truncated: a body shorter than its declared size
 size field, means the framing is broken and the scan cannot claim to have seen the file.
 
 An `missing <type>` header (a pruned object) is skipped and the walk continues with the next record.
+
+## The screening decision (added 2026-11-11)
+
+`screen_versions(versions, blobs, short)` is the pure decision over parsed data, so the refusal rules are
+testable without a repository. Running git stays with the caller.
+
+Order, and why it is this order:
+
+1. **Submodule first**, refused on file type alone. Its content lives in another repository this scan cannot
+   read, so no content check could clear it.
+2. **Paths.** A file name is repository text like any body. A name carrying a credential is refused even when
+   the file's content is clean, and the refusal is labelled `file name` so it is not mistaken for a content hit.
+3. **Content**, for every scanned blob mode including symlinks (`120000`) — a symlink target is a blob and is a
+   real exfiltration path. Non-UTF-8 blobs are screened as Latin-1, so a binary cannot smuggle an ASCII
+   credential past a lossy decode.
+
+A deleted version (zero `dst_sha`) has no content to screen and is skipped.
+
+**Absence is not cleanliness.** A version whose blob is not in the map produces no failure. The function
+reports what it was given; the caller must read every oid it asked for before trusting an empty result. The
+earlier draft of this module claimed a failed read "can never be mistaken for a passing scan", which was
+false — the test `a_version_whose_blob_was_not_read_is_not_reported_clean` pins the actual behaviour.
+
+No refusal ever contains the matched value: details carry the redacted path and the class name only.

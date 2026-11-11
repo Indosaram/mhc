@@ -3,6 +3,13 @@
 //! Behaviour spec: `docs/cleanroom/specs/memory-secret-scan.md`. Nobody writes a diff record by hand:
 //! `diff-tree --raw -z` and `cat-file --batch` are machine formats whose framing carries meaning, and a
 //! parser that decodes them lossily or splits on the wrong byte silently screens the wrong file.
+//!
+//! The screening decision itself is here too: it is a pure function over parsed versions and blob bytes,
+//! so it can be tested without a repository. Running git belongs to the caller.
+
+use std::collections::BTreeMap;
+
+use crate::redact::{SecretClass, redact_secret_like_material, scan_secret_like_material};
 
 /// Blob modes whose content is screened. A gitlink is refused on its file type alone.
 pub const SCANNED_BLOB_MODES: [&str; 3] = ["100644", "100755", "120000"];
@@ -69,6 +76,88 @@ pub fn introduced_versions(records: &[FileVersion]) -> Vec<&FileVersion> {
 
 pub fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
+}
+
+/// One refused file version: the repository path and the refusal text, never the matched value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretLikeFailure {
+    pub path: String,
+    pub detail: String,
+}
+
+/// The name a refusal carries for a matched class.
+pub fn class_name(class: SecretClass) -> &'static str {
+    match class {
+        SecretClass::AwsAccessKey => "aws_access_key",
+        SecretClass::CredentialAssignment => "credential_assignment",
+        SecretClass::AuthorizationHeader => "authorization_header",
+        SecretClass::OpenaiKey => "openai_key",
+        SecretClass::VendorToken => "vendor_token",
+        SecretClass::PemBlock => "pem_block",
+        SecretClass::SplitCredentialAssignment => "split_credential_assignment",
+    }
+}
+
+/// Every refusal one commit's introduced file versions earn.
+///
+/// Paths are screened before content: a file name is repository text like any body, and a name carrying
+/// a credential is refused even when its content is clean. A gitlink is refused on its file type alone,
+/// because its content lives in another repository this scan cannot read. Content is screened for every
+/// scanned blob mode including symlinks — a symlink target is a blob and can carry an evaded credential.
+///
+/// `blobs` maps oid to the bytes `cat-file --batch` returned. A version whose blob is absent yields no
+/// failure, so the caller must read every requested oid before relying on an empty result: this function
+/// reports what it was given, and absence is not evidence of cleanliness.
+pub fn screen_versions(
+    versions: &[FileVersion],
+    blobs: &BTreeMap<String, BlobRecord>,
+    short: &str,
+) -> Vec<SecretLikeFailure> {
+    let mut failures = Vec::new();
+    for version in versions {
+        if version.dst_mode == SUBMODULE_MODE {
+            failures.push(SecretLikeFailure {
+                path: version.path.clone(),
+                detail: format!(
+                    "secret_like_content: {} (submodule, file type)",
+                    redact_secret_like_material(&version.path)
+                ),
+            });
+        }
+    }
+    let introduced = introduced_versions(versions);
+    for version in &introduced {
+        if let Some(hit) = scan_secret_like_material(&version.path).first() {
+            failures.push(SecretLikeFailure {
+                path: version.path.clone(),
+                detail: format!(
+                    "secret_like_content: {} ({}, file name) @{short}",
+                    redact_secret_like_material(&version.path),
+                    class_name(hit.class)
+                ),
+            });
+        }
+    }
+    for version in introduced {
+        if !is_scanned_blob(version) {
+            continue;
+        }
+        let Some(blob) = blobs.get(&version.dst_sha) else {
+            continue;
+        };
+        let text = screenable_text(&blob.body);
+        if let Some(hit) = scan_secret_like_material(&text).first() {
+            failures.push(SecretLikeFailure {
+                path: version.path.clone(),
+                detail: format!(
+                    "secret_like_content: {} ({}) @{short}",
+                    redact_secret_like_material(&version.path),
+                    class_name(hit.class)
+                ),
+            });
+        }
+    }
+    failures
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,5 +439,115 @@ mod tests {
         let index = index_blobs(records);
         assert_eq!(index.len(), 1);
         assert_eq!(index["a"].body, b"first");
+    }
+    fn version(mode: &str, sha: &str, path: &str) -> FileVersion {
+        FileVersion {
+            dst_mode: mode.to_owned(),
+            dst_sha: sha.to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
+    fn blob(oid: &str, body: &str) -> BlobRecord {
+        BlobRecord {
+            oid: oid.to_owned(),
+            kind: "blob".to_owned(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    fn index(records: Vec<BlobRecord>) -> BTreeMap<String, BlobRecord> {
+        index_blobs(records)
+    }
+
+    #[test]
+    fn a_clean_version_produces_no_failure() {
+        let versions = [version("100644", "a", "notes/clean.md")];
+        let blobs = index(vec![blob("a", "ordinary prose")]);
+        assert!(screen_versions(&versions, &blobs, "abc1234").is_empty());
+    }
+
+    #[test]
+    fn a_credential_in_a_path_is_refused() {
+        let versions = [version(
+            "100644",
+            "a",
+            "notes/ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md",
+        )];
+        let blobs = index(vec![blob("a", "clean body")]);
+        let failures = screen_versions(&versions, &blobs, "abc1234");
+        assert_eq!(failures.len(), 1);
+        assert!(
+            !failures[0]
+                .detail
+                .contains("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert!(failures[0].detail.contains("file name"));
+    }
+
+    #[test]
+    fn a_credential_in_content_is_refused() {
+        let versions = [version("100644", "a", "notes/a.md")];
+        let blobs = index(vec![blob("a", "key = AKIAIOSFODNN7EXAMPLE\n")]);
+        let failures = screen_versions(&versions, &blobs, "abc1234");
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].detail.contains("aws_access_key"));
+        assert!(!failures[0].detail.contains("AKIAIOSFODNN7EXAMPLE"));
+    }
+
+    #[test]
+    fn a_submodule_is_refused_on_file_type_alone() {
+        let versions = [version(SUBMODULE_MODE, "a", "vendor/dep")];
+        let blobs = index(vec![]);
+        let failures = screen_versions(&versions, &blobs, "abc1234");
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].detail.contains("submodule"));
+    }
+
+    #[test]
+    fn a_symlink_target_is_screened_like_content() {
+        let versions = [version("120000", "a", "notes/link")];
+        let blobs = index(vec![blob("a", "key = AKIAIOSFODNN7EXAMPLE\n")]);
+        let failures = screen_versions(&versions, &blobs, "abc1234");
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn a_version_whose_blob_was_not_read_is_not_reported_clean() {
+        let versions = [version("100644", "missing", "notes/a.md")];
+        let blobs = index(vec![]);
+        assert!(screen_versions(&versions, &blobs, "abc1234").is_empty());
+    }
+
+    #[test]
+    fn a_deleted_path_is_not_screened_for_content() {
+        let versions = [version(
+            "100644",
+            "0000000000000000000000000000000000000000",
+            "notes/gone.md",
+        )];
+        let blobs = index(vec![]);
+        assert!(screen_versions(&versions, &blobs, "abc1234").is_empty());
+    }
+
+    #[test]
+    fn a_binary_blob_still_reveals_an_ascii_credential() {
+        let mut body = vec![0xff, 0xfe, 0x00];
+        body.extend_from_slice(b"key = AKIAIOSFODNN7EXAMPLE");
+        let versions = [version("100644", "a", "notes/bin.dat")];
+        let blobs = index(vec![BlobRecord {
+            oid: "a".to_owned(),
+            kind: "blob".to_owned(),
+            body,
+        }]);
+        assert_eq!(screen_versions(&versions, &blobs, "abc1234").len(), 1);
+    }
+
+    #[test]
+    fn a_refusal_names_the_introducing_commit() {
+        let versions = [version("100644", "a", "notes/a.md")];
+        let blobs = index(vec![blob("a", "key = AKIAIOSFODNN7EXAMPLE\n")]);
+        let failures = screen_versions(&versions, &blobs, "deadbee");
+        assert!(failures[0].detail.contains("deadbee"));
     }
 }
