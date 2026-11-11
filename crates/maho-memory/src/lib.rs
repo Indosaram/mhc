@@ -37,6 +37,7 @@ pub mod facts_extraction;
 pub mod facts_failures_schema;
 pub mod facts_note;
 pub mod facts_parked;
+pub mod facts_person_index;
 pub mod facts_person_routing;
 pub mod facts_queue;
 pub mod facts_queue_scan;
