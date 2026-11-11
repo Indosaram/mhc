@@ -2899,6 +2899,11 @@ impl SessionManager {
         }
     }
 
+    /// Index-only presence check: unlike `entry`, it never materializes the stored JSON.
+    pub fn contains_entry(&self, id: &str) -> bool {
+        self.by_id.contains_key(id)
+    }
+
     pub fn entry(&self, id: &str) -> Option<Value> {
         if let Some(entry) = self
             .by_id

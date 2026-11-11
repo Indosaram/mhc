@@ -1447,6 +1447,12 @@ pub trait SessionManager: ToolSessionManager {
         None
     }
     fn get_branch(&self) -> Vec<SessionEntry>;
+    /// Whether the live branch still holds `id`. Callers that only validate a remembered leaf must
+    /// ask this instead of cloning the branch with `get_branch()`; on long sessions that clone is
+    /// megabytes of JSON on the interactive thread (measured part of the post-Enter freeze).
+    fn has_entry(&self, id: &str) -> bool {
+        self.get_branch().iter().any(|entry| entry.id == id)
+    }
     /// Folds `reduce` over the resident entries, oldest first, starting from `initial`.
     fn reduce_history(
         &self,

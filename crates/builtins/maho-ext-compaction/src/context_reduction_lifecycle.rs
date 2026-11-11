@@ -323,13 +323,9 @@ fn message_end_handler(
             assistant.stop_reason,
             maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error
         )
-        || leaf.as_ref().is_some_and(|leaf| {
-            !context
-                .session_manager
-                .get_branch()
-                .iter()
-                .any(|entry| &entry.id == leaf)
-        })
+        || leaf
+            .as_ref()
+            .is_some_and(|leaf| !context.session_manager.has_entry(leaf))
     {
         return Ok(());
     }

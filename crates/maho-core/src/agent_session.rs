@@ -3796,6 +3796,12 @@ impl maho_ext_api::SessionManager for SessionContextManager {
             .map(session_entry_from_value)
             .collect()
     }
+    fn has_entry(&self, id: &str) -> bool {
+        let indexed = self
+            .session
+            .with_session_manager(|manager| manager.contains_entry(id));
+        indexed || self.get_branch().iter().any(|entry| entry.id == id)
+    }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session
             .with_session_manager(|manager| manager.current_branch())
