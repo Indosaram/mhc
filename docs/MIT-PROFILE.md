@@ -102,7 +102,10 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   `/memory` (`status`, `search <query>`, `prune`, `import-legacy [--dry-run] [--include-people]`). Sessions
   write to a per-project bank and also recall the global bank (`MAHO_MEMORY_SCOPING` =
   `per-project-tagged` (default) | `per-project` | `global`). `memory.enabled: false` in the omo
-  config turns it off. Shell: `mhc memory status|search|remember [--global]|prune|import-legacy|mcp`.
+  config turns it off. Shell: `mhc memory status|search|remember [--global]|search-sessions|prune|import-legacy|mcp`.
+  `search-sessions [--include-hidden] <query>` ranks every message in the session JSONL store, including
+  thinking and tool-call arguments; the excerpt names which one matched. See
+  `docs/cleanroom/specs/memory-session-provider.md` and `memory-transcript-search.md`.
   `prune` (both surfaces) drops rows past the retention windows — 30 days for working memory, 90 for
   episodic — and never touches a row this session does not own, one still valid, or one at or above
   the keep-importance threshold (0.9). See `docs/cleanroom/specs/memory-retention.md`.
