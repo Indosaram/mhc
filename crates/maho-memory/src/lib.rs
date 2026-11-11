@@ -76,6 +76,7 @@ pub mod receipts;
 pub mod records;
 pub mod redact;
 pub mod reflection;
+pub mod reflection_machine;
 pub mod reminders;
 mod schema;
 pub mod secret_scan_records;
