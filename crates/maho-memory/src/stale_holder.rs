@@ -56,7 +56,7 @@ impl ReflectionLockProbe for SystemReflectionLockProbe {
     }
 
     fn hostname(&self) -> String {
-        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-host".to_owned())
+        crate::host_identity::hostname()
     }
 
     fn pid_liveness(&self, pid: u32) -> ProcessLiveness {
@@ -78,8 +78,9 @@ impl ReflectionLockProbe for SystemReflectionLockProbe {
         }
     }
 
-    fn process_start_identity(&self, _pid: u32) -> Result<Option<String>, String> {
-        Ok(None)
+    fn process_start_identity(&self, pid: u32) -> Result<Option<String>, String> {
+        use crate::lock_record::LockHost;
+        Ok(crate::host_identity::SystemLockHost.process_start(pid))
     }
 }
 
@@ -655,6 +656,60 @@ mod tests {
                     ReflectionLockVerdict::Stuck { .. }
                 ),
                 "attempt {bad} should not be a recorded outcome"
+            );
+        }
+    }
+    #[test]
+    fn the_real_probe_reports_the_running_process_start_identity() {
+        let identity = SystemReflectionLockProbe
+            .process_start_identity(std::process::id())
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        assert!(
+            identity
+                .as_deref()
+                .is_some_and(|value| value.starts_with("proc-start:")),
+            "a live pid must yield a start identity, got {identity:?}"
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn the_real_probe_reports_this_machine_hostname() {
+        assert_eq!(
+            SystemReflectionLockProbe.hostname(),
+            crate::host_identity::hostname()
+        );
+    }
+
+    #[test]
+    fn a_reused_pid_is_dead_when_the_recorded_start_differs() {
+        let recorded = "proc-start:111";
+        let actual = SystemReflectionLockProbe
+            .process_start_identity(std::process::id())
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let actual = actual.expect("a live pid has a start identity");
+            assert_ne!(actual, recorded);
+            let liveness = launcher_liveness(
+                f64::from(std::process::id()),
+                Some(recorded),
+                &SystemReflectionLockProbe,
+            );
+            assert_eq!(liveness, ProcessLiveness::Dead);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = actual;
+            assert_eq!(
+                launcher_liveness(
+                    f64::from(std::process::id()),
+                    Some(recorded),
+                    &SystemReflectionLockProbe
+                ),
+                ProcessLiveness::Alive
             );
         }
     }
