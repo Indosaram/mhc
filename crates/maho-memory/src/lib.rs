@@ -24,6 +24,7 @@ pub mod consent;
 pub mod cursor;
 pub mod description_preflight;
 pub mod english_stem;
+pub mod errno_code;
 pub mod expiry;
 pub mod extension;
 pub mod fact_display;
