@@ -6,6 +6,11 @@ mod schedule_command;
 static GLOBAL_ALLOCATOR: maho_tool_child::allocator::MahoAllocator =
     maho_tool_child::allocator::ALLOCATOR;
 
+/// How long the process then waits for blocking work that outlived the teardown. Any `spawn_blocking`
+/// closure still running at exit pins `Runtime::drop` forever, so the wait is bounded: blocking work
+/// that survives the teardown budget is abandoned and the process exits without it.
+const POST_SESSION_BLOCKING_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Stack of the thread that runs `run()`. Every tokio runtime this binary builds is current-thread,
 /// so every future - the RPC host, its session workers, the TUI - is polled on that one thread. The
 /// OS main-thread stack differs by platform (8 MiB on Linux and macOS, 1 MiB on Windows, which a
@@ -963,7 +968,18 @@ fn run() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(maho_cli::cli::runtime::run(parsed))
+    let result = runtime.block_on(maho_cli::cli::runtime::run(parsed));
+    // senpi returns as soon as `dispose()` resolves; Rust's `Runtime::drop` waits forever for
+    // `spawn_blocking` closures, so a memory settle save that outlived its deadline kept mhc alive
+    // after the TUI had already stopped and printed its resume hint. Bound that wait here.
+    let draining_at = std::time::Instant::now();
+    runtime.shutdown_timeout(POST_SESSION_BLOCKING_GRACE);
+    if draining_at.elapsed() >= POST_SESSION_BLOCKING_GRACE {
+        maho_core::hidden_stdout_log::append_debug_note(&format!(
+            "post-session blocking work overran {POST_SESSION_BLOCKING_GRACE:?}; exited without it"
+        ));
+    }
+    result
 }
 /// senpi main.ts:1032-1034: the startup-cwd settings diagnostics precede the help, list-tips and
 /// list-models answers.

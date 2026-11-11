@@ -2,6 +2,21 @@ use super::{args::Args, startup};
 use maho_core::{project_trust::AppMode, session_manager::SessionManager};
 use std::{io::IsTerminal, sync::Arc};
 
+/// Grace on top of the configured `sessionShutdownQuitBudgetMs` for the teardown waits that run
+/// outside the handler budget: a blocking memory settle, a tool child that never acks its shutdown.
+/// The TUI has already stopped and the resume hint is the last output, so nothing may keep the shell
+/// waiting past budget + grace.
+const QUIT_TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Runs the quit teardown under `cap`, returning whether it finished. A teardown that overruns is
+/// abandoned: the terminal is already restored and the resume hint already printed.
+async fn run_bounded_quit_cleanup_within<F: std::future::Future>(
+    cap: std::time::Duration,
+    work: F,
+) -> bool {
+    tokio::time::timeout(cap, work).await.is_ok()
+}
+
 /// Auth problems for a run's diagnostics (senpi `collectAuthDiagnostics`). Each credential notice
 /// appears once per process; with `persist_seen` it is also recorded as seen, so later runs stay quiet
 /// until the problem changes (senpi#3486).
@@ -1129,9 +1144,23 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         }
     }
     // senpi `runtime.dispose({ processExit: true })`: the process exits right after, so quit-time handlers
-    // share the total quit budget.
-    session.emit_session_shutdown_for_quit(true).await;
-    session.dispose().await;
+    // share the total quit budget. That budget bounds the handlers, not the teardown waits around
+    // them, so the cleanup as a whole is bounded too: the terminal is already restored and the
+    // resume hint already printed, and the shell must come back.
+    let quit_budget_ms = session
+        .with_settings_manager(|settings| settings.get_session_shutdown_quit_budget_ms())
+        .unwrap_or(maho_core::settings_manager::DEFAULT_SESSION_SHUTDOWN_QUIT_BUDGET_MS);
+    let quit_cleanup_cap =
+        std::time::Duration::from_millis(quit_budget_ms).saturating_add(QUIT_TEARDOWN_GRACE);
+    let quit_cleanup = async {
+        session.emit_session_shutdown_for_quit(true).await;
+        session.dispose().await;
+    };
+    if !run_bounded_quit_cleanup_within(quit_cleanup_cap, quit_cleanup).await {
+        maho_core::hidden_stdout_log::append_debug_note(&format!(
+            "session quit cleanup overran {quit_cleanup_cap:?}; exiting without it"
+        ));
+    }
     drop(process_lifetime);
     // senpi's endpoint `process.once("exit", unregisterTuiEndpointSync)`: nothing is left registered.
     maho_interactive::session_control_lifecycle::unregister_endpoints_at_exit();
@@ -1367,4 +1396,27 @@ pub fn fork_session(
             ..Default::default()
         }),
     )
+}
+
+#[cfg(test)]
+mod quit_cleanup_tests {
+    use super::run_bounded_quit_cleanup_within;
+    use std::time::Duration;
+
+    // `start_paused` advances virtual time, so the abandoned-teardown case costs no wall clock.
+    #[tokio::test(start_paused = true)]
+    async fn a_teardown_that_never_finishes_is_abandoned_at_the_cap() {
+        // Given a teardown that never resolves (a settle the runtime cannot finish).
+        let stuck = std::future::pending::<()>();
+        // When it runs under a cap.
+        let finished = run_bounded_quit_cleanup_within(Duration::from_millis(20), stuck).await;
+        // Then the caller is released instead of waiting for it.
+        assert!(!finished);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_finished_teardown_is_reported_as_finished() {
+        let finished = run_bounded_quit_cleanup_within(Duration::from_secs(30), async {}).await;
+        assert!(finished);
+    }
 }
