@@ -7782,9 +7782,16 @@ impl AgentSession {
         }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         lock(&self.transcript_write_failures).start_run();
-        if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
-        {
-            self.agent.set_messages(kept);
+        // Only a refused write can keep the transcript from being read here: `messages()`
+        // re-materializes every spilled tool result on the interactive thread, and this runs on every
+        // prompt (2.6 s of a 6.6 s frame on a 132 MB session) while the common case has nothing
+        // refused at all.
+        if lock(&self.transcript_write_failures).has_refusals() {
+            if let Some(kept) =
+                lock(&self.transcript_write_failures).take_refused_out(&self.messages())
+            {
+                self.agent.set_messages(kept);
+            }
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.hydrate_runtime_messages_for_run();
