@@ -261,7 +261,13 @@ pub struct ReqwestTransport {
     client: reqwest::Client,
 }
 
-struct Abort;
+/// Why `builder.send()` produced no response. The two cases are reported differently: a cancelled
+/// signal is an abort, while a failed send keeps reqwest's own message (connection refused, TLS,
+/// DNS, reset) instead of being folded into a timeout it never was.
+enum SendFailure {
+    Cancelled,
+    Transport(reqwest::Error),
+}
 
 impl ReqwestTransport {
     pub fn new(client: reqwest::Client) -> Self {
@@ -285,10 +291,10 @@ impl ChatTransport for ReqwestTransport {
                 match &request.signal {
                     Some(signal) => tokio::select! {
                         biased;
-                        () = signal.cancelled() => Err(Abort),
-                        result = send => result.map_err(|_| Abort),
+                        () = signal.cancelled() => Err(SendFailure::Cancelled),
+                        result = send => result.map_err(SendFailure::Transport),
                     },
-                    None => send.await.map_err(|_| Abort),
+                    None => send.await.map_err(SendFailure::Transport),
                 }
             };
             let response = match request.timeout_ms {
@@ -309,11 +315,16 @@ impl ChatTransport for ReqwestTransport {
             };
             let response = match response {
                 Ok(response) => response,
-                Err(Abort) => {
+                Err(SendFailure::Cancelled) => {
+                    return Err(OpenAiCompletionsError::protocol("Request was aborted."));
+                }
+                Err(SendFailure::Transport(error)) => {
                     if request.signal.as_ref().is_some_and(AbortSignal::aborted) {
                         return Err(OpenAiCompletionsError::protocol("Request was aborted."));
                     }
-                    return Err(OpenAiCompletionsError::protocol("Request timed out."));
+                    return Err(OpenAiCompletionsError::transport(describe_send_failure(
+                        &error,
+                    )));
                 }
             };
             let status = response.status().as_u16();
@@ -329,6 +340,25 @@ impl ChatTransport for ReqwestTransport {
             })
         })
     }
+}
+
+/// Prefix for a `builder.send()` failure. The retryable-message classifier matches it, so a failed
+/// connect stays retryable exactly as the old blanket `Request timed out.` was, while the provider's
+/// real cause survives into the message.
+pub(crate) const TRANSPORT_FAILURE_PREFIX: &str = "transport error";
+
+/// `reqwest::Error`'s `Display` stops at "error sending request for url (...)"; the cause that
+/// actually explains the failure (connect refused, DNS, TLS, reset) lives in its `source` chain.
+/// Rendering the chain is what makes a dead tunnel distinguishable from a real timeout.
+fn describe_send_failure(error: &reqwest::Error) -> String {
+    let mut text = format!("{TRANSPORT_FAILURE_PREFIX}: {error}");
+    let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(error);
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 fn http_error(status: u16, headers: &HeaderMap, body: &str) -> OpenAiCompletionsError {

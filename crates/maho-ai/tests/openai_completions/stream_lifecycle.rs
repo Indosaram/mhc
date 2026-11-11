@@ -114,6 +114,44 @@ async fn still_times_out_when_response_headers_never_arrive() {
     server.shutdown();
 }
 
+/// A dead endpoint must report why the send failed. Before, every `builder.send()` error was
+/// flattened into `Request timed out.`, which made a refused connection (a dead SSH tunnel or a
+/// stopped gateway) indistinguishable from a real client-side timeout in the transcript.
+#[tokio::test]
+async fn reports_the_real_transport_cause_instead_of_a_blanket_timeout() {
+    // Reserve then drop a port so the OS refuses connections on it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let dead = listener.local_addr().expect("local addr");
+    drop(listener);
+
+    let mut options: SimpleStreamOptions = simple_options("test");
+    options.stream.request.max_retries = Some(0);
+    let response = finish(&run_simple(
+        &lifecycle_model(&format!("http://{dead}/v1")),
+        &lifecycle_context(),
+        options,
+        None,
+    ))
+    .await;
+
+    assert_eq!(response.stop_reason, StopReason::Error);
+    let message = response.error_message.unwrap_or_default();
+    assert!(
+        message.starts_with("transport error: "),
+        "the failure keeps its kind instead of masquerading as a timeout: {message}"
+    );
+    assert!(
+        !message.contains("Request timed out"),
+        "a refused connection is not a timeout: {message}"
+    );
+    assert!(
+        message.contains("error sending request"),
+        "reqwest's own wording survives: {message}"
+    );
+}
+
 #[tokio::test]
 async fn rejects_a_real_sse_transport_eof_without_finish_reason() {
     let server = RawServer::start(raw_handler(|mut stream, _request| async move {

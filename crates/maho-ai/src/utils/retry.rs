@@ -132,6 +132,10 @@ static RETRYABLE_PROVIDER_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         // reqwest's body-read failure: the Rust analogue of Node fetch's "terminated"
         "error decoding response body",
         "socket connection was closed",
+        // `builder.send()` failures (openai-completions transport): the message now carries reqwest's
+        // real cause instead of a blanket "Request timed out.", so the class must follow the prefix
+        // rather than relying on the word "timed out" appearing.
+        "transport error",
         "timed? out",
         "timeout",
         "terminated",
@@ -1062,6 +1066,35 @@ mod tests {
         assert!(is_retryable_assistant_error(&error_message(
             "Idle timeout waiting for provider stream after 300000ms"
         )));
+    }
+
+    /// A failed `builder.send()` now carries reqwest's real cause under a `transport error` prefix
+    /// instead of the blanket `Request timed out.`. It must stay retryable (a dead tunnel is
+    /// transient) without being reclassified as a provider stream timeout it never was.
+    #[test]
+    fn keeps_a_real_transport_failure_retryable_without_calling_it_a_timeout() {
+        for message in [
+            "transport error: error sending request for url (http://localhost:18801/v1): connection refused",
+            "transport error: error sending request for url (https://example.test/v1): dns error: failed to lookup address information: Name or service not known",
+        ] {
+            let assistant = error_message(message);
+            assert!(
+                is_retryable_assistant_error(&assistant),
+                "a transient transport failure must stay retryable: {message}"
+            );
+            assert!(
+                is_retryable_error_message(message),
+                "the classifier recognizes the transport prefix: {message}"
+            );
+            assert!(
+                !is_provider_timeout_error(&assistant),
+                "a refused connection is not a provider timeout: {message}"
+            );
+            assert!(
+                !is_provider_stream_stall_error(&assistant),
+                "a refused connection is not a stream stall: {message}"
+            );
+        }
     }
 
     /// "matches Claude Agent SDK session lock contention"
