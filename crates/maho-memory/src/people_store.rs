@@ -142,13 +142,9 @@ impl PeopleBook {
             return Err(WriteRefusal::PolicyRefused);
         }
 
-        let entry = Observation {
-            date: observation.date,
-            text: admitted[0].clone(),
-            src: observation.src,
-            pattern: observation.pattern,
-            confidence: observation.confidence,
-        };
+        let provenance = observation.provenance().map(str::to_owned);
+        let entry =
+            Observation::new(observation.date, admitted[0].clone()).with_provenance(provenance);
         if let Some(existing) = person
             .observations
             .sections
@@ -275,13 +271,9 @@ mod tests {
     }
 
     fn observation(text: &str) -> Observation {
-        Observation {
-            date: "2026-11-10".to_owned(),
-            text: text.to_owned(),
-            src: Some("01a1c486".to_owned()),
-            pattern: Some("preference".to_owned()),
-            confidence: Some("high".to_owned()),
-        }
+        Observation::new("2026-11-10", text).with_provenance(Some(
+            "src: 01a1c486; pattern: preference; confidence: high".to_owned(),
+        ))
     }
 
     #[test]
@@ -488,13 +480,9 @@ mod tests {
         book.append_observation(
             "indosaram",
             "Inductive",
-            Observation {
-                date: "2026-11-10".to_owned(),
-                text: "Probably prefers short answers.".to_owned(),
-                src: Some("agent suggestion".to_owned()),
-                pattern: Some("style".to_owned()),
-                confidence: Some("low".to_owned()),
-            },
+            Observation::new("2026-11-10", "Probably prefers short answers.").with_provenance(
+                Some("src: agent suggestion; pattern: style; confidence: low".to_owned()),
+            ),
             &DreamPolicy::default(),
         )
         .expect("append");
@@ -511,8 +499,26 @@ mod tests {
             .first()
             .expect("entry")
             .clone();
-        assert_eq!(entry.confidence.as_deref(), Some("low"));
-        assert_eq!(entry.src.as_deref(), Some("agent suggestion"));
+        assert_eq!(entry.confidence(), Some("low"));
+        assert_eq!(entry.src(), Some("agent suggestion"));
+    }
+
+    #[test]
+    fn appending_keeps_the_keys_this_crate_does_not_model() {
+        let mut book = book();
+        book.append_observation(
+            "indosaram",
+            "Explicit",
+            Observation::new("2026-11-10", "Carries a count.")
+                .with_provenance(Some("src: m1; n=3; status: open".to_owned())),
+            &DreamPolicy::default(),
+        )
+        .expect("append");
+        let rendered = book.get("indosaram").expect("person").observations.render();
+        assert!(
+            rendered.contains("<!-- src: m1; n=3; status: open -->"),
+            "{rendered}"
+        );
     }
 
     #[test]

@@ -46,6 +46,20 @@ fn frontmatter_value(fields: &[(String, String)], key: &str) -> Option<String> {
         .map(|(_, value)| value.clone())
 }
 
+fn provenance_value<'a>(meta: &'a str, key: &str) -> Option<&'a str> {
+    meta.split(';').find_map(|part| {
+        let separator = match (part.find(':'), part.find('=')) {
+            (Some(colon), Some(equals)) => colon.min(equals),
+            (Some(colon), None) => colon,
+            (None, Some(equals)) => equals,
+            (None, None) => return None,
+        };
+        let (name, value) = part.split_at(separator);
+        let value = value[1..].trim();
+        (name.trim() == key && !value.is_empty()).then_some(value)
+    })
+}
+
 fn render_frontmatter(fields: &[(String, String)]) -> String {
     if fields.is_empty() {
         return String::new();
@@ -227,15 +241,54 @@ pub struct Observation {
     pub date: String,
     /// The observation text.
     pub text: String,
-    /// `src:` from the provenance comment, when present.
-    pub src: Option<String>,
-    /// `pattern:` from the provenance comment, when present.
-    pub pattern: Option<String>,
-    /// `confidence:` from the provenance comment, when present.
-    pub confidence: Option<String>,
+    /// The provenance comment exactly as it appeared between `<!--` and `-->`.
+    ///
+    /// Held as text rather than as named fields because cards on disk carry keys this crate does not
+    /// model (`n`, `status`, `expires`, `agreement-event`, `premise`, ...). Modelling three of them and
+    /// regenerating the comment on write silently deleted every other key from the user's file.
+    provenance: Option<String>,
 }
 
 impl Observation {
+    pub fn new(date: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            date: date.into(),
+            text: text.into(),
+            provenance: None,
+        }
+    }
+
+    /// The same entry with its provenance comment set verbatim.
+    pub fn with_provenance(mut self, provenance: Option<String>) -> Self {
+        self.provenance = provenance.filter(|text| !text.trim().is_empty());
+        self
+    }
+
+    /// The comment as written, between `<!--` and `-->`.
+    pub fn provenance(&self) -> Option<&str> {
+        self.provenance.as_deref()
+    }
+
+    /// The value of one provenance key, matching `key: value` and `key=value`.
+    ///
+    /// `n=` is written with `=` and every other key with `:`, so the separator is detected rather
+    /// than assumed; a reader that fixed one would miss half the comments on disk.
+    pub fn provenance_value(&self, key: &str) -> Option<&str> {
+        provenance_value(self.provenance.as_deref()?, key)
+    }
+
+    pub fn src(&self) -> Option<&str> {
+        self.provenance_value("src")
+    }
+
+    pub fn pattern(&self) -> Option<&str> {
+        self.provenance_value("pattern")
+    }
+
+    pub fn confidence(&self) -> Option<&str> {
+        self.provenance_value("confidence")
+    }
+
     /// Parse `- [date] text <!-- src: …; pattern: …; confidence: … -->`.
     pub fn parse(line: &str) -> Option<Self> {
         let rest = line.strip_prefix("- [")?;
@@ -250,33 +303,14 @@ impl Observation {
         if text.is_empty() {
             return None;
         }
-        let mut src = None;
-        let mut pattern = None;
-        let mut confidence = None;
-        if let Some(meta) = meta {
-            let meta = meta.strip_suffix("-->").unwrap_or(meta);
-            for part in meta.split(';') {
-                let Some((key, value)) = part.split_once(':') else {
-                    continue;
-                };
-                let value = value.trim();
-                if value.is_empty() {
-                    continue;
-                }
-                match key.trim() {
-                    "src" => src = Some(value.to_owned()),
-                    "pattern" => pattern = Some(value.to_owned()),
-                    "confidence" => confidence = Some(value.to_owned()),
-                    _ => {}
-                }
-            }
-        }
         Some(Self {
             date: date.to_owned(),
             text: text.to_owned(),
-            src,
-            pattern,
-            confidence,
+            provenance: meta
+                .and_then(|meta| meta.strip_suffix("-->").or(Some(meta)))
+                .map(str::trim)
+                .filter(|meta| !meta.is_empty())
+                .map(str::to_owned),
         })
     }
 
@@ -285,33 +319,15 @@ impl Observation {
         Self {
             date: String::new(),
             text: line.to_owned(),
-            src: None,
-            pattern: None,
-            confidence: None,
+            provenance: None,
         }
     }
 
-    /// Render the entry back, keeping every provenance field that was present.
+    /// Render the entry back, keeping the provenance comment exactly as it was read.
     pub fn render(&self) -> String {
-        let mut meta = Vec::new();
-        if let Some(src) = &self.src {
-            meta.push(format!("src: {src}"));
-        }
-        if let Some(pattern) = &self.pattern {
-            meta.push(format!("pattern: {pattern}"));
-        }
-        if let Some(confidence) = &self.confidence {
-            meta.push(format!("confidence: {confidence}"));
-        }
-        if meta.is_empty() {
-            format!("- [{}] {}\n", self.date, self.text)
-        } else {
-            format!(
-                "- [{}] {} <!-- {} -->\n",
-                self.date,
-                self.text,
-                meta.join("; ")
-            )
+        match &self.provenance {
+            Some(meta) => format!("- [{}] {} <!-- {} -->\n", self.date, self.text, meta),
+            None => format!("- [{}] {}\n", self.date, self.text),
         }
     }
 }
@@ -562,10 +578,35 @@ description: Observations - Indosaram
         let parsed = Observations::parse(OBSERVATIONS);
         let explicit = parsed.section("Explicit").expect("explicit section");
         assert_eq!(explicit.entries.len(), 2);
-        assert_eq!(explicit.entries[0].src.as_deref(), Some("01a0c327"));
-        assert_eq!(explicit.entries[0].pattern.as_deref(), Some("preference"));
-        assert_eq!(explicit.entries[0].confidence.as_deref(), Some("high"));
-        assert_eq!(explicit.entries[1].src, None);
+        assert_eq!(explicit.entries[0].src(), Some("01a0c327"));
+        assert_eq!(explicit.entries[0].pattern(), Some("preference"));
+        assert_eq!(explicit.entries[0].confidence(), Some("high"));
+        assert_eq!(explicit.entries[1].src(), None);
+    }
+
+    #[test]
+    fn provenance_keys_this_crate_does_not_model_survive_a_rewrite() {
+        // Every key here appears in real observations files; modelling only src/pattern/confidence
+        // used to delete the rest on write.
+        let source = "---\ndescription: X\n---\n## Explicit\n\n- [2026-10-18] A fact. <!-- n=2 -->\n- [2026-10-19] Another. <!-- src: s1; status: open -->\n- [2026-10-20] Third. <!-- status: hypothesis; expires: 2026-11-05 -->\n- [2026-10-21] Fourth. <!-- src: s2; pattern: preference; confidence: high; status: open -->\n";
+        let parsed = Observations::parse(source);
+        assert_eq!(parsed.render(), source);
+    }
+
+    #[test]
+    fn a_provenance_key_is_readable_whatever_its_separator() {
+        let colon = Observation::parse("- [2026-01-01] Fact <!-- n: 4 -->").expect("parses");
+        let equals = Observation::parse("- [2026-01-01] Fact <!-- n=4 -->").expect("parses");
+        assert_eq!(colon.provenance_value("n"), Some("4"));
+        assert_eq!(equals.provenance_value("n"), Some("4"));
+        assert_eq!(equals.provenance_value("absent"), None);
+    }
+
+    #[test]
+    fn an_entry_without_a_comment_renders_without_one() {
+        let entry = Observation::new("2026-01-01", "Plain fact");
+        assert_eq!(entry.render(), "- [2026-01-01] Plain fact\n");
+        assert_eq!(entry.provenance(), None);
     }
 
     #[test]
