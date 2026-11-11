@@ -7786,12 +7786,11 @@ impl AgentSession {
         // re-materializes every spilled tool result on the interactive thread, and this runs on every
         // prompt (2.6 s of a 6.6 s frame on a 132 MB session) while the common case has nothing
         // refused at all.
-        if lock(&self.transcript_write_failures).has_refusals() {
-            if let Some(kept) =
+        if lock(&self.transcript_write_failures).has_refusals()
+            && let Some(kept) =
                 lock(&self.transcript_write_failures).take_refused_out(&self.messages())
-            {
-                self.agent.set_messages(kept);
-            }
+        {
+            self.agent.set_messages(kept);
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.hydrate_runtime_messages_for_run();
@@ -21154,9 +21153,7 @@ impl AgentSession {
         // The fingerprint only needs the newest message, and the interactive footer asks for
         // context usage on every frame: `self.messages()` clones the whole transcript (2.6 s of
         // a 6.6 s frame on a 132 MB session), so it is read under the agent's own lock instead.
-        let last_fingerprint = self
-            .agent
-            .with_last_message(|message| message_fingerprint(message));
+        let last_fingerprint = self.agent.with_last_message(message_fingerprint);
         let key = {
             let state = self.state();
             ContextUsageCacheKey {
