@@ -3,6 +3,10 @@
 //! Spec: `docs/cleanroom/specs/memory-transcript-search.md`. The ranking is deliberately odd and deliberately
 //! kept: a message scores *higher* the **later** a term appears, so a hit near the top of a long transcript
 //! ranks below the same hit near the bottom. This is the reference behaviour, not a bug to be fixed here.
+//!
+//! `search_transcripts` is the same ranking applied over a conversation provider: filter by hidden and
+//! conversation id, score every message, keep only in-range dates, then sort by score and break ties by the
+//! **later** date, so an undated message sorts last.
 
 use serde::{Deserialize, Serialize};
 
@@ -280,6 +284,123 @@ pub fn date_in_range(
     true
 }
 
+/// A conversation stream containing messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptConversation {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    pub messages: Vec<SearchDocument>,
+}
+
+/// Source of transcripts, implemented per harness.
+pub trait TranscriptProvider {
+    fn list_conversations(&self) -> Vec<TranscriptConversation>;
+}
+
+/// Filters for a transcript search.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_hidden: Option<bool>,
+}
+
+/// One ranked message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub message_id: String,
+    pub conversation_id: String,
+    pub created_at: String,
+    pub score: f64,
+    pub document: SearchDocument,
+}
+
+/// Default number of results when the caller names no limit.
+pub const DEFAULT_SEARCH_LIMIT: i64 = 100;
+
+const EPOCH: &str = "1970-01-01T00:00:00.000Z";
+
+/// Ranks every message in `provider` against `query`.
+///
+/// An empty or unparseable query, and a limit of zero, return nothing rather than everything — a search that
+/// matches no term must not look like a successful full dump.
+pub fn search_transcripts(
+    provider: &dyn TranscriptProvider,
+    query: &str,
+    options: &SearchOptions,
+) -> Vec<SearchResult> {
+    let query_text = query.trim();
+    if query_text.is_empty() {
+        return Vec::new();
+    }
+    let parsed = parse_query(query_text);
+    if parsed.terms.is_empty() && parsed.phrases.is_empty() {
+        return Vec::new();
+    }
+    let limit = options.limit.unwrap_or(DEFAULT_SEARCH_LIMIT).max(0) as usize;
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(SearchDocument, f64)> = Vec::new();
+    for conversation in provider.list_conversations() {
+        if conversation.hidden == Some(true) && options.include_hidden != Some(true) {
+            continue;
+        }
+        if let Some(target) = &options.conversation_id
+            && &conversation.id != target
+        {
+            continue;
+        }
+        for document in conversation.messages {
+            let Some(score) = match_score(&searchable_text(&document), &parsed) else {
+                continue;
+            };
+            if !date_in_range(
+                document.date.as_deref(),
+                options.start_date.as_deref(),
+                options.end_date.as_deref(),
+            ) {
+                continue;
+            }
+            scored.push((document, score));
+        }
+    }
+
+    scored.sort_by(|(left, left_score), (right, right_score)| {
+        match left_score.partial_cmp(right_score) {
+            Some(std::cmp::Ordering::Equal) | None => {
+                let right_date = right.date.as_deref().unwrap_or("");
+                let left_date = left.date.as_deref().unwrap_or("");
+                right_date.cmp(left_date)
+            }
+            Some(ordering) => ordering,
+        }
+    });
+    scored.truncate(limit);
+
+    scored
+        .into_iter()
+        .map(|(document, score)| SearchResult {
+            message_id: document.id.clone(),
+            conversation_id: document.conversation_id.clone(),
+            created_at: document.date.clone().unwrap_or_else(|| EPOCH.to_string()),
+            score,
+            document,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +628,172 @@ mod tests {
             None,
             Some("2026-12-31T00:00:00Z")
         ));
+    }
+
+    fn doc(id: &str, conversation: &str, date: Option<&str>, content: &str) -> SearchDocument {
+        SearchDocument {
+            id: id.into(),
+            conversation_id: conversation.into(),
+            date: date.map(str::to_owned),
+            message_type: None,
+            content: Some(serde_json::Value::String(content.into())),
+            reasoning: None,
+            summary: None,
+            tool_calls: None,
+            tool_return: None,
+            func_response: None,
+        }
+    }
+
+    struct Provider(Vec<TranscriptConversation>);
+
+    impl TranscriptProvider for Provider {
+        fn list_conversations(&self) -> Vec<TranscriptConversation> {
+            self.0.clone()
+        }
+    }
+
+    fn conversation(
+        id: &str,
+        hidden: Option<bool>,
+        messages: Vec<SearchDocument>,
+    ) -> TranscriptConversation {
+        TranscriptConversation {
+            id: id.into(),
+            hidden,
+            messages,
+        }
+    }
+
+    #[test]
+    fn a_query_that_matches_nothing_returns_nothing() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            vec![doc("m1", "c1", None, "unrelated words")],
+        )]);
+        assert!(search_transcripts(&provider, "zebra", &SearchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn an_empty_query_returns_nothing() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            vec![doc("m1", "c1", None, "anything")],
+        )]);
+        assert!(search_transcripts(&provider, "   ", &SearchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn a_zero_limit_returns_nothing() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            vec![doc("m1", "c1", None, "zebra")],
+        )]);
+        let options = SearchOptions {
+            limit: Some(0),
+            ..SearchOptions::default()
+        };
+        assert!(search_transcripts(&provider, "zebra", &options).is_empty());
+    }
+
+    #[test]
+    fn a_hidden_conversation_is_skipped_unless_asked_for() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            Some(true),
+            vec![doc("m1", "c1", None, "zebra")],
+        )]);
+        assert!(search_transcripts(&provider, "zebra", &SearchOptions::default()).is_empty());
+        let options = SearchOptions {
+            include_hidden: Some(true),
+            ..SearchOptions::default()
+        };
+        assert_eq!(search_transcripts(&provider, "zebra", &options).len(), 1);
+    }
+
+    #[test]
+    fn a_conversation_filter_keeps_only_that_conversation() {
+        let provider = Provider(vec![
+            conversation("c1", None, vec![doc("m1", "c1", None, "zebra")]),
+            conversation("c2", None, vec![doc("m2", "c2", None, "zebra")]),
+        ]);
+        let options = SearchOptions {
+            conversation_id: Some("c2".into()),
+            ..SearchOptions::default()
+        };
+        let results = search_transcripts(&provider, "zebra", &options);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].conversation_id, "c2");
+    }
+
+    #[test]
+    fn a_date_window_excludes_a_message_outside_it() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            vec![
+                doc("old", "c1", Some("2025-01-01T00:00:00Z"), "zebra"),
+                doc("new", "c1", Some("2026-06-01T00:00:00Z"), "zebra"),
+            ],
+        )]);
+        let options = SearchOptions {
+            start_date: Some("2026-01-01T00:00:00Z".into()),
+            ..SearchOptions::default()
+        };
+        let results = search_transcripts(&provider, "zebra", &options);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message_id, "new");
+    }
+
+    #[test]
+    fn an_undated_result_reports_the_epoch() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            vec![doc("m1", "c1", None, "zebra")],
+        )]);
+        let results = search_transcripts(&provider, "zebra", &SearchOptions::default());
+        assert_eq!(results[0].created_at, "1970-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn an_equal_score_sorts_the_later_date_first() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            vec![
+                doc("early", "c1", Some("2026-01-01T00:00:00Z"), "zebra"),
+                doc("late", "c1", Some("2026-09-01T00:00:00Z"), "zebra"),
+            ],
+        )]);
+        let results = search_transcripts(&provider, "zebra", &SearchOptions::default());
+        assert_eq!(results[0].message_id, "late");
+    }
+
+    #[test]
+    fn the_limit_truncates_the_ranked_list() {
+        let provider = Provider(vec![conversation(
+            "c1",
+            None,
+            (0..5)
+                .map(|index| {
+                    doc(
+                        &format!("m{index}"),
+                        "c1",
+                        Some("2026-01-01T00:00:00Z"),
+                        "zebra",
+                    )
+                })
+                .collect(),
+        )]);
+        let options = SearchOptions {
+            limit: Some(2),
+            ..SearchOptions::default()
+        };
+        assert_eq!(search_transcripts(&provider, "zebra", &options).len(), 2);
     }
 
     #[test]
