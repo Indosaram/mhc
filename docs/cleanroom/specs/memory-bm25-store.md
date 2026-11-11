@@ -65,3 +65,24 @@ Beyond size, the decoder rejects:
 This module encodes and decodes bytes. It does not decide when to save, where the `.git` directory is, or how
 the terms are seeded into a live corpus — those are the persistence layer's job, and they are ported
 separately.
+
+## Why the rest of the persistence chain is not ported
+
+Upstream's persistence stack is four modules: this codec, `bm25_terms_transfer`, `bm25_persist`, and
+`bm25_persist_gate`. The three above this one exist to move terms between the codec and a **process-wide live
+dictionary** — `RecallTermAccess`, a `OnceLock`-backed registry of interned terms keyed by document hash.
+
+That registry exists because upstream's recall keeps one BM25 index alive across calls and persists it between
+processes. This port does not: `build_index` runs inside `rank_documents`, so every recall pass tokenizes the
+documents it is given and throws the index away. There is no live dictionary to seed and no stable generation to
+snapshot.
+
+Porting `bm25_terms_transfer` and `bm25_persist` onto that architecture would produce modules with no reachable
+caller — the same defect this clean room just fixed in `recall_strategy`, where a fully ported 253-line module
+was never called and every test passed. A store that never loads and never saves is not a cache; it is dead
+weight that looks finished.
+
+The codec is still worth having as the single self-contained piece: it is pure bytes-in/bytes-out, it is fully
+tested, and it is the part that has to be exactly right whenever the caching layer is built. The transfer and
+save layers should be ported in the same change that introduces a cached corpus on this side, so their first
+caller arrives with them.
