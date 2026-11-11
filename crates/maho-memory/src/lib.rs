@@ -19,6 +19,7 @@ pub mod banks;
 pub mod bm25;
 pub mod extension;
 pub mod fact_display;
+pub mod facts_abort;
 pub mod facts_anchor;
 pub mod facts_commit;
 pub mod facts_note;
