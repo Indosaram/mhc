@@ -66,6 +66,7 @@ pub mod records;
 pub mod redact;
 pub mod reflection;
 mod schema;
+pub mod seeds;
 pub mod select;
 pub mod stale_holder;
 pub mod store;
