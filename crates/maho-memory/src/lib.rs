@@ -15,6 +15,7 @@
 //! sessions write to a per-project bank and also recall the global bank by default
 //! ([`banks::Scoping`]). There are no embeddings and no LLM consolidation step in this port.
 pub mod agreements;
+pub mod audit;
 pub mod banks;
 pub mod bm25;
 pub mod broken_links;
