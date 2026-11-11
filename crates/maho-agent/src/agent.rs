@@ -509,6 +509,16 @@ impl Agent {
         lock(&self.inner.state).messages().len()
     }
 
+    /// Read the newest message without cloning the transcript.
+    ///
+    /// `state()` clones the whole message list, and the interactive footer asks for context usage on
+    /// every frame: cloning there cost 2.6 s of a 6.6 s frame on a 132 MB session. Reading the last
+    /// message under the lock keeps that per-frame work proportional to one message.
+    pub fn with_last_message<T>(&self, read: impl FnOnce(Option<&AgentMessage>) -> T) -> T {
+        let state = lock(&self.inner.state);
+        read(state.messages().last())
+    }
+
     /// `state.messages.length > 0` without cloning the transcript.
     pub fn has_messages(&self) -> bool {
         !lock(&self.inner.state).messages().is_empty()

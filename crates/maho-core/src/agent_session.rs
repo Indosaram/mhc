@@ -21144,7 +21144,12 @@ impl AgentSession {
                 manager.leaf_id().map(str::to_owned),
             )
         });
-        let last_fingerprint = message_fingerprint(self.messages().last());
+        // The fingerprint only needs the newest message, and the interactive footer asks for
+        // context usage on every frame: `self.messages()` clones the whole transcript (2.6 s of
+        // a 6.6 s frame on a 132 MB session), so it is read under the agent's own lock instead.
+        let last_fingerprint = self
+            .agent
+            .with_last_message(|message| message_fingerprint(message));
         let key = {
             let state = self.state();
             ContextUsageCacheKey {
