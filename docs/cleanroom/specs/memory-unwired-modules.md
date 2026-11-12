@@ -18,7 +18,7 @@ The orphan set above was derived by parsing `use` groups and expression paths ou
 modules. That is an argument, not a proof, so it was checked with the compiler.
 
 All 66 orphan modules were deleted from a scratch copy together with their `pub mod` declarations and
-`pub use` re-exports. The result:
+`pub use` re-exports. No further edit was needed. The result:
 
 | | modules (incl. `lib.rs`) | lines | tests | build | clippy |
 |---|---|---|---|---|---|
@@ -28,8 +28,11 @@ All 66 orphan modules were deleted from a scratch copy together with their `pub 
 The two line totals differ by 164 more than the 26,207 above: that difference is the `pub mod` and
 `pub use` lines stripped out of `lib.rs`, which belong to neither count.
 
-No reachable module referenced an orphan, and no orphan referenced a reachable module. The split is
-total in both directions. The kept twenty are `banks`, `cursor`, `expiry`, `extension`, `frontmatter`,
+No reachable module referenced an orphan: the five-line strip was enough to make the reduced crate
+compile. The reverse direction is **not** empty — 23 edges run from orphans into kept modules, so the
+corpus half depends on `store`, `redact`, `frontmatter`, `text`, `normalize`, `cursor` and
+`time_format`. Deletion is safe because the dependency is one-way; splitting the crate apart would
+need those seven carried across with it. The kept twenty are `banks`, `cursor`, `expiry`, `extension`, `frontmatter`,
 `git_log`, `kibitzer`, `legacy`, `lib`, `mcp`, `normalize`, `recall`, `redact`, `reflection`,
 `reflection_machine`, `retention`, `schema`, `store`, `text`, `time_format`.
 
