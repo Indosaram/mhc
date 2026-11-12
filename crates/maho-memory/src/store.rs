@@ -192,6 +192,7 @@ pub struct ImportStats {
     pub skipped: u64,
     pub overwritten: u64,
     pub scratchpad: u64,
+    pub triples: u64,
 }
 
 /// An open bank.
@@ -709,7 +710,7 @@ impl Store {
     }
 
     /// The bank as mnemopi's export document (`mnemopi_export` header, `working_memory`,
-    /// `episodic_memory`, `scratchpad`, `consolidation_log`).
+    /// `episodic_memory`, `scratchpad`, `consolidation_log`, `triples`).
     pub fn export_json(&self) -> Result<Value> {
         Ok(json!({
             "mnemopi_export": {
@@ -731,10 +732,11 @@ impl Store {
             "episodic_embeddings": [],
             "scratchpad": self.table_rows("SELECT id, content, session_id, created_at, updated_at FROM scratchpad ORDER BY session_id, updated_at")?,
             "consolidation_log": self.table_rows("SELECT id, session_id, items_consolidated, summary_preview, created_at FROM consolidation_log ORDER BY session_id, created_at")?,
+            "triples": self.table_rows("SELECT subject, predicate, object, valid_from, valid_until, source, confidence, created_at FROM triples ORDER BY id")?,
         }))
     }
 
-    /// Imports the working memories and scratchpad of an export document. Existing ids are
+    /// Imports the working memories, scratchpad and triples of an export document. Existing ids are
     /// skipped unless `force`. Episodic rows are imported as working memories (no consolidation
     /// tier here).
     pub fn import_json(&self, data: &Value, force: bool) -> Result<ImportStats> {
@@ -827,6 +829,43 @@ impl Store {
             )
             .map_err(sql_err)?;
             stats.scratchpad += 1;
+        }
+        // Triples carry no stable id across banks, so a row identical in every column but the
+        // rowid is the same fact; re-importing a backup must not duplicate it.
+        for item in data
+            .get("triples")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let (Some(subject), Some(predicate), Some(object), Some(valid_from)) = (
+                text(&item, "subject"),
+                text(&item, "predicate"),
+                text(&item, "object"),
+                text(&item, "valid_from"),
+            ) else {
+                continue;
+            };
+            let valid_until = text(&item, "valid_until");
+            let inserted = tx
+                .execute(
+                    "INSERT INTO triples (subject, predicate, object, valid_from, valid_until, source, confidence, created_at)
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, CURRENT_TIMESTAMP)
+                     WHERE NOT EXISTS (SELECT 1 FROM triples WHERE subject = ?1 AND predicate = ?2 AND object = ?3
+                                       AND valid_from = ?4 AND valid_until IS ?5)",
+                    params![
+                        subject,
+                        predicate,
+                        object,
+                        valid_from,
+                        valid_until,
+                        text(&item, "source"),
+                        item.get("confidence").and_then(Value::as_f64).unwrap_or(1.0),
+                        text(&item, "created_at"),
+                    ],
+                )
+                .map_err(sql_err)?;
+            stats.triples += inserted as u64;
         }
         tx.commit().map_err(sql_err)?;
         Ok(stats)
@@ -1161,6 +1200,39 @@ mod tests {
             target.import_json(&data, true).expect("force").overwritten,
             1
         );
+    }
+
+    #[test]
+    fn export_import_round_trip_keeps_triples() {
+        let source = store();
+        source
+            .triple_add("alice", "works_at", "acme", Some("2026-01-01"), "user", 0.8)
+            .expect("old");
+        source
+            .triple_add(
+                "alice",
+                "works_at",
+                "globex",
+                Some("2026-06-01"),
+                "user",
+                1.0,
+            )
+            .expect("new");
+        let data = source.export_json().expect("export");
+        let target = Store::open_in_memory("t").expect("target");
+        assert_eq!(target.import_json(&data, false).expect("import").triples, 2);
+        let current = target
+            .triple_query(Some("alice"), None, None, Some("2026-07-01"))
+            .expect("current");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].object, "globex");
+        let past = target
+            .triple_query(Some("alice"), None, None, Some("2026-03-01"))
+            .expect("past");
+        assert_eq!(past[0].object, "acme");
+        assert!((past[0].confidence - 0.8).abs() < f64::EPSILON);
+        assert_eq!(target.import_json(&data, false).expect("again").triples, 0);
+        assert_eq!(target.stats().expect("stats").triples, 2);
     }
 
     #[test]
