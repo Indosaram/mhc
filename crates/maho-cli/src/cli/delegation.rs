@@ -1,6 +1,9 @@
 //! MIT profile (`--no-default-features`): the subagent delegation tools (`maho-task`): `task`,
-//! `task_output`, `task_list`, `task_resume`, `task_cancel` and `/tasks`. Children run as
-//! `mhc -p` processes of the current executable; the `omo` build mounts its own task tools.
+//! `task_output`, `task_list`, `task_resume`, `task_cancel`, `task_send`, `/tasks` and
+//! `/task-kill`. Children run as `mhc -p` processes of the current executable; the `omo` build
+//! mounts its own task tools. Two addons ride on the same runner: `workflow` (`maho-workflow`: a
+//! dependency graph of delegated tasks run in waves, with `/dag`) and `workpool`
+//! (`maho-workpool`).
 //! Isolated tasks (`isolated: true` or `task.isolation.enabled`) run in a git worktree (or a copy
 //! outside git) under `$MAHO_WORKTREE_DIR` or `<agent dir>/wt` (`maho-isolation`). Team runs
 //! (`team_*` tools, `/team`) and tmux/cmux panes for delegated tasks come from `maho-team`

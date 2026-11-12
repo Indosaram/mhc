@@ -134,8 +134,10 @@ impl Engine {
         let snapshot = self.sessions.snapshot(view.session);
         // After a compaction the session counts as armed until the next mention re-arms it.
         let armed = snapshot.armed || snapshot.compaction_pending;
-        if !matches!(details.get("op").and_then(Value::as_str), Some("init" | "append"))
-            || !armed
+        if !matches!(
+            details.get("op").and_then(Value::as_str),
+            Some("init" | "append")
+        ) || !armed
         {
             return None;
         }

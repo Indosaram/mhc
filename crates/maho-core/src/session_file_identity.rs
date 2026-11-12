@@ -48,7 +48,7 @@ fn identity_of(file: &File, path: &str) -> Option<FileIdentity> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
     let mut info = BY_HANDLE_FILE_INFORMATION::default();

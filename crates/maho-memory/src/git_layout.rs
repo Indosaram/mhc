@@ -237,49 +237,74 @@ mod tests {
         }
     }
 
-    const LINKED: &str = "/repo/linked";
-    const ADMIN: &str = "/repo/main/.git/worktrees/linked";
+    /// Fixture paths must be absolute on the platform under test: `/repo/...` is not absolute on
+    /// Windows, so `resolve_from` would join it onto the current directory and no fixture would
+    /// ever match. Every fixture key and expectation is built from this one root.
+    #[cfg(windows)]
+    const ROOT: &str = r"C:\repo";
+    #[cfg(not(windows))]
+    const ROOT: &str = "/repo";
+
+    fn under(relative: &str) -> String {
+        format!("{ROOT}/{relative}")
+    }
+
+    fn linked() -> String {
+        under("linked")
+    }
+
+    fn linked_marker() -> String {
+        format!("{}/.git", linked())
+    }
+
+    fn admin() -> String {
+        under("main/.git/worktrees/linked")
+    }
 
     fn linked_worktree_probe() -> FakeProbe {
+        let (marker, admin) = (linked_marker(), admin());
         FakeProbe::default()
-            .with_kind("/repo/linked/.git", GitEntryKind::File)
-            .with_text("/repo/linked/.git", &format!("gitdir: {ADMIN}\n"))
-            .with_text(&format!("{ADMIN}/commondir"), "../..\n")
-            .with_text(&format!("{ADMIN}/gitdir"), "/repo/linked/.git")
-            .with_real("/repo/linked/.git", LINKED)
-            .with_real(ADMIN, ADMIN)
+            .with_kind(&marker, GitEntryKind::File)
+            .with_text(&marker, &format!("gitdir: {admin}\n"))
+            .with_text(&format!("{admin}/commondir"), "../..\n")
+            .with_text(&format!("{admin}/gitdir"), &marker)
+            .with_real(&marker, &linked())
+            .with_real(&admin, &admin)
     }
 
     #[test]
     fn a_subdirectory_resolves_to_the_main_checkout_and_keeps_the_subpath() {
-        let source =
-            resolve_linked_worktree_source(Path::new("/repo/linked/src"), &linked_worktree_probe())
-                .expect("a linked worktree should resolve");
-        assert_eq!(source.hash_source, Path::new("/repo/main/src"));
+        let source = resolve_linked_worktree_source(
+            Path::new(&format!("{}/src", linked())),
+            &linked_worktree_probe(),
+        )
+        .expect("a linked worktree should resolve");
+        assert_eq!(source.hash_source, Path::new(&under("main/src")));
         assert_eq!(source.slug_source, "src");
     }
 
     #[test]
     fn the_worktree_root_uses_the_main_directory_name_as_slug() {
         let source =
-            resolve_linked_worktree_source(Path::new(LINKED), &linked_worktree_probe()).unwrap();
-        assert_eq!(source.hash_source, Path::new("/repo/main"));
+            resolve_linked_worktree_source(Path::new(&linked()), &linked_worktree_probe()).unwrap();
+        assert_eq!(source.hash_source, Path::new(&under("main")));
         assert_eq!(source.slug_source, "main");
     }
 
     #[test]
     fn an_ordinary_checkout_is_not_a_linked_worktree() {
-        let probe = FakeProbe::default().with_kind("/repo/.git", GitEntryKind::Directory);
-        assert!(resolve_linked_worktree_source(Path::new("/repo/src"), &probe).is_none());
+        let probe = FakeProbe::default().with_kind(&under(".git"), GitEntryKind::Directory);
+        assert!(resolve_linked_worktree_source(Path::new(&under("src")), &probe).is_none());
     }
 
     #[test]
     fn a_marker_without_the_gitdir_prefix_is_rejected() {
         let mut probe = linked_worktree_probe();
-        probe
-            .texts
-            .insert(PathBuf::from("/repo/linked/.git"), "not a pointer\n".into());
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_none());
+        probe.texts.insert(
+            normalize(Path::new(&linked_marker())),
+            "not a pointer\n".into(),
+        );
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_none());
     }
 
     #[test]
@@ -287,89 +312,98 @@ mod tests {
         let mut probe = linked_worktree_probe();
         probe
             .texts
-            .insert(PathBuf::from("/repo/linked/.git"), "gitdir:\n".into());
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_none());
+            .insert(normalize(Path::new(&linked_marker())), "gitdir:\n".into());
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_none());
     }
 
     #[test]
     fn a_missing_commondir_is_rejected() {
         let mut probe = linked_worktree_probe();
-        probe.texts.remove(Path::new(&format!("{ADMIN}/commondir")));
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_none());
+        probe
+            .texts
+            .remove(&normalize(Path::new(&format!("{}/commondir", admin()))));
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_none());
     }
 
     #[test]
     fn a_forged_back_pointer_is_rejected() {
         let mut probe = linked_worktree_probe();
-        probe
-            .texts
-            .insert(PathBuf::from(format!("{ADMIN}/gitdir")), "/forged".into());
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_none());
+        probe.texts.insert(
+            normalize(Path::new(&format!("{}/gitdir", admin()))),
+            under("forged"),
+        );
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_none());
     }
 
     #[test]
     fn a_missing_back_pointer_is_rejected() {
         let mut probe = linked_worktree_probe();
-        probe.texts.remove(Path::new(&format!("{ADMIN}/gitdir")));
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_none());
+        probe
+            .texts
+            .remove(&normalize(Path::new(&format!("{}/gitdir", admin()))));
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_none());
     }
 
     #[test]
     fn a_crlf_pointer_file_is_accepted() {
         let mut probe = linked_worktree_probe();
         probe.texts.insert(
-            PathBuf::from("/repo/linked/.git"),
-            format!("gitdir: {ADMIN}\r\n"),
+            normalize(Path::new(&linked_marker())),
+            format!("gitdir: {}\r\n", admin()),
         );
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_some());
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_some());
     }
 
     #[test]
     fn a_bare_repository_uses_its_own_directory() {
-        let common = "/repo/main/bare.git";
+        let common = under("main/bare.git");
+        let (marker, admin) = (linked_marker(), admin());
         let probe = FakeProbe::default()
-            .with_kind("/repo/linked/.git", GitEntryKind::File)
-            .with_text("/repo/linked/.git", &format!("gitdir: {ADMIN}\n"))
-            .with_text(&format!("{ADMIN}/commondir"), "../../../bare.git\n")
-            .with_text(&format!("{ADMIN}/gitdir"), "/repo/linked/.git")
-            .with_real("/repo/linked/.git", LINKED)
-            .with_real(ADMIN, ADMIN)
+            .with_kind(&marker, GitEntryKind::File)
+            .with_text(&marker, &format!("gitdir: {admin}\n"))
+            .with_text(&format!("{admin}/commondir"), "../../../bare.git\n")
+            .with_text(&format!("{admin}/gitdir"), &marker)
+            .with_real(&marker, &linked())
+            .with_real(&admin, &admin)
             .with_text(&format!("{common}/config"), "[core]\n\tbare = true\n");
-        let source = resolve_linked_worktree_source(Path::new(LINKED), &probe).unwrap();
-        assert_eq!(source.hash_source, Path::new(common));
+        let source = resolve_linked_worktree_source(Path::new(&linked()), &probe).unwrap();
+        assert_eq!(source.hash_source, Path::new(&common));
         assert_eq!(source.slug_source, "bare");
     }
 
     #[test]
     fn a_core_worktree_setting_beats_the_bare_layout() {
-        let common = "/repo/main/admin";
+        let common = under("main/admin");
+        let checked = under("somewhere/checked");
+        let (marker, admin) = (linked_marker(), admin());
         let probe = FakeProbe::default()
-            .with_kind("/repo/linked/.git", GitEntryKind::File)
-            .with_text("/repo/linked/.git", &format!("gitdir: {ADMIN}\n"))
-            .with_text(&format!("{ADMIN}/commondir"), "../../../admin\n")
-            .with_text(&format!("{ADMIN}/gitdir"), "/repo/linked/.git")
-            .with_real("/repo/linked/.git", LINKED)
-            .with_real(ADMIN, ADMIN)
+            .with_kind(&marker, GitEntryKind::File)
+            .with_text(&marker, &format!("gitdir: {admin}\n"))
+            .with_text(&format!("{admin}/commondir"), "../../../admin\n")
+            .with_text(&format!("{admin}/gitdir"), &marker)
+            .with_real(&marker, &linked())
+            .with_real(&admin, &admin)
             .with_text(
                 &format!("{common}/config"),
-                "[core]\n\tbare = false\n\tworktree = /somewhere/checked\n",
+                &format!("[core]\n\tbare = false\n\tworktree = {checked}\n"),
             );
-        let source = resolve_linked_worktree_source(Path::new(LINKED), &probe).unwrap();
-        assert_eq!(source.hash_source, Path::new("/somewhere/checked"));
+        let source = resolve_linked_worktree_source(Path::new(&linked()), &probe).unwrap();
+        assert_eq!(source.hash_source, Path::new(&checked));
         assert_eq!(source.slug_source, "checked");
     }
 
     #[test]
     fn a_repository_with_neither_bare_nor_worktree_is_rejected() {
+        let (marker, admin) = (linked_marker(), admin());
         let probe = FakeProbe::default()
-            .with_kind("/repo/linked/.git", GitEntryKind::File)
-            .with_text("/repo/linked/.git", &format!("gitdir: {ADMIN}\n"))
-            .with_text(&format!("{ADMIN}/commondir"), "../../../admin\n")
-            .with_text(&format!("{ADMIN}/gitdir"), "/repo/linked/.git")
-            .with_real("/repo/linked/.git", LINKED)
-            .with_real(ADMIN, ADMIN)
-            .with_text("/repo/main/admin/config", "[core]\n\tbare = false\n");
-        assert!(resolve_linked_worktree_source(Path::new(LINKED), &probe).is_none());
+            .with_kind(&marker, GitEntryKind::File)
+            .with_text(&marker, &format!("gitdir: {admin}\n"))
+            .with_text(&format!("{admin}/commondir"), "../../../admin\n")
+            .with_text(&format!("{admin}/gitdir"), &marker)
+            .with_real(&marker, &linked())
+            .with_real(&admin, &admin)
+            .with_text(&under("main/admin/config"), "[core]\n\tbare = false\n");
+        assert!(resolve_linked_worktree_source(Path::new(&linked()), &probe).is_none());
     }
 
     #[test]

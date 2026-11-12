@@ -4872,25 +4872,31 @@ impl AgentSession {
         *lock(&session.agent_subscription) = Some(subscription);
 
         let weak = Arc::downgrade(&session.inner);
-        session.agent.set_finish_turn(Some(Arc::new(move |turn, _signal| {
-            let weak = weak.clone();
-            Box::pin(async move {
-                let session = AgentSession { inner: weak.upgrade()? };
-                let event = maho_ext_api::ExtensionEvent::TurnEnd {
-                    turn_index: session.state().turn_index,
-                    message: AgentMessage::Llm(maho_ai::types::Message::Assistant(Arc::new(turn.message))),
-                    tool_results: turn.tool_results,
-                };
-                match session.emit_boundary(event).await {
-                    Ok(true) => Some(maho_agent::types::AgentTurnDecision::Continue),
-                    Ok(false) => None,
-                    Err(error_message) => {
-                        session.emit(AgentSessionEvent::ContinuationError { error_message });
-                        Some(maho_agent::types::AgentTurnDecision::End)
+        session
+            .agent
+            .set_finish_turn(Some(Arc::new(move |turn, _signal| {
+                let weak = weak.clone();
+                Box::pin(async move {
+                    let session = AgentSession {
+                        inner: weak.upgrade()?,
+                    };
+                    let event = maho_ext_api::ExtensionEvent::TurnEnd {
+                        turn_index: session.state().turn_index,
+                        message: AgentMessage::Llm(maho_ai::types::Message::Assistant(Arc::new(
+                            turn.message,
+                        ))),
+                        tool_results: turn.tool_results,
+                    };
+                    match session.emit_boundary(event).await {
+                        Ok(true) => Some(maho_agent::types::AgentTurnDecision::Continue),
+                        Ok(false) => None,
+                        Err(error_message) => {
+                            session.emit(AgentSessionEvent::ContinuationError { error_message });
+                            Some(maho_agent::types::AgentTurnDecision::End)
+                        }
                     }
-                }
-            })
-        })));
+                })
+            })));
 
         let weak = Arc::downgrade(&session.inner);
         session
@@ -5719,7 +5725,9 @@ impl AgentSession {
         let Some(mut runner) = self.extension_runner_for(event.kind()).await else {
             return Ok(false);
         };
-        let result = Box::pin(runner.emit(event)).await.map_err(|error| error.to_string())?;
+        let result = Box::pin(runner.emit(event))
+            .await
+            .map_err(|error| error.to_string())?;
         let maho_ext_api::EventResult::Boundary(result) = result else {
             return Ok(false);
         };
@@ -5738,8 +5746,11 @@ impl AgentSession {
             self.emit_entry_appended(&id);
         }
         if changed {
-            let messages = self.with_session_manager(|manager| manager.current_context().messages)
-                .into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
+            let messages = self
+                .with_session_manager(|manager| manager.current_context().messages)
+                .into_iter()
+                .map(session_message_from_value)
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| error.to_string())?;
             self.agent.set_messages(messages);
             self.state().context_usage_cache = None;
@@ -10070,8 +10081,14 @@ impl AgentSession {
                 let messages = self.messages();
                 let outcome = if self.state().user_aborted {
                     "aborted"
-                } else if messages.iter().rev().find_map(AgentMessage::as_assistant)
-                    .is_some_and(|message| matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)) {
+                } else if messages
+                    .iter()
+                    .rev()
+                    .find_map(AgentMessage::as_assistant)
+                    .is_some_and(|message| {
+                        matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)
+                    })
+                {
                     "error"
                 } else {
                     "completed"
@@ -18085,7 +18102,9 @@ impl AgentSession {
                                 });
                             }
                         };
-                    let boundary_changed = session.boundary_context_changed.swap(false, Ordering::SeqCst);
+                    let boundary_changed = session
+                        .boundary_context_changed
+                        .swap(false, Ordering::SeqCst);
                     if previous.is_none() {
                         let messages = if compacted_before_callback || boundary_changed {
                             session.messages()

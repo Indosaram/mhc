@@ -39,7 +39,7 @@ maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["process", "fs"] }
+rustix = { version = "=1.1.6", features = ["process", "fs"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -911,8 +911,10 @@ impl Agent {
                 agent_event_sink(self.clone()),
                 signal,
                 Some(self.stream_function()),
-            )).await;
-        }).await;
+            ))
+            .await;
+        })
+        .await;
         Ok(())
     }
 

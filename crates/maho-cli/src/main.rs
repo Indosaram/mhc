@@ -1002,7 +1002,18 @@ fn register_ultrawork_keywords() {
         "omo-ultrawork-directive",
         "ultrawork",
     );
-    maho_interactive::components::neon_border::register_glow_keywords(&["ultrawork", "ulw"]);
+    // Every alias `maho_ultrawork` arms on lights the border, mass ones included, so the border
+    // never stays cold on a prompt the engine acted on. `mass ulw` and `mass-ulw` need no entry
+    // of their own (each separator ends the `ulw` word); `mass_ulw` does, because `_` is a word
+    // character here and would glue the alias into one compound word.
+    maho_interactive::components::neon_border::register_glow_keywords(&[
+        "ultrawork",
+        "ulw",
+        "mulw",
+        "meth",
+        "massulw",
+        "mass_ulw",
+    ]);
 }
 /// Entries served by the oh-my-openagent port (crates/omo, `omo` feature): `mhc ulw-loop`, the
 /// memory MCP stdio server, and the memory supervisor / child-bootstrap roles. `None` means argv
@@ -1261,9 +1272,18 @@ mod ultrawork_registration_tests {
         assert!(armed.classification.effective);
         assert_eq!(message.custom_type, DIRECTIVE_MESSAGE_TYPE);
         assert!(!directive.starts_with(&format!("<{DIRECTIVE_MESSAGE_TYPE}>")));
-        assert!(maho_interactive::components::neon_border::has_glow_keyword(
-            "ulw hello"
-        ));
+        for text in [
+            "ulw hello",
+            "mulw hello",
+            "mass ulw hello",
+            "mass_ulw hello",
+        ] {
+            assert!(
+                maho_interactive::components::neon_border::has_glow_keyword(text),
+                "{text}"
+            );
+        }
+        assert!(!maho_interactive::components::neon_border::has_glow_keyword("call the method"));
         assert_eq!(deduped.collapsed_directives, 1);
     }
 }

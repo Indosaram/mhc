@@ -16,7 +16,7 @@ pub fn dag_run_ref(run_id: &str) -> Value {
 pub fn paused_wake_text(name: &str, reason: Option<&str>) -> String {
     match reason {
         Some("user_stop") => {
-            format!("DAG \"{name}\" paused by your Stop. Resume the run to continue.")
+            format!("DAG \"{name}\" paused by your Stop. Run /resume to continue.")
         }
         Some(reason) => {
             format!("DAG \"{name}\" paused ({reason}): it will resume when the session restarts.")
@@ -233,7 +233,7 @@ mod tests {
     fn a_user_stopped_run_requires_an_explicit_resume() {
         let text = paused_wake_text("release", Some("user_stop"));
         assert!(text.contains("paused by your Stop"));
-        assert!(text.contains("Resume the run to continue"));
+        assert!(text.contains("Run /resume to continue"));
         // A shutdown pause is NOT a user stop: it resumes when the session restarts.
         let shutdown = paused_wake_text("release", Some("session_shutdown"));
         assert!(shutdown.contains("resume when the session restarts"));

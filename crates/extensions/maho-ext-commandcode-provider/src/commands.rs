@@ -39,9 +39,10 @@ pub fn register(api: &mut ExtensionApi, env: ProviderEnv) {
                 if let Some(warning) = crate::quota_command::quota_unavailable_message(&snapshot) {
                     context.ui.notify(warning, NotificationType::Error);
                 } else {
-                    context
-                        .ui
-                        .notify(&crate::quota_format::format_quota(&snapshot), NotificationType::Info);
+                    context.ui.notify(
+                        &crate::quota_format::format_quota(&snapshot),
+                        NotificationType::Info,
+                    );
                 }
                 Ok(())
             })

@@ -10,8 +10,8 @@
 #![allow(unsafe_code)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::launch_env_names::without_internal_env_on;
 
@@ -213,10 +213,10 @@ mod real {
     };
     use windows_sys::Win32::System::Console::GetStdHandle;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-        InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
-        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTUPINFOEXW, STARTUPINFOW,
+        CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
+        UpdateProcThreadAttribute, WaitForSingleObject,
     };
 
     pub struct RealKernel32Process;
@@ -512,8 +512,8 @@ mod tests {
     }
 
     #[test]
-    fn passes_the_breakaway_flag_the_quoted_command_line_and_the_x64_startupinfow_with_the_callers_std_handles(
-    ) {
+    fn passes_the_breakaway_flag_the_quoted_command_line_and_the_x64_startupinfow_with_the_callers_std_handles()
+     {
         let kernel = fake(true);
         start_breakaway(kernel.clone(), "cmd /c \"echo hi\"", &HashMap::new()).unwrap();
         let seen = kernel.seen.lock().unwrap();
@@ -529,8 +529,8 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_pid_from_process_information_closes_the_thread_handle_at_once_and_the_process_handle_after_the_wait(
-    ) {
+    fn reads_the_pid_from_process_information_closes_the_thread_handle_at_once_and_the_process_handle_after_the_wait()
+     {
         let kernel = fake(true);
         let command = start_breakaway(kernel.clone(), "x.exe", &HashMap::new()).unwrap();
         assert_eq!(command.pid, 5150);

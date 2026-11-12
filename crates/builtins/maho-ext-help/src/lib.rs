@@ -4,7 +4,9 @@ use maho_ext_api::{
     Extension, ExtensionApi, ExtensionContext, ExtensionFuture, ExtensionMode, NotificationType,
 };
 use std::sync::Arc;
-pub fn help_markdown(commands: Vec<maho_ext_api::SlashCommandInfo>) -> String {
+/// `paused`: the session is held by a Stop (or a paused run), so `/resume` resumes it here
+/// instead of opening the session picker -- the command list has to say which one applies.
+pub fn help_markdown_for(commands: Vec<maho_ext_api::SlashCommandInfo>, paused: bool) -> String {
     let commands = commands
         .into_iter()
         .map(|command| maho_core::slash_commands::SlashCommandInfo {
@@ -14,8 +16,27 @@ pub fn help_markdown(commands: Vec<maho_ext_api::SlashCommandInfo>) -> String {
             source_info: Default::default(),
         })
         .collect::<Vec<_>>();
-    maho_interactive::help_content::build_help_markdown(&commands)
+    maho_interactive::help_content::build_help_markdown_with_state(&commands, paused)
 }
+
+pub fn help_markdown(commands: Vec<maho_ext_api::SlashCommandInfo>) -> String {
+    help_markdown_for(commands, false)
+}
+/// Whether a Stop (or a paused run) currently holds the session, from the extension-visible
+/// pause state: `session_hold`/`unattended` holds and `run_fence` fences both mean `/resume`
+/// resumes this session rather than opening the picker. A missing or unreadable state reads as
+/// not paused so the help list keeps its idle wording.
+pub fn pause_state_holds_the_session(state: &maho_ext_api::JsonValue) -> bool {
+    state["holds"].as_array().is_some_and(|holds| {
+        holds.iter().any(|hold| {
+            matches!(
+                hold["kind"].as_str(),
+                Some("session_hold" | "unattended" | "run_fence")
+            )
+        })
+    })
+}
+
 pub type HelpDisplay =
     Arc<dyn Fn(ExtensionContext, String) -> ExtensionFuture<'static, ()> + Send + Sync>;
 pub type HelpRowsReader = Arc<
@@ -98,7 +119,9 @@ impl Extension for Help {
         api.register_command("help",Some("Show usage, keybindings, and all commands".into()),None,Arc::new(move|_,ctx|{
             let runtime=runtime.clone();let display=display.clone();Box::pin(async move{
                 if ctx.mode!=ExtensionMode::Tui{ctx.ui.notify(&format!("Interactive /help is available in TUI mode; run {} --help for CLI usage.",maho_core::config::app_name()),NotificationType::Info);return Ok(());}
-                let markdown=help_markdown(runtime.session_actions()?.get_commands()?);
+                let actions=runtime.session_actions()?;
+                let paused=ctx.get_pause_state().is_ok_and(|state|pause_state_holds_the_session(&state));
+                let markdown=help_markdown_for(actions.get_commands()?,paused);
                 display(ctx.clone(),markdown).await
             })
         }));

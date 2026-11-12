@@ -72,7 +72,30 @@ impl ReflectionLockProbe for SystemReflectionLockProbe {
                 ProcessLiveness::Dead
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        // A signal-0 send performs only an existence/permission check; no signal is delivered.
+        // `nix` wraps the syscall safely, so this crate keeps `unsafe_code = "forbid"`.
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            let Ok(raw) = i32::try_from(pid) else {
+                return ProcessLiveness::Unknown;
+            };
+            match nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None) {
+                Ok(()) => ProcessLiveness::Alive,
+                Err(nix::errno::Errno::ESRCH) => ProcessLiveness::Dead,
+                // The process exists but belongs to another user.
+                Err(nix::errno::Errno::EPERM) => ProcessLiveness::Alive,
+                Err(_) => ProcessLiveness::Unknown,
+            }
+        }
+        #[cfg(windows)]
+        {
+            match windows_process_liveness(pid) {
+                Some(true) => ProcessLiveness::Alive,
+                Some(false) => ProcessLiveness::Dead,
+                None => ProcessLiveness::Unknown,
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             ProcessLiveness::Unknown
         }
@@ -336,10 +359,12 @@ mod tests {
             self
         }
 
+        /// Fixture keys are POSIX-style (`runs/r1/outcome.json`) while a Windows path joins with `\`,
+        /// so both sides are compared as normalized forward-slash text.
         fn key(path: &Path) -> String {
-            path.strip_prefix("/refl")
-                .map(|rest| rest.to_string_lossy().into_owned())
-                .unwrap_or_default()
+            let text = path.to_string_lossy().replace('\\', "/");
+            let trimmed = text.strip_prefix("/refl").unwrap_or(&text);
+            trimmed.trim_start_matches('/').to_owned()
         }
     }
 

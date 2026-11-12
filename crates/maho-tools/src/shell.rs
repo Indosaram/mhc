@@ -268,8 +268,8 @@ pub fn note_detached_child_exited(pid: i32) {
     {
         // The leader is gone but its children may still be running; keep the pid so
         // `kill_tracked_detached_children` can still take the tree down at session end.
+        // This block is the function's tail on Windows, so it must not `return`.
         entry.leader_exited = true;
-        return;
     }
     #[cfg(not(any(unix, windows)))]
     let _ = entry;

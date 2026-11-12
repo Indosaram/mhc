@@ -4327,7 +4327,12 @@ impl InteractiveMode {
     ) -> maho_tui::autocomplete::CombinedAutocompleteProvider {
         use maho_tui::autocomplete::{ArgumentCompletions, AutocompleteItem, CommandSpec};
         use maho_tui::fuzzy::fuzzy_filter;
-        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands()
+        // A Stop (or a paused run) makes `/resume` resume this session instead of opening the
+        // picker, so the completion must describe the behaviour the next Enter performs.
+        let paused = crate::pause_footer::resume_command_target(
+            &crate::pause_footer::PauseView::of_session(session),
+        ) == crate::pause_footer::ResumeCommandTarget::ResumeSession;
+        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands_for(paused)
             .into_iter()
             .map(|command| {
                 // senpi: `/model` completes scoped (else available) models, `/login` provider options.

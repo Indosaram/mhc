@@ -52,11 +52,17 @@ pub fn has_glow_keyword(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     keywords.iter().any(|keyword| {
         lower.match_indices(keyword.as_str()).any(|(index, _)| {
-            index == 0
+            let starts_word = index == 0
                 || !lower[..index]
                     .chars()
                     .next_back()
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+            // The keyword must also end the word, so `meth` does not glow inside `method`.
+            let ends_word = !lower[index + keyword.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+            starts_word && ends_word
         })
     })
 }
@@ -180,6 +186,28 @@ mod tests {
             assert!(has_glow_keyword(text), "{text}");
         }
         for text in ["", "bspkx", "fix the bug", "spar kle"] {
+            assert!(!has_glow_keyword(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn glows_every_mass_alias_without_matching_ordinary_words() {
+        // The mass aliases arm mass mode (crates/maho-ultrawork/src/keywords.rs), so the border
+        // must answer them too, and only as whole words: `meth` never matches inside `method`.
+        // Exactly what `register_ultrawork_keywords` (maho-cli) registers.
+        register_glow_keywords(&["ultrawork", "ulw", "mulw", "meth", "massulw", "mass_ulw"]);
+        for text in [
+            "mulw go",
+            "massulw go",
+            "meth go",
+            "MASS_ULW go",
+            "mass ulw go",
+            "mass-ulw go",
+            "ulw-mass go",
+        ] {
+            assert!(has_glow_keyword(text), "{text}");
+        }
+        for text in ["call the method", "methyl group", "mulwx", "ulwx"] {
             assert!(!has_glow_keyword(text), "{text}");
         }
     }

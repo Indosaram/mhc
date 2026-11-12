@@ -1461,7 +1461,10 @@ impl TaskManager {
         let scope = match entered {
             crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => entered.scope,
             crate::manager::start_admission::StartAdmissionEntry::Held(_) => {
-                return Err("run admission held".into());
+                return Err(
+                    "run admission held: this session is paused by Stop, and only the user can resume it with /resume"
+                        .into(),
+                );
             }
         };
         let guard = AdmissionScope(scope.clone());

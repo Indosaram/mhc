@@ -169,7 +169,7 @@ where
 fn held() -> WorkpoolError {
     WorkpoolError::new(
         WorkpoolErrorCode::AdmissionRefused,
-        "Run pause admission held",
+        "Run pause admission held: this session is paused by Stop; the user must run /resume to continue",
     )
 }
 

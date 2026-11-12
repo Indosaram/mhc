@@ -360,7 +360,10 @@ mod tests {
         live.tick_session("two", &mut second);
         live.activate("two", "agent", "other-run", &mut second);
         live.tick_session("one", &mut first);
-        assert_eq!(first.0, ["mem:agent ⠋ reflecting", "mem:agent ⠙ reflecting"]);
+        assert_eq!(
+            first.0,
+            ["mem:agent ⠋ reflecting", "mem:agent ⠙ reflecting"]
+        );
         assert_eq!(second.0, ["mem:agent ⠋ reflecting"]);
         live.settle("one", "agent", "run", &mut first, &mut Probe::default());
         assert_eq!(live.animating_sessions(), ["two"]);

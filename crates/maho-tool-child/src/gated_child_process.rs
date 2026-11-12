@@ -16,11 +16,11 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitSta
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use crate::go_shim::{enoent_error, shim_target, ErrnoException, Shell};
+use crate::go_shim::{ErrnoException, Shell, enoent_error, shim_target};
 use crate::launch_barrier::{ExitOutcome, StdioKind};
-use crate::launch_env_names::{process_env, without_internal_env, ProcessEnv};
+use crate::launch_env_names::{ProcessEnv, process_env, without_internal_env};
 use crate::protocol::{LaunchApi, LaunchContainment, LaunchLifetime, LaunchOrigin};
-use crate::windows_breakaway::{load_kernel32_process, start_breakaway, BreakawayError};
+use crate::windows_breakaway::{BreakawayError, load_kernel32_process, start_breakaway};
 use crate::windows_command_line::{quote_windows_argument, windows_command_line};
 use crate::worker_launch::{
     WorkerLaunchClient, WorkerLaunchError, WorkerLaunchOutcome, WorkerLaunchRequest,
@@ -847,9 +847,11 @@ mod tests {
             launched(&messages).map(|request| request.containment),
             Some(LaunchContainment::Inherited)
         );
-        assert!(!lock(&messages)
-            .iter()
-            .any(|message| matches!(message, WorkerLaunchMessage::Started { .. })));
+        assert!(
+            !lock(&messages)
+                .iter()
+                .any(|message| matches!(message, WorkerLaunchMessage::Started { .. }))
+        );
     }
 
     #[cfg(unix)]

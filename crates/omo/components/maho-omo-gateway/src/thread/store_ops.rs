@@ -148,8 +148,8 @@ impl SqlAccess for StoreContext {
         let mut statement = self.conn.prepare(sql)?;
         let columns: Vec<String> = statement
             .column_names()
-            .iter()
-            .map(|name| (*name).to_owned())
+            .into_iter()
+            .map(str::to_owned)
             .collect();
         let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
         match rows.next()? {
@@ -162,8 +162,8 @@ impl SqlAccess for StoreContext {
         let mut statement = self.conn.prepare(sql)?;
         let columns: Vec<String> = statement
             .column_names()
-            .iter()
-            .map(|name| (*name).to_owned())
+            .into_iter()
+            .map(str::to_owned)
             .collect();
         let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
         let mut collected = Vec::new();

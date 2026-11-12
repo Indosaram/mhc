@@ -685,8 +685,8 @@ impl Store {
         let mut statement = self.conn.prepare(sql).map_err(sql_err)?;
         let names: Vec<String> = statement
             .column_names()
-            .iter()
-            .map(|name| (*name).to_owned())
+            .into_iter()
+            .map(str::to_owned)
             .collect();
         let rows = statement
             .query_map([], |row| {

@@ -119,7 +119,10 @@ pub async fn handle_doctor(
             }),
             Ok(report) => checks.extend(report.issues.into_iter().map(|issue| DoctorCheck {
                 name: format!("audit:{}", issue.code),
-                level: if matches!(issue.code.as_str(), "file_unreadable" | "frontmatter_invalid") {
+                level: if matches!(
+                    issue.code.as_str(),
+                    "file_unreadable" | "frontmatter_invalid"
+                ) {
                     CheckLevel::Fail
                 } else {
                     CheckLevel::Warn

@@ -278,12 +278,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         fixture(root.path())?;
-        validate(root.path())?;
+        validate_for_profile(root.path(), "sul")?;
         fs::write(
             root.path().join("skills/browser/SKILL.md"),
             b"modified content",
         )?;
-        assert!(validate(root.path()).is_err());
+        assert!(validate_for_profile(root.path(), "sul").is_err());
         Ok(())
     }
 
@@ -292,7 +292,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         fixture(root.path())?;
         fs::write(root.path().join("user-notes.txt"), b"preserve me")?;
-        assert!(validate(root.path()).is_err());
+        assert!(validate_for_profile(root.path(), "sul").is_err());
         assert_eq!(
             fs::read(root.path().join("user-notes.txt"))?,
             b"preserve me"

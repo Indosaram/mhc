@@ -4,7 +4,11 @@ pub const STATUS_COMMAND: &str = "commandcode-status";
 pub const QUOTA_MISSING_KEY: &str = "Command Code quota requires an API key. Run /login and select Command Code, or set COMMAND_CODE_API_KEY.";
 
 pub fn quota_unavailable_message(snapshot: &crate::quota_types::QuotaSnapshot) -> Option<&str> {
-    if snapshot.credits.is_none() && snapshot.plan.is_none() && snapshot.usage.is_none() && snapshot.account.is_none() {
+    if snapshot.credits.is_none()
+        && snapshot.plan.is_none()
+        && snapshot.usage.is_none()
+        && snapshot.account.is_none()
+    {
         snapshot.warning.as_deref()
     } else {
         None
@@ -20,4 +24,3 @@ mod tests {
         assert_eq!(snapshot.warning.as_deref(), Some(QUOTA_MISSING_KEY));
     }
 }
-

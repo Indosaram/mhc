@@ -4258,10 +4258,7 @@ pub trait ExtensionActions: Send + Sync {
     /// of scanning `get_all_tools`, which materializes every definition (a per-turn cost measured at
     /// part of the post-Enter freeze on large sessions).
     fn has_tool(&self, name: &str) -> Result<bool, ExtensionFailure> {
-        Ok(self
-            .get_all_tools()?
-            .iter()
-            .any(|tool| tool.name == name))
+        Ok(self.get_all_tools()?.iter().any(|tool| tool.name == name))
     }
     /// `send_user_message` with the origin captured at call admission.
     fn send_user_message_with_origin(

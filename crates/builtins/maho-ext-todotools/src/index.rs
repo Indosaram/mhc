@@ -320,11 +320,9 @@ pub fn register_first_turn_hooks(api: &mut maho_ext_api::ExtensionApi) {
                     {
                         return Ok(maho_ext_api::EventResult::None);
                     }
-                    let (_, tail) =
-                        ctx.session_manager
-                            .get_branch_tail(0, &mut |data: &Value| {
-                                crate::first_turn::is_request_entry(data)
-                            });
+                    let (_, tail) = ctx.session_manager.get_branch_tail(0, &mut |data: &Value| {
+                        crate::first_turn::is_request_entry(data)
+                    });
                     let branch = tail.into_iter().map(|entry| entry.data).collect::<Vec<_>>();
                     let home = std::env::var("HOME")
                         .or_else(|_| std::env::var("USERPROFILE"))

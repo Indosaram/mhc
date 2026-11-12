@@ -114,7 +114,7 @@ fn file_url_to_path(url: &str) -> Option<PathBuf> {
             return Some(PathBuf::from(normalize_windows_shell_path(without_slash)));
         }
         // A rooted URL without a drive is a rooted path on the current drive: `\tmp\x`.
-        return Some(PathBuf::from(decoded.replace('/', "\\")));
+        Some(PathBuf::from(decoded.replace('/', "\\")))
     }
     #[cfg(not(windows))]
     {

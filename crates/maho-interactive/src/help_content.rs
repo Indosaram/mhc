@@ -1,7 +1,7 @@
 use crate::components::keybinding_hints::key_display_text;
 use maho_core::{
     keybindings::keybindings,
-    slash_commands::{SlashCommandInfo, builtin_slash_commands},
+    slash_commands::{SlashCommandInfo, builtin_slash_commands_for},
 };
 
 fn escape_table_cell(value: &str) -> String {
@@ -9,6 +9,14 @@ fn escape_table_cell(value: &str) -> String {
 }
 
 pub fn build_help_markdown(extension_commands: &[SlashCommandInfo]) -> String {
+    build_help_markdown_with_state(extension_commands, false)
+}
+
+/// `paused`: a Stop or a paused run holds the session, so `/resume` resumes this session.
+pub fn build_help_markdown_with_state(
+    extension_commands: &[SlashCommandInfo],
+    paused: bool,
+) -> String {
     let groups = [
         ("tui.editor.", "Editor"),
         ("tui.input.", "Input"),
@@ -22,7 +30,7 @@ pub fn build_help_markdown(extension_commands: &[SlashCommandInfo]) -> String {
         "- Type `/` for commands.".into(),
         "- Drop files into the terminal to attach them.".into(),
         format!("- Press `{}` to cycle thinking level.", key_display_text("app.thinking.cycle")),
-        "- Use `/resume` or `/sessions` to switch sessions.".into(),
+        "- Use `/resume` to switch sessions; while a Stop is holding the session it resumes that session instead.".into(),
         format!("- Press `{}` to paste an image, with text fallback.", key_display_text("app.clipboard.pasteImage")),
         format!("- Press `{}` to queue a follow-up message.", key_display_text("app.message.followUp")),
         "- Press `?` on an empty input to show the shortcut overlay.".into(),
@@ -53,7 +61,7 @@ pub fn build_help_markdown(extension_commands: &[SlashCommandInfo]) -> String {
         .join("\n\n");
     let mut names = std::collections::HashSet::new();
     let mut commands = Vec::new();
-    for command in builtin_slash_commands() {
+    for command in builtin_slash_commands_for(paused) {
         names.insert(command.name.to_owned());
         let description = if command.name == "favorite-models" {
             format!(

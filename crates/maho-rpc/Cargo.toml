@@ -16,7 +16,7 @@ maho-ext-api = { path = "../maho-ext-api" }
 maho-tool-child = { path = "../maho-tool-child" }
 maho-tui = { path = "../maho-tui" }
 chrono = { workspace = true, features = ["std", "clock"] }
-rustix = { version = "=1.1.4", features = ["process", "pipe", "stdio"] }
+rustix = { version = "=1.1.6", features = ["process", "pipe", "stdio"] }
 # Private MCP presenter enrollment/proof verification (senpi `crypto.verify(null, ..., ed25519 key)`).
 ed25519-dalek = { version = "=2.2.0", features = ["pkcs8"] }
 base64.workspace = true
@@ -34,7 +34,7 @@ futures.workspace = true
 getrandom = "=0.3.4"
 subtle = "=2.6.1"
 notify = "=8.2.0"
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 tokio = { workspace = true, features = ["io-util", "io-std", "sync", "rt", "macros", "net", "time", "fs", "signal", "process"] }
 
 # darwin process table, start identity and child listing without a `ps` spawn (safe libproc bindings).

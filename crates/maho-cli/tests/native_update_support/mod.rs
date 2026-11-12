@@ -101,28 +101,36 @@ pub fn build_package(out_parent: &Path, payload: Payload) -> PathBuf {
         Payload::RealMhc => env!("CARGO_BIN_EXE_mhc"),
         Payload::Probe { .. } => env!("CARGO_BIN_EXE_mhc-update-probe"),
     };
+    // A package is only installable by a binary of its own profile, so the fixture follows the
+    // profile this test binary was built with: the MIT job must not serve SUL payloads.
+    let mit = maho_cli::native_update::signature::PROFILE == "mit";
     let mut executables = vec![
         copy_executable(&package, "mhc", mhc_bin),
         copy_executable(&package, "mhc-launcher", env!("CARGO_BIN_EXE_mhc-launcher")),
     ];
-    for name in SIBLINGS {
-        executables.push(copy_executable(
-            &package,
-            name,
-            env!("CARGO_BIN_EXE_mhc-update-probe"),
-        ));
+    if !mit {
+        for name in SIBLINGS {
+            executables.push(copy_executable(
+                &package,
+                name,
+                env!("CARGO_BIN_EXE_mhc-update-probe"),
+            ));
+        }
     }
     let license = write_data(&package, "licenses/LICENSE", b"licensed\n");
-    let schema = write_data(&package, "omo.schema.json", b"{}\n");
-    let skill = write_data(&package, "skills/s/SKILL.md", b"# s\n");
     let mut manifest = json!({
         "schemaVersion": 1,
         "executables": executables,
         "licenses": [license],
-        "schema": schema,
-        "skills": { "files": [skill] },
-        "conditionalSkills": { "files": [] },
     });
+    if mit {
+        manifest["profile"] = Value::String("mit".to_owned());
+    } else {
+        manifest["schema"] = json!(write_data(&package, "omo.schema.json", b"{}\n"));
+        manifest["skills"] =
+            json!({ "files": [write_data(&package, "skills/s/SKILL.md", b"# s\n")] });
+        manifest["conditionalSkills"] = json!({ "files": [] });
+    }
     if let Payload::Probe {
         version,
         fail_when_installed,
@@ -138,8 +146,11 @@ pub fn build_package(out_parent: &Path, payload: Payload) -> PathBuf {
 
 pub fn archive(package_dir: &Path, out_dir: &Path) -> (PathBuf, String) {
     let target = maho_cli::native_update::release::target().expect("native update target");
-    let asset = maho_cli::native_update::release::asset_name_for_target(target)
-        .expect("release asset name");
+    let asset = maho_cli::native_update::release::asset_name_for_target_in_profile(
+        target,
+        maho_cli::native_update::signature::PROFILE,
+    )
+    .expect("release asset name");
     std::fs::create_dir_all(out_dir).expect("archive output directory");
     let path = out_dir.join(&asset);
     let top = format!("mhc-{target}");

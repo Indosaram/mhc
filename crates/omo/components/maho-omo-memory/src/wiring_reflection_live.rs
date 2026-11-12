@@ -178,8 +178,7 @@ impl MemoryReflectionLiveWiring {
             },
         );
         if drained {
-            self.footer
-                .refresh(context, Some(session), active, now, ui);
+            self.footer.refresh(context, Some(session), active, now, ui);
         }
         self.sync_rpc(api, now)
     }
@@ -291,8 +290,7 @@ impl MemoryReflectionLiveWiring {
         let active = context.is_some_and(|context| {
             lock(&self.active_runs).is_active_for_session(&context.identity, session)
         });
-        self.footer
-            .refresh(context, Some(session), active, now, ui);
+        self.footer.refresh(context, Some(session), active, now, ui);
         let unchanged = self
             .contexts
             .get(session)

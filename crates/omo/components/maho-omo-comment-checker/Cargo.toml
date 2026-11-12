@@ -16,7 +16,7 @@ tokio = { version = "=1.52.3", features = ["process", "io-util", "fs", "sync"] }
 zip = { version = "=9.2.2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["process"] }
+rustix = { version = "=1.1.6", features = ["process"] }
 
 [dev-dependencies]
 maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }

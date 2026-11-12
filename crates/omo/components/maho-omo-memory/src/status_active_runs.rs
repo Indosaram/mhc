@@ -62,7 +62,11 @@ impl ActiveReflectionRuns {
 
     /// Whether this session is one the run reads; an unscoped run stays visible to its identity's
     /// sessions so older reserved records keep painting.
-    pub fn current_for_session(&self, identity: &str, session: &str) -> Option<&ActiveReflectionRun> {
+    pub fn current_for_session(
+        &self,
+        identity: &str,
+        session: &str,
+    ) -> Option<&ActiveReflectionRun> {
         self.current(identity).filter(|run| {
             run.details.conversation_ids.is_empty()
                 || run.details.conversation_ids.iter().any(|id| id == session)

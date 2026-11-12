@@ -19,7 +19,7 @@ serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 tokio = { version = "=1.52.3", features = ["rt", "sync", "time"] }
 uuid = { version = "=1.20.0", features = ["v4"] }
 jiff = "=0.2.23"
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 
 [dev-dependencies]
 maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }

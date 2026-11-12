@@ -38,6 +38,7 @@ maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../../maho-ext-host" }
 maho-ai = { path = "../../../maho-ai" }
 tempfile.workspace = true
+filetime.workspace = true
 tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "test-util"] }
 
 [lints]

@@ -23,9 +23,7 @@ pub const QUOTA_DETAIL_URL: &str = "https://commandcode.ai/usage";
 pub fn zdr_headers() -> Option<std::collections::BTreeMap<String, String>> {
     let enabled = std::env::var("CMD_ZDR").ok().as_deref() == Some("1")
         || std::env::var("COMMANDCODE_ZDR").ok().as_deref() == Some("1");
-    enabled.then(|| {
-        std::collections::BTreeMap::from([("x-cmd-zdr".to_owned(), "1".to_owned())])
-    })
+    enabled.then(|| std::collections::BTreeMap::from([("x-cmd-zdr".to_owned(), "1".to_owned())]))
 }
 
 /// One model as discovered from the live catalog or restored from cache.
@@ -103,12 +101,7 @@ pub fn model_compat(model_id: &str, reasoning: bool) -> maho_ai::model::ModelCom
             "maxTokensField": "max_tokens",
         })
     };
-    maho_ai::model::ModelCompat(
-        value
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-    )
+    maho_ai::model::ModelCompat(value.as_object().cloned().unwrap_or_default())
 }
 
 /// Result of a catalog load, mirroring `LoadCommandCodeModelsResult` in the TypeScript source.

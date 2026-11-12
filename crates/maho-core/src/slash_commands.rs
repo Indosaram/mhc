@@ -98,13 +98,36 @@ const BUILTIN_SLASH_COMMANDS: [BuiltinSlashCommand; 24] = [
     command("logout", "Remove provider authentication", None),
     command("new", "Start a new session", None),
     command("compact", "Manually compact the session context", None),
-    command("resume", "Resume a different session", None),
+    command(
+        "resume",
+        "Resume this paused session, or switch to a different session",
+        None,
+    ),
     command(
         "reload",
         "Reload keybindings, extensions, skills, prompts, themes, and context files",
         None,
     ),
 ];
+
+/// The description `/resume` shows while nothing holds the session: it opens the session picker.
+/// Once a Stop holds the session the same command resumes this session instead, so the list must
+/// say so -- otherwise the only way to learn what `/resume` does is to read its handler.
+pub const RESUME_IDLE_DESCRIPTION: &str =
+    "Resume this paused session, or switch to a different session";
+
+/// The description `/resume` shows while a Stop (or a paused run) holds the session.
+pub const RESUME_PAUSED_DESCRIPTION: &str = "Resume this paused session";
+
+/// The built-in commands with `/resume` described against the live pause state. A paused session
+/// must not advertise `/resume` as a session switch: there it resumes the paused session.
+pub fn builtin_slash_commands_for(paused: bool) -> Vec<BuiltinSlashCommand> {
+    let mut commands = builtin_slash_commands();
+    if paused && let Some(resume) = commands.iter_mut().find(|command| command.name == "resume") {
+        resume.description = RESUME_PAUSED_DESCRIPTION;
+    }
+    commands
+}
 
 pub fn builtin_slash_commands() -> Vec<BuiltinSlashCommand> {
     let mut commands = BUILTIN_SLASH_COMMANDS.to_vec();
@@ -136,6 +159,33 @@ mod tests {
         assert_eq!(commands[1].argument_hint, Some("<provider/model>"));
         assert_eq!(commands[commands.len() - 2].name, "quit");
         assert_eq!(commands[commands.len() - 1].name, "exit");
+    }
+
+    #[test]
+    fn a_paused_session_describes_resume_as_resuming_this_session() {
+        let idle = builtin_slash_commands_for(false);
+        let resume = idle
+            .iter()
+            .find(|command| command.name == "resume")
+            .expect("resume");
+        assert_eq!(resume.description, RESUME_IDLE_DESCRIPTION);
+
+        let paused = builtin_slash_commands_for(true);
+        let resume = paused
+            .iter()
+            .find(|command| command.name == "resume")
+            .expect("resume");
+        assert_eq!(resume.description, RESUME_PAUSED_DESCRIPTION);
+        // Only the description changes: the command keeps its position and argument hint.
+        assert_eq!(paused.len(), idle.len());
+        assert_eq!(
+            paused
+                .iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>(),
+            idle.iter().map(|command| command.name).collect::<Vec<_>>()
+        );
+        assert_eq!(resume.argument_hint, None);
     }
 
     #[test]

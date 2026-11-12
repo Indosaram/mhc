@@ -137,9 +137,7 @@ pub fn register_omo_native_prompt_telemetry(
         .get("role")
         .cloned()
         .filter(|role| !role.is_empty())
-        .or_else(|| {
-            std::env::var_os("SENPI_TASK_MEMBER").map(|_| "member".to_string())
-        })
+        .or_else(|| std::env::var_os("SENPI_TASK_MEMBER").map(|_| "member".to_string()))
         .or_else(|| {
             std::env::var("OMO_SENPI_TASK_RPC_CHILD")
                 .ok()

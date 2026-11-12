@@ -22,7 +22,7 @@ libc.workspace = true
 tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net", "time", "fs", "process"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["process", "fs"] }
+rustix = { version = "=1.1.6", features = ["process", "fs"] }
 # `stats` keeps jemalloc's per-arena counters so the memory report can split live heap from
 # allocator overhead; the counters are thread-cache local and cost no measurable allocation time.
 tikv-jemallocator = { version = "=0.7.0", features = ["stats"] }

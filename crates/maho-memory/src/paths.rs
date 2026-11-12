@@ -334,7 +334,15 @@ mod tests {
     #[test]
     fn an_absolute_path_outside_the_root_is_refused() {
         let dir = root();
-        let err = tool_path(dir.path(), "/etc/passwd").expect_err("must refuse");
+        // A platform-free literal is not outside the root everywhere: `/etc/passwd` is a rooted path
+        // on the current drive on Windows, and `C:\...` is a relative name on Unix. Build a sibling
+        // of the root instead, which is genuinely outside on every platform.
+        let outside = dir
+            .path()
+            .parent()
+            .expect("root has a parent")
+            .join("outside-the-root.md");
+        let err = tool_path(dir.path(), &outside.to_string_lossy()).expect_err("must refuse");
         assert!(
             err.message.contains("can only be used to modify files"),
             "{}",

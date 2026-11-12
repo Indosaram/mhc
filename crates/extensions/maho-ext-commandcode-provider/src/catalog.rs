@@ -96,11 +96,23 @@ pub const MODEL_REASONING: &[&str] = &[
 ];
 pub const MODEL_EFFORTS: &[(&str, &[&str])] = &[
     ("claude-fable-5", &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-opus-4-7", &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-opus-4-8", &["low", "medium", "high", "xhigh", "max"]),
+    (
+        "claude-opus-4-7",
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-4-8",
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
     ("claude-opus-5", &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-sonnet-4-6", &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-sonnet-5", &["low", "medium", "high", "xhigh", "max"]),
+    (
+        "claude-sonnet-4-6",
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-sonnet-5",
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
     ("deepseek/deepseek-v4-flash", &["high", "max"]),
     ("deepseek/deepseek-v4-flash-vision-exp", &["high", "max"]),
     ("deepseek/deepseek-v4-pro", &["high", "max"]),
@@ -131,10 +143,73 @@ pub const MODEL_MAX_OUTPUT_TOKENS: &[(&str, u64)] = &[
     ("stealth/ox-alpha", 131072),
 ];
 
-pub fn api_for_model_id(id: &str) -> &'static str { if id.starts_with("claude-") { "anthropic-messages" } else { "openai-completions" } }
-pub fn input_modalities_for_model(id: &str) -> Vec<InputModality> { if MODEL_INPUT_MODALITIES.contains(&id) { vec![InputModality::Text, InputModality::Image] } else { vec![InputModality::Text] } }
-pub fn is_reasoning_model(id: &str) -> bool { MODEL_REASONING.contains(&id) }
-pub fn efforts_for_model(id: &str) -> Option<&'static [&'static str]> { MODEL_EFFORTS.iter().find(|(key, _)| *key == id).map(|(_, efforts)| *efforts) }
-pub fn max_output_tokens_for_model(id: &str, context_length: u64) -> u64 { let cap=MODEL_MAX_OUTPUT_TOKENS.iter().find(|(key,_)| *key==id).map(|(_,v)| *v).unwrap_or(crate::contract::DEFAULT_MAX_OUTPUT_TOKENS); context_length.min(cap) }
-pub fn thinking_level_map(id: &str) -> ThinkingLevelMap { let efforts=efforts_for_model(id); ModelThinkingLevel::ALL.into_iter().filter(|level| *level != ModelThinkingLevel::Off).map(|level| { let value=efforts.filter(|items| items.contains(&level.as_str())).map(|_| level.as_str().to_owned()); (level,value) }).collect() }
-#[cfg(test)] mod tests { use super::*; #[test] fn catalog_contract() { assert_eq!(api_for_model_id("claude-opus-5"),"anthropic-messages"); assert_eq!(api_for_model_id("gpt-5.4"),"openai-completions"); assert_eq!(max_output_tokens_for_model("stealth/ox-alpha",999999),131072); assert_eq!(max_output_tokens_for_model("unknown",200000),65536); let m=thinking_level_map("deepseek/deepseek-v4-pro"); assert_eq!(m.len(),6); for (level,value) in m { assert_eq!(value, if matches!(level.as_str(),"high"|"max") {Some(level.as_str().to_owned())} else {None}); } } }
+pub fn api_for_model_id(id: &str) -> &'static str {
+    if id.starts_with("claude-") {
+        "anthropic-messages"
+    } else {
+        "openai-completions"
+    }
+}
+pub fn input_modalities_for_model(id: &str) -> Vec<InputModality> {
+    if MODEL_INPUT_MODALITIES.contains(&id) {
+        vec![InputModality::Text, InputModality::Image]
+    } else {
+        vec![InputModality::Text]
+    }
+}
+pub fn is_reasoning_model(id: &str) -> bool {
+    MODEL_REASONING.contains(&id)
+}
+pub fn efforts_for_model(id: &str) -> Option<&'static [&'static str]> {
+    MODEL_EFFORTS
+        .iter()
+        .find(|(key, _)| *key == id)
+        .map(|(_, efforts)| *efforts)
+}
+pub fn max_output_tokens_for_model(id: &str, context_length: u64) -> u64 {
+    let cap = MODEL_MAX_OUTPUT_TOKENS
+        .iter()
+        .find(|(key, _)| *key == id)
+        .map(|(_, v)| *v)
+        .unwrap_or(crate::contract::DEFAULT_MAX_OUTPUT_TOKENS);
+    context_length.min(cap)
+}
+pub fn thinking_level_map(id: &str) -> ThinkingLevelMap {
+    let efforts = efforts_for_model(id);
+    ModelThinkingLevel::ALL
+        .into_iter()
+        .filter(|level| *level != ModelThinkingLevel::Off)
+        .map(|level| {
+            let value = efforts
+                .filter(|items| items.contains(&level.as_str()))
+                .map(|_| level.as_str().to_owned());
+            (level, value)
+        })
+        .collect()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn catalog_contract() {
+        assert_eq!(api_for_model_id("claude-opus-5"), "anthropic-messages");
+        assert_eq!(api_for_model_id("gpt-5.4"), "openai-completions");
+        assert_eq!(
+            max_output_tokens_for_model("stealth/ox-alpha", 999999),
+            131072
+        );
+        assert_eq!(max_output_tokens_for_model("unknown", 200000), 65536);
+        let m = thinking_level_map("deepseek/deepseek-v4-pro");
+        assert_eq!(m.len(), 6);
+        for (level, value) in m {
+            assert_eq!(
+                value,
+                if matches!(level.as_str(), "high" | "max") {
+                    Some(level.as_str().to_owned())
+                } else {
+                    None
+                }
+            );
+        }
+    }
+}

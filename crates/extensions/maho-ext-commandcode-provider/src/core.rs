@@ -121,7 +121,6 @@ pub fn generate_request_body(
     json!({"config":{"workingDir":env.cwd,"date":Utc::now().format("%Y-%m-%d").to_string(),"environment":format!("{}-{}, Node.js rust-port", std::env::consts::OS, std::env::consts::ARCH),"structure":[],"isGitRepo":false,"currentBranch":"","mainBranch":"","gitStatus":"","recentCommits":[]},"memory":null,"taste":null,"skills":null,"params":params,"threadId":thread_id.to_string()})
 }
 
-
 const GENERATE_BASE_RETRY_DELAY_MS: u64 = 500;
 const GENERATE_MAX_RETRY_DELAY_MS: u64 = 60_000;
 
@@ -245,7 +244,10 @@ impl GenerateOutput {
     }
 
     fn handle(&mut self, event: &Value, sink: &AssistantMessageEventStream) {
-        let kind = event.get("type").and_then(Value::as_str).unwrap_or_default();
+        let kind = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match kind {
             "text-delta" => {
                 self.end_thinking(sink);
@@ -257,13 +259,13 @@ impl GenerateOutput {
                 let index = match self.text_index {
                     Some(index) => index,
                     None => {
-                        self.message.content.push(maho_ai::types::ContentBlock::Text(
-                            TextContent {
+                        self.message
+                            .content
+                            .push(maho_ai::types::ContentBlock::Text(TextContent {
                                 text: String::new(),
                                 audience: None,
                                 text_signature: None,
-                            },
-                        ));
+                            }));
                         let index = self.message.content.len() - 1;
                         self.text_index = Some(index);
                         sink.push(AssistantMessageEvent::TextStart {
@@ -302,12 +304,12 @@ impl GenerateOutput {
                         index
                     }
                     None => {
-                        self.message.content.push(maho_ai::types::ContentBlock::Thinking(
-                            ThinkingContent {
+                        self.message
+                            .content
+                            .push(maho_ai::types::ContentBlock::Thinking(ThinkingContent {
                                 thinking: delta.clone(),
                                 ..Default::default()
-                            },
-                        ));
+                            }));
                         let index = self.message.content.len() - 1;
                         self.thinking_index = Some(index);
                         sink.push(AssistantMessageEvent::ThinkingStart {
@@ -327,7 +329,10 @@ impl GenerateOutput {
             "tool-input-start" => {
                 self.end_text(sink);
                 self.end_thinking(sink);
-                let Some(id) = event.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
+                let Some(id) = event
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
                 else {
                     return;
                 };
@@ -411,8 +416,9 @@ impl GenerateOutput {
                         index
                     }
                     None => {
-                        self.message.content.push(maho_ai::types::ContentBlock::ToolCall(
-                            ToolCall {
+                        self.message
+                            .content
+                            .push(maho_ai::types::ContentBlock::ToolCall(ToolCall {
                                 id,
                                 name: event
                                     .get("toolName")
@@ -424,8 +430,7 @@ impl GenerateOutput {
                                 error_message: None,
                                 thought_signature: None,
                                 namespace: None,
-                            },
-                        ));
+                            }));
                         let index = self.message.content.len() - 1;
                         sink.push(AssistantMessageEvent::ToolcallStart {
                             content_index: index,
@@ -465,9 +470,8 @@ impl GenerateOutput {
                     self.message.usage.cache_write = cache_write;
                     self.message.usage.total_tokens = input + output + cache_read + cache_write;
                 }
-                self.message.stop_reason = map_stop_reason(
-                    event.get("finishReason").and_then(Value::as_str),
-                );
+                self.message.stop_reason =
+                    map_stop_reason(event.get("finishReason").and_then(Value::as_str));
                 self.finished = true;
             }
             _ => {}
@@ -506,7 +510,8 @@ fn request_body(
     if let Some(temperature) = stream.and_then(|stream| stream.temperature) {
         params["temperature"] = json!(temperature);
     }
-    if let Some(effort) = mapped_reasoning_effort(model, options.and_then(|options| options.reasoning))
+    if let Some(effort) =
+        mapped_reasoning_effort(model, options.and_then(|options| options.reasoning))
     {
         params["reasoning_effort"] = json!(effort);
     }
@@ -592,8 +597,15 @@ async fn run_generate(
     let signal = options
         .as_ref()
         .and_then(|options| options.stream.request.signal.clone());
-    if signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted) {
-        return Err(failure(model, ErrorReason::Aborted, "Request aborted".to_owned()));
+    if signal
+        .as_ref()
+        .is_some_and(maho_ai::utils::abort::AbortSignal::aborted)
+    {
+        return Err(failure(
+            model,
+            ErrorReason::Aborted,
+            "Request aborted".to_owned(),
+        ));
     }
     sink.push(AssistantMessageEvent::Start {
         partial: output.message.clone(),
@@ -630,7 +642,10 @@ async fn run_generate(
             .post(&url)
             .bearer_auth(&api_key)
             .header("Content-Type", "application/json")
-            .header("x-command-code-version", crate::catalog::COMMAND_CODE_CLI_VERSION)
+            .header(
+                "x-command-code-version",
+                crate::catalog::COMMAND_CODE_CLI_VERSION,
+            )
             .header("x-cli-environment", "production")
             .header("x-project-slug", crate::contract::project_slug(&env.cwd))
             .header("x-taste-learning", "true")
@@ -668,7 +683,10 @@ async fn run_generate(
                 return Err(failure(
                     model,
                     ErrorReason::Error,
-                    format!("Retry-After delay {}s exceeds max {max_retry_delay_ms}ms", retry_after.unwrap_or_default()),
+                    format!(
+                        "Retry-After delay {}s exceeds max {max_retry_delay_ms}ms",
+                        retry_after.unwrap_or_default()
+                    ),
                 ));
             }
             attempt += 1;
@@ -684,7 +702,10 @@ async fn run_generate(
                 .map(|value| crate::overflow::command_code_error_message(&value))
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| {
-                    crate::overflow::redact_error_text(&raw).chars().take(500).collect()
+                    crate::overflow::redact_error_text(&raw)
+                        .chars()
+                        .take(500)
+                        .collect()
                 });
             let detail = if detail.is_empty() {
                 "Provider returned an error".to_owned()
@@ -757,7 +778,10 @@ async fn run_generate(
     }
     output.end_text(sink);
     output.end_thinking(sink);
-    crate::cost::calculate_cost(&crate::pricing::model_cost(&model.id), &mut output.message.usage);
+    crate::cost::calculate_cost(
+        &crate::pricing::model_cost(&model.id),
+        &mut output.message.usage,
+    );
     sink.push(AssistantMessageEvent::Done {
         reason: match output.message.stop_reason {
             StopReason::Length => DoneReason::Length,

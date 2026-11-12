@@ -9,7 +9,7 @@ license = "MIT"
 [dependencies]
 maho-config = { path = "../maho-config" }
 maho-ext-api = { path = "../maho-ext-api" }
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true

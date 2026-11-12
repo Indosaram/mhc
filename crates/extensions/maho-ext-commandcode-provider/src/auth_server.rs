@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 const DEFAULT_PORT: u16 = 51789;
@@ -47,11 +47,11 @@ impl CallbackServer {
     }
 
     pub fn auth_url(&self) -> String {
-        let callback =
-            url::form_urlencoded::byte_serialize(format!("http://localhost:{}/callback", self.port).as_bytes())
-                .collect::<String>();
-        let state =
-            url::form_urlencoded::byte_serialize(self.state.as_bytes()).collect::<String>();
+        let callback = url::form_urlencoded::byte_serialize(
+            format!("http://localhost:{}/callback", self.port).as_bytes(),
+        )
+        .collect::<String>();
+        let state = url::form_urlencoded::byte_serialize(self.state.as_bytes()).collect::<String>();
         format!(
             "{}/studio/auth/cli?callback={callback}&state={state}",
             crate::oauth::STUDIO_BASE_URL
@@ -137,11 +137,7 @@ enum Outcome {
     Retry,
 }
 
-async fn handle(
-    mut stream: TcpStream,
-    expected: &str,
-    sender: &CallbackSender,
-) -> Outcome {
+async fn handle(mut stream: TcpStream, expected: &str, sender: &CallbackSender) -> Outcome {
     let Some(request) = read_request(&mut stream).await else {
         return Outcome::Retry;
     };
@@ -373,11 +369,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_matching_post_delivers_the_key() {
-        let server = CallbackServer::start_in_range(52310, 1).await.expect("start");
+        let server = CallbackServer::start_in_range(52310, 1)
+            .await
+            .expect("start");
         let port = server.port;
         let state = server.state.clone();
         let payload = body(port).replace(&port.to_string(), &state);
-        let waiter = tokio::spawn(async move { server.wait(std::time::Duration::from_secs(5)).await });
+        let waiter =
+            tokio::spawn(async move { server.wait(std::time::Duration::from_secs(5)).await });
         let response = post(port, "/callback", &payload).await;
         assert!(response.starts_with("HTTP/1.1 200"));
         assert_eq!(waiter.await.expect("join").expect("key"), "cc_live_key");
@@ -385,9 +384,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_wrong_state_is_rejected_and_keeps_waiting() {
-        let server = CallbackServer::start_in_range(52320, 1).await.expect("start");
+        let server = CallbackServer::start_in_range(52320, 1)
+            .await
+            .expect("start");
         let port = server.port;
-        let waiter = tokio::spawn(async move { server.wait(std::time::Duration::from_secs(1)).await });
+        let waiter =
+            tokio::spawn(async move { server.wait(std::time::Duration::from_secs(1)).await });
         let response = post(port, "/callback", &body(port)).await;
         assert!(response.starts_with("HTTP/1.1 403"));
         assert!(waiter.await.expect("join").is_err());
@@ -395,9 +397,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_denied_login_fails_with_the_description() {
-        let server = CallbackServer::start_in_range(52330, 1).await.expect("start");
+        let server = CallbackServer::start_in_range(52330, 1)
+            .await
+            .expect("start");
         let port = server.port;
-        let waiter = tokio::spawn(async move { server.wait(std::time::Duration::from_secs(5)).await });
+        let waiter =
+            tokio::spawn(async move { server.wait(std::time::Duration::from_secs(5)).await });
         let response = post(
             port,
             "/callback",

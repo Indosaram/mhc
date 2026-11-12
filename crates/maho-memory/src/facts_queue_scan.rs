@@ -65,6 +65,7 @@ pub fn scan_queue_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facts_schema::queue_timestamp;
     use std::fs;
 
     fn entry_json(conversation_id: &str) -> String {
@@ -84,9 +85,11 @@ mod tests {
         .to_string()
     }
 
+    /// Mirrors the real naming rule: the timestamp is part of the name so a re-enqueue is a new
+    /// file, and `:` is stripped because it is illegal in a file name on Windows.
     fn entry_name(conversation_id: &str, at: &str) -> String {
         let hash = queue_conversation_hash(conversation_id);
-        format!("{at}-{hash}-m2.json")
+        format!("{}-{hash}-m2.json", queue_timestamp(at))
     }
 
     #[test]

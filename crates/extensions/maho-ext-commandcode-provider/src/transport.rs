@@ -1,8 +1,6 @@
 use crate::contract::ProviderEnv;
 use maho_ai::model::Model;
-use maho_ai::types::{
-    AssistantMessageEventStream, Context, SimpleStreamOptions, ThinkingLevel,
-};
+use maho_ai::types::{AssistantMessageEventStream, Context, SimpleStreamOptions, ThinkingLevel};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -56,11 +54,7 @@ impl TransportRouter {
     }
 }
 
-pub fn decide(
-    router: &TransportRouter,
-    key: &str,
-    upgrade_observed: bool,
-) -> CommandCodeTransport {
+pub fn decide(router: &TransportRouter, key: &str, upgrade_observed: bool) -> CommandCodeTransport {
     if router.transport_for(key) == CommandCodeTransport::Generate {
         return CommandCodeTransport::Generate;
     }
@@ -106,7 +100,10 @@ pub fn apply_request_headers(
     );
     insert("x-cli-environment", "production".to_owned());
     insert("x-project-slug", crate::contract::project_slug(&env.cwd));
-    if zdr_enabled(std::env::var("CMD_ZDR").ok().as_deref(), std::env::var("COMMANDCODE_ZDR").ok().as_deref()) {
+    if zdr_enabled(
+        std::env::var("CMD_ZDR").ok().as_deref(),
+        std::env::var("COMMANDCODE_ZDR").ok().as_deref(),
+    ) {
         insert("x-cmd-zdr", "1".to_owned());
     }
     if let Some(session) = options
@@ -261,21 +258,33 @@ mod tests {
             403,
             &json!({"error": {"code": "upgrade_required"}})
         ));
-        assert!(is_upgrade_required(403, &json!({"code": "upgrade_required"})));
+        assert!(is_upgrade_required(
+            403,
+            &json!({"code": "upgrade_required"})
+        ));
         assert!(!is_upgrade_required(
             500,
             &json!({"error": {"code": "upgrade_required"}})
         ));
-        assert!(!is_upgrade_required(403, &json!({"error": {"code": "other"}})));
+        assert!(!is_upgrade_required(
+            403,
+            &json!({"error": {"code": "other"}})
+        ));
         assert!(!is_upgrade_required(403, &json!({})));
     }
 
     #[test]
     fn an_upgraded_key_stays_on_the_generate_transport() {
         let router = TransportRouter::default();
-        assert_eq!(decide(&router, "key", false), CommandCodeTransport::Provider);
+        assert_eq!(
+            decide(&router, "key", false),
+            CommandCodeTransport::Provider
+        );
         assert_eq!(decide(&router, "key", true), CommandCodeTransport::Generate);
-        assert_eq!(decide(&router, "key", false), CommandCodeTransport::Generate);
+        assert_eq!(
+            decide(&router, "key", false),
+            CommandCodeTransport::Generate
+        );
         assert_eq!(router.transport_for("other"), CommandCodeTransport::Unknown);
     }
 
@@ -313,6 +322,9 @@ mod tests {
         let target = request_target(&model, &env);
         assert_eq!(target.api, "anthropic-messages");
         assert_eq!(target.base_url, "https://api.commandcode.ai/provider");
-        assert_eq!(crate::catalog::api_for_model_id("gpt-5.4"), "openai-completions");
+        assert_eq!(
+            crate::catalog::api_for_model_id("gpt-5.4"),
+            "openai-completions"
+        );
     }
 }

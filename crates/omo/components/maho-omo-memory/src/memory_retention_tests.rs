@@ -181,10 +181,11 @@ fn absent_runtime_trees_are_not_an_error() {
     assert!(prune_runtime(&paths, &options()).is_empty());
 }
 
+/// Applies to files and directories alike: `File::open` on a directory fails on Windows, and the
+/// retention scan mtime-checks both.
 fn set_mtime(path: &PathBuf, at_ms: u64) {
     let at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(at_ms);
-    let file = fs::File::open(path).unwrap();
-    file.set_modified(at).unwrap();
+    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(at)).unwrap();
 }
 
 /// File times are derived from the injected clock so no test depends on wall time.

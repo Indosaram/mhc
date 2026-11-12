@@ -723,6 +723,12 @@ fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
     let Ok(top) = git_toplevel(dir) else {
         return Ok(Vec::new());
     };
+    // `git rev-parse --show-toplevel` reports the work tree's *real* path, so a `/var/...` tempdir
+    // comes back as `/private/var/...` on macOS and an 8.3 short name comes back long on Windows.
+    // Comparing `path` against that without canonicalizing both sides finds no repository and silently
+    // imports zero revisions, so both sides are resolved the same way.
+    let top = top.canonicalize().unwrap_or(top);
+    let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let Ok(rel) = path.strip_prefix(&top) else {
         return Ok(Vec::new());
     };

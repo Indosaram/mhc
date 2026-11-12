@@ -19,8 +19,9 @@ pub const POWERSHELL_ARGS: [&str; 5] = [
 /// `where`/`which` costs a process launch per call, and the answer cannot change while this
 /// process runs, so one probe per executable name is memoized.
 fn find_executable_on_path(executable: &'static str) -> Option<String> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<&'static str, Option<String>>>> =
-        std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<&'static str, Option<String>>>,
+    > = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
     if let Some(cached) = cache
         .lock()

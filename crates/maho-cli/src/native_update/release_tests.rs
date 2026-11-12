@@ -1,6 +1,14 @@
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// The archive name this build's own profile publishes. `latest_from_endpoint` resolves assets with
+/// `asset_name_for_target`, which follows the build profile, so a MIT-profile test binary must serve
+/// `-mit` names or every lookup fails before the assertion under test is reached.
+fn own_asset(target: &str) -> String {
+    asset_name_for_target_in_profile(target, crate::native_update::signature::PROFILE)
+        .expect("own asset name")
+}
+
 #[test]
 fn offline_flags_require_an_explicit_truthy_value() {
     for value in [None, Some(""), Some("0"), Some("false"), Some("no")] {
@@ -48,26 +56,26 @@ fn target_mapping_covers_known_platforms_and_rejects_unknown() {
 #[test]
 fn asset_names_map_to_expected_package_archives() {
     assert_eq!(
-        asset_name_for_target("linux-x86_64"),
+        asset_name_for_target_in_profile("linux-x86_64", "sul"),
         Ok("mhc-linux-x86_64.tar.gz".to_string())
     );
     assert_eq!(
-        asset_name_for_target("macos-aarch64"),
+        asset_name_for_target_in_profile("macos-aarch64", "sul"),
         Ok("mhc-macos-aarch64.tar.gz".to_string())
     );
     assert_eq!(
-        asset_name_for_target("linux-aarch64"),
+        asset_name_for_target_in_profile("linux-aarch64", "sul"),
         Ok("mhc-linux-aarch64.tar.gz".to_string())
     );
     assert_eq!(
-        asset_name_for_target("macos-x86_64"),
+        asset_name_for_target_in_profile("macos-x86_64", "sul"),
         Ok("mhc-macos-x86_64.tar.gz".to_string())
     );
     assert_eq!(
-        asset_name_for_target("windows-x86_64"),
+        asset_name_for_target_in_profile("windows-x86_64", "sul"),
         Ok("mhc-windows-x86_64.zip".to_string())
     );
-    assert!(asset_name_for_target("freebsd-x86_64").is_err());
+    assert!(asset_name_for_target_in_profile("freebsd-x86_64", "sul").is_err());
 }
 
 /// The MIT profile publishes under its own asset names; an update from an MIT install must resolve
@@ -324,21 +332,24 @@ async fn start_mock_release_server(
 
 #[tokio::test]
 async fn latest_resolves_valid_release_and_assets() {
+    let asset = own_asset("linux-x86_64");
+    let checksum = format!("{asset}.sha256");
     let release_json = serde_json::json!({
         "tag_name": "v2026.10.20.1",
         "draft": false,
         "prerelease": false,
         "assets": [
             {
-                "name": "mhc-linux-x86_64.tar.gz",
-                "browser_download_url": "http://127.0.0.1:8999/download/mhc-linux-x86_64.tar.gz"
+                "name": asset,
+                "browser_download_url": format!("http://127.0.0.1:8999/download/{asset}")
             },
             {
-                "name": "mhc-linux-x86_64.tar.gz.sha256",
-                "browser_download_url": "http://127.0.0.1:8999/download/mhc-linux-x86_64.tar.gz.sha256"
+                "name": checksum,
+                "browser_download_url": format!("http://127.0.0.1:8999/download/{checksum}")
             }
         ]
-    }).to_string();
+    })
+    .to_string();
 
     let (url, server) = start_mock_release_server(release_json, "200 OK").await;
     let release = latest_from_endpoint(Some(&url), Some("linux-x86_64"))
@@ -348,14 +359,14 @@ async fn latest_resolves_valid_release_and_assets() {
 
     assert_eq!(release.version, "2026.10.20.1");
     assert_eq!(release.tag, "v2026.10.20.1");
-    assert_eq!(release.asset_name, "mhc-linux-x86_64.tar.gz");
+    assert_eq!(release.asset_name, asset);
     assert_eq!(
         release.asset_url,
-        "http://127.0.0.1:8999/download/mhc-linux-x86_64.tar.gz"
+        format!("http://127.0.0.1:8999/download/{asset}")
     );
     assert_eq!(
         release.checksum_url,
-        "http://127.0.0.1:8999/download/mhc-linux-x86_64.tar.gz.sha256"
+        format!("http://127.0.0.1:8999/download/{checksum}")
     );
 }
 
@@ -439,14 +450,15 @@ async fn latest_rejects_missing_target_asset() {
 
 #[tokio::test]
 async fn latest_rejects_missing_checksum_asset() {
+    let asset = own_asset("linux-x86_64");
     let release_json = serde_json::json!({
         "tag_name": "v2026.10.20.1",
         "draft": false,
         "prerelease": false,
         "assets": [
             {
-                "name": "mhc-linux-x86_64.tar.gz",
-                "browser_download_url": "http://127.0.0.1:8999/download/mhc-linux-x86_64.tar.gz"
+                "name": asset,
+                "browser_download_url": format!("http://127.0.0.1:8999/download/{asset}")
             }
         ]
     })
@@ -503,21 +515,24 @@ async fn latest_rejects_non_loopback_http_endpoint() {
 
 #[tokio::test]
 async fn latest_rejects_non_loopback_asset_url_from_loopback_endpoint() {
+    let asset = own_asset("linux-x86_64");
+    let checksum = format!("{asset}.sha256");
     let release_json = serde_json::json!({
         "tag_name": "v2026.10.20.1",
         "draft": false,
         "prerelease": false,
         "assets": [
             {
-                "name": "mhc-linux-x86_64.tar.gz",
-                "browser_download_url": "http://evil.com/mhc-linux-x86_64.tar.gz"
+                "name": asset,
+                "browser_download_url": format!("http://evil.com/{asset}")
             },
             {
-                "name": "mhc-linux-x86_64.tar.gz.sha256",
-                "browser_download_url": "http://127.0.0.1:8999/download/mhc-linux-x86_64.tar.gz.sha256"
+                "name": checksum,
+                "browser_download_url": format!("http://127.0.0.1:8999/download/{checksum}")
             }
         ]
-    }).to_string();
+    })
+    .to_string();
 
     let (url, server) = start_mock_release_server(release_json, "200 OK").await;
     let result = latest_from_endpoint(Some(&url), Some("linux-x86_64")).await;

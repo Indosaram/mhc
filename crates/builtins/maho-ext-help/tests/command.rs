@@ -265,6 +265,34 @@ fn adds_help_to_the_loaded_extension_command_list() {
 }
 
 #[test]
+fn a_stop_makes_the_command_list_describe_resume_as_resuming_this_session() {
+    // The same `/resume` resumes a Stop-held session and opens the picker otherwise; the list must
+    // describe the behaviour the user's next Enter performs, not one fixed meaning.
+    assert!(maho_ext_help::pause_state_holds_the_session(
+        &serde_json::json!({
+            "pauseSeq": 3,
+            "holds": [{"kind": "session_hold", "key": "stop"}]
+        })
+    ));
+    assert!(maho_ext_help::pause_state_holds_the_session(
+        &serde_json::json!({
+            "pauseSeq": 4,
+            "holds": [{"kind": "run_fence", "key": "run:dag:r"}]
+        })
+    ));
+    assert!(!maho_ext_help::pause_state_holds_the_session(
+        &serde_json::json!({"pauseSeq": 0, "holds": []})
+    ));
+
+    let idle = maho_ext_help::help_markdown(Vec::new());
+    let paused = maho_ext_help::help_markdown_for(Vec::new(), true);
+    assert!(
+        idle.contains("/resume — Resume this paused session, or switch to a different session")
+    );
+    assert!(paused.contains("/resume — Resume this paused session\n"));
+}
+
+#[test]
 fn renders_all_help_sections_plus_builtin_and_extension_commands_in_a_focused_overlay() {
     let (api, shown) = registered();
     let ui = Arc::new(Ui::default());

@@ -386,10 +386,9 @@ impl MemoryWiring {
                             .collect::<Vec<_>>();
                         let mut wiring = wiring.lock().await;
                         let mut ui = NativeFooter(context.ui.clone());
-                        wiring.live_hosts.insert(
-                            session.to_owned(),
-                            (api.clone(), context.ui.clone()),
-                        );
+                        wiring
+                            .live_hosts
+                            .insert(session.to_owned(), (api.clone(), context.ui.clone()));
                         let mut live = NativeBindLive {
                             api: maho_ext_api::ExtensionApi::new(
                                 api.registered.clone(),

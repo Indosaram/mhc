@@ -16,10 +16,18 @@ pub struct RuntimeStatus {
 
 pub fn format_status(status: &RuntimeStatus) -> String {
     let transport = status.transport.as_deref().unwrap_or("unknown");
-    let source = status.source.as_ref().map(CatalogSource::as_str).unwrap_or("none");
+    let source = status
+        .source
+        .as_ref()
+        .map(CatalogSource::as_str)
+        .unwrap_or("none");
     let last_success = status.last_success.as_deref().unwrap_or("never");
     let last_attempt = status.last_attempt.as_deref().unwrap_or("never");
-    let refresh = if status.refresh_in_flight { "in progress" } else { "idle" };
+    let refresh = if status.refresh_in_flight {
+        "in progress"
+    } else {
+        "idle"
+    };
     let warning = status.warning.as_deref().unwrap_or("none");
     format!(
         "transport: {transport}\nsource: {source}\nmodels: {}\nlast success: {last_success}\nlast attempt: {last_attempt}\ncache: {}\nendpoint: {}\nrefresh: {refresh}\nwarning: {warning}",
@@ -50,7 +58,11 @@ pub fn status(env: &ProviderEnv) -> RuntimeStatus {
         source: Some(loaded.source),
         model_count: loaded.models.len(),
         last_success: None,
-        last_attempt: Some(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+        last_attempt: Some(
+            chrono::Utc::now()
+                .format("%Y-%m-%d %H:%M:%S UTC")
+                .to_string(),
+        ),
         cache_path: env.cache_path.display().to_string(),
         endpoint: env.models_url.clone(),
         refresh_in_flight: false,

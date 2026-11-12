@@ -252,8 +252,8 @@ impl SqliteDatabase {
         }
         let names: Vec<String> = prepared
             .column_names()
-            .iter()
-            .map(|name| (*name).to_string())
+            .into_iter()
+            .map(str::to_string)
             .collect();
         let mut rows = prepared.query(params_from_iter(params)).map_err(db_error)?;
         let mut out = Vec::new();
