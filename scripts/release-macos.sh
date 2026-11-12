@@ -68,10 +68,9 @@ fi
 
 mit_name=mhc-macos-aarch64-mit
 MHC_BUILD_VERSION="$version" cargo build --release --locked --no-default-features -p maho-cli --bins
-test "$(target_dir="${CARGO_TARGET_DIR:-$repo/target}"; "$target_dir/release/mhc" --version | tr -d '\r')" = "$version"
-mit_rel="${CARGO_TARGET_DIR:-$repo/target}/release"
+test "$("$target_dir/release/mhc" --version | tr -d '\r')" = "$version"
 mit_stage="$work/dist/$mit_name"
-bun tools/package-native.mjs --mit --binary "$mit_rel/mhc" --launcher-binary "$mit_rel/mhc-launcher" --output "$mit_stage"
+bun tools/package-native.mjs --mit --binary "$target_dir/release/mhc" --launcher-binary "$target_dir/release/mhc-launcher" --output "$mit_stage"
 bun tools/package-native.mjs --verify-only "$mit_stage"
 node -e 'const m=require(process.argv[1]+"/manifest.json");if(m.profile!=="mit")throw new Error("staged manifest is not the mit profile")' "$mit_stage"
 scripts/package-archive.sh "$work/dist" "$mit_name"
