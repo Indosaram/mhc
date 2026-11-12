@@ -8,10 +8,6 @@ fn escape_table_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
 
-pub fn build_help_markdown(extension_commands: &[SlashCommandInfo]) -> String {
-    build_help_markdown_with_state(extension_commands, false)
-}
-
 /// `paused`: a Stop or a paused run holds the session, so `/resume` resumes this session.
 pub fn build_help_markdown_with_state(
     extension_commands: &[SlashCommandInfo],
