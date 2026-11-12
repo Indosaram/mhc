@@ -194,6 +194,13 @@ copied into a new place unless the user enabled people memory.
     appears in this file's history, and importing unchanged text stores the same memory twice.
   - With history on, the newest revision *is* the current file, so the working-tree pass covers
     only files whose history could not be read (untracked files, or a root outside a work tree).
+- Reading history back out: `mhc memory search --at <iso> <query>` answers against that instant
+  rather than now (`MemoryContext::recall_at`; the same `RecallOptions::valid_at` the library has
+  had all along). The argument is parsed and re-rendered in the storage shape before it reaches
+  SQL, because rows are `YYYY-MM-DDTHH:MM:SS.mmmZ` and a date-only or offset argument compared as
+  text lands on the wrong side of a deadline; an unparseable argument is an error rather than a
+  silent fallback to now. The listing header names the resolved instant, so
+  `2026-06-01T00:30:00+09:00` reports `2026-05-31T15:30:00.000Z`.
     Importing both stores every block twice under two different timestamps.
 - The repo is resolved per file, not per content root: `--from` may point at an identity directory
   or the store root, neither of which is itself a work tree, while the repo is `agents/<id>/repo/`
