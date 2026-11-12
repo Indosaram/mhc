@@ -13,6 +13,10 @@ cd "$repo"
 
 win_host="${MHC_WIN_HOST:-win-new}"
 win_protoc="${MHC_WIN_PROTOC:-C:/Users/sook/build/protoc/bin/protoc.exe}"
+# /tmp is a RAM-backed tmpfs on Linux hosts; a full tree copy plus bun install
+# there consumes memory and dies as "Disk quota exceeded". Stage off the tmpfs.
+export TMPDIR="${MHC_RELEASE_TMPDIR:-${TMPDIR:-/var/tmp}}"
+mkdir -p "$TMPDIR"
 mac_host="${MHC_MAC_HOST:-maho-mac}"
 out_root="${MHC_RELEASE_OUT:-$HOME/.cache/mhc-release-$version}"
 unix_dir="$out_root/unix"

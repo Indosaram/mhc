@@ -19,7 +19,7 @@ target_dir="${CARGO_TARGET_DIR:-$repo/target}"
 case "$target_dir" in /*) ;; *) target_dir="$repo/$target_dir" ;; esac
 export CARGO_TARGET_DIR="$target_dir"
 name=mhc-macos-aarch64
-work="$(mktemp -d)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/mhc-rel-XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 omowright_commit() {
