@@ -235,70 +235,7 @@ fn split_frontmatter(text: &str) -> (Option<Value>, &str, Option<String>) {
 /// `+HH:MM` / `-HH:MM`; surrounding whitespace is ignored and sub-millisecond digits are
 /// truncated. Anything else (impossible dates, out-of-range fields, no zone) yields `None`.
 pub fn parse_expires(value: &str) -> Option<i64> {
-    let text = value.trim();
-    let bytes = text.as_bytes();
-    let digits = |range: std::ops::Range<usize>| -> Option<u32> {
-        let part = bytes.get(range)?;
-        if part.is_empty() || !part.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        part.iter()
-            .try_fold(0u32, |acc, digit| Some(acc * 10 + u32::from(digit - b'0')))
-    };
-    if bytes.len() < 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return None;
-    }
-    let year = i32::try_from(digits(0..4)?).ok()?;
-    let date = chrono::NaiveDate::from_ymd_opt(year, digits(5..7)?, digits(8..10)?)?;
-    if bytes.len() == 10 {
-        return Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
-    }
-    if bytes[10] != b'T' || bytes.get(13) != Some(&b':') {
-        return None;
-    }
-    let hour = digits(11..13)?;
-    let minute = digits(14..16)?;
-    let mut at = 16;
-    let mut second = 0;
-    let mut millis = 0;
-    if bytes.get(at) == Some(&b':') {
-        second = digits(at + 1..at + 3)?;
-        at += 3;
-        if bytes.get(at) == Some(&b'.') {
-            let start = at + 1;
-            let len = bytes[start..]
-                .iter()
-                .take_while(|byte| byte.is_ascii_digit())
-                .count();
-            if !(1..=9).contains(&len) {
-                return None;
-            }
-            let fraction = &text[start..start + len.min(3)];
-            millis = format!("{fraction:0<3}").parse().ok()?;
-            at = start + len;
-        }
-    }
-    if hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    let offset_minutes: i64 = match &bytes[at..] {
-        [b'Z'] => 0,
-        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
-            let offset_hour = digits(at + 1..at + 3)?;
-            let offset_minute = digits(at + 4..at + 6)?;
-            if offset_hour > 23 || offset_minute > 59 {
-                return None;
-            }
-            let total = i64::from(offset_hour * 60 + offset_minute);
-            if *sign == b'-' { -total } else { total }
-        }
-        _ => return None,
-    };
-    let local = date
-        .and_hms_milli_opt(hour, minute, second, millis)?
-        .and_utc()
-        .timestamp_millis();
-    Some(local - offset_minutes * 60_000)
+    crate::expiry::parse_expiry_instant(value.trim())
 }
 
 /// Formats epoch milliseconds the way the store stamps times (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
@@ -1671,6 +1608,33 @@ mod tests {
             closed.starts_with("2026-02-01"),
             "the file's own expiry ends the row, not the later commit: {closed}"
         );
+    }
+
+    #[test]
+    fn the_importer_and_expiry_module_agree_on_every_spec_case() {
+        let cases = [
+            "2031-03-14",
+            "2031-03-14T00:00",
+            "2031-03-14T10:20:30Z",
+            "2031-03-14T10:20:30.123Z",
+            "2031-03-14T10:20:30.123456789Z",
+            "2031-03-14T10:20:30+09:00",
+            "2031-03-14T10:20:30-05:30",
+            "2031-04-31",
+            "2031-03-14T25:00:00Z",
+            "2031-03-14T10:20:30",
+            "2031-03-14 10:20:30Z",
+            "2031-03-14T10:20:60Z",
+            "not a date",
+            "",
+        ];
+        for case in cases {
+            assert_eq!(
+                parse_expires(case),
+                crate::expiry::parse_expiry_instant(case),
+                "the two expiry parsers disagree on {case:?}"
+            );
+        }
     }
 
     #[test]
