@@ -2,7 +2,8 @@
 
 `maho-memory` declares 85 modules. **19 are reachable** from a real entry point
 (`extension`, `store`, `recall`, `legacy`, `mcp`, `kibitzer`, `reflection`) and **66 are not**.
-Those 66 hold 26,207 lines and 1,158 unit tests that no user can reach.
+Those 66 hold 26,207 lines and 1,158 unit tests that no user can reach. (Counts below include
+`lib.rs` itself, which is why they read 86 and 20.)
 
 This file exists so that unwired surface stops reading as progress. A module is listed here because
 it is *deliberately* not wired yet, with the reason. Nothing here is a completed feature.
@@ -91,5 +92,23 @@ needs YAML parsing across stacked blocks, so they are different contracts rather
 ## Open decision
 
 Whether this crate keeps two architectures at all is unresolved. The options are: delete the
-unwired half, keep both with separated roles, or move the corpus half into its own crate. Until that
-is settled, nothing here should be deleted, and nothing here should be counted as shipped.
+unwired half, keep both with separated roles, or move the corpus half into its own crate.
+
+**Where it stands (2026-11-12).** Keep both, with the boundary documented and proven — that is the
+current state, and it is now a decision rather than an accident, for three reasons:
+
+1. Deletion is *possible* (the compiler proof above) but not *desirable yet*. The user's standing
+   requirement is to include every feature, and the producers these modules need are on the
+   Phase 1-8 track, not abandoned. Deleting 26,207 lines to make a number look better would have to
+   be undone.
+2. A crate split would not help today. The corpus half has 23 one-way dependencies into
+   `store`/`redact`/`frontmatter`/`text`/`normalize`/`cursor`/`time_format`, so a
+   `maho-memory-corpus` crate would either duplicate them or drag them along — and a crate that
+   nothing depends on hides dead code instead of revealing it.
+3. The real problem was never the file layout. It was that unwired modules read as progress. The
+   cluster table and the compiler proof fix that directly.
+
+So the fork becomes actionable only when one of two things happens: the reflection runner and the
+facts-extraction producer get scheduled (then wire these modules), or that track is abandoned (then
+delete them — the proof above shows nothing else breaks). Until then, nothing here should be deleted,
+and nothing here should be counted as shipped.
