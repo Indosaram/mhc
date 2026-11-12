@@ -16,8 +16,10 @@ targets even though `.github/workflows/release.yml` lists them. Check the previo
 release's asset list before building.
 
 Each target ships two profiles: the default (`mhc-<target>`) and the MIT profile
-(`mhc-<target>-mit`, built with `--no-default-features`). Asset names carry no
-version so `releases/latest/download/<name>` always resolves.
+(`mhc-<target>-mit`, built with `--no-default-features`). Each per-target script
+builds both; set `MHC_RELEASE_SKIP_MIT=1` (or `-SkipMit` on Windows) to build
+only the default profile. Asset names carry no version so
+`releases/latest/download/<name>` always resolves.
 
 ## Versioning
 
@@ -89,6 +91,13 @@ shell semantics. `agents stop` aborts a turn that has gone wrong.
 
 `ferryx-cli file cp` resolves its source path on the MacBook where the CLI runs,
 not locally, and can return `PAIRED_HOST_CAPABILITY_UNAVAILABLE`.
+
+### All hosts: run the scripts from inside the repo
+
+`release-windows.ps1` reads `assets/omo-latest/manifest.json` relative to the
+repository root, so invoking a copy that lives outside the checkout fails on the
+manifest lookup. It now resolves the manifest to an absolute path and reports
+when it is missing.
 
 ## Signing and publishing
 
