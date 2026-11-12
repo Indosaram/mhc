@@ -178,7 +178,16 @@ fn veracity_weight(label: &str) -> f64 {
 }
 
 fn valid_at(options: &RecallOptions) -> String {
-    options.valid_at.clone().unwrap_or_else(now_iso)
+    match options.valid_at.as_deref() {
+        // The comparison in `visibility` and `fts_hits` is textual, so the boundary has to be in
+        // the same shape the rows are written in. A caller passing `2026-03-01` or an offset form
+        // would otherwise compare as a string and land on the wrong side of a deadline; a value
+        // that does not parse at all would sort above every row and silently mean "now".
+        Some(given) => crate::expiry::parse_expiry_instant(given)
+            .and_then(crate::time_format::format_millis)
+            .unwrap_or_else(now_iso),
+        None => now_iso(),
+    }
 }
 
 fn tier_weight(tier: i64) -> f64 {

@@ -16,7 +16,8 @@ const USAGE: &str = "Usage: mhc memory <command>
 
 Commands:
   status                         Banks for this directory and their sizes
-  search <query>                 Recall memories for this directory
+  search [--at <iso>] <query>     Recall memories for this directory; --at asks what was
+                                 true at that instant, against imported git history
   remember [--global] <text>     Store a memory in this project's bank (or the global bank)
   search-sessions [--include-hidden] <query>
                                  Search past session transcripts
@@ -155,14 +156,33 @@ pub fn run_memory_command(args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         Some("search") => {
-            if rest.is_empty() {
-                return Err("usage: mhc memory search <query>".into());
+            let mut at: Option<&str> = None;
+            let mut terms: Vec<&str> = Vec::new();
+            let mut rest_iter = rest.iter().map(String::as_str);
+            while let Some(arg) = rest_iter.next() {
+                if let Some(value) = arg.strip_prefix("--at=") {
+                    at = Some(value);
+                } else if arg == "--at" {
+                    at = Some(rest_iter.next().ok_or_else(|| {
+                        "--at needs an ISO instant, e.g. --at 2026-03-01".to_string()
+                    })?);
+                } else {
+                    terms.push(arg);
+                }
             }
-            let results = memory.recall(&rest.join(" "), 10)?;
+            if terms.is_empty() {
+                return Err("usage: mhc memory search [--at <iso>] <query>".into());
+            }
+            let (results, resolved) = memory.recall_at(&terms.join(" "), 10, at)?;
             if results.is_empty() {
                 print("No relevant memories found.");
             } else {
-                print(&maho_memory::extension::recall_listing(&results));
+                match resolved {
+                    Some(instant) => print(&maho_memory::extension::recall_listing_at(
+                        &results, &instant,
+                    )),
+                    None => print(&maho_memory::extension::recall_listing(&results)),
+                }
             }
             Ok(0)
         }

@@ -1532,6 +1532,53 @@ mod tests {
             !now.iter().any(|hit| hit.content.contains("original")),
             "a superseded wording is not recallable now: {now:?}"
         );
+
+        // The date-only form is what a person types, and `2026-06-01T00:30:00+09:00` is the same
+        // instant as `2026-05-31T15:30:00Z` -- before the June change. Comparing it as text would
+        // read the June date part and hand back the replacement instead of the original.
+        for given in ["2026-05-31", "2026-06-01T00:30:00+09:00"] {
+            let past = store
+                .recall(
+                    "wording",
+                    5,
+                    &RecallOptions {
+                        valid_at: Some(given.into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("recall");
+            assert!(
+                past.iter().any(|hit| hit.content.contains("original")),
+                "{given} selects the wording from that instant: {past:?}"
+            );
+            assert!(
+                !past.iter().any(|hit| hit.content.contains("replacement")),
+                "{given} does not see a later wording: {past:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_at_that_does_not_parse_is_now_rather_than_a_silent_match() {
+        let store = Store::open_in_memory("s").expect("store");
+        store
+            .remember("the release is on tuesday", &RememberOptions::default())
+            .expect("remember");
+        let hits = store
+            .recall(
+                "release",
+                5,
+                &RecallOptions {
+                    valid_at: Some("last tuesday".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("recall");
+        assert_eq!(
+            hits.len(),
+            1,
+            "an unparseable bound falls back to now, so a live row is still visible"
+        );
     }
 
     #[test]

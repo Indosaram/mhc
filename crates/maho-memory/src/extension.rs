@@ -116,8 +116,34 @@ impl MemoryContext {
     /// Recalls from every recall bank and merges: best score wins per id/content, then newer, then
     /// content order.
     pub fn recall(&self, query: &str, limit: usize) -> Result<Vec<RecallResult>, String> {
+        self.recall_at(query, limit, None).map(|(hits, _)| hits)
+    }
+
+    /// As [`Self::recall`], but answers "what was true at `valid_at`" rather than "what is true
+    /// now". The store keeps every revision of a block, so a past instant selects the revision
+    /// that was live then; passing `None` is the same as [`Self::recall`].
+    ///
+    /// Returns the resolved instant with the hits so a caller can label the answer with the time it
+    /// describes; an unparseable bound is an error rather than a silent fallback to now.
+    pub fn recall_at(
+        &self,
+        query: &str,
+        limit: usize,
+        valid_at: Option<&str>,
+    ) -> Result<(Vec<RecallResult>, Option<String>), String> {
+        let resolved = match valid_at {
+            Some(given) => Some(
+                crate::expiry::parse_expiry_instant(given)
+                    .and_then(crate::time_format::format_millis)
+                    .ok_or_else(|| {
+                        format!("`{given}` is not an instant (try 2026-03-01 or 2026-03-01T10:30Z)")
+                    })?,
+            ),
+            None => None,
+        };
         let options = RecallOptions {
             ignore_session_scope: true,
+            valid_at: resolved.clone(),
             ..Default::default()
         };
         let mut merged: Vec<RecallResult> = Vec::new();
@@ -145,7 +171,7 @@ impl MemoryContext {
                 .then_with(|| left.content.cmp(&right.content))
         });
         merged.truncate(limit);
-        Ok(merged)
+        Ok((merged, resolved))
     }
 
     fn existing_banks(&self) -> Vec<&str> {
@@ -252,14 +278,20 @@ pub fn recall_block(results: &[RecallResult]) -> String {
 
 /// The `recall` tool's listing, with ids.
 pub fn recall_listing(results: &[RecallResult]) -> String {
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M");
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+    recall_listing_at(results, &now)
+}
+
+/// As [`recall_listing`], but naming the instant the answer describes, so a question about the past
+/// is not labelled with the current time.
+pub fn recall_listing_at(results: &[RecallResult], as_of: &str) -> String {
     let noun = if results.len() == 1 {
         "memory"
     } else {
         "memories"
     };
     let mut text = format!(
-        "Found {} relevant {noun} (as of {now} UTC):\n",
+        "Found {} relevant {noun} (as of {as_of} UTC):\n",
         results.len()
     );
     for result in results {
