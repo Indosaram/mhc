@@ -10,7 +10,7 @@ use get_worker::{
     ReleaseStore, RequestContext, Response, Row, Statement, StoreError, StoredObject, Value,
 };
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{Connection, Error as SqlError, params_from_iter};
+use rusqlite::{params_from_iter, Connection, Error as SqlError};
 
 /// One stored object: its bytes plus the `R2HTTPMetadata` an `R2Bucket.put` would attach.
 #[derive(Clone, Default)]
@@ -250,11 +250,7 @@ impl SqliteDatabase {
                 .map_err(db_error)?;
             return Ok(Vec::new());
         }
-        let names: Vec<String> = prepared
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let names: Vec<String> = prepared.column_names().map(str::to_owned).collect();
         let mut rows = prepared.query(params_from_iter(params)).map_err(db_error)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(db_error)? {

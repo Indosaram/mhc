@@ -146,11 +146,7 @@ impl SqlAccess for StoreContext {
 
     fn one(&self, sql: &str, params: &[SqliteValue]) -> Result<Option<SqlRow>, StoreError> {
         let mut statement = self.conn.prepare(sql)?;
-        let columns: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_map(row, &columns)?)),
@@ -160,11 +156,7 @@ impl SqlAccess for StoreContext {
 
     fn all(&self, sql: &str, params: &[SqliteValue]) -> Result<Vec<SqlRow>, StoreError> {
         let mut statement = self.conn.prepare(sql)?;
-        let columns: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
         let mut collected = Vec::new();
         while let Some(row) = rows.next()? {
