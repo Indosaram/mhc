@@ -19,6 +19,9 @@ Commands:
   search [--at <iso>] <query>     Recall memories for this directory; --at asks what was
                                  true at that instant, against imported git history
   remember [--global] <text>     Store a memory in this project's bank (or the global bank)
+  forget <memory-id>             Permanently delete one memory from this directory's banks
+  update <memory-id> [--content <text>] [--importance <0..1>]
+                                 Replace a memory's text or importance
   search-sessions [--include-hidden] <query>
                                  Search past session transcripts
   prune                          Drop rows past the retention windows (30d working, 90d episodic)
@@ -205,6 +208,52 @@ pub fn run_memory_command(args: &[String]) -> Result<i32, String> {
                     memory.scope().bank.as_str()
                 }
             ));
+            Ok(0)
+        }
+        Some("forget") => {
+            let id = match rest.first() {
+                Some(id) if !id.starts_with("--") => id.as_str(),
+                _ => return Err("usage: mhc memory forget <memory-id>".into()),
+            };
+            match memory.forget(id)? {
+                Some(bank) => print(&format!("Deleted memory {id} from bank {bank}.")),
+                None => print(&format!("No memory {id} in this directory's banks.")),
+            }
+            Ok(0)
+        }
+        Some("update") => {
+            let mut id: Option<&str> = None;
+            let mut content: Option<&str> = None;
+            let mut importance: Option<f64> = None;
+            let mut iter = rest.iter();
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--content" => content = Some(iter.next().ok_or("--content needs text")?),
+                    "--importance" => {
+                        let raw = iter.next().ok_or("--importance needs a number (0..1)")?;
+                        let value: f64 = raw.parse().map_err(|_| format!("not a number: {raw}"))?;
+                        if !(0.0..=1.0).contains(&value) {
+                            return Err(format!("importance must be within 0..=1, got {value}"));
+                        }
+                        importance = Some(value);
+                    }
+                    other if id.is_none() && !other.starts_with("--") => id = Some(other),
+                    other => return Err(format!("unknown update option: {other}")),
+                }
+            }
+            let Some(id) = id else {
+                return Err(
+                    "usage: mhc memory update <memory-id> [--content <text>] [--importance <0..1>]"
+                        .into(),
+                );
+            };
+            if content.is_none() && importance.is_none() {
+                return Err("nothing to change: pass --content and/or --importance".into());
+            }
+            match memory.update(id, content, importance)? {
+                Some(bank) => print(&format!("Updated memory {id} in bank {bank}.")),
+                None => print(&format!("No memory {id} in this directory's banks.")),
+            }
             Ok(0)
         }
         Some("import-legacy") => {

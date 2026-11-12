@@ -194,6 +194,21 @@ impl MemoryContext {
         Ok(None)
     }
 
+    /// Replaces the content and/or importance of the entry with this id in the session's banks.
+    pub fn update(
+        &self,
+        id: &str,
+        content: Option<&str>,
+        importance: Option<f64>,
+    ) -> Result<Option<String>, String> {
+        for bank in self.existing_banks() {
+            if self.open(bank)?.update(id, content, importance)? {
+                return Ok(Some(bank.to_owned()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Deletes the entry with this id from the session's banks.
     pub fn forget(&self, id: &str) -> Result<Option<String>, String> {
         for bank in self.existing_banks() {
@@ -540,6 +555,65 @@ pub fn run_command(
                 Err(error) => error,
             }
         }
+        Some("forget") => match words.next() {
+            None => "Usage: /memory forget <memory-id>".into(),
+            Some(id) => match memory.forget(id) {
+                Ok(Some(bank)) => format!("Deleted memory {id} from bank {bank}."),
+                Ok(None) => format!("No memory {id} in this directory's banks."),
+                Err(error) => error,
+            },
+        },
+        Some("update") => {
+            // `--content` takes the rest of the line, not one word: memory text is prose.
+            let rest_of_line = raw
+                .trim_start()
+                .strip_prefix("update")
+                .unwrap_or("")
+                .trim_start();
+            let Some(id) = rest_of_line.split_whitespace().next() else {
+                return "Usage: /memory update <id> [--content <text>] [--importance <0..1>]"
+                    .into();
+            };
+            let mut tail = rest_of_line.strip_prefix(id).unwrap_or("").trim();
+            let mut content: Option<&str> = None;
+            let mut importance: Option<f64> = None;
+            while !tail.is_empty() {
+                if let Some(rest) = tail.strip_prefix("--content") {
+                    let rest = rest.trim_start();
+                    let end = rest.find("--importance").unwrap_or(rest.len());
+                    let text = rest[..end].trim();
+                    if text.is_empty() {
+                        return "Usage: /memory update <id> [--content <text>] [--importance <0..1>]"
+                            .into();
+                    }
+                    content = Some(text);
+                    tail = rest[end..].trim();
+                } else if let Some(rest) = tail.strip_prefix("--importance") {
+                    let rest = rest.trim_start();
+                    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                    let Ok(value) = rest[..end].parse::<f64>() else {
+                        return "Usage: /memory update <id> [--content <text>] [--importance <0..1>]"
+                            .into();
+                    };
+                    if !(0.0..=1.0).contains(&value) {
+                        return "Usage: /memory update <id> [--content <text>] [--importance <0..1>]"
+                            .into();
+                    }
+                    importance = Some(value);
+                    tail = rest[end..].trim();
+                } else {
+                    return format!("Unknown update option: {tail}");
+                }
+            }
+            if content.is_none() && importance.is_none() {
+                return "Nothing to change: pass --content and/or --importance".into();
+            }
+            match memory.update(id, content, importance) {
+                Ok(Some(bank)) => format!("Updated memory {id} in bank {bank}."),
+                Ok(None) => format!("No memory {id} in this directory's banks."),
+                Err(error) => error,
+            }
+        }
         Some("prune") => match memory.prune(&crate::retention::RetentionPolicy::default()) {
             Ok(reports) if reports.is_empty() => "Nothing to prune.".into(),
             Ok(reports) => {
@@ -557,7 +631,7 @@ pub fn run_command(
             Err(error) => error,
         },
         Some(other) => format!(
-            "Unknown /memory subcommand '{other}'. Use: status, search <query>, prune, import-legacy [--dry-run] [--include-people]"
+            "Unknown /memory subcommand '{other}'. Use: status, search <query>, forget <id>, update <id>, prune, import-legacy [--dry-run] [--include-people]"
         ),
     }
 }
@@ -733,6 +807,64 @@ mod tests {
         );
         assert!(run_command(&memory, &legacy, false, "").contains("Write bank:"));
         assert!(run_command(&memory, &legacy, false, "bogus").starts_with("Unknown"));
+    }
+
+    #[test]
+    fn command_forget_and_update_change_the_bank() {
+        let dir = tempfile::tempdir().expect("dir");
+        let memory = context(dir.path());
+        let legacy = dir.path().join("legacy");
+        let id = memory
+            .retain("rotation happens on fridays", None, false, "s")
+            .expect("retain");
+
+        assert!(
+            run_command(
+                &memory,
+                &legacy,
+                false,
+                &format!("update {id} --content rotation happens on mondays")
+            )
+            .starts_with("Updated")
+        );
+        assert!(run_command(&memory, &legacy, false, "search mondays").contains("on mondays"));
+        assert_eq!(
+            run_command(&memory, &legacy, false, "search fridays"),
+            "No relevant memories found."
+        );
+
+        assert!(
+            run_command(&memory, &legacy, false, &format!("forget {id}")).starts_with("Deleted")
+        );
+        assert_eq!(
+            run_command(&memory, &legacy, false, "search mondays"),
+            "No relevant memories found."
+        );
+        assert!(
+            run_command(&memory, &legacy, false, &format!("forget {id}")).starts_with("No memory")
+        );
+    }
+
+    #[test]
+    fn command_update_rejects_an_out_of_range_importance() {
+        let dir = tempfile::tempdir().expect("dir");
+        let memory = context(dir.path());
+        let legacy = dir.path().join("legacy");
+        let id = memory.retain("a note", None, false, "s").expect("retain");
+        assert!(
+            run_command(
+                &memory,
+                &legacy,
+                false,
+                &format!("update {id} --importance 5")
+            )
+            .starts_with("Usage:")
+        );
+        assert!(
+            run_command(&memory, &legacy, false, &format!("update {id}"))
+                .starts_with("Nothing to change")
+        );
+        assert!(run_command(&memory, &legacy, false, "forget").starts_with("Usage:"));
     }
 
     #[test]
