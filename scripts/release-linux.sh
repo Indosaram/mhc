@@ -3,7 +3,7 @@
 #
 # Usage: scripts/release-linux.sh <version> <output-dir>
 #   <version>     MHC_BUILD_VERSION, e.g. 2026.10.23
-#   <output-dir>  receives mhc-linux-x86_64.tar.gz and mhc-linux-x86_64.tar.gz.sha256
+#   <output-dir>  receives mhc-linux-x86_64.tar.gz and mhc-linux-x86_64-mit.tar.gz (+ .sha256)
 # Needs: cargo, cargo-zigbuild + zig (pip3 install ziglang cargo-zigbuild), bun, node, git.
 # Honors CARGO_TARGET_DIR. Never uploads anything.
 set -euo pipefail
@@ -22,6 +22,16 @@ name=mhc-linux-x86_64
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+omowright_commit() {
+  local commit
+  commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)' 2>/dev/null | tr -d '\r\n ')
+  if ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+    echo "could not read browserRuntime.dependency.commit from assets/omo-latest/manifest.json (got '$commit')" >&2
+    return 1
+  fi
+  printf '%s' "$commit"
+}
+
 export MHC_BUILD_VERSION="$version"
 rustup target add x86_64-unknown-linux-gnu >/dev/null 2>&1 || true
 cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 \
@@ -31,7 +41,7 @@ test "$("$rel/mhc" --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
 test -f "$rel/mhc-launcher"
 
 # materialize browser skill runtime
-commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
+commit=$(omowright_commit)
 git init -q "$work/omowright"
 git -C "$work/omowright" fetch -q --depth 1 https://github.com/code-yeongyu/omowright.git "$commit"
 git -C "$work/omowright" checkout -q FETCH_HEAD
@@ -52,3 +62,21 @@ bun tools/package-native.mjs --verify-only "$stage"
 scripts/package-archive.sh "$work/dist" "$name"
 mv "$work/dist/$name.tar.gz" "$work/dist/$name.tar.gz.sha256" "$outdir/"
 echo "wrote $outdir/$name.tar.gz"
+
+if [ "${MHC_RELEASE_SKIP_MIT:-}" = 1 ]; then
+  exit 0
+fi
+
+# MIT profile: same source, --no-default-features unlinks every crates/omo crate.
+mit_name=mhc-linux-x86_64-mit
+MHC_BUILD_VERSION="$version" cargo zigbuild --release --locked --no-default-features \
+  --target x86_64-unknown-linux-gnu.2.28 -p maho-cli --bins
+rel_mit="$target_dir/x86_64-unknown-linux-gnu/release"
+test "$("$rel_mit/mhc" --version | tr -d '\r')" = "$version"
+mit_stage="$work/dist/$mit_name"
+bun tools/package-native.mjs --mit --binary "$rel_mit/mhc" --launcher-binary "$rel_mit/mhc-launcher" --output "$mit_stage"
+bun tools/package-native.mjs --verify-only "$mit_stage"
+node -e 'const m=require(process.argv[1]+"/manifest.json");if(m.profile!=="mit")throw new Error("staged manifest is not the mit profile")' "$mit_stage"
+scripts/package-archive.sh "$work/dist" "$mit_name"
+mv "$work/dist/$mit_name.tar.gz" "$work/dist/$mit_name.tar.gz.sha256" "$outdir/"
+echo "wrote $outdir/$mit_name.tar.gz"

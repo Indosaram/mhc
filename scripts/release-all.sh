@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Usage: scripts/release-all.sh <version> [--build-only]
+#
+# Builds the three release targets on their own hosts, then signs and publishes.
+# Host-specific failure modes live in docs/release.md, not here.
+set -euo pipefail
+
+version="${1:?usage: release-all.sh <version> [--build-only]}"
+mode="${2:-}"
+version="${version#v}"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo"
+
+win_host="${MHC_WIN_HOST:-win-new}"
+mac_host="${MHC_MAC_HOST:-maho-mac}"
+win_root='C:/Users/sook/build/rel-VERSION'
+out_root="${MHC_RELEASE_OUT:-$HOME/.cache/mhc-release-$version}"
+unix_dir="$out_root/unix"
+win_dir="$out_root/windows"
+mkdir -p "$unix_dir" "$win_dir"
+
+die() { echo "release-all: $*" >&2; exit 1; }
+step() { echo; echo "=== $* ($(date +%H:%M:%S))"; }
+
+step "preflight"
+[ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || die "release from main"
+git fetch -q origin main
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD is not pushed to origin/main"
+echo "    v$version from $(git rev-parse --short HEAD)"
+
+step "linux-x86_64 (local)"
+bash scripts/release-linux.sh "$version" "$unix_dir"
+
+step "windows-x86_64 ($win_host)"
+win_root="${win_root/VERSION/$version}"
+ssh -o BatchMode=yes "$win_host" "if exist ${win_root//\//\\}\\src\\.git (cd /d ${win_root//\//\\}\\src && git fetch -q --depth 1 origin main && git reset -q --hard origin/main) else (git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git ${win_root//\//\\}\\src)" \
+  || die "could not prepare $win_root/src on $win_host"
+ssh -o BatchMode=yes "$win_host" "powershell -NoProfile -ExecutionPolicy Bypass -File ${win_root//\//\\}\\src\\scripts\\release-windows.ps1 -Version $version -OutputDir ${win_root//\//\\}\\out" \
+  || die "windows build failed"
+scp -o BatchMode=yes "$win_host:$win_root/out/*" "$win_dir/" || die "could not collect windows assets"
+
+step "macos-aarch64 ($mac_host)"
+if ssh -o BatchMode=yes -o ConnectTimeout=8 "$mac_host" true 2>/dev/null; then
+  mac_root="$HOME/build/rel-$version"
+  ssh -o BatchMode=yes "$mac_host" "if [ -d $mac_root/src/.git ]; then git -C $mac_root/src fetch -q --depth 1 origin main && git -C $mac_root/src reset -q --hard origin/main; else mkdir -p $mac_root && git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git $mac_root/src; fi" \
+    || die "could not prepare macos checkout"
+  ssh -o BatchMode=yes "$mac_host" "cd $mac_root/src && bash scripts/release-macos.sh $version $mac_root/out" \
+    || die "macos build failed"
+  scp -o BatchMode=yes "$mac_host:$mac_root/out/*" "$unix_dir/" || die "could not collect macos assets"
+else
+  die "$mac_host unreachable over ssh; see docs/release.md for the Ferryx relay path"
+fi
+
+step "checksums"
+for f in "$unix_dir"/*.tar.gz "$win_dir"/*.zip; do
+  [ -e "$f" ] || continue
+  (cd "$(dirname "$f")" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256")
+done
+
+if [ "$mode" = "--build-only" ]; then
+  echo
+  echo "build-only: assets in $out_root"
+  find "$out_root" \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f  %s bytes\n' | sort
+  exit 0
+fi
+
+step "sign"
+key="${MHC_RELEASE_KEY:-$HOME/.config/mhc-release/mhc-release.key}"
+[ -f "$key" ] || die "release key not found: $key"
+for f in "$unix_dir"/*.tar.gz "$win_dir"/*.zip; do
+  [ -e "$f" ] || continue
+  minisign -S -s "$key" -m "$f" -x "$f.minisig" || die "signing failed: $f"
+done
+cp "${MHC_RELEASE_PUBKEY:-$HOME/.config/mhc-release/mhc-release.pub}" "$out_root/mhc-release.pub" 2>/dev/null || true
+
+step "publish"
+gh release create "v$version" --repo Indosaram/mhc --title "mhc v$version" --draft \
+  "$unix_dir"/*.tar.gz "$unix_dir"/*.sha256 "$unix_dir"/*.minisig \
+  "$win_dir"/*.zip "$win_dir"/*.sha256 "$win_dir"/*.minisig \
+  "$out_root/mhc-release.pub" \
+  || die "draft release creation failed"
+gh release edit "v$version" --repo Indosaram/mhc --draft=false || die "publish failed"
+gh release view "v$version" --repo Indosaram/mhc --json tagName,assets -q '.tagName, (.assets[].name)'
+
+step "cleanup"
+rm -rf "$out_root"
+ssh -o BatchMode=yes "$win_host" "if exist ${win_root//\//\\} rmdir /s /q ${win_root//\//\\}" 2>/dev/null || true
+echo "done"
