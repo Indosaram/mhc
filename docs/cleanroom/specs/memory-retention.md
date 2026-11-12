@@ -23,10 +23,26 @@ so a caller decides when to spend the I/O.
 `clamped()` bounds both windows to 1..3650 days and importance to ≤1000. The lower bound matters: a settings file
 with `0` must not mean "delete everything now" — it means one day.
 
-## The four conditions a row must meet to be dropped
+## Imported rows are exempt
 
-All four, or the row stays:
+A row with `source = 'import'` is never dropped, whatever its age or importance.
 
+This is not a convenience. `mhc memory import-legacy --history` writes one row per *file revision*,
+stamped with that revision's commit date, so an imported row is ancient the moment it is written —
+that is the entire point of importing history. Combined with the importance mapping (`system/` is
+0.9, but `notes/`, `project/`, `reference/` and `people/` land at 0.6–0.7, below the 900 keep
+threshold), a single `mhc memory prune` after an import deleted the whole imported corpus. This was
+an actual defect, caught by importing a 2020-dated store and pruning it.
+
+The exemption is on `source`, not on age or a flag the importer would have to remember to set:
+the row says what it is. A row the agent writes through `remember` keeps `source =
+"conversation"` (or `"coding-agent-retain"`) and ages out normally.
+
+## The conditions a row must meet to be dropped
+
+All of them, or the row stays:
+
+0. **It is not imported.** `source = 'import'` is never dropped; see above.
 1. **This session owns it.** `session_id = current`. A bank shared across sessions must not lose another agent's
    memory because this session stopped using it.
 2. **It is old enough**, measured against the policy window for its table.

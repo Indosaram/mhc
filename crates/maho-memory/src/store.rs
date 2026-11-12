@@ -485,9 +485,16 @@ impl Store {
         ] {
             // `timestamp` is ISO-8601 and `created_at` is SQLite's own format, so both go through
             // julianday rather than a string comparison that would only be right for one of them.
+            //
+            // Imported rows are exempt. `mhc memory import-legacy --history` writes a row per file
+            // revision stamped with that revision's commit date, so every imported row looks ancient
+            // the moment it is written; a single `mhc memory prune` would then delete the whole
+            // imported corpus. Imported history is a record of what was true, not this session's
+            // scratch that ages out.
             let sql = format!(
                 "DELETE FROM {table}
                  WHERE session_id = ?1
+                   AND COALESCE(source, '') <> 'import'
                    AND julianday(COALESCE(timestamp, created_at)) < julianday(?2)
                    AND (valid_until IS NULL OR julianday(valid_until) <= julianday(?3))
                    AND CAST(ROUND(COALESCE(importance, 0.5) * 1000.0) AS INTEGER) < ?4"
@@ -851,6 +858,30 @@ mod tests {
                 },
             )
             .expect("remember")
+    }
+
+    #[test]
+    fn prune_never_drops_an_imported_row() {
+        let store = store();
+        store
+            .remember(
+                "an imported note",
+                &RememberOptions {
+                    source: "import".into(),
+                    importance: 0.6,
+                    timestamp: Some(aged(2_000)),
+                    veracity: "imported".into(),
+                    ..RememberOptions::default()
+                },
+            )
+            .expect("remember");
+        let report = store
+            .prune(&crate::retention::RetentionPolicy::default())
+            .expect("prune");
+        assert_eq!(
+            report.working, 0,
+            "an imported row is history, not this session's scratch"
+        );
     }
 
     #[test]

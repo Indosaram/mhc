@@ -107,8 +107,12 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   thinking and tool-call arguments; the excerpt names which one matched. See
   `docs/cleanroom/specs/memory-session-provider.md` and `memory-transcript-search.md`.
   `prune` (both surfaces) drops rows past the retention windows — 30 days for working memory, 90 for
-  episodic — and never touches a row this session does not own, one still valid, or one at or above
-  the keep-importance threshold (0.9). See `docs/cleanroom/specs/memory-retention.md`.
+  episodic — and never touches a row this session does not own, one still valid, one at or above
+  the keep-importance threshold (0.9), or one imported from the legacy Markdown store. Without that
+  last exemption a single `prune` after `import-legacy --history` deleted the entire imported corpus,
+  because every imported row is stamped with its revision's commit date and `notes/`, `project/`,
+  `reference/` and `people/` rows import below the keep threshold. See
+  `docs/cleanroom/specs/memory-retention.md`.
   The memory MCP server (`mhc memory mcp`, `mhc --memory-mcp`, and the legacy `--omo-memory-mcp`
   entry) serves the `mnemopi_*` tools (remember, recall, get, update, forget, invalidate, stats,
   scratchpad, triples, export/import) over stdio; `--bank`, `MNEMOPI_MCP_BANK` and
