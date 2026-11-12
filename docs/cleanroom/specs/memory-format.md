@@ -199,6 +199,26 @@ copied into a new place unless the user enabled people memory.
   or the store root, neither of which is itself a work tree, while the repo is `agents/<id>/repo/`
   below it.
 
+### 1.4 Cost of a full history import
+
+`--history` is off by default because it is not free, and the cost is entirely in git subprocesses,
+not in SQLite. Measured on one real identity repo of 260 Markdown files:
+
+| pass | wall time |
+|---|---|
+| working tree only | 1.3 s |
+| with history | 38 s |
+
+The delta is one `git log` and one `git show` per (file, revision): 753 revisions, so roughly 1,000
+subprocess spawns. Resolving the work tree once per root rather than per file was measured and
+saved 0.7 s of 38 s, so it was not kept -- the spawns are the cost, not the repository lookup.
+
+Across a whole real store (275 identity repos, 2,212 Markdown files, 6,092 Markdown-touching
+commits) the result is 1,427,740 rows, of which 23,046 are live now; the database reaches about
+1.6 GB because both the full-text and vector indexes carry every historical revision. That is
+inherent to keeping history rather than a defect, but it is the reason the flag is opt-in: a
+caller who wants a fast import of the current state should not pay for it.
+
 ## Open points (still not established)
 
 - Whether `project/` is written by every build or only by some workflows. The migrator imports it
