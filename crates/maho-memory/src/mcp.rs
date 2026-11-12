@@ -91,6 +91,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "top_k": {"type": "integer", "description": "Maximum results to return.", "default": 5},
                     "temporal_weight": {"type": "number", "description": "Temporal boost weight. 0.0 disables recency boost.", "default": 0.0},
                     "query_time": {"type": "string", "description": "ISO timestamp to treat as now for temporal scoring."},
+                    "valid_at": {"type": "string", "description": "ISO timestamp to answer against: returns what was recorded as true then, not now. Unlike query_time, which only affects recency scoring."},
                     "temporal_halflife": {"type": "number", "description": "Temporal decay half-life in hours.", "default": 24},
                     "fts_weight": {"type": "number", "description": "Full-text search weight."},
                     "importance_weight": {"type": "number", "description": "Importance score weight."},
@@ -296,6 +297,7 @@ impl ServerConfig {
                 let options = RecallOptions {
                     temporal_weight: num_arg(args, "temporal_weight"),
                     query_time: str_arg(args, "query_time").map(str::to_owned),
+                    valid_at: str_arg(args, "valid_at").map(str::to_owned),
                     temporal_halflife_hours: num_arg(args, "temporal_halflife").unwrap_or(24.0),
                     vec_weight: num_arg(args, "vec_weight").unwrap_or(defaults.vec_weight),
                     fts_weight: num_arg(args, "fts_weight").unwrap_or(defaults.fts_weight),
@@ -512,6 +514,36 @@ mod tests {
 
     fn call(config: &ServerConfig, name: &str, args: Value) -> Value {
         config.call_tool(name, &args).expect("call")
+    }
+
+    #[test]
+    fn recall_valid_at_answers_a_past_question_but_query_time_alone_does_not() {
+        let (_dir, config) = config();
+        call(
+            &config,
+            "mnemopi_remember",
+            json!({"content": "the cache is disabled by default"}),
+        );
+        // Stored now, so a question about 2020 must not see it.
+        let past = call(
+            &config,
+            "mnemopi_recall",
+            json!({"query": "cache default", "valid_at": "2020-01-01"}),
+        );
+        assert_eq!(
+            past["count"], 0,
+            "a row recorded today is not part of 2020: {past}"
+        );
+        // `query_time` only moves recency scoring, so the row is still returned.
+        let scored = call(
+            &config,
+            "mnemopi_recall",
+            json!({"query": "cache default", "query_time": "2020-01-01"}),
+        );
+        assert_eq!(
+            scored["count"], 1,
+            "query_time is not a temporal filter: {scored}"
+        );
     }
 
     #[test]
