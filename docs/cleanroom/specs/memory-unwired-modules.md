@@ -8,10 +8,13 @@ Those 66 hold 26,207 lines and 1,158 unit tests that no user can reach. (Counts 
 This file exists so that unwired surface stops reading as progress. A module is listed here because
 it is *deliberately* not wired yet, with the reason. Nothing here is a completed feature.
 
-Reachability was measured by parsing `use crate::…` trees (groups expanded, nested lists included),
-dropping `#[cfg(test)]` bodies so a module used only by its own tests counts as unreachable, then
-closing transitively from the entry points above. Re-running that measurement is the way to check
-this file has not gone stale.
+Reachability was measured by parsing `use crate::…` trees (groups expanded, nested lists included)
+**and** fully-qualified expression paths such as `crate::expiry::parse_expiry_instant(…)`, dropping
+`#[cfg(test)]` bodies so a module used only by its own tests counts as unreachable, then closing
+transitively from the entry points above. Both halves are required: a `use`-only parser reports wired
+modules as orphans, and `expiry`, `git_log`, `frontmatter`, `normalize`, `retention` and
+`time_format` were all false orphans under that bug before it was fixed. Re-running that measurement
+is the way to check this file has not gone stale.
 
 ## The deletion boundary is compiler-proven, not inferred
 
