@@ -255,15 +255,22 @@ impl Store {
             .to_owned();
         let metadata = options.metadata.as_ref().map(Value::to_string);
         let consolidated = options.durable.then(now_iso);
-        let existing: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT id FROM working_memory WHERE content = ? AND session_id = ? LIMIT 1",
-                params![content, self.session_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql_err)?;
+        // An explicit `memory_id` means the caller already knows the row's identity, so the
+        // content-equality lookup below is wrong for it: two revisions of one file can share text
+        // while being distinct memories at distinct times. Collapsing them by content would
+        // silently update the earlier row instead of adding the later one.
+        let existing: Option<String> = if options.memory_id.is_some() {
+            None
+        } else {
+            self.conn
+                .query_row(
+                    "SELECT id FROM working_memory WHERE content = ? AND session_id = ? LIMIT 1",
+                    params![content, self.session_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sql_err)?
+        };
         if let Some(id) = existing {
             self.conn
                 .execute(

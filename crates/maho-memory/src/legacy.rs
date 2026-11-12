@@ -8,6 +8,7 @@ use crate::store::{RememberOptions, Store, now_iso, sha256_hex16};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Files larger than this are skipped.
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -19,6 +20,9 @@ pub struct ImportOptions {
     pub root: PathBuf,
     pub include_people: bool,
     pub dry_run: bool,
+    /// Import earlier file revisions from each identity repo's git history. Off by default: it runs
+    /// git once per changed file, which is far slower than reading the working tree.
+    pub history: bool,
 }
 
 /// One problem met during the import.
@@ -42,6 +46,8 @@ pub struct ImportReport {
     pub skipped_non_markdown: u64,
     /// Files whose readable `expires` instant was not later than the import time.
     pub expired_on_import: u64,
+    /// Earlier block revisions recovered from git history, each closed by its successor.
+    pub revisions_imported: u64,
     pub warnings: Vec<Warning>,
 }
 
@@ -84,6 +90,12 @@ impl ImportReport {
             },
             format_args!(", {} file(s) expired on import", self.expired_on_import),
         );
+        if self.revisions_imported > 0 {
+            out.push_str(&format!(
+                "\n  {} earlier revision(s) recovered from git history",
+                self.revisions_imported
+            ));
+        }
         for warning in &self.warnings {
             out.push_str(&format!(
                 "\n  warning: {}: {}",
@@ -574,7 +586,19 @@ pub fn import_at(
     for content in content_roots(root) {
         let mut files = Vec::new();
         collect_files(&content.path, &content.path, &mut report, &mut files);
+        // With history on, the newest revision of a file is its current text, so the working-tree
+        // pass only covers files whose repo history could not be read (untracked files, or a root
+        // outside any work tree). Importing both would store the same block twice under two
+        // different timestamps.
+        let covered = if options.history {
+            import_history(store, options, &content, &files, &imported_at, &mut report)
+        } else {
+            Vec::new()
+        };
         for path in files {
+            if covered.contains(&path) {
+                continue;
+            }
             import_file(
                 store,
                 options,
@@ -587,6 +611,217 @@ pub fn import_at(
         }
     }
     Ok(report)
+}
+
+/// Recovers earlier revisions of the collected files from each content root's git history.
+///
+/// The working tree is what a reader sees now; history is what the store can show when asked what
+/// changed. Each revision's blocks are inserted with the commit's own timestamp and immediately
+/// closed by its successor, so a recall for "now" returns the current text and a recall for a past
+/// instant returns the text that was true then. A root that is not a git work tree is skipped, not
+/// an error: a flat `--from <dir>` export has no history.
+fn import_history(
+    store: &Store,
+    options: &ImportOptions,
+    content: &ContentRoot,
+    files: &[PathBuf],
+    imported_at: &str,
+    report: &mut ImportReport,
+) -> Vec<PathBuf> {
+    let mut covered: Vec<PathBuf> = Vec::new();
+    for path in files {
+        let rel = relative(&content.path, path);
+        if !content.label.is_empty() && !is_content(&rel) {
+            continue;
+        }
+        if content.label.is_empty()
+            && (rel.starts_with("runtime/") || rel.starts_with("transient-runs/"))
+        {
+            continue;
+        }
+        let history = match file_history(path) {
+            Ok(history) => history,
+            Err(reason) => {
+                report.warnings.push(Warning { path: rel, reason });
+                continue;
+            }
+        };
+        if history.is_empty() {
+            continue;
+        }
+        covered.push(path.clone());
+        report.files_imported += 1;
+        report.files_scanned += 1;
+        // Oldest first, so each revision can be closed by the next one. Revisions that leave a
+        // file byte-identical are dropped: a commit touching other files still appears in the
+        // file's history, and importing its unchanged text would store the same memory again.
+        let mut seen: Vec<&str> = Vec::new();
+        let history: Vec<&Revision> = history
+            .iter()
+            .filter(|revision| {
+                if seen.contains(&revision.text.as_str()) {
+                    return false;
+                }
+                seen.push(&revision.text);
+                true
+            })
+            .collect();
+        for (index, revision) in history.iter().enumerate() {
+            let next = history.get(index + 1);
+            let kind = kind_of(&rel);
+            let parsed = parse_markdown(&revision.text);
+            for (block_index, block) in parsed.blocks.iter().enumerate() {
+                let content_text = block.text.clone();
+                let id = sha256_hex16(&format!(
+                    "{rel}\0{block_index}\0{content_text}\0{}",
+                    revision.committed_at_millis
+                ));
+                if !options.dry_run && store.contains(&id).unwrap_or(false) {
+                    report.skipped_existing += 1;
+                    continue;
+                }
+                report.revisions_imported += 1;
+                report.blocks_imported += 1;
+                if options.dry_run {
+                    continue;
+                }
+                let metadata = json!({
+                    "legacy_path": rel,
+                    "section": block.section,
+                    "block": block_index,
+                    "frontmatter": parsed.frontmatter,
+                    "importer": IMPORTER,
+                    "revision_of": revision.sha,
+                    "revision_subject": revision.subject,
+                });
+                let timestamp = format_instant(revision.committed_at_millis)
+                    .unwrap_or_else(|| imported_at.to_owned());
+                // A revision is closed only by a successor that is not earlier than it. Git commit
+                // times have one-second precision, so two revisions of a fast-moving file routinely
+                // share a second; refusing to close on equality would leave both texts active at
+                // once, which is worse than a zero-length validity window. What must never happen
+                // is a `valid_until` *before* the row's own `timestamp`.
+                let closing = next
+                    .filter(|n| n.committed_at_millis >= revision.committed_at_millis)
+                    .and_then(|n| format_instant(n.committed_at_millis));
+                if let Err(error) = store.remember(
+                    &content_text,
+                    &RememberOptions {
+                        source: "import".into(),
+                        importance: kind.importance,
+                        timestamp: Some(timestamp),
+                        scope: "global".into(),
+                        veracity: "imported".into(),
+                        trust_tier: Some("IMPORTED".into()),
+                        memory_type: kind.memory_type.into(),
+                        memory_id: Some(id),
+                        valid_until: closing,
+                        metadata: Some(metadata),
+                        ..Default::default()
+                    },
+                ) {
+                    report.warnings.push(Warning {
+                        path: rel.clone(),
+                        reason: format!("revision {sha} not stored: {error}", sha = revision.sha),
+                    });
+                    report.revisions_imported -= 1;
+                    report.blocks_imported -= 1;
+                }
+            }
+        }
+    }
+    covered
+}
+
+/// One historical revision of one file.
+struct Revision {
+    sha: String,
+    subject: String,
+    committed_at_millis: i64,
+    text: String,
+}
+
+/// Whether the directory is inside a git work tree, and its top level.
+fn git_toplevel(dir: &Path) -> Result<PathBuf, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .map_err(|error| format!("git is unavailable: {error}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(if stderr.contains("not a git repository") {
+            "not a git repository; history skipped".into()
+        } else {
+            format!("git rev-parse failed: {}", stderr.trim())
+        });
+    }
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    ))
+}
+
+/// Revisions of one file from whichever git work tree contains it, oldest first.
+///
+/// The repo is resolved per file rather than per content root: `--from` may point at an identity
+/// directory or the store root, neither of which is itself a work tree, while the actual repo is
+/// `agents/<id>/repo/` below it. A file outside any work tree has no history and yields nothing.
+fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
+    let Some(dir) = path.parent() else {
+        return Ok(Vec::new());
+    };
+    let Ok(top) = git_toplevel(dir) else {
+        return Ok(Vec::new());
+    };
+    let Ok(rel) = path.strip_prefix(&top) else {
+        return Ok(Vec::new());
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&top)
+        .arg("log")
+        .arg("--reverse")
+        .arg(crate::git_log::LOG_FORMAT)
+        .arg("--")
+        .arg(&rel)
+        .output()
+        .map_err(|error| format!("git log failed: {error}"))?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    let mut revisions = Vec::new();
+    for commit in crate::git_log::parse_log(&String::from_utf8_lossy(&out.stdout)) {
+        let Ok(when) = chrono::DateTime::parse_from_rfc3339(&commit.committed_at) else {
+            continue;
+        };
+        let blob = Command::new("git")
+            .arg("-C")
+            .arg(&top)
+            .arg("show")
+            .arg(format!("{}:{}", commit.sha, &rel))
+            .output()
+            .map_err(|error| format!("git show failed: {error}"))?;
+        if !blob.status.success() {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(blob.stdout) else {
+            continue;
+        };
+        revisions.push(Revision {
+            sha: commit.sha,
+            subject: commit.subject,
+            committed_at_millis: when.timestamp_millis(),
+            text,
+        });
+    }
+    // Commit order is not time order: a rebase or a clock skew can leave a newer commit older in
+    // the graph. Closing a revision by its graph successor would then record a `valid_until`
+    // earlier than the row's own timestamp, which is impossible in the store's temporal model.
+    revisions.sort_by_key(|revision| revision.committed_at_millis);
+    Ok(revisions)
 }
 
 fn import_file(
@@ -816,6 +1051,7 @@ mod tests {
         let store = Store::open_in_memory("import").expect("store");
         let options = ImportOptions {
             root: root.clone(),
+            history: false,
             include_people: false,
             dry_run: false,
         };
@@ -867,6 +1103,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: true,
             },
@@ -878,6 +1115,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().join("nope"),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -995,6 +1233,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1028,6 +1267,7 @@ mod tests {
         let store = Store::open_in_memory("import").expect("store");
         let options = ImportOptions {
             root: dir.path().into(),
+            history: false,
             include_people: false,
             dry_run: false,
         };
@@ -1075,6 +1315,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1102,6 +1343,7 @@ mod tests {
         let store = Store::open_in_memory("import").expect("store");
         let options = ImportOptions {
             root: dir.path().into(),
+            history: false,
             include_people: false,
             dry_run: true,
         };
@@ -1145,6 +1387,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1161,6 +1404,109 @@ mod tests {
     }
 
     #[test]
+    fn history_imports_earlier_revisions_closed_by_their_successor() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path();
+        let repo = root.join("agents/a/repo");
+        write(
+            &repo,
+            "notes/a.md",
+            "---\ndescription: x\n---\nThe first wording.\n",
+        );
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "T"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "first"]);
+        write(
+            &repo,
+            "notes/a.md",
+            "---\ndescription: x\n---\nThe second wording.\n",
+        );
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "second"]);
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: root.into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert!(
+            report.revisions_imported >= 2,
+            "both revisions are imported: {}",
+            report.revisions_imported
+        );
+        // The current text is recallable; the replaced wording is retained but closed.
+        let hits = store
+            .recall("second wording", 5, &RecallOptions::default())
+            .expect("recall");
+        assert!(
+            hits.iter().any(|h| h.content.contains("second wording")),
+            "the current revision is recallable"
+        );
+        let rows = store.export_json().expect("export");
+        let all = rows
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("working_memory");
+        let first = all
+            .iter()
+            .find(|r| {
+                r.get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c.contains("first wording"))
+            })
+            .expect("the earlier revision is kept");
+        assert!(
+            first.get("valid_until").and_then(Value::as_str).is_some(),
+            "an earlier revision is closed by its successor: {first}"
+        );
+    }
+
+    #[test]
+    fn history_is_skipped_without_complaint_when_the_root_is_not_a_repo() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(dir.path(), "a.md", "plain note\n");
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(report.blocks_imported, 1);
+        assert!(
+            report.warnings.is_empty(),
+            "a plain directory is not an error: {:?}",
+            report.warnings
+        );
+        assert_eq!(report.revisions_imported, 0);
+    }
+
+    #[test]
     fn unparseable_frontmatter_never_becomes_memory_content() {
         let dir = tempfile::tempdir().expect("dir");
         write(
@@ -1173,6 +1519,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1213,6 +1560,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1277,6 +1625,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: root.clone(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1324,6 +1673,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: root.clone(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1363,6 +1713,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },

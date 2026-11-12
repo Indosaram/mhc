@@ -496,6 +496,7 @@ pub fn run_command(
                 root: legacy_root.to_path_buf(),
                 include_people: people_default || flags.contains(&"--include-people"),
                 dry_run: flags.contains(&"--dry-run"),
+                history: flags.contains(&"--history"),
             };
             match memory
                 .open(DEFAULT_BANK)

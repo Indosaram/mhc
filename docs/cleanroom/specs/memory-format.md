@@ -178,14 +178,33 @@ copied into a new place unless the user enabled people memory.
   skipped people files, skipped non-Markdown files, warnings (path + reason).
 - Symbolic links are not followed (a link is reported and skipped).
 - Files larger than 4 MiB are skipped with a warning.
+- `--history` replays each file's git revisions (off by default: it runs git per file). The
+  working tree is what a reader sees now; history is what lets the store answer "what did this say
+  last month". Each commit that changed a file contributes its blocks with that commit's own
+  timestamp, immediately closed by the next revision, so a recall for now returns the current text
+  and a recall for a past instant returns the text that was true then. Measured on one real
+  identity repo: 129 current blocks plus 399 recovered revisions. Four rules the importer must
+  keep, each learned from a defect:
+  - Commits are ordered by commit time, not graph order: after a rebase the two disagree, and
+    closing a revision by its graph successor records a `valid_until` earlier than the row's own
+    `timestamp`.
+  - A revision is closed by a successor that is not earlier than it. Commit times have one-second
+    precision, so consecutive revisions of a fast-moving file routinely share a second.
+  - A revision byte-identical to the one before it is dropped: a commit touching other files still
+    appears in this file's history, and importing unchanged text stores the same memory twice.
+  - With history on, the newest revision *is* the current file, so the working-tree pass covers
+    only files whose history could not be read (untracked files, or a root outside a work tree).
+    Importing both stores every block twice under two different timestamps.
+- The repo is resolved per file, not per content root: `--from` may point at an identity directory
+  or the store root, neither of which is itself a work tree, while the repo is `agents/<id>/repo/`
+  below it.
 
 ## Open points (still not established)
 
 - Whether `project/` is written by every build or only by some workflows. The migrator imports it
   as notes either way, because real stores contain it.
-- The git history (older versions of a block) is not imported; only the working tree is. History
-  is available on disk and is used by the SUL store (`compile/changes`, `facts/recovery`,
-  `soul/watermark`, `commands/agreements`), so a future importer could replay it.
+- The git history is replayed only with `--history`; see Migrator behaviour above for the rules it
+  follows.
 - Whether legacy blocks carry ids or timestamps inside the Markdown is unknown; such text is kept
   verbatim in `content`.
 - Runtime bookkeeping (recall ledgers, sync queues, locks, transcripts, facts queues, reflection

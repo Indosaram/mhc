@@ -21,7 +21,7 @@ Commands:
   search-sessions [--include-hidden] <query>
                                  Search past session transcripts
   prune                          Drop rows past the retention windows (30d working, 90d episodic)
-  import-legacy [--from <dir>] [--dry-run] [--include-people] [--json]
+  import-legacy [--from <dir>] [--dry-run] [--include-people] [--history] [--json]
                                  Import the legacy Markdown memory store (default:
                                  $MAHO_MEMORY_HOME or ~/.omo/memory) into the global bank
   mcp [--bank <name>]            Serve the memory MCP server on stdio
@@ -192,6 +192,7 @@ pub fn run_memory_command(args: &[String]) -> Result<i32, String> {
                 root: legacy_root(),
                 include_people: people_enabled(&cwd),
                 dry_run: false,
+                history: false,
             };
             let mut json = false;
             let mut iter = rest.iter();
@@ -202,6 +203,7 @@ pub fn run_memory_command(args: &[String]) -> Result<i32, String> {
                     }
                     "--dry-run" => options.dry_run = true,
                     "--include-people" => options.include_people = true,
+                    "--history" => options.history = true,
                     "--json" => json = true,
                     other => return Err(format!("unknown import-legacy option: {other}")),
                 }
