@@ -12,6 +12,32 @@ dropping `#[cfg(test)]` bodies so a module used only by its own tests counts as 
 closing transitively from the entry points above. Re-running that measurement is the way to check
 this file has not gone stale.
 
+## The deletion boundary is compiler-proven, not inferred
+
+The orphan set above was derived by parsing `use` groups and expression paths out of the reachable
+modules. That is an argument, not a proof, so it was checked with the compiler.
+
+All 66 orphan modules were deleted from a scratch copy together with their `pub mod` declarations and
+`pub use` re-exports. The result:
+
+| | modules (incl. `lib.rs`) | lines | tests | build | clippy |
+|---|---|---|---|---|---|
+| full crate | 86 | 38,093 | 1,474 | ok | clean |
+| orphans removed | 20 | 11,722 | 316 | **exit 0** | **clean** |
+
+No reachable module referenced an orphan, and no orphan referenced a reachable module. The split is
+total in both directions. The kept twenty are `banks`, `cursor`, `expiry`, `extension`, `frontmatter`,
+`git_log`, `kibitzer`, `legacy`, `lib`, `mcp`, `normalize`, `recall`, `redact`, `reflection`,
+`reflection_machine`, `retention`, `schema`, `store`, `text`, `time_format`.
+
+Two things this measurement does **not** say. It does not say the orphans are worthless — several are
+complete implementations of features this profile does not run. And it does not decide what happens to
+them; `orphan_sweep` was wired to a producer and a caller as an experiment and both were absent, so
+the module was left unwired rather than shipped as a 67th orphan.
+
+Reproduce it: copy `crates/maho-memory/src` aside, delete the modules listed here, strip the matching
+`pub mod`/`pub use` lines from `lib.rs`, then run `cargo test -p maho-memory --lib`.
+
 ## Why these exist
 
 Phase 1b ported `memory-core` module-for-module. The port is faithful, and faithfulness alone does
