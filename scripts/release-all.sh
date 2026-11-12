@@ -56,7 +56,9 @@ scp -o BatchMode=yes "$win_host:$win_root/out/*" "$win_dir/" || die "could not c
 
 step "macos-aarch64 ($mac_host)"
 if ssh -o BatchMode=yes -o ConnectTimeout=8 "$mac_host" true 2>/dev/null; then
-  mac_root="$HOME/build/rel-$version"
+  mac_home=$(ssh -o BatchMode=yes "$mac_host" 'printf %s "$HOME"' | tr -d '\r') \
+    || die "could not resolve home on $mac_host"
+  mac_root="$mac_home/build/rel-$version"
   ssh -o BatchMode=yes "$mac_host" "if [ -d $mac_root/src/.git ]; then git -C $mac_root/src fetch -q --depth 1 origin $release_commit && git -C $mac_root/src checkout -q --force FETCH_HEAD; else mkdir -p $mac_root && git init -q $mac_root/src && git -C $mac_root/src remote add origin https://github.com/Indosaram/mhc.git && git -C $mac_root/src fetch -q --depth 1 origin $release_commit && git -C $mac_root/src checkout -q --force FETCH_HEAD; fi" \
     || die "could not prepare macos checkout"
   ssh -o BatchMode=yes "$mac_host" "cd $mac_root/src && git rev-parse HEAD" | tr -d '\r' | grep -q "^$release_commit$" \
