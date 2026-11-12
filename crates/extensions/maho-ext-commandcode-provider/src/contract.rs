@@ -10,6 +10,9 @@ pub const DEFAULT_PROVIDER_API_BASE: &str = "https://api.commandcode.ai/provider
 pub const DEFAULT_MODELS_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 65_536;
 pub const MODEL_CACHE_VERSION: u32 = 1;
+/// How old the cached catalog may be before a launch refreshes it in the background. A fresh
+/// cache skips the network entirely, so startup never pays for a fetch it does not need.
+pub const MODEL_CACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 pub const GENERATE_MAX_TOKENS_CAP: u64 = 64_000;
 pub const OVERFLOW_PREFIX: &str = "context_length_exceeded:";
 pub const PROVIDER_ID: &str = "commandcode";
