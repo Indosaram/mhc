@@ -1,8 +1,11 @@
 name: ci
 
 on:
+  # main is not listed: a push to main is not a verification request, and CI on every
+  # main push burned runners for no decision. Verification runs on `verify/**` (what
+  # scripts/gh-verify.sh pushes), on pull requests, and on demand.
   push:
-    branches: [main, "verify/**"]
+    branches: ["verify/**"]
   pull_request:
   workflow_dispatch:
 
