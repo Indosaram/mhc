@@ -40,6 +40,16 @@ new name. Every build stage therefore asserts `mhc --version` before packaging.
 If the assertion fails, clear the target directory — do not "fix" it by bumping
 the version by hand.
 
+### Windows: the SSH shell is already PowerShell
+
+`ssh win-new` lands in **PowerShell 7**, not cmd. Wrapping a build in
+`cmd /c "..."` or appending `> log 2>&1` therefore gets parsed by PowerShell,
+which either rewrites the arguments into something else or dies on them. Every
+attempt to launch the script that way hung silently with a truncated log and no
+process visible. Invoke `pwsh -NoProfile -ExecutionPolicy Bypass -File
+scripts/release-windows.ps1 ...` directly over SSH and let the script do its own
+logging.
+
 ### Windows: protoc is not on the SSH PATH
 
 `maho-ai/build.rs` compiles vendored protobuf schemas and needs `protoc`. It is

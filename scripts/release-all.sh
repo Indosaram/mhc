@@ -12,6 +12,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
 win_host="${MHC_WIN_HOST:-win-new}"
+win_protoc="${MHC_WIN_PROTOC:-C:/Users/sook/build/protoc/bin/protoc.exe}"
 mac_host="${MHC_MAC_HOST:-maho-mac}"
 out_root="${MHC_RELEASE_OUT:-$HOME/.cache/mhc-release-$version}"
 unix_dir="$out_root/unix"
@@ -40,7 +41,7 @@ win_root="C:/Users/sook/build/rel-$version"
 win_bs="C:\\Users\\sook\\build\\rel-$version"
 ssh -o BatchMode=yes "$win_host" "if exist $win_bs\\src\\.git (cd /d $win_bs\\src && git fetch -q --depth 1 origin main && git reset -q --hard origin/main) else (git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git $win_bs\\src)" \
   || die "could not prepare $win_root/src on $win_host"
-ssh -o BatchMode=yes "$win_host" "powershell -NoProfile -ExecutionPolicy Bypass -File $win_bs\\src\\scripts\\release-windows.ps1 -Version $version -OutputDir $win_bs\\out -OmowrightCommit $omowright_commit" \
+ssh -o BatchMode=yes "$win_host" "pwsh -NoProfile -ExecutionPolicy Bypass -File $win_bs\\src\\scripts\\release-windows.ps1 -Version $version -OutputDir $win_bs\\out -OmowrightCommit $omowright_commit -ProtocPath $win_protoc" \
   || die "windows build failed"
 scp -o BatchMode=yes "$win_host:$win_root/out/*" "$win_dir/" || die "could not collect windows assets"
 
