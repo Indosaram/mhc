@@ -10,7 +10,7 @@ use get_worker::{
     ReleaseStore, RequestContext, Response, Row, Statement, StoreError, StoredObject, Value,
 };
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params_from_iter, Connection, Error as SqlError};
+use rusqlite::{Connection, Error as SqlError, params_from_iter};
 
 /// One stored object: its bytes plus the `R2HTTPMetadata` an `R2Bucket.put` would attach.
 #[derive(Clone, Default)]

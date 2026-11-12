@@ -537,6 +537,10 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         parsed.no_extensions,
     )
     .await?;
+    maho_core::timings::time(
+        "discoverUserExtensions",
+        maho_core::timings::TimingLabel::Main,
+    );
     runtime_diagnostics.extend(extension_errors.into_iter().map(|error| {
         maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(
             super::default_extensions::extension_load_failure_message(&error.path, &error.message),
@@ -552,6 +556,7 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         ))
         .await;
     super::extension_registry::mark_hidden_inline_extensions(&mut extensions.extensions);
+    maho_core::timings::time("loadExtensions", maho_core::timings::TimingLabel::Main);
     let extension_snapshot = extensions.extensions.clone();
     // senpi main.ts:1262-1268: every full launch refreshes what `--help` reads.
     super::help_flags_cache::write_help_flags_cache(
