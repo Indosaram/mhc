@@ -26,7 +26,9 @@ step "preflight"
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || die "release from main"
 git fetch -q origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD is not pushed to origin/main"
-echo "    v$version from $(git rev-parse --short HEAD)"
+release_commit=$(git rev-parse HEAD)
+version_commit=$(git rev-parse --short "$release_commit")
+echo "    v$version from $version_commit"
 
 omowright_commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)' | tr -d '\r\n ')
 printf '%s' "$omowright_commit" | grep -Eq '^[0-9a-f]{40}$' \
@@ -34,13 +36,16 @@ printf '%s' "$omowright_commit" | grep -Eq '^[0-9a-f]{40}$' \
 echo "    omowright $omowright_commit"
 
 step "linux-x86_64 (local)"
+[ "$(git rev-parse HEAD)" = "$release_commit" ] || die "local checkout moved during the release"
 bash scripts/release-linux.sh "$version" "$unix_dir"
 
 step "windows-x86_64 ($win_host)"
 win_root="C:/Users/sook/build/rel-$version"
 win_bs="C:\\Users\\sook\\build\\rel-$version"
-ssh -o BatchMode=yes "$win_host" "if exist $win_bs\\src\\.git (cd /d $win_bs\\src && git fetch -q --depth 1 origin main && git reset -q --hard origin/main) else (git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git $win_bs\\src)" \
+ssh -o BatchMode=yes "$win_host" "if exist $win_bs\\src\\.git (cd /d $win_bs\\src && git fetch -q --depth 1 origin $release_commit && git checkout -q --force FETCH_HEAD) else (git init -q $win_bs\\src && cd /d $win_bs\\src && git remote add origin https://github.com/Indosaram/mhc.git && git fetch -q --depth 1 origin $release_commit && git checkout -q --force FETCH_HEAD)" \
   || die "could not prepare $win_root/src on $win_host"
+ssh -o BatchMode=yes "$win_host" "cd /d $win_bs\\src && git rev-parse HEAD" | tr -d '\r' | grep -q "^$release_commit$" \
+  || die "$win_host is not on $version_commit"
 ssh -o BatchMode=yes "$win_host" "pwsh -NoProfile -ExecutionPolicy Bypass -File $win_bs\\src\\scripts\\release-windows.ps1 -Version $version -OutputDir $win_bs\\out -OmowrightCommit $omowright_commit -ProtocPath $win_protoc" \
   || die "windows build failed"
 scp -o BatchMode=yes "$win_host:$win_root/out/*" "$win_dir/" || die "could not collect windows assets"
@@ -48,8 +53,10 @@ scp -o BatchMode=yes "$win_host:$win_root/out/*" "$win_dir/" || die "could not c
 step "macos-aarch64 ($mac_host)"
 if ssh -o BatchMode=yes -o ConnectTimeout=8 "$mac_host" true 2>/dev/null; then
   mac_root="$HOME/build/rel-$version"
-  ssh -o BatchMode=yes "$mac_host" "if [ -d $mac_root/src/.git ]; then git -C $mac_root/src fetch -q --depth 1 origin main && git -C $mac_root/src reset -q --hard origin/main; else mkdir -p $mac_root && git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git $mac_root/src; fi" \
+  ssh -o BatchMode=yes "$mac_host" "if [ -d $mac_root/src/.git ]; then git -C $mac_root/src fetch -q --depth 1 origin $release_commit && git -C $mac_root/src checkout -q --force FETCH_HEAD; else mkdir -p $mac_root && git init -q $mac_root/src && git -C $mac_root/src remote add origin https://github.com/Indosaram/mhc.git && git -C $mac_root/src fetch -q --depth 1 origin $release_commit && git -C $mac_root/src checkout -q --force FETCH_HEAD; fi" \
     || die "could not prepare macos checkout"
+  ssh -o BatchMode=yes "$mac_host" "cd $mac_root/src && git rev-parse HEAD" | tr -d '\r' | grep -q "^$release_commit$" \
+    || die "$mac_host is not on $version_commit"
   ssh -o BatchMode=yes "$mac_host" "cd $mac_root/src && bash scripts/release-macos.sh $version $mac_root/out" \
     || die "macos build failed"
   scp -o BatchMode=yes "$mac_host:$mac_root/out/*" "$unix_dir/" || die "could not collect macos assets"
