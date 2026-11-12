@@ -704,6 +704,18 @@ fn import_history(
                 let closing = next
                     .filter(|n| n.committed_at_millis >= revision.committed_at_millis)
                     .and_then(|n| format_instant(n.committed_at_millis));
+                // An `expires` in this revision's own frontmatter ends the row sooner than a
+                // successor commit does, and it must win when it is earlier: the file said of
+                // itself that it stopped being true then. Taking the minimum keeps both rules
+                // without either overwriting the other.
+                let expiry = match expiry_of(parsed.frontmatter.as_ref()) {
+                    Expiry::At { millis, .. } => format_instant(millis),
+                    _ => None,
+                };
+                let closing = match (closing, expiry) {
+                    (Some(a), Some(b)) => Some(if b < a { b } else { a }),
+                    (a, b) => a.or(b),
+                };
                 if let Err(error) = store.remember(
                     &content_text,
                     &RememberOptions {
@@ -1504,6 +1516,161 @@ mod tests {
             report.warnings
         );
         assert_eq!(report.revisions_imported, 0);
+    }
+
+    #[test]
+    fn recalling_at_a_past_instant_returns_the_text_that_was_true_then() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path();
+        let repo = root.join("notes");
+        write(&repo, "a.md", "the original wording\n");
+        let run = |args: &[&str], date: &str| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_COMMITTER_DATE", date)
+                .env("GIT_AUTHOR_DATE", date)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"], "2026-01-01T00:00:00Z");
+        run(
+            &["config", "user.email", "t@example.com"],
+            "2026-01-01T00:00:00Z",
+        );
+        run(&["config", "user.name", "T"], "2026-01-01T00:00:00Z");
+        run(&["add", "."], "2026-01-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "first"], "2026-01-01T00:00:00Z");
+        write(&repo, "a.md", "the replacement wording\n");
+        run(&["add", "."], "2026-06-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "second"], "2026-06-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        import(
+            &store,
+            &ImportOptions {
+                root: root.into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+
+        // Asking as of March, before the replacement: the old wording is the answer.
+        let past = store
+            .recall(
+                "wording",
+                5,
+                &RecallOptions {
+                    valid_at: Some("2026-03-01T00:00:00Z".into()),
+                    query_time: Some("2026-03-01T00:00:00Z".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("recall");
+        assert!(
+            past.iter().any(|hit| hit.content.contains("original")),
+            "the past wording is recallable at a past instant: {past:?}"
+        );
+        assert!(
+            !past.iter().any(|hit| hit.content.contains("replacement")),
+            "a later wording is not recallable at an earlier instant: {past:?}"
+        );
+
+        // Asking as of today: only the current wording.
+        let now = store
+            .recall("wording", 5, &RecallOptions::default())
+            .expect("recall");
+        assert!(
+            now.iter().any(|hit| hit.content.contains("replacement")),
+            "the current wording is recallable now: {now:?}"
+        );
+        assert!(
+            !now.iter().any(|hit| hit.content.contains("original")),
+            "a superseded wording is not recallable now: {now:?}"
+        );
+    }
+
+    #[test]
+    fn a_revision_expiry_ends_the_row_before_its_successor_does() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path();
+        let repo = root.join("notes");
+        write(
+            &repo,
+            "a.md",
+            "---\nexpires: 2026-02-01\n---\nThe short-lived wording.\n",
+        );
+        let run = |args: &[&str], date: &str| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_COMMITTER_DATE", date)
+                .env("GIT_AUTHOR_DATE", date)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"], "2026-01-01T00:00:00Z");
+        run(
+            &["config", "user.email", "t@example.com"],
+            "2026-01-01T00:00:00Z",
+        );
+        run(&["config", "user.name", "T"], "2026-01-01T00:00:00Z");
+        run(&["add", "."], "2026-01-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "first"], "2026-01-01T00:00:00Z");
+        write(
+            &repo,
+            "a.md",
+            "---\nexpires: 2026-02-01\n---\nThe replacement wording.\n",
+        );
+        run(&["add", "."], "2026-06-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "second"], "2026-06-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        import(
+            &store,
+            &ImportOptions {
+                root: root.into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        let exported = store.export_json().expect("export");
+        let rows = exported
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("rows");
+        let first = rows
+            .iter()
+            .find(|r| {
+                r.get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c.contains("short-lived"))
+            })
+            .expect("the first revision is present");
+        let closed = first
+            .get("valid_until")
+            .and_then(Value::as_str)
+            .expect("the first revision is closed");
+        assert!(
+            closed.starts_with("2026-02-01"),
+            "the file's own expiry ends the row, not the later commit: {closed}"
+        );
     }
 
     #[test]

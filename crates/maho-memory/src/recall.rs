@@ -193,9 +193,13 @@ impl Store {
     fn visibility(&self, prefix: &str, options: &RecallOptions) -> (String, Vec<SqlValue>) {
         let mut clauses = vec![
             format!("({prefix}valid_until IS NULL OR {prefix}valid_until > ?)"),
+            format!("({prefix}timestamp IS NULL OR {prefix}timestamp <= ?)"),
             format!("{prefix}superseded_by IS NULL"),
         ];
-        let mut values = vec![SqlValue::Text(valid_at(options))];
+        let mut values = vec![
+            SqlValue::Text(valid_at(options)),
+            SqlValue::Text(valid_at(options)),
+        ];
         if !options.ignore_session_scope {
             clauses.push(format!(
                 "({prefix}session_id = ? OR {prefix}scope = 'global')"
@@ -226,13 +230,15 @@ impl Store {
             Tier::Working => {
                 "SELECT f.id, f.rank FROM fts_working f WHERE f.fts_working MATCH ?1
                  AND EXISTS (SELECT 1 FROM working_memory w WHERE w.id = f.id AND w.superseded_by IS NULL
-                     AND (w.valid_until IS NULL OR w.valid_until > ?2))
+                     AND (w.valid_until IS NULL OR w.valid_until > ?2)
+                     AND (w.timestamp IS NULL OR w.timestamp <= ?2))
                  ORDER BY f.rank, f.id LIMIT ?3"
             }
             Tier::Episodic => {
                 "SELECT CAST(f.rowid AS TEXT), f.rank FROM fts_episodes f WHERE f.fts_episodes MATCH ?1
                  AND EXISTS (SELECT 1 FROM episodic_memory e WHERE e.rowid = f.rowid AND e.superseded_by IS NULL
-                     AND (e.valid_until IS NULL OR e.valid_until > ?2))
+                     AND (e.valid_until IS NULL OR e.valid_until > ?2)
+                     AND (e.timestamp IS NULL OR e.timestamp <= ?2))
                  ORDER BY f.rank, f.rowid LIMIT ?3"
             }
         };
