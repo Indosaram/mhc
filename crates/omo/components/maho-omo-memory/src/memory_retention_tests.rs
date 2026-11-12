@@ -181,11 +181,30 @@ fn absent_runtime_trees_are_not_an_error() {
     assert!(prune_runtime(&paths, &options()).is_empty());
 }
 
-/// Applies to files and directories alike: `File::open` on a directory fails on Windows, and the
-/// retention scan mtime-checks both.
+/// Applies to files and directories alike: the retention scan mtime-checks both, and Windows only
+/// allows a directory handle to be opened for `FILE_WRITE_ATTRIBUTES` (never `GENERIC_WRITE`, which
+/// is what `filetime::set_file_mtime` asks for), so directories take a dedicated path there.
 fn set_mtime(path: &PathBuf, at_ms: u64) {
     let at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(at_ms);
-    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(at)).unwrap();
+    let at = filetime::FileTime::from_system_time(at);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // `FILE_WRITE_ATTRIBUTES` plus `FILE_FLAG_BACKUP_SEMANTICS`: the latter is what makes a
+        // directory openable at all, the former is all `SetFileTime` needs.
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0000_0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap();
+        filetime::set_file_handle_times(&file, None, Some(at)).unwrap();
+    }
+    #[cfg(not(windows))]
+    {
+        filetime::set_file_mtime(path, at).unwrap();
+    }
 }
 
 /// File times are derived from the injected clock so no test depends on wall time.

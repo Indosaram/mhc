@@ -418,15 +418,13 @@ mod tests {
         assert!(validate_repository_path(dir.path(), "../outside").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_directory_that_escapes_the_root_is_refused() {
         let dir = root();
         let outside = TempDir::new().expect("outside");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), dir.path().join("system/escape"))
             .expect("symlink");
-        #[cfg(not(unix))]
-        return;
 
         let err = tool_path(dir.path(), "system/escape/note").expect_err("must refuse");
         assert!(
@@ -436,14 +434,12 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_that_stays_inside_the_root_is_allowed() {
         let dir = root();
-        #[cfg(unix)]
         std::os::unix::fs::symlink(dir.path().join("system"), dir.path().join("system/alias"))
             .expect("symlink");
-        #[cfg(not(unix))]
-        return;
         assert!(tool_path(dir.path(), "system/alias/note").is_ok());
     }
 

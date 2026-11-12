@@ -12312,6 +12312,16 @@ impl InteractiveMode {
                 let view = crate::pause_footer::PauseView::of_session(&self.session);
                 let text = crate::pause_footer::pause_footer_text(&view);
                 self.set_extension_status(crate::pause_footer::PAUSE_STATUS_KEY, text.as_deref());
+                // The provider snapshots the command list and `/resume` is described against the
+                // pause state, so a transition has to rebuild it or the hint goes stale. Notices
+                // fire per held wake and never change that state, so they skip the rebuild.
+                if matches!(
+                    event,
+                    AgentSessionEvent::SessionPaused { .. }
+                        | AgentSessionEvent::SessionResumed { .. }
+                ) {
+                    self.setup_autocomplete();
+                }
             }
             // senpi `retry_fallback_applied` / `_succeeded` / `_reverted` / `_exhausted` / `server_fallback_aborted`.
             AgentSessionEvent::RetryFallbackApplied { from, to, reason, .. } => {

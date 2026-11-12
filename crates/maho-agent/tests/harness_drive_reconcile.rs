@@ -1431,8 +1431,15 @@ async fn deferred_fixture(options: FixtureOptions) -> Fixture {
     fixture
 }
 
-#[tokio::test]
-async fn plans_ready_deferred_tool_calls_with_the_poll_turn_identity_and_follower_result_ids() {
+#[test]
+fn plans_ready_deferred_tool_calls_with_the_poll_turn_identity_and_follower_result_ids() {
+    on_large_stack(
+        plans_ready_deferred_tool_calls_with_the_poll_turn_identity_and_follower_result_ids_body,
+    );
+}
+
+async fn plans_ready_deferred_tool_calls_with_the_poll_turn_identity_and_follower_result_ids_body()
+{
     let fixture = deferred_fixture(FixtureOptions::default()).await;
     let mut arguments = serde_json::Map::new();
     arguments.insert("query".into(), json!("value"));

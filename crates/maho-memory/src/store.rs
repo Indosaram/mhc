@@ -683,11 +683,7 @@ impl Store {
 
     fn table_rows(&self, sql: &str) -> Result<Vec<Value>> {
         let mut statement = self.conn.prepare(sql).map_err(sql_err)?;
-        let names: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let rows = statement
             .query_map([], |row| {
                 let mut object = Map::new();

@@ -107,6 +107,33 @@ impl ReflectionLockProbe for SystemReflectionLockProbe {
     }
 }
 
+/// `OpenProcess` + `WaitForSingleObject`: `Some(true)` while the process runs, `Some(false)` once it
+/// has exited or never existed, `None` when access is denied (an elevated process we can see but not
+/// signal) or the wait itself fails. `winsafe` wraps both calls safely, so this crate keeps
+/// `unsafe_code = "forbid"`.
+#[cfg(windows)]
+fn windows_process_liveness(pid: u32) -> Option<bool> {
+    use winsafe::{HPROCESS, co};
+
+    let process = match HPROCESS::OpenProcess(
+        co::PROCESS::QUERY_LIMITED_INFORMATION | co::PROCESS::SYNCHRONIZE,
+        false,
+        pid,
+    ) {
+        Ok(process) => process,
+        // Access denied means the process exists but is not ours to inspect.
+        Err(co::ERROR::ACCESS_DENIED) => return Some(true),
+        // A pid that never existed (or the idle process) is rejected as an invalid parameter.
+        Err(co::ERROR::INVALID_PARAMETER) => return Some(false),
+        Err(_) => return None,
+    };
+    match process.WaitForSingleObject(Some(0)) {
+        Ok(co::WAIT::OBJECT_0) => Some(false),
+        Ok(co::WAIT::TIMEOUT) => Some(true),
+        _ => None,
+    }
+}
+
 fn io_code(error: &std::io::Error) -> String {
     match error.kind() {
         std::io::ErrorKind::NotFound => "ENOENT".to_owned(),

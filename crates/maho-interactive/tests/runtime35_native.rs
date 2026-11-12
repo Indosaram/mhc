@@ -6665,3 +6665,57 @@ async fn consent_continue_records_consent_then_queues_the_login() {
     );
     assert!(!mode.render(100).join("\n").contains("Account risk"));
 }
+
+/// A Stop holds the session, and the same `/resume` then resumes it instead of opening the
+/// picker. The footer and the command list both have to say so: the footer because it is the
+/// only hint on screen, and the command list because it is what `/` completion shows.
+#[tokio::test]
+async fn a_stop_updates_the_pause_footer_and_the_resume_hint() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "faux",
+        "faux-1",
+        false,
+    );
+    assert!(!session.paused(), "a fresh session is not held");
+    assert_eq!(
+        maho_interactive::pause_footer::resume_command_target(
+            &maho_interactive::pause_footer::PauseView::of_session(&session),
+        ),
+        maho_interactive::pause_footer::ResumeCommandTarget::SessionPicker,
+        "with nothing held, /resume opens the session picker"
+    );
+
+    session.stop().await;
+    assert!(session.paused(), "Stop holds the session");
+    assert_eq!(
+        maho_interactive::pause_footer::resume_command_target(
+            &maho_interactive::pause_footer::PauseView::of_session(&session),
+        ),
+        maho_interactive::pause_footer::ResumeCommandTarget::ResumeSession,
+        "a held session makes /resume resume it here"
+    );
+
+    // The event drives the footer; the hint must match the state it lands in.
+    mode.handle_session_event(&maho_ext_api::AgentSessionEvent::SessionPaused {
+        pause_seq: session.pause_seq(),
+        kind: "session_hold".into(),
+        at: String::new(),
+        notice_count: session.paused_notice_count(),
+        persisted: false,
+    });
+    let statuses = mode
+        .extension_ui
+        .statuses
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        statuses
+            .get(maho_interactive::pause_footer::PAUSE_STATUS_KEY)
+            .map(String::as_str),
+        Some("Paused · 0 updates held · type to continue, /resume to resume"),
+        "the footer names /resume as the way out"
+    );
+}

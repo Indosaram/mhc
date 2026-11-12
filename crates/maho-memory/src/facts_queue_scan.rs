@@ -119,7 +119,7 @@ mod tests {
                 .file_name()
                 .expect("name")
                 .to_string_lossy()
-                .starts_with("2026-11-01"),
+                .starts_with(&queue_timestamp("2026-11-01T00:00:00Z")),
             "name order is timestamp order"
         );
     }

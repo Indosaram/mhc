@@ -299,5 +299,11 @@ async fn verbose_version_reports_channel_and_embedded_key() {
     assert!(text.contains("release-key: "), "{text}");
     // The profile decides which release asset this install may update to, so it has to be
     // observable from the binary itself rather than inferred from the download URL.
-    assert!(text.contains("profile: sul"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "profile: {}",
+            maho_cli::native_update::signature::PROFILE
+        )),
+        "{text}"
+    );
 }

@@ -295,7 +295,7 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
 #[allow(unsafe_code)]
 fn windows_process_liveness(pid: u32) -> Option<bool> {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ACCESS_DENIED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
@@ -310,10 +310,14 @@ fn windows_process_liveness(pid: u32) -> Option<bool> {
         )
     };
     if handle.is_null() {
+        // `OpenProcess` answers ERROR_INVALID_PARAMETER both for the idle process (pid 0) and for a
+        // pid that does not exist; the caller already screens pid 0, so this is a dead process.
         // Access denied means the process exists but is not ours to inspect.
-        return (std::io::Error::last_os_error().raw_os_error()
-            == i32::try_from(ERROR_ACCESS_DENIED).ok())
-        .then_some(true);
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) if code == i32::try_from(ERROR_ACCESS_DENIED).ok()? => Some(true),
+            Some(code) if code == i32::try_from(ERROR_INVALID_PARAMETER).ok()? => Some(false),
+            _ => None,
+        };
     }
     // SAFETY: `handle` is a valid process handle owned by this call.
     let waited = unsafe { WaitForSingleObject(handle, 0) };

@@ -19,6 +19,14 @@ chrono = { workspace = true, features = ["clock", "std"] }
 unicode-normalization.workspace = true
 unicode-general-category.workspace = true
 
+# Process liveness for stale-lock recovery: `kill(pid, 0)` on unix and `OpenProcess` on Windows.
+# Both are safe wrappers, so this crate keeps the workspace's `unsafe_code = "forbid"`.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.30.1", features = ["signal", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 
