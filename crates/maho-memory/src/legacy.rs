@@ -240,8 +240,7 @@ pub fn parse_expires(value: &str) -> Option<i64> {
 
 /// Formats epoch milliseconds the way the store stamps times (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
 pub fn format_instant(millis: i64) -> Option<String> {
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map(|time| time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    crate::time_format::format_millis(millis)
 }
 
 /// The `expires` key of a file's frontmatter.
@@ -1608,6 +1607,25 @@ mod tests {
             closed.starts_with("2026-02-01"),
             "the file's own expiry ends the row, not the later commit: {closed}"
         );
+    }
+
+    #[test]
+    fn the_importer_and_time_format_module_agree_on_instant_rendering() {
+        for millis in [
+            0i64,
+            1_762_891_200_000,
+            1_799_999_999_123,
+            -1,
+            -86_400_000,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            assert_eq!(
+                format_instant(millis),
+                crate::time_format::format_millis(millis),
+                "the two instant formatters disagree on {millis}"
+            );
+        }
     }
 
     #[test]
