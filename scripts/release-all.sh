@@ -13,7 +13,6 @@ cd "$repo"
 
 win_host="${MHC_WIN_HOST:-win-new}"
 mac_host="${MHC_MAC_HOST:-maho-mac}"
-win_root='C:/Users/sook/build/rel-VERSION'
 out_root="${MHC_RELEASE_OUT:-$HOME/.cache/mhc-release-$version}"
 unix_dir="$out_root/unix"
 win_dir="$out_root/windows"
@@ -28,14 +27,20 @@ git fetch -q origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD is not pushed to origin/main"
 echo "    v$version from $(git rev-parse --short HEAD)"
 
+omowright_commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)' | tr -d '\r\n ')
+printf '%s' "$omowright_commit" | grep -Eq '^[0-9a-f]{40}$' \
+  || die "could not read the omowright commit from assets/omo-latest/manifest.json"
+echo "    omowright $omowright_commit"
+
 step "linux-x86_64 (local)"
 bash scripts/release-linux.sh "$version" "$unix_dir"
 
 step "windows-x86_64 ($win_host)"
-win_root="${win_root/VERSION/$version}"
-ssh -o BatchMode=yes "$win_host" "if exist ${win_root//\//\\}\\src\\.git (cd /d ${win_root//\//\\}\\src && git fetch -q --depth 1 origin main && git reset -q --hard origin/main) else (git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git ${win_root//\//\\}\\src)" \
+win_root="C:/Users/sook/build/rel-$version"
+win_bs="C:\\Users\\sook\\build\\rel-$version"
+ssh -o BatchMode=yes "$win_host" "if exist $win_bs\\src\\.git (cd /d $win_bs\\src && git fetch -q --depth 1 origin main && git reset -q --hard origin/main) else (git clone -q --depth 1 --branch main https://github.com/Indosaram/mhc.git $win_bs\\src)" \
   || die "could not prepare $win_root/src on $win_host"
-ssh -o BatchMode=yes "$win_host" "powershell -NoProfile -ExecutionPolicy Bypass -File ${win_root//\//\\}\\src\\scripts\\release-windows.ps1 -Version $version -OutputDir ${win_root//\//\\}\\out" \
+ssh -o BatchMode=yes "$win_host" "powershell -NoProfile -ExecutionPolicy Bypass -File $win_bs\\src\\scripts\\release-windows.ps1 -Version $version -OutputDir $win_bs\\out -OmowrightCommit $omowright_commit" \
   || die "windows build failed"
 scp -o BatchMode=yes "$win_host:$win_root/out/*" "$win_dir/" || die "could not collect windows assets"
 
@@ -84,5 +89,5 @@ gh release view "v$version" --repo Indosaram/mhc --json tagName,assets -q '.tagN
 
 step "cleanup"
 rm -rf "$out_root"
-ssh -o BatchMode=yes "$win_host" "if exist ${win_root//\//\\} rmdir /s /q ${win_root//\//\\}" 2>/dev/null || true
+ssh -o BatchMode=yes "$win_host" "if exist $win_bs rmdir /s /q $win_bs" 2>/dev/null || true
 echo "done"

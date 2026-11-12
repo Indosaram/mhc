@@ -8,6 +8,8 @@
     -Version     MHC_BUILD_VERSION, e.g. 2026.11.12.1
     -OutputDir   receives mhc-windows-x86_64.zip and mhc-windows-x86_64-mit.zip (+ .sha256)
     -ProtocPath  protoc.exe; required because an SSH session does not inherit it
+    -OmowrightCommit  the pinned omowright SHA; computed by release-all.sh, which
+                  reads the manifest on a host where bun -e works reliably
 
   Needs: cargo, bun, node, git, protoc. Honors CARGO_TARGET_DIR. Never uploads
   anything. Set -SkipMit to build only the default profile.
@@ -17,6 +19,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$OutputDir,
     [string]$ProtocPath = $env:PROTOC,
+    [string]$OmowrightCommit = "",
     [switch]$SkipMit
 )
 
@@ -27,7 +30,7 @@ $Version = $Version -replace '^v', ''
 $exe = ".exe"
 
 function Step($name, $block) {
-    Write-Host "=== $name"
+    Write-Log "=== $name"
     & $block
     if ($LASTEXITCODE -ne 0) { throw "$name failed with exit code $LASTEXITCODE" }
 }
@@ -37,7 +40,7 @@ function Assert-Version($binary) {
     if ($got -ne $Version) {
         throw "version mismatch: $binary reports '$got', expected '$Version' (stale CARGO_TARGET_DIR?)"
     }
-    Write-Host "    version ok: $got"
+    Write-Log "    version ok: $got"
 }
 
 # PowerShell 5.1 mangles the quotes in `bun -e '...'`, so the commit came back
@@ -69,6 +72,16 @@ console.log(manifest.browserRuntime.dependency.commit);
 
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+
+# Write-Host does not survive `cmd 1>` redirection, so progress goes to a file;
+# without it a hung step is indistinguishable from a slow one.
+$logPath = Join-Path $repo "release-windows.log"
+function Write-Log($message) {
+    $line = "[$(Get-Date -Format HH:mm:ss)] $message"
+    Write-Host $line
+    Add-Content -Path $logPath -Value $line -Encoding utf8
+}
+Set-Content -Path $logPath -Value "release-windows.ps1 v$Version" -Encoding utf8
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
 $OutputDir = (Resolve-Path $OutputDir).Path
 
@@ -86,13 +99,14 @@ if (-not $ProtocPath -or -not (Test-Path $ProtocPath)) {
 }
 $env:PROTOC = $ProtocPath
 $env:PATH = "$env:PATH;" + (Split-Path -Parent $ProtocPath)
-Write-Host "protoc: $ProtocPath"
+Write-Log "protoc: $ProtocPath"
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("mhc-rel-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 try {
-    $commit = Get-OmowrightCommit $repo
-    Write-Host "omowright: $commit"
+    $commit = if ($OmowrightCommit) { $OmowrightCommit } else { Get-OmowrightCommit $repo }
+    if ($commit -notmatch '^[0-9a-f]{40}$') { throw "invalid omowright commit '$commit'" }
+    Write-Log "omowright: $commit"
 
     Step "materialize omowright runtime" {
         git init -q "$work/omowright"
@@ -116,7 +130,7 @@ try {
         bun tools/package-native.mjs --verify-only $sulStage
     }
     Compress-Archive -Path "$sulStage/*" -DestinationPath (Join-Path $OutputDir "mhc-windows-x86_64.zip") -Force
-    Write-Host "    wrote mhc-windows-x86_64.zip"
+    Write-Log "    wrote mhc-windows-x86_64.zip"
 
     if (-not $SkipMit) {
         Step "MIT build" {
@@ -130,7 +144,7 @@ try {
             bun tools/package-native.mjs --verify-only $mitStage
         }
         Compress-Archive -Path "$mitStage/*" -DestinationPath (Join-Path $OutputDir "mhc-windows-x86_64-mit.zip") -Force
-        Write-Host "    wrote mhc-windows-x86_64-mit.zip"
+        Write-Log "    wrote mhc-windows-x86_64-mit.zip"
     }
 }
 finally {
@@ -140,6 +154,6 @@ finally {
 Get-ChildItem $OutputDir -Filter "mhc-windows-*.zip" | ForEach-Object {
     $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
     "$hash  $($_.Name)" | Out-File -Encoding ascii "$($_.FullName).sha256"
-    Write-Host "    $($_.Name) $($_.Length) $hash"
+    Write-Log "    $($_.Name) $($_.Length) $hash"
 }
-Write-Host "wrote release assets for $Version to $OutputDir"
+Write-Log "wrote release assets for $Version to $OutputDir"
