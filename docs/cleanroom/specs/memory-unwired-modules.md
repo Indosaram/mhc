@@ -25,6 +25,9 @@ All 66 orphan modules were deleted from a scratch copy together with their `pub 
 | full crate | 86 | 38,093 | 1,474 | ok | clean |
 | orphans removed | 20 | 11,722 | 316 | **exit 0** | **clean** |
 
+The two line totals differ by 164 more than the 26,207 above: that difference is the `pub mod` and
+`pub use` lines stripped out of `lib.rs`, which belong to neither count.
+
 No reachable module referenced an orphan, and no orphan referenced a reachable module. The split is
 total in both directions. The kept twenty are `banks`, `cursor`, `expiry`, `extension`, `frontmatter`,
 `git_log`, `kibitzer`, `legacy`, `lib`, `mcp`, `normalize`, `recall`, `redact`, `reflection`,
