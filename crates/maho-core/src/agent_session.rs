@@ -12039,6 +12039,31 @@ impl AgentSession {
             == Some(true))
     }
 
+    /// Carries the level in force into a fresh `/new` session, as senpi's replacement runtime does.
+    /// senpi builds a new `SessionManager` and `createRuntime` re-resolves the level there; an
+    /// in-place replacement here reuses this session object, so the empty branch would otherwise
+    /// restore as `off` (`get_session_context_settings`'s default) and silently drop the user's
+    /// effort. The level is written as the entry the branch is missing, then read back by
+    /// `rebuild_session_context`, which keeps one entry and does not re-emit a level change.
+    fn carry_thinking_level_into_new_session(&self) {
+        if self.with_session_manager(|manager| manager.has_thinking_level_changes()) {
+            return;
+        }
+        let level = self.thinking_level();
+        let selection = self.thinking_selection().map(|selection| {
+            serde_json::to_value(selection).expect("thinking selection serializes")
+        });
+        let model = self.model();
+        self.with_session_manager_mut(|manager| {
+            manager.append_thinking_level_change_with_context(
+                level.as_str(),
+                selection,
+                None,
+                Some(&model),
+            );
+        });
+    }
+
     fn rebuild_session_context(&self) -> Result<(), String> {
         let context = self.with_session_manager(|manager| manager.current_context());
         let messages = context
@@ -12126,6 +12151,9 @@ impl AgentSession {
         self.state().pending_model_switch = None;
         self.state().retry_attempt = 0;
         self.reset_hint_tier_state();
+        if matches!(reason, maho_ext_api::SessionReason::New) {
+            self.carry_thinking_level_into_new_session();
+        }
         self.rebuild_session_context()?;
         self.renew_extension_runtime(reason).await?;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(

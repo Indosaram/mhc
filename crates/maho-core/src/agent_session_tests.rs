@@ -15920,6 +15920,29 @@ async fn new_session_clears_context_and_changes_identity() {
     assert!(session.messages().is_empty());
 }
 
+/// `/new` starts a fresh branch, but the effort the user set must carry into it: senpi's
+/// replacement runtime re-resolves the level for the new session, while an in-place replacement
+/// here reuses the agent and would otherwise restore the empty branch's `off` default.
+#[tokio::test]
+async fn new_session_keeps_the_thinking_level_in_force() {
+    let (session, models) = reasoning_faux_session(vec![("think-1", 128_000)]);
+    session.set_session_thinking_level(ModelThinkingLevel::High);
+    assert_eq!(session.thinking_level(), ModelThinkingLevel::High);
+
+    assert!(session.new_session(None).await.expect("new"));
+
+    assert_eq!(session.thinking_level(), ModelThinkingLevel::High);
+    assert!(session.messages().is_empty());
+    let entries = session.with_session_manager(|manager| {
+        manager.current_branch_of_types(&["thinking_level_change"])
+    });
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["thinkingLevel"], "high");
+    assert_eq!(entries[0]["thinkingSelection"]["level"], "high");
+    assert_eq!(entries[0]["provider"], models[0].provider.as_str());
+    assert_eq!(entries[0]["modelId"], "think-1");
+}
+
 #[test]
 fn enabled_hook_sources_preserve_scope_order_and_session_directory() {
     let session = test_session();
