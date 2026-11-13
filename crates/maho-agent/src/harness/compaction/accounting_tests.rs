@@ -1,9 +1,10 @@
-use maho_ai::types::{ContentBlock, Message, StopReason, UserContent, UserMessage};
+use maho_ai::types::{ContentBlock, ImageContent, Message, StopReason, UserContent, UserMessage};
 use serde_json::json;
 
 use super::compaction::{
-    DEFAULT_COMPACTION_SETTINGS, estimate_context_tokens, estimate_tokens, find_cut_point,
-    prepare_compaction,
+    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, MEDIA_COMPACTION_BUDGET_BYTES,
+    estimate_context_tokens, estimate_messages_media_bytes, estimate_tokens, find_cut_point,
+    prepare_compaction, should_compact_with_media,
 };
 use super::utils::serialize_conversation;
 use crate::harness::session::types::{Entry, EntryKind};
@@ -64,6 +65,66 @@ fn compacted_path() -> Vec<Entry> {
         ),
         message_entry("new", user("abcd")),
     ]
+}
+
+#[test]
+fn media_bytes_sum_only_image_payloads() {
+    let image = |data: &str| {
+        ContentBlock::Image(ImageContent {
+            data: data.to_owned(),
+            mime_type: "image/png".to_owned(),
+        })
+    };
+    let user_image = AgentMessage::Llm(Message::User(UserMessage {
+        content: UserContent::Blocks(vec![image("abcd")]),
+        timestamp: 0,
+    }));
+    let tool_result = AgentMessage::Llm(Message::ToolResult(
+        serde_json::from_value(json!({
+            "role": "toolResult", "toolCallId": "call", "toolName": "read",
+            "content": [{"type": "image", "data": "12345", "mimeType": "image/png"}],
+            "isError": false, "timestamp": 0
+        }))
+        .expect("tool-result image fixture"),
+    ));
+    assert_eq!(estimate_messages_media_bytes(&[user_image, tool_result]), 9);
+    assert_eq!(estimate_messages_media_bytes(&[user("text only")]), 0);
+}
+
+#[test]
+fn media_past_the_budget_compacts_a_token_light_context() {
+    let settings = CompactionSettings {
+        enabled: true,
+        reserve_tokens: 1,
+        keep_recent_tokens: 0,
+    };
+    assert!(!should_compact_with_media(
+        1,
+        MEDIA_COMPACTION_BUDGET_BYTES,
+        u64::MAX,
+        &settings
+    ));
+    assert!(should_compact_with_media(
+        1,
+        MEDIA_COMPACTION_BUDGET_BYTES + 1,
+        u64::MAX,
+        &settings
+    ));
+}
+
+#[test]
+fn disabled_policy_never_compacts_on_media() {
+    let settings = CompactionSettings {
+        enabled: false,
+        reserve_tokens: 1,
+        keep_recent_tokens: 0,
+    };
+    assert!(!should_compact_with_media(
+        1,
+        MEDIA_COMPACTION_BUDGET_BYTES * 10,
+        u64::MAX,
+        &settings
+    ));
 }
 
 #[test]

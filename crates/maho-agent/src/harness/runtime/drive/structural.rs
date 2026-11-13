@@ -431,7 +431,7 @@ use crate::harness::compaction::branch_summarization::{
 };
 use crate::harness::compaction::compaction::{
     CompactGenerationOptions, CompactResult, SummaryRequest, compact_with_request,
-    prepare_compaction, should_compact,
+    estimate_messages_media_bytes, prepare_compaction, should_compact_with_media,
 };
 use crate::harness::context::{Context, provider_telemetry_context, with_abort_signal};
 use crate::harness::events::{HarnessEvent, HarnessEventPayload, RunEndPayload};
@@ -1982,8 +1982,12 @@ pub async fn prepare_compaction_threshold(
     let Some(prepared) = prepared.filter(summarizes_history) else {
         return Ok(LaneContinue::Result { value: None });
     };
-    if !should_compact(
+    let media_bytes = estimate_messages_media_bytes(&prepared.messages_to_summarize)
+        + estimate_messages_media_bytes(&prepared.turn_prefix_messages)
+        + estimate_messages_media_bytes(&prepared.retained_tail);
+    if !should_compact_with_media(
         prepared.tokens_before.max(0) as u64,
+        media_bytes,
         model.context_window,
         &settings,
     ) {

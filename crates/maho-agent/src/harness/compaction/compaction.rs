@@ -426,6 +426,47 @@ pub fn should_compact(
     context_tokens > context_window.saturating_sub(settings.reserve_tokens)
 }
 
+/// Media budget mirrors `maho_core::compaction::MEDIA_COMPACTION_BUDGET_BYTES`; the value is
+/// duplicated deliberately because maho-agent must not depend on maho-core.
+pub const MEDIA_COMPACTION_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+
+fn content_block_media_bytes(block: &ContentBlock) -> usize {
+    match block {
+        ContentBlock::Image(image) => image.data.len(),
+        _ => 0,
+    }
+}
+
+/// Sum image payload bytes from provider-facing user and tool-result messages.
+pub fn estimate_messages_media_bytes(messages: &[AgentMessage]) -> usize {
+    let counted = counted_mask(messages);
+    messages
+        .iter()
+        .zip(counted)
+        .filter(|(_, counted)| *counted)
+        .map(|(message, _)| match message {
+            AgentMessage::Llm(Message::User(user)) => match &user.content {
+                UserContent::Text(_) => 0,
+                UserContent::Blocks(blocks) => blocks.iter().map(content_block_media_bytes).sum(),
+            },
+            AgentMessage::Llm(Message::ToolResult(result)) => {
+                result.content.iter().map(content_block_media_bytes).sum()
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+pub fn should_compact_with_media(
+    context_tokens: u64,
+    media_bytes: usize,
+    context_window: u64,
+    settings: &CompactionSettings,
+) -> bool {
+    should_compact(context_tokens, context_window, settings)
+        || (settings.enabled && media_bytes > MEDIA_COMPACTION_BUDGET_BYTES)
+}
+
 const ESTIMATED_IMAGE_CHARS: usize = 4800;
 
 fn estimate_text_and_image_content_chars(content: &UserContent) -> usize {

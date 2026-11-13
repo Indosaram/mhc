@@ -20,19 +20,19 @@ pub use branch_summarization::{
 pub use compaction::{
     BASE64_RUN_RE, CacheFriendlySummaryOptions, CompactionDetails, CompactionPreparation,
     CompactionResult, ContextUsageEstimate, CutPointResult, ESTIMATED_IMAGE_CHARS,
-    MAX_SCALED_RESERVE_TOKENS, RESERVE_WINDOW_FRACTION,
+    MAX_SCALED_RESERVE_TOKENS, MEDIA_COMPACTION_BUDGET_BYTES, RESERVE_WINDOW_FRACTION,
     SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT, SOURCE_CONTEXT_UPDATE_SUMMARIZATION_PROMPT,
     SUMMARIZATION_PROMPT, SummarizationRequest, SummarizationStreamFn, SummaryRequestOptions,
     SummaryTransformContext, SummaryWithUsage, TURN_PREFIX_SUMMARIZATION_PROMPT,
     UPDATE_SUMMARIZATION_INSTRUCTIONS, build_summarization_context, cache_friendly_context_fits,
     calculate_context_tokens, combine_usage, compact, complete_summarization,
     context_messages_for_compaction_entry, create_summarization_options, estimate_context_tokens,
-    estimate_tokens, find_cut_point, find_turn_start_index, find_valid_cut_points,
-    generate_summary, generate_summary_with_usage, get_assistant_usage, get_last_assistant_usage,
-    get_message_from_entry_for_compaction, get_summarization_failure, is_cut_point_message,
-    is_turn_start_message, prepare_compaction, resolve_effective_reserve_tokens,
-    resolve_reserve_tokens, resolve_threshold_context_tokens, should_compact,
-    update_summarization_prompt, weighted_chars,
+    estimate_messages_media_bytes, estimate_tokens, find_cut_point, find_turn_start_index,
+    find_valid_cut_points, generate_summary, generate_summary_with_usage, get_assistant_usage,
+    get_last_assistant_usage, get_message_from_entry_for_compaction, get_summarization_failure,
+    is_cut_point_message, is_turn_start_message, prepare_compaction,
+    resolve_effective_reserve_tokens, resolve_reserve_tokens, resolve_threshold_context_tokens,
+    should_compact, should_compact_with_media, update_summarization_prompt, weighted_chars,
 };
 pub use ideal_settings::{IdealCompactionSettings, default_ideal_compaction_settings};
 pub use lifecycle::{

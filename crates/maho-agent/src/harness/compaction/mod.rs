@@ -19,12 +19,13 @@ pub use branch_summarization::{
 pub use compaction::{
     CompactGenerationOptions, CompactResult, CompactionDetails, CompactionError,
     CompactionErrorCode, CompactionPreparation, CompactionSettings, ContextUsageEstimate,
-    CutPointResult, DEFAULT_COMPACTION_SETTINGS, SUMMARIZATION_SYSTEM_PROMPT,
-    SummaryGenerationOptions, SummaryRequest, calculate_context_tokens, compact,
-    compact_with_request, complete_simple_with_retries, create_summary_request_options,
-    estimate_context_tokens, estimate_tokens, find_cut_point, find_turn_start_index,
-    generate_summary, generate_summary_with_request, generate_summary_with_usage,
-    get_last_assistant_usage, prepare_compaction, serialize_conversation, should_compact,
+    CutPointResult, DEFAULT_COMPACTION_SETTINGS, MEDIA_COMPACTION_BUDGET_BYTES,
+    SUMMARIZATION_SYSTEM_PROMPT, SummaryGenerationOptions, SummaryRequest,
+    calculate_context_tokens, compact, compact_with_request, complete_simple_with_retries,
+    create_summary_request_options, estimate_context_tokens, estimate_messages_media_bytes,
+    estimate_tokens, find_cut_point, find_turn_start_index, generate_summary,
+    generate_summary_with_request, generate_summary_with_usage, get_last_assistant_usage,
+    prepare_compaction, serialize_conversation, should_compact, should_compact_with_media,
 };
 pub use utils::{
     FileOperations, compute_file_lists, content_text_for_summary, create_file_ops,

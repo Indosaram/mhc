@@ -2986,6 +2986,22 @@ impl SessionManager {
         })
     }
 
+    /// `has_context_messages` widened to every entry `session_entry_to_context_messages` projects
+    /// a message for: a `configuration_update` entry (from [`Self::append_configuration_update`])
+    /// emits a `configurationUpdate` context message, so a branch holding only one of those still
+    /// carries context. Callers that must agree with `!current_context().messages.is_empty()`
+    /// use this to get that answer without materializing the branch.
+    pub fn has_context_messages_for_switch(&self) -> bool {
+        self.has_branch_entry(|entry| match entry_type(entry) {
+            "message" | "custom_message" | "compaction" | "configuration_update" => true,
+            "branch_summary" => entry
+                .get("summary")
+                .and_then(Value::as_str)
+                .is_some_and(|summary| !summary.is_empty()),
+            _ => false,
+        })
+    }
+
     pub fn has_thinking_level_changes(&self) -> bool {
         self.has_branch_entry(|entry| entry_type(entry) == "thinking_level_change")
     }
@@ -5372,6 +5388,25 @@ mod tests {
         assert!(!manager.has_context_messages());
         manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
         assert!(manager.has_context_messages());
+    }
+
+    #[test]
+    fn the_switch_context_check_agrees_with_the_hydrated_context_for_every_entry_shape() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::in_memory(&dir, None, None);
+        let hydrated = |manager: &SessionManager| !manager.current_context().messages.is_empty();
+        assert!(!manager.has_context_messages_for_switch());
+        assert!(!hydrated(&manager));
+        // A thinking-level change projects no context message: both checks stay false.
+        manager.append_thinking_level_change("high", None);
+        assert!(!manager.has_context_messages_for_switch());
+        assert!(!hydrated(&manager));
+        // A configuration update does project one, which plain `has_context_messages` misses.
+        manager.append_configuration_update("high");
+        assert!(!manager.has_context_messages());
+        assert!(manager.has_context_messages_for_switch());
+        assert!(hydrated(&manager));
     }
 
     #[test]

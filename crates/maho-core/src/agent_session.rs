@@ -7980,7 +7980,12 @@ impl AgentSession {
             } else {
                 estimate.tokens
             };
-            Ok(tokens > model.context_window.saturating_sub(reserve))
+            // The token comparison below is byte-for-byte the old verdict (it saturates where
+            // `should_compact` subtracts in f64, which matters on a window smaller than the
+            // reserve). The second term is the media safety bound from the compaction policy,
+            // consulted only when there is media at all, so it can only turn false into true.
+            Ok(tokens > model.context_window.saturating_sub(reserve)
+                || estimate.media_bytes > crate::compaction::MEDIA_COMPACTION_BUDGET_BYTES)
         };
         if !oversized()? {
             return Ok(());
@@ -9810,9 +9815,12 @@ impl AgentSession {
     fn exceeds_policy_by_content_estimate(&self) -> Result<bool, String> {
         let model = self.model();
         let settings = self.threshold_compaction_settings(&model)?;
-        let tokens = estimate_messages_tokens(&self.context_message_values()?);
-        Ok(crate::compaction::should_compact(
+        let messages = self.context_message_values()?;
+        let tokens = estimate_messages_tokens(&messages);
+        let media_bytes = crate::compaction::estimate_messages_media_bytes(&messages);
+        Ok(crate::compaction::should_compact_with_media(
             tokens as f64,
+            media_bytes,
             model.context_window as f64,
             &settings,
         ))
@@ -11907,8 +11915,11 @@ impl AgentSession {
             let model = only.model.clone();
             let live = downswitch_live(&model)?;
             let (budget, repairable) = self.model_budget(&model, live, false)?;
+            // `has_context_messages_for_switch` walks the branch by `parentId` instead of
+            // materializing it, and counts every entry shape that projects a context message
+            // (including `configuration_update`), so it agrees with the hydration it replaces.
             let has_context =
-                self.with_session_manager(|manager| !manager.current_context().messages.is_empty());
+                self.with_session_manager(|manager| manager.has_context_messages_for_switch());
             if model.context_window > 0 && has_context && budget.shortfall_tokens > 0 && repairable
             {
                 let notice = format!(
@@ -17951,6 +17962,11 @@ impl AgentSession {
         } else {
             estimate.tokens
         };
+        // Media the token estimate cannot see: an image is charged ~1,200 tokens whatever its payload,
+        // so a screenshot-heavy context stays under the window while holding hundreds of megabytes of
+        // base64. This gate must still try to compact it before another request copies that payload.
+        let over_media_budget =
+            estimate.media_bytes > crate::compaction::MEDIA_COMPACTION_BUDGET_BYTES;
         let reserve = if resolved.reserve_scaling_enabled {
             crate::compaction::compaction::resolve_reserve_tokens(
                 model.context_window as f64,
@@ -17971,7 +17987,9 @@ impl AgentSession {
         };
         let over_proactive_threshold =
             model.context_window > 0 && tokens as f64 >= model.context_window as f64 * ratio;
-        if !(at_hard_limit || proactive && over_proactive_threshold) {
+        // Over-budget media only triggers a compaction *attempt*; `at_hard_limit` stays token-only so a
+        // failed compaction of a media-heavy context never hard-fails the provider request below.
+        if !(at_hard_limit || over_media_budget || proactive && over_proactive_threshold) {
             return Ok(());
         }
         let result = self

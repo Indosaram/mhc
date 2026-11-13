@@ -221,6 +221,10 @@ pub struct ContextUsageEstimate {
     pub usage_tokens: u64,
     pub trailing_tokens: u64,
     pub last_usage_index: Option<usize>,
+    /// Base64 payload bytes carried by image blocks in these messages. Token accounting charges
+    /// every image a fixed [`ESTIMATED_IMAGE_CHARS`], so this is the only measurement that tracks
+    /// the heap a media-heavy context actually holds.
+    pub media_bytes: usize,
 }
 
 /// senpi dropFailedAssistantTurns as an index mask: failed assistant turns and the tool results
@@ -299,6 +303,7 @@ pub fn estimate_context_tokens(messages: &[Value]) -> ContextUsageEstimate {
             usage_tokens: 0,
             trailing_tokens: estimated,
             last_usage_index: None,
+            media_bytes: estimate_messages_media_bytes(messages),
         };
     };
 
@@ -316,6 +321,7 @@ pub fn estimate_context_tokens(messages: &[Value]) -> ContextUsageEstimate {
         usage_tokens,
         trailing_tokens,
         last_usage_index: Some(index),
+        media_bytes: estimate_messages_media_bytes(messages),
     }
 }
 
@@ -355,6 +361,7 @@ pub fn estimate_projected_context_tokens(path_entries: &[Value]) -> ContextUsage
         usage_tokens: 0,
         trailing_tokens: tokens,
         last_usage_index: None,
+        media_bytes: estimate_messages_media_bytes(&messages),
     }
 }
 
@@ -402,8 +409,31 @@ pub fn should_compact(
     context_tokens > context_window - reserve
 }
 
+/// [`should_compact`] plus a media budget: a context that stays under the token window still
+/// compacts once its image payloads exceed [`MEDIA_COMPACTION_BUDGET_BYTES`]. A disabled policy
+/// keeps the token function's veto.
+pub fn should_compact_with_media(
+    context_tokens: f64,
+    media_bytes: usize,
+    context_window: f64,
+    settings: &CompactionSettings,
+) -> bool {
+    should_compact(context_tokens, context_window, settings)
+        || (settings.enabled && media_bytes > MEDIA_COMPACTION_BUDGET_BYTES)
+}
+
 /// senpi ESTIMATED_IMAGE_CHARS.
 pub const ESTIMATED_IMAGE_CHARS: usize = 4800;
+
+/// Media a session may hold before compaction is forced regardless of the token estimate.
+///
+/// [`estimate_tokens`] charges an image a fixed [`ESTIMATED_IMAGE_CHARS`] (~1200 tokens) whatever
+/// its payload, so 45 screenshots of 2.9 MB each are ~54k estimated tokens against 128 MB of
+/// base64 heap: such a session grows unbounded without ever nearing a 200k-token window. 24 MiB
+/// still leaves roughly eight full-size screenshots of working set (enough for a few turns of
+/// visual work) while bounding a runaway session to a fraction of that 128 MB. Deliberately a
+/// constant rather than a setting: this is a safety bound, not a tuning knob.
+pub const MEDIA_COMPACTION_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 
 /// senpi BASE64_RUN_RE.
 pub static BASE64_RUN_RE: LazyLock<Regex> =
@@ -442,6 +472,44 @@ fn estimate_text_and_image_content_chars(content: &Value) -> usize {
             .sum(),
         _ => 0,
     }
+}
+
+/// Payload bytes of one content block: an image's base64 `data`, or the `source.data` of an
+/// Anthropic-shaped image block. Any other block contributes nothing.
+fn content_block_media_bytes(block: &Value) -> usize {
+    if block.get("type").and_then(Value::as_str) != Some("image") {
+        return 0;
+    }
+    block
+        .get("data")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            block
+                .get("source")
+                .and_then(|source| source.get("data"))
+                .and_then(Value::as_str)
+        })
+        .map_or(0, str::len)
+}
+
+fn content_media_bytes(content: &Value) -> usize {
+    let Value::Array(blocks) = content else {
+        return 0;
+    };
+    blocks.iter().map(content_block_media_bytes).sum()
+}
+
+/// Base64 bytes carried by image blocks, walking the same `content` shapes
+/// `estimate_text_and_image_content_chars` reads.
+///
+/// Every message counts, including turns `counted_message_mask` drops for the provider: these
+/// bytes stand for memory the session is holding, and a failed turn's screenshot holds just as
+/// much as a kept one.
+pub fn estimate_messages_media_bytes(messages: &[Value]) -> usize {
+    messages
+        .iter()
+        .map(|message| content_media_bytes(message.get("content").unwrap_or(&Value::Null)))
+        .sum()
 }
 
 /// senpi estimateTokens: the chars/4 heuristic, deliberately conservative.
@@ -1959,6 +2027,70 @@ mod tests {
             estimate_tokens(&message),
             (ESTIMATED_IMAGE_CHARS as u64).div_ceil(4)
         );
+    }
+
+    #[test]
+    fn media_bytes_sum_the_image_payloads_and_ignore_text() {
+        let base64 = "A".repeat(1000);
+        let message = json!({ "role": "user", "content": [
+            { "type": "text", "text": "look at this" },
+            { "type": "image", "data": base64, "mimeType": "image/png" },
+        ] });
+        assert_eq!(estimate_messages_media_bytes(&[message]), 1000);
+        // Anthropic-shaped image blocks carry the payload inside `source.data`.
+        let anthropic = json!({ "role": "user", "content": [ { "type": "image", "source": { "type": "base64", "mediaType": "image/png", "data": base64 } } ] });
+        assert_eq!(estimate_messages_media_bytes(&[anthropic]), 1000);
+        // Text-only messages carry no media, and an empty list is zero.
+        let text_only = vec![user(&"x".repeat(900)), assistant_text("answer")];
+        assert_eq!(estimate_messages_media_bytes(&text_only), 0);
+        assert_eq!(estimate_messages_media_bytes(&[]), 0);
+    }
+
+    #[test]
+    fn media_past_the_budget_compacts_a_token_light_context() {
+        let settings = crate::compaction::settings::default_compaction_settings();
+        // Far under a 200k window: the token-only decision never fires here.
+        assert!(!should_compact(5_000.0, 200_000.0, &settings));
+        assert!(!should_compact_with_media(
+            5_000.0,
+            MEDIA_COMPACTION_BUDGET_BYTES,
+            200_000.0,
+            &settings
+        ));
+        assert!(!should_compact_with_media(
+            5_000.0,
+            MEDIA_COMPACTION_BUDGET_BYTES - 1,
+            200_000.0,
+            &settings
+        ));
+        assert!(should_compact_with_media(
+            5_000.0,
+            MEDIA_COMPACTION_BUDGET_BYTES + 1,
+            200_000.0,
+            &settings
+        ));
+    }
+
+    #[test]
+    fn should_compact_is_unchanged_by_the_media_aware_wrapper() {
+        let mut settings = crate::compaction::settings::default_compaction_settings();
+        // The token-only verdict is untouched: a light context stays uncompacted whatever media
+        // measurement the caller has, and a heavy one compacts even with no media at all.
+        assert!(!should_compact(5_000.0, 200_000.0, &settings));
+        assert!(should_compact(200_000.0, 200_000.0, &settings));
+        assert!(should_compact_with_media(
+            200_000.0, 0, 200_000.0, &settings
+        ));
+        assert!(!should_compact_with_media(5_000.0, 0, 200_000.0, &settings));
+        // A disabled policy vetoes the media budget too, as it vetoes the token threshold.
+        settings.enabled = false;
+        assert!(!should_compact(200_000.0, 200_000.0, &settings));
+        assert!(!should_compact_with_media(
+            200_000.0,
+            MEDIA_COMPACTION_BUDGET_BYTES * 10,
+            200_000.0,
+            &settings
+        ));
     }
 
     #[test]
