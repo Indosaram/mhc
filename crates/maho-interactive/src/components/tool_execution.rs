@@ -51,23 +51,23 @@ pub struct ToolExecutionOptions {
 }
 
 fn collapse_fallback_result(
-    result: Option<&ToolExecutionResult>,
+    result: Option<&Rc<ToolExecutionResult>>,
     show_images: bool,
     expanded: bool,
     theme: &Theme,
-) -> Option<ToolExecutionResult> {
+) -> Option<Rc<ToolExecutionResult>> {
     let result = result?;
     if expanded {
-        return Some(result.clone());
+        return Some(Rc::clone(result));
     }
     let output =
         crate::tools::render_utils::get_text_output(Some(&result.as_tool_result()), show_images);
     if output.is_empty() {
-        return Some(result.clone());
+        return Some(Rc::clone(result));
     }
     let lines: Vec<&str> = output.split('\n').collect();
     if lines.len() <= FALLBACK_PREVIEW_LINES {
-        return Some(result.clone());
+        return Some(Rc::clone(result));
     }
     let remaining = lines.len() - FALLBACK_PREVIEW_LINES;
     let hint =
@@ -82,11 +82,11 @@ fn collapse_fallback_result(
         hint,
         theme.fg(ThemeColor::Muted, ")")
     );
-    Some(ToolExecutionResult {
+    Some(Rc::new(ToolExecutionResult {
         content: vec![ToolContent::text(text)],
         details: result.details.clone(),
         is_error: result.is_error,
-    })
+    }))
 }
 
 pub struct ToolExecutionComponent {
@@ -106,7 +106,10 @@ pub struct ToolExecutionComponent {
     /// senpi's `#spinner` timer; `spinner_frame` alone is shared with the strike animation.
     spinner_running: bool,
     todo_strike_frames_left: Option<i64>,
-    result: Option<ToolExecutionResult>,
+    result: Option<Rc<ToolExecutionResult>>,
+    /// The card's result with model-only text parts removed, built once per result update so a
+    /// render never rebuilds it.
+    render_result: Option<Rc<ToolExecutionResult>>,
     cached_lines: Option<Vec<String>>,
     cached_width: Option<usize>,
     last_display_signature: Option<String>,
@@ -165,6 +168,7 @@ impl ToolExecutionComponent {
             spinner_running: false,
             todo_strike_frames_left: None,
             result: None,
+            render_result: None,
             cached_lines: None,
             cached_width: None,
             last_display_signature: None,
@@ -311,7 +315,9 @@ impl ToolExecutionComponent {
                 })
                 .sum(),
         );
-        self.result = Some(result.clone());
+        let result = Rc::new(result);
+        self.result = Some(Rc::clone(&result));
+        self.render_result = Some(Self::filter_model_only(&result));
         self.is_partial = is_partial;
         if !is_partial {
             self.args_complete = true;
@@ -321,7 +327,7 @@ impl ToolExecutionComponent {
         self.update_todo_strike_animation();
         self.update_display();
         if let Some(images) = &mut self.images {
-            images.update_result(&result.as_tool_result());
+            images.update_result(Rc::clone(&result));
         }
         self.invalidate_render_cache();
     }
@@ -464,16 +470,6 @@ impl ToolExecutionComponent {
     }
 
     fn create_render_state(&self) -> ToolExecutionRenderState {
-        let result = self.result.as_ref().map(|result| ToolExecutionResult {
-            content: result
-                .content
-                .iter()
-                .filter(|part| !maho_tools::model_only_text::is_model_only_text(part))
-                .cloned()
-                .collect(),
-            details: result.details.clone(),
-            is_error: result.is_error,
-        });
         ToolExecutionRenderState {
             args: self.args.clone(),
             execution_started: self.execution_started,
@@ -482,10 +478,33 @@ impl ToolExecutionComponent {
             expanded: self.expanded,
             show_images: self.show_images,
             spinner_frame: self.spinner_frame,
-            result,
+            result: self.render_result.clone(),
             is_error: self.is_error(),
             now_ms: self.now_ms,
         }
+    }
+
+    /// The card's result with model-only text parts removed, built once per `update_result` so a
+    /// render never re-copies an image payload. Shares the card's allocation when nothing is
+    /// filtered.
+    fn filter_model_only(result: &Rc<ToolExecutionResult>) -> Rc<ToolExecutionResult> {
+        if !result
+            .content
+            .iter()
+            .any(maho_tools::model_only_text::is_model_only_text)
+        {
+            return Rc::clone(result);
+        }
+        Rc::new(ToolExecutionResult {
+            content: result
+                .content
+                .iter()
+                .filter(|part| !maho_tools::model_only_text::is_model_only_text(part))
+                .cloned()
+                .collect(),
+            details: result.details.clone(),
+            is_error: result.is_error,
+        })
     }
 
     fn create_render_signature(&self) -> String {
@@ -498,7 +517,7 @@ impl ToolExecutionComponent {
             "expanded": state.expanded,
             "showImages": state.show_images,
             "spinnerFrame": state.spinner_frame,
-            "result": state.result.map(|result| serde_json::json!({
+            "result": state.result.as_ref().map(|result| serde_json::json!({
                 "content": result.content,
                 "details": result.details,
                 "isError": result.is_error,

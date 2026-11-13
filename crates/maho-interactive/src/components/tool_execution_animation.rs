@@ -143,6 +143,8 @@ impl ToolExecutionAnimation {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use serde_json::json;
 
     use super::super::tool_execution_types::ToolExecutionResult;
@@ -178,12 +180,12 @@ mod tests {
         }
     }
 
-    fn result(details: serde_json::Value, is_error: bool) -> Option<ToolExecutionResult> {
-        Some(ToolExecutionResult {
+    fn result(details: serde_json::Value, is_error: bool) -> Option<Rc<ToolExecutionResult>> {
+        Some(Rc::new(ToolExecutionResult {
             content: Vec::new(),
             details: Some(details),
             is_error,
-        })
+        }))
     }
 
     #[test]

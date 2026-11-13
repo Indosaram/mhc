@@ -12,6 +12,7 @@ use maho_interactive::components::mermaid::{
 use maho_interactive::components::tool_execution_images::{
     ToolExecutionImageOptions, ToolExecutionImages,
 };
+use maho_interactive::components::tool_execution_types::ToolExecutionResult;
 use maho_interactive::components::user_message_selector::{
     UserMessageItem, UserMessageSelectorComponent,
 };
@@ -168,15 +169,14 @@ fn tool_execution_images_match_pinned_senpi_without_image_support() {
             max_width_cells: 60,
             show_renderer_fallback: false,
         });
-        images.update_result(&maho_tools::definition::ToolResult {
+        images.update_result(Rc::new(ToolExecutionResult {
             content: vec![maho_tools::definition::ToolContent::Image {
                 data: String::from("aGVsbG8="),
                 mime_type: String::from("image/png"),
             }],
             details: None,
-            structured_content: None,
-            is_error: None,
-        });
+            is_error: false,
+        }));
         assert_eq!(
             trim(images.render(width)),
             expected(case),

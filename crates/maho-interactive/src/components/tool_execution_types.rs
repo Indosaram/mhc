@@ -1,4 +1,6 @@
 //! Port of `components/tool-execution-types.ts`.
+use std::rc::Rc;
+
 use maho_tools::definition::{ToolContent, ToolResult};
 use serde_json::Value;
 
@@ -31,7 +33,7 @@ pub struct ToolExecutionRenderState {
     pub expanded: bool,
     pub show_images: bool,
     pub spinner_frame: Option<i64>,
-    pub result: Option<ToolExecutionResult>,
+    pub result: Option<Rc<ToolExecutionResult>>,
     pub is_error: bool,
     /// Wall-clock milliseconds for the progress line's elapsed time. senpi reads `Date.now()` at
     /// render time; this port takes it from the host tick so a render is reproducible.

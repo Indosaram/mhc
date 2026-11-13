@@ -305,7 +305,7 @@ impl ToolExecutionRenderer {
     }
 
     fn render_result(&mut self) -> Option<Rc<RefCell<dyn Component>>> {
-        let result = self.state.result.clone()?;
+        let result = Rc::clone(self.state.result.as_ref()?);
         let tool_result = result.as_tool_result();
         let fallback =
             create_tool_result_fallback(Some(&tool_result), self.state.show_images, &self.theme);
