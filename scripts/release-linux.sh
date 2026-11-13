@@ -76,7 +76,7 @@ test "$("$rel_mit/mhc" --version | tr -d '\r')" = "$version"
 mit_stage="$work/dist/$mit_name"
 bun tools/package-native.mjs --mit --binary "$rel_mit/mhc" --launcher-binary "$rel_mit/mhc-launcher" --output "$mit_stage"
 bun tools/package-native.mjs --verify-only "$mit_stage"
-node -e 'const m=require(process.argv[1]+"/manifest.json");if(m.profile!=="mit")throw new Error("staged manifest is not the mit profile")' "$mit_stage"
+MHC_MIT_STAGE="$mit_stage" node -e 'const {readFileSync}=require("node:fs");const p=process.env.MHC_MIT_STAGE;if(!p)throw new Error("MHC_MIT_STAGE is not set");const m=JSON.parse(readFileSync(p+"/manifest.json","utf8"));if(m.profile!=="mit")throw new Error("staged manifest is not the mit profile")'
 scripts/package-archive.sh "$work/dist" "$mit_name"
 mv "$work/dist/$mit_name.tar.gz" "$work/dist/$mit_name.tar.gz.sha256" "$outdir/"
 echo "wrote $outdir/$mit_name.tar.gz"
