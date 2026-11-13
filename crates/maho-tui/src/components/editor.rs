@@ -595,6 +595,10 @@ pub struct Editor {
     snapped_from_cursor_col: Option<usize>,
     undo_stack: UndoStack<EditorSnapshot>,
     wrapped_line_cache: Vec<Option<CachedWrappedLine>>,
+    /// Buffer text the cached keyword runs were found in; `None` until the first render.
+    keyword_cache_text: Option<String>,
+    /// Buffer-wide keyword runs for `keyword_cache_text`, reused while the text is unchanged.
+    keyword_cache_runs: Vec<MentionRange>,
     pub on_submit: Option<SubmitCallback>,
     pub on_change: Option<ChangeCallback>,
     /// Fired whenever image markers are added, removed, pruned or renumbered, with the
@@ -656,6 +660,8 @@ impl Editor {
             snapped_from_cursor_col: None,
             undo_stack: UndoStack::new(),
             wrapped_line_cache: Vec::new(),
+            keyword_cache_text: None,
+            keyword_cache_runs: Vec::new(),
             on_submit: None,
             on_change: None,
             on_image_markers_changed: None,
@@ -1042,13 +1048,22 @@ impl Editor {
         let mention_style = self.theme.mention.clone();
 
         let keyword_highlight = self.theme.keyword_highlight.clone();
-        let keyword_ranges_by_line: BTreeMap<usize, Vec<KeywordRange>> = keyword_highlight
-            .as_ref()
-            .map(|highlight| {
-                let text = self.state.lines.join("\n");
-                keyword_ranges_by_line(&self.state.lines, &(highlight.find)(&text))
-            })
-            .unwrap_or_default();
+        let keyword_runs: Vec<MentionRange> = match keyword_highlight.as_ref() {
+            Some(highlight) => {
+                let joined = self.state.lines.join("\n");
+                // The border animation repaints the editor on every breath step with the same text;
+                // scanning the whole buffer again per frame is pure waste, so reuse the previous
+                // result until the text actually changes.
+                if self.keyword_cache_text.as_deref() != Some(joined.as_str()) {
+                    self.keyword_cache_runs = (highlight.find)(&joined);
+                    self.keyword_cache_text = Some(joined);
+                }
+                self.keyword_cache_runs.clone()
+            }
+            None => Vec::new(),
+        };
+        let keyword_ranges_by_line: BTreeMap<usize, Vec<KeywordRange>> =
+            keyword_ranges_by_line(&self.state.lines, &keyword_runs);
 
         for layout_line in &visible_lines {
             let mut line_visible_width = visible_width(&layout_line.text);

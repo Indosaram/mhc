@@ -69,7 +69,7 @@ pub(crate) fn header_spans(text: &str) -> Vec<Span> {
     spans
 }
 
-const NEGATIONS: [&str; 12] = [
+pub(crate) const NEGATIONS: [&str; 12] = [
     "never", "not", "dont", "don't", "doesnt", "doesn't", "wont", "won't", "cant", "can't",
     "cannot", "avoid",
 ];

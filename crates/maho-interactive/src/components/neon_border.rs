@@ -117,6 +117,8 @@ fn color_prompt_glyph(line: &mut String, rgb: [u8; 3], mode: ColorMode) {
     let Some(position) = line.find('❯') else {
         return;
     };
+    // CustomEditor prepends only the border color and then the glyph, so anything printable before
+    // it means this is not the prompt glyph but text the user typed.
     if !strip_terminal_sequences(&line[..position]).is_empty() {
         return;
     }
@@ -227,6 +229,21 @@ mod tests {
         assert_eq!(strip_terminal_sequences(&lines[1]), "❯ spk hi");
         assert!(!lines[1].contains("1;2;3m"));
         assert_eq!(lines[3], "  → /spk-loop");
+    }
+
+    #[test]
+    fn leaves_a_glyph_the_user_typed_alone() {
+        // CustomEditor prepends the prompt glyph itself and puts nothing printable before it, so a
+        // printable prefix means the '❯' belongs to the draft and must keep its own styling.
+        register_glow_keywords(&["spk"]);
+        let mut lines = vec![
+            "─".repeat(40),
+            "  \u{1b}[38;2;1;2;3m❯\u{1b}[39m spk hi".to_owned(),
+            "─".repeat(40),
+        ];
+        let untouched = lines[1].clone();
+        assert!(apply_neon_border(&mut lines, 0.0, ColorMode::Truecolor));
+        assert_eq!(lines[1], untouched);
     }
 
     #[test]

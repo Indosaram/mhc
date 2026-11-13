@@ -1,6 +1,6 @@
 //! Replaces inactive regions of a prompt with spaces, keeping byte length and newlines.
 
-use crate::mask_phrases::{header_spans, prohibitive_spans};
+use crate::mask_phrases::{NEGATIONS, header_spans, prohibitive_spans};
 
 pub(crate) type Span = (usize, usize);
 
@@ -14,22 +14,53 @@ pub struct Masked {
     pub embedded_directive: bool,
 }
 
+/// A pass runs only when the text carries a substring its detector requires. Masking replaces
+/// characters with spaces and never introduces one, so a marker missing from the original text is
+/// missing from every later intermediate too, that pass would find no span, and skipping it is
+/// observably a no-op. Every detector below allocates per line or per word, so a typical draft that
+/// carries no code, quote, URL or negation skips all of them.
 pub fn mask(input: &str, directive_tag: &str) -> Masked {
-    let mut text = blank(input, &fence_spans(input));
-    text = blank(&text, &blockquote_spans(&text));
-    text = blank(&text, &code_span_spans(&text));
-    text = blank(&text, &quote_spans(&text));
-    text = blank(&text, &url_spans(&text));
+    let mut text = if input.contains("```") || input.contains("~~~") {
+        blank(input, &fence_spans(input))
+    } else {
+        input.to_owned()
+    };
+    if text.contains('>') {
+        text = blank(&text, &blockquote_spans(&text));
+    }
+    if text.contains('`') {
+        text = blank(&text, &code_span_spans(&text));
+    }
+    if text.contains('"') || text.contains('\u{201C}') {
+        text = blank(&text, &quote_spans(&text));
+    }
+    if text.contains("://") {
+        text = blank(&text, &url_spans(&text));
+    }
     let embedded_directive = text.contains(directive_tag);
-    text = blank(&text, &tag_pair_spans(&text));
-    text = blank(&text, &header_spans(&text));
+    if text.contains('<') {
+        text = blank(&text, &tag_pair_spans(&text));
+    }
+    if text.contains(':') || text.contains('[') {
+        text = blank(&text, &header_spans(&text));
+    }
     let before_prohibitive = text.clone();
-    text = blank(&text, &prohibitive_spans(&text));
+    if negates(&text) {
+        text = blank(&text, &prohibitive_spans(&text));
+    }
     Masked {
         text,
         before_prohibitive,
         embedded_directive,
     }
+}
+
+/// Whether the text carries any word [`prohibitive_spans`] could start from. Case-insensitive and
+/// linear: it only decides whether the word-by-word scan is worth running. Reads the same table the
+/// detector reads, and folds exactly the way its `normalise` does, so the two cannot drift apart.
+fn negates(text: &str) -> bool {
+    let lower = text.to_lowercase().replace('\u{2019}', "'");
+    NEGATIONS.iter().any(|token| lower.contains(token))
 }
 
 fn blank(text: &str, spans: &[Span]) -> String {

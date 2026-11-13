@@ -258,3 +258,42 @@ fn disabled_flag_reports_no_effective_action() {
     assert!(!got.effective);
     assert_eq!(got.suppression, Some(Suppression::Disabled));
 }
+
+/// The masking passes are skipped when the text cannot trip their detector; skipping must never
+/// change what the classifier sees. Every case here carries a keyword next to a marker a pass would
+/// have masked, plus the same text without the marker.
+#[test]
+fn gated_masking_passes_preserve_classification() {
+    struct Case(&'static str, bool, usize);
+    // (text, keyword still visible, visible mentions)
+    let cases = [
+        Case("ulw go", true, 1),
+        Case("ulw plan the migration", true, 1),
+        Case("ulw loop until green", true, 1),
+        Case("ulw research the field", true, 1),
+        Case("mass ulw", true, 1),
+        Case("```\nulw in a fence\n```\nulw go", true, 1),
+        Case("`ulw` inline then ulw go", true, 1),
+        Case("\"quoted ulw\" then ulw go", true, 1),
+        Case("> quoted ulw\nulw go", true, 1),
+        Case("see https://x.dev/ulw then ulw go", true, 1),
+        Case("do not load ulw now. ulw go", true, 1),
+        Case("don\u{2019}t use ulw", false, 0),
+        Case("doesn\u{2019}t enable ulw", false, 0),
+        Case("never run ulw", false, 0),
+        Case("nothing reserved here", false, 0),
+    ];
+    for Case(text, armed, mentions) in cases {
+        for source in [InputSource::Interactive, InputSource::Rpc] {
+            let got = classify(ClassifyInput {
+                text,
+                source,
+                snapshot: SessionArming::default(),
+                disabled: false,
+            });
+            assert_eq!(has_visible_keyword(text), armed, "armed: {text:?}");
+            assert_eq!(got.visible_mentions, mentions, "mentions: {text:?}");
+            assert_eq!(got.effective, armed, "effective: {text:?}");
+        }
+    }
+}

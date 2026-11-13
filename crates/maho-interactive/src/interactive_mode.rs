@@ -12432,8 +12432,8 @@ impl InteractiveMode {
                 }
             }
             AgentSessionEvent::BashExecutionUpdate { delta, .. } => { if let Some((component, _)) = &self.pending_bash { component.borrow_mut().append_output(delta); } }
-            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; self.keyword_turn_glow = false; }
-            AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.keyword_turn_glow = false; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
+            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; self.keyword_turn_glow = false; self.frame_dirty = true; }
+            AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.keyword_turn_glow = false; self.frame_dirty = true; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
             AgentSessionEvent::EntryAppended { entry } if entry.kind == "custom" => self.add_custom_entry_to_chat(&entry.data),
             _ => {}
         }
@@ -14069,6 +14069,9 @@ impl InteractiveMode {
                 }
                 self.agent_idle = true;
                 self.keyword_turn_glow = false;
+                // Clearing the glow changes the prompt's rendered border, so ask for the repaint
+                // instead of waiting for the once-per-second idle backstop to notice.
+                self.frame_dirty = true;
                 self.active_tool_executions.clear();
                 self.refresh_active_tool_execution_terminal_title();
                 self.pending_tools.clear();

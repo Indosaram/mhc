@@ -191,18 +191,78 @@ fn mask_fences(mut visible: String) -> String {
     visible
 }
 
+/// A skill keyword needs the word `plan`, `loop` or `research`, matched with the same Unicode case
+/// folding as the fancy patterns these guard, so they can never hide a match such a pattern would
+/// have found (`(?i)` folds U+017F to `s`, which `to_lowercase` does not).
+static SKILL_WORD: LazyLock<Vec<(ReservedKeyword, Regex)>> = LazyLock::new(|| {
+    vec![
+        (ReservedKeyword::UlwPlan, word_regex("plan")),
+        (ReservedKeyword::UlwLoop, word_regex("loop")),
+        (ReservedKeyword::UlwResearch, word_regex("research")),
+    ]
+});
+
+fn word_regex(word: &str) -> Regex {
+    Regex::new(&format!("(?i){word}")).unwrap_or_else(|e| panic!("skill word gate: {e}"))
+}
+
+/// A skill keyword needs the word `plan`, `loop` or `research`. Linear, and folded the same way as
+/// the fancy patterns it guards, so it can never hide a match they would have found.
+static SKILL_KEYWORD_GATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("(?i)plan|loop|research").unwrap_or_else(|e| panic!("skill gate: {e}"))
+});
+/// Every branch of [`NEGATED_INVOCATION`] opens with one of these; linear, same folding.
+static NEGATION_GATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("(?i)do\\s+not|don['\u{2019}]t|dont|never")
+        .unwrap_or_else(|e| panic!("negation gate: {e}"))
+});
+
 /// Quoted, injected, relayed and negated regions are masked (offsets kept) before matching.
+///
+/// A pass runs only when the text carries a substring its pattern requires. Masking replaces
+/// characters but never introduces them, so a substring missing from the original text is missing
+/// from every later intermediate too: skipping the pass is observably a no-op. These passes are
+/// fancy-regex backtracking over the whole buffer and dominate this function, while a typical
+/// draft trips none of them.
 fn mask_quoted_regions(text: &str) -> String {
     if RELAY_HEADER.is_match(text) {
         return mask_range(text, 0, text.len());
     }
-    let visible = mask_fancy(text.to_owned(), &INJECTED_BLOCK);
-    let visible = mask_fences(visible);
-    let visible = mask_fancy(visible, &INLINE_CODE);
-    let visible = mask_regex(visible, &BLOCK_QUOTE_LINE);
-    let visible = mask_regex(visible, &DOUBLE_QUOTED);
-    let visible = mask_fancy(visible, &URL_SPAN);
-    mask_fancy(visible, &NEGATED_INVOCATION)
+    let visible = if text.contains('<') {
+        mask_fancy(text.to_owned(), &INJECTED_BLOCK)
+    } else {
+        text.to_owned()
+    };
+    let visible = if text.contains("```") || text.contains("~~~") {
+        mask_fences(visible)
+    } else {
+        visible
+    };
+    let visible = if text.contains('`') {
+        mask_fancy(visible, &INLINE_CODE)
+    } else {
+        visible
+    };
+    let visible = if text.contains('>') {
+        mask_regex(visible, &BLOCK_QUOTE_LINE)
+    } else {
+        visible
+    };
+    let visible = if text.contains('"') || text.contains('\u{201C}') {
+        mask_regex(visible, &DOUBLE_QUOTED)
+    } else {
+        visible
+    };
+    let visible = if text.contains("://") {
+        mask_fancy(visible, &URL_SPAN)
+    } else {
+        visible
+    };
+    if NEGATION_GATE.is_match(text) {
+        mask_fancy(visible, &NEGATED_INVOCATION)
+    } else {
+        visible
+    }
 }
 
 /// Every reserved-keyword mention outside quoted regions, in text order.
@@ -222,14 +282,27 @@ pub fn find_reserved_keyword_spans(text: &str) -> Vec<ReservedKeywordSpan> {
             end: span.end,
         })
         .collect();
-    let visible = mask_quoted_regions(text);
-    for (keyword, pattern) in RESERVED_KEYWORD_PATTERNS.iter() {
-        for found in pattern.find_iter(&visible).filter_map(Result::ok) {
-            spans.push(ReservedKeywordSpan {
-                keyword: *keyword,
-                start: found.start(),
-                end: found.end(),
-            });
+    // Without `plan`/`loop`/`research` no skill pattern can match, so neither the masking passes
+    // nor their scans can change the outcome; a draft naming only `ulw` stops here.
+    if SKILL_KEYWORD_GATE.is_match(text) {
+        let visible = mask_quoted_regions(text);
+        for (keyword, pattern) in RESERVED_KEYWORD_PATTERNS.iter() {
+            // Presence check only, in the guarded pattern's own folding; a hit still goes through the
+            // full pattern below.
+            let word_may_match = SKILL_WORD
+                .iter()
+                .find(|(candidate, _)| candidate == keyword)
+                .is_some_and(|(_, word)| word.is_match(&visible));
+            if !word_may_match {
+                continue;
+            }
+            for found in pattern.find_iter(&visible).filter_map(Result::ok) {
+                spans.push(ReservedKeywordSpan {
+                    keyword: *keyword,
+                    start: found.start(),
+                    end: found.end(),
+                });
+            }
         }
     }
     spans.sort_by(|left, right| left.start.cmp(&right.start).then(right.end.cmp(&left.end)));
@@ -369,5 +442,104 @@ mod tests {
         );
         assert_eq!(runs_of("ulw fix the bug"), vec!["ulw"]);
         assert!(runs_of("fix the bug").is_empty());
+    }
+
+    /// The masking passes are skipped when the text cannot trip them; skipping must never change
+    /// what is painted. Each case puts a keyword where a pass would have masked it or kept it.
+    #[test]
+    fn gated_masking_passes_match_an_ungated_pipeline() {
+        for text in [
+            "ulw go",
+            "ulw plan the migration",
+            "ulw loop on the failing test",
+            "ulw research the field",
+            "mass ulw research",
+            "plan the migration",
+            "loop over it",
+            "research this",
+            "```\nulw in a fence\n```\nulw go",
+            "~~unterminated fence\nulw go",
+            "`ulw` inline then ulw go",
+            "\"quoted ulw\" then ulw go",
+            "\u{201C}quoted ulw\u{201D} then ulw plan",
+            "> quoted ulw\nulw go",
+            "see https://x.dev/ulw then ulw go",
+            "do not load ulw now. ulw go",
+            "never run ulw-loop",
+            "don't use ulw; ulw plan instead",
+            "<ultrawork-mode>ulw inside</ultrawork-mode> then ulw go",
+            "[alice -> bob] please ulw",
+            "From: alice\nTo: bob\nulw go",
+            "PLAN in caps",
+            "ULW PLAN in caps",
+            // `(?i)` folds U+017F to `s`, which `to_lowercase` alone does not: the presence gate must
+            // use the guarded pattern's own folding or this spelling stops being painted.
+            "ulw-re\u{17f}earch",
+            "ulw lo\u{17f}p",
+            "ulw pla\u{17f}n",
+            // Negations must be recognized through a curly apostrophe too.
+            "don\u{2019}t use ulw",
+            "doesn\u{2019}t enable ulw",
+            // A skill keyword inside each masked region, with a visible one outside it: these are the
+            // only cases that can catch a masking pass being skipped when it was still needed.
+            "`ulw plan` then ulw loop",
+            "```\nulw plan\n```\nulw loop",
+            "~~~\nulw research\n~~~\nulw plan",
+            "> ulw plan\nulw loop",
+            "\"ulw plan\" then ulw loop",
+            "https://x.dev/ulw-research then ulw plan",
+            "<ultrawork-mode>ulw plan</ultrawork-mode> then ulw loop",
+            "\u{d55c}\u{ae00} ulw plan \u{d14c}\u{c2a4}\u{d2b8}",
+            "nothing reserved here",
+        ] {
+            assert_eq!(
+                find_reserved_keyword_spans(text),
+                reference_reserved_keyword_spans(text),
+                "{text:?}"
+            );
+        }
+    }
+
+    /// Every pass applied, no gate: the behavior the gates must reproduce exactly.
+    fn reference_reserved_keyword_spans(text: &str) -> Vec<ReservedKeywordSpan> {
+        let mut spans: Vec<ReservedKeywordSpan> = maho_ultrawork::visible_keyword_spans(text)
+            .into_iter()
+            .map(|span| ReservedKeywordSpan {
+                keyword: if span.mass {
+                    ReservedKeyword::MassUlw
+                } else {
+                    ReservedKeyword::Ultrawork
+                },
+                start: span.start,
+                end: span.end,
+            })
+            .collect();
+        if RESERVED_KEYWORD_STEM.is_match(text) {
+            let visible = reference_mask_quoted_regions(text);
+            for (keyword, pattern) in RESERVED_KEYWORD_PATTERNS.iter() {
+                for found in pattern.find_iter(&visible).filter_map(Result::ok) {
+                    spans.push(ReservedKeywordSpan {
+                        keyword: *keyword,
+                        start: found.start(),
+                        end: found.end(),
+                    });
+                }
+            }
+        }
+        spans.sort_by(|left, right| left.start.cmp(&right.start).then(right.end.cmp(&left.end)));
+        spans
+    }
+
+    fn reference_mask_quoted_regions(text: &str) -> String {
+        if RELAY_HEADER.is_match(text) {
+            return mask_range(text, 0, text.len());
+        }
+        let visible = mask_fancy(text.to_owned(), &INJECTED_BLOCK);
+        let visible = mask_fences(visible);
+        let visible = mask_fancy(visible, &INLINE_CODE);
+        let visible = mask_regex(visible, &BLOCK_QUOTE_LINE);
+        let visible = mask_regex(visible, &DOUBLE_QUOTED);
+        let visible = mask_fancy(visible, &URL_SPAN);
+        mask_fancy(visible, &NEGATED_INVOCATION)
     }
 }

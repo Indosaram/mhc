@@ -143,17 +143,17 @@ The mass-mode block instructs the model to structure complex undertakings into d
 ### 6.1 Trigger Conditions
 The engine monitors tool execution to provide sizing and delegation reminders:
 1. The tool result event is for the `todo` tool.
-2. Ultrawork mode is actively armed for the session.
-3. The tool operation is `init`. (The reminder does NOT fire on `append` operations, avoiding repetitive interruptions).
-4. The initialized task list contains three or more items.
-5. The reminder has not yet fired for the current session (single-latch policy).
+2. The session is armed, or awaiting explicit re-arm after compaction.
+3. The tool operation is `init` or `append`. (Long checklists are usually grown by appending, so the reminder fires for either operation; the latch below keeps it to one reminder until the next accepted compaction).
+4. No task-count or non-empty-list check is performed: the engine never reads the item list.
+5. The reminder latch has not been set since session-state creation or the latest accepted compaction.
 6. The tool result did not report an error.
 
 ### 6.2 Injected Content
 When triggered, the engine appends one advisory text block, written by the implementer, to the tool result output. Its required outcome: before starting the first item, the model first weighs how much work the whole new list represents, judged by its number of items and the effort each one implies; it then makes an explicit choice between handing items to parallel child agents and working them itself, bases that choice on whether the items can proceed independently and whether parallelism actually saves time once its setup cost is counted, and states the choice and its reason to the user. The block also asks that the checklist keep mirroring reality for the rest of the run.
 
 ### 6.3 Compaction Reset
-When session compaction occurs, the single-latch reminder state is reset. The next `todo init` call with 3+ items after compaction is eligible to receive the reminder.
+When session compaction occurs, the reminder latch is reset and the session moves to compaction-pending rather than armed. The next eligible `todo init` or `todo append` result after that reset receives the reminder — at any item count, and without the user repeating the keyword.
 
 ---
 
@@ -303,11 +303,11 @@ The following 39 test vectors specify expected behavior across all functional ar
 
 ### Group G: Task List (Todo Fanout) Reminder
 33. **Condition**: Session armed; `todo` tool `init` with 2 items.
-    - **Expected**: No reminder injected (task count less than 3).
+    - **Expected**: Sizing advisory notice appended (no task-count threshold).
 34. **Condition**: Session armed; `todo` tool `init` with 3 items.
     - **Expected**: Sizing advisory notice appended to tool result.
-35. **Condition**: Session armed; subsequent `todo` tool `append` with 4 items.
-    - **Expected**: No reminder injected (append does not trigger reminder).
+35. **Condition**: Session armed; reminder already fired; subsequent `todo` tool `append` with 4 items.
+    - **Expected**: No reminder injected (the latch is already set, not because the operation is `append`).
 36. **Condition**: Session armed; compaction accepted; subsequent `todo` tool `init` with 4 items.
     - **Expected**: Sizing advisory notice appended (compaction reset the latch).
 

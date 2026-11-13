@@ -72,6 +72,17 @@ fn cut_points(
     cuts
 }
 
+/// Snap one byte offset down to a character boundary. Cut points come from clamped ranges, so this
+/// only matters for a caller that built byte offsets into the middle of a character, but a row must
+/// never panic or duplicate a character over it.
+fn floor_to_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 /// Compose one visible editor row; see the module docs for the styling contract.
 pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderResult {
     let text = input.text;
@@ -82,24 +93,21 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
             .keywords
             .iter()
             .copied()
-            .filter(|range| {
-                range.start < text.len()
-                    && range.start < range.end
-                    && !mentions
-                        .iter()
-                        .any(|mention| range.start < mention.end && mention.start < range.end)
-            })
+            .filter(|range| range.start < text.len() && range.start < range.end)
             .collect(),
         None => Vec::new(),
     };
     let cursor_in_text = cursor.is_some_and(|cursor| cursor.pos < text.len());
     let cursor_glyph = if cursor_in_text && cursor.is_some_and(|cursor| cursor.draw_fake_cursor) {
         let pos = cursor.expect("cursor present").pos;
-        let first = graphemes(&text[pos..]).next().unwrap_or("");
-        Some(MentionRange {
-            start: pos,
-            end: pos + first.len(),
-        })
+        // A cursor parked inside a multi-byte character would panic the slice below; treat it as
+        // plain text instead of taking the whole renderer down.
+        text.get(pos..)
+            .and_then(|rest| graphemes(rest).next())
+            .map(|first| MentionRange {
+                start: pos,
+                end: pos + first.len(),
+            })
     } else {
         None
     };
@@ -115,6 +123,16 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
         text.len(),
     ));
     let points = cut_points(text.len(), &cut_ranges, cursor_glyph);
+    // Snap once, up front: snapping each segment independently would let two neighbours both cover
+    // the character a cut point landed inside, printing it twice.
+    let points: Vec<usize> = {
+        let mut snapped: Vec<usize> = points
+            .into_iter()
+            .map(|point| floor_to_boundary(text, point))
+            .collect();
+        snapped.dedup();
+        snapped
+    };
 
     let mut out = String::new();
     for index in 0..points.len().saturating_sub(1) {
@@ -173,5 +191,33 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
     EditorLineRenderResult {
         text: out,
         cursor_appended: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cut points come from clamped ranges, but a caller that builds byte offsets itself must not
+    /// be able to panic the renderer by pointing into the middle of a character.
+    #[test]
+    fn survives_cut_points_inside_multibyte_characters() {
+        let text = "\u{d55c}\u{ae00} \u{1f600} ulw";
+        let cursor = EditorLineCursor {
+            pos: 1,
+            marker: String::new(),
+            draw_fake_cursor: true,
+        };
+        let rendered = render_editor_line(EditorLineRenderInput {
+            text,
+            cursor: Some(cursor),
+            mentions: &[MentionRange { start: 1, end: 4 }],
+            mention_style: &|segment| segment.to_owned(),
+            keyword_style: None,
+            keywords: &[],
+        });
+        // Exactly the input once: no panic, and no character printed twice by two neighbouring
+        // segments both covering the character a bad cut point landed inside.
+        assert_eq!(rendered.text, text);
     }
 }
