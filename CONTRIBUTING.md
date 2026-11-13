@@ -25,9 +25,9 @@ cargo build --workspace --bins --release     # mhc, ast-grep-mcp, lsp-daemon, ..
 
 The workspace lints (`unsafe_code = "forbid"`, `clippy::unwrap_used = "deny"`, ...) are set in the
 root `Cargo.toml`; every new crate opts in with `[lints] workspace = true`. Tests must not skip,
-sleep or poll: await the exact event with a bounded timeout. `scripts/gh-verify.sh` runs clippy, the
-build and the whole test suite on GitHub Actions for your checkout, and `scripts/gh-install.sh` builds
-and installs a release `mhc` there (see [AGENTS.md](AGENTS.md)).
+sleep or poll: await the exact event with a bounded timeout. `scripts/verify-local.sh` runs
+`cargo fmt --all --check`, workspace clippy with `-D warnings` and the whole nextest suite on your
+own machine; GitHub Actions is disabled for this repository (see [AGENTS.md](AGENTS.md)).
 
 ## Porting rules
 

@@ -1,12 +1,10 @@
 name: ci
 
 on:
-  # main is not listed: a push to main is not a verification request, and CI on every
-  # main push burned runners for no decision. Verification runs on `verify/**` (what
-  # scripts/gh-verify.sh pushes), on pull requests, and on demand.
-  push:
-    branches: ["verify/**"]
-  pull_request:
+  # Verification runs on this machine, not on GitHub-hosted runners. Every automatic
+  # trigger is gone on purpose: `verify/**` (what scripts/gh-verify.sh used to push) and
+  # pull requests no longer start a run, and the workflow is disabled in the repository
+  # settings, so `workflow_dispatch` stays only for a deliberate manual re-enable.
   workflow_dispatch:
 
 concurrency:

@@ -81,24 +81,25 @@ note. Nothing in it is committed, so no tracked file may depend on a path under 
 ledgers citing `.omo/evidence/...` point at local artifacts that exist only on the machine that
 produced them.
 
-## REMOTE BUILD ON GITHUB ACTIONS
-The repo is public, so GitHub-hosted runners are unmetered. `.github/workflows/ci.yml` runs `cargo clippy --workspace --all-targets -D warnings` on Linux, macOS and Windows, builds `maho-cli`, and runs the whole nextest suite in 6 Linux crate shards and 3 Windows crate shards in parallel (`scripts/ci-shard.py` puts every workspace member in exactly one shard, balanced by test-file count), each on a fresh VM. Nothing is shared with other sessions.
+## LOCAL VERIFICATION
+GitHub Actions is disabled for this repository: `.github/workflows/ci.yml` keeps only
+`workflow_dispatch` (no push or pull-request trigger) and the workflow is disabled in the
+repository settings. Verification runs on this machine.
 
 ```bash
-scripts/gh-verify.sh             # push HEAD + local changes to verify/<user>-<ts>, wait, print per-job result
-scripts/gh-verify.sh --keep      # keep the verify/* branch afterwards
-scripts/gh-verify.sh --no-wait   # print the run URL and return
+scripts/verify-local.sh          # fmt --check, clippy -D warnings, nextest --workspace
+scripts/verify-local.sh --fast   # fmt --check and clippy only
 ```
 
-- It snapshots HEAD plus staged, unstaged and untracked files into one commit with a temporary index; the local branch and working tree are untouched. It exits non-zero when any job fails and prints the failed step logs.
-- Pushes use the repo owner's gh account (`Indosaram`, the globally active gh account).
-- Build cache: `Swatinem/rust-cache` per job, saved only on `main` (other refs cannot see their own caches after the run, but can read main's). Workspace crates are never cached, so most of a build is compiling them; that is the floor caching cannot remove. sccache with the Actions cache backend was tried (2026-10-19) and was slower: per-object uploads plus 429 rate limiting dropped 40-55% of writes. Warm the release cache with `gh workflow run release.yml --ref main` (no tag).
-- Tests that compare against upstream read a pinned senpi checkout at `~/code/senpi`. CI clones `code-yeongyu/senpi` at `SENPI_PIN` (must match `tools/golden/pin.mjs`) and runs `bun install`.
-- Live model QA needs private-network access, so it still runs locally.
+- It runs on the checkout as it stands, staged/unstaged/untracked included, and stops at the first failing step with that step's tail.
+- `cargo nextest run --workspace` is the whole suite; use `-p <crate>` while iterating, but land on the workspace run.
+- Tests that compare against upstream read a pinned senpi checkout at `~/code/senpi` (`SENPI_PIN` in `tools/golden/pin.mjs`).
 - Builds/tests run only after all code work, once, on the merged result. Machine names and commands for the private build hosts stay out of this public repo; they live in the gitignored `.omo/build-hosts.local.md`.
 
-## INSTALLING mhc (dev build via CI)
-When the user asks to (re)install mhc, run `scripts/gh-install.sh` from the checkout to install. It snapshots HEAD plus local changes to a temporary `build/YYYY.MM.DD-N` branch, `.github/workflows/mhc-binary.yml` builds `cargo build --release -p maho-cli --bin mhc` with that version as `MHC_BUILD_VERSION`, and the script downloads the `mhc-linux-x86_64` artifact into `~/.local/share/mhc/mhc` (symlinked from `~/.local/bin/mhc`), checks `mhc --version`, and deletes the branch. N counts installs made that day. It blocks until the run finishes; run it in the background and wait on its exit. Linux x86_64 only; `scripts/install-dev.sh` is the local-build fallback, used only when the user asks for it.
+## INSTALLING mhc (local dev build)
+When the user asks to (re)install mhc, run `scripts/install-dev.sh` from the checkout. It builds a release `mhc` locally, packages it like a release and installs it as `versions/YYYY.MM.DD-N/` under the install root with the stable root launcher and `current.json`, then checks `mhc --version`. N counts installs made that day. Linux x86_64 only.
+
+GitHub Actions is disabled repository-wide, so no workflow builds a binary for an install: every build runs on this machine (or another host the user names explicitly) and is started only when they ask for it.
 
 ## RELEASES
-Push a `v<version>` tag (e.g. `git tag v2026.10.18 && git push origin v2026.10.18`); `.github/workflows/release.yml` builds `mhc` and its sibling binaries (ast-grep-mcp, lsp-daemon, omo-git-bash, senpi-desktop-engine) for linux-x86_64, macos-aarch64 and windows-x86_64 with `MHC_BUILD_VERSION=<version>`, materializes the omowright browser runtime, stages the self-contained directory with `tools/package-native.mjs --skill-source latest`, verifies it, and publishes `mhc-<target>.tar.gz` (Windows: `mhc-windows-x86_64.zip`, `.exe` siblings) plus `.sha256` as a GitHub Release. Asset names carry no version so `releases/latest/download/mhc-<target>.tar.gz` always resolves; `install.sh` and `install.ps1` (the README one-liners) depend on that. Re-run for an existing tag with `gh workflow run release -f tag=<tag>` (assets are replaced).
+GitHub Actions is disabled repository-wide, so `release.yml` no longer builds anything automatically. Releases are built locally on each target host (linux-x86_64, macos-aarch64, windows-x86_64) and published from here; `release.yml` stays in the tree, disabled, only as a record of the previous pipeline. Packaging remains `tools/package-native.mjs --skill-source latest`, and asset names still carry no version so `releases/latest/download/mhc-<target>.tar.gz` resolves for `install.sh` and `install.ps1`.
