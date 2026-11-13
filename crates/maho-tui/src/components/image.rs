@@ -26,7 +26,7 @@ pub struct ImageOptions {
 }
 
 pub struct Image {
-    base64_data: String,
+    base64_data: Rc<str>,
     mime_type: String,
     dimensions: ImageDimensions,
     theme: ImageTheme,
@@ -44,7 +44,19 @@ impl Image {
         options: ImageOptions,
         dimensions: Option<ImageDimensions>,
     ) -> Self {
-        let base64_data = base64_data.into();
+        let owned: String = base64_data.into();
+        let base64_data: Rc<str> = Rc::from(owned);
+        Self::new_shared(base64_data, mime_type, theme, options, dimensions)
+    }
+
+    /// Build an image from an already-shared base64 payload, avoiding a copy of the source.
+    pub fn new_shared(
+        base64_data: Rc<str>,
+        mime_type: impl Into<String>,
+        theme: ImageTheme,
+        options: ImageOptions,
+        dimensions: Option<ImageDimensions>,
+    ) -> Self {
         let mime_type = mime_type.into();
         let dimensions = dimensions
             .or_else(|| get_image_dimensions(&base64_data, &mime_type))
@@ -174,5 +186,64 @@ impl Component for Image {
         self.cached_width = Some(width);
 
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Image, ImageOptions, ImageTheme};
+    use crate::terminal_text::ImageDimensions;
+    use std::rc::Rc;
+
+    fn theme() -> ImageTheme {
+        ImageTheme {
+            fallback_color: Rc::new(str::to_string),
+        }
+    }
+
+    #[test]
+    fn new_shared_matches_new_base64_data() {
+        let owned = Image::new(
+            "AAAA".to_string(),
+            "image/png",
+            theme(),
+            ImageOptions::default(),
+            Some(ImageDimensions {
+                width_px: 10,
+                height_px: 10,
+            }),
+        );
+        let shared = Image::new_shared(
+            Rc::from("AAAA"),
+            "image/png",
+            theme(),
+            ImageOptions::default(),
+            Some(ImageDimensions {
+                width_px: 10,
+                height_px: 10,
+            }),
+        );
+        assert_eq!(&*owned.base64_data, &*shared.base64_data);
+        assert_eq!(&*owned.base64_data, "AAAA");
+    }
+
+    #[test]
+    fn cloning_the_rc_shares_the_same_allocation() {
+        let source: Rc<str> = Rc::from("AAAA");
+        let image = Image::new_shared(
+            Rc::clone(&source),
+            "image/png",
+            theme(),
+            ImageOptions::default(),
+            Some(ImageDimensions {
+                width_px: 10,
+                height_px: 10,
+            }),
+        );
+        let before = Rc::strong_count(&source);
+        let cloned = Rc::clone(&image.base64_data);
+        assert_eq!(Rc::strong_count(&source), before + 1);
+        assert!(Rc::ptr_eq(&source, &cloned));
+        assert!(Rc::ptr_eq(&source, &image.base64_data));
     }
 }

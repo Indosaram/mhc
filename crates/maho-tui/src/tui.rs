@@ -32,6 +32,10 @@ const MAX_RENDER_WRITE_CHARS: usize = 1024 * 1024;
 const VIEWPORT_RENDER_OVERSCAN: usize = 16;
 const MAX_SCROLL_DIFF_ROWS: usize = 4;
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
+/// Stands in for an image row in `TuiBaseState::previous_raw_lines`: the payload itself is kept
+/// only once, in `previous_lines`, so a multi-megabyte base64 escape sequence is not copied a
+/// second time just to answer "did this row change?".
+const IMAGE_RAW_MARKER: &str = "\0image";
 const FRAME_BEGIN: &str = "\x1b[?2026h\x1b[?7l";
 const FRAME_END: &str = "\x1b[?7h\x1b[?2026l";
 /// Zero-width APC marker: components emit this at the cursor position when focused.
@@ -3143,6 +3147,41 @@ impl TuiBase {
         }
     }
 
+    /// Store the raw frame for change detection while keeping image payloads out of it: an image
+    /// row becomes [`IMAGE_RAW_MARKER`], and `raw_line_matches` compares it through
+    /// `previous_lines`.
+    fn store_previous_raw_lines(state: &mut TuiBaseState, raw_lines: Vec<String>) {
+        state.previous_raw_lines = raw_lines
+            .into_iter()
+            .map(|line| {
+                if is_image_line(&line) {
+                    IMAGE_RAW_MARKER.to_owned()
+                } else {
+                    line
+                }
+            })
+            .collect();
+    }
+
+    /// Whether `raw` equals the previously stored raw row at `index`, resolving an image row's
+    /// marker through `previous_lines` (whose image entry is the raw row plus an optional trailing
+    /// [`SEGMENT_RESET`]).
+    fn raw_line_matches(state: &TuiBaseState, index: usize, raw: &str) -> bool {
+        let stored = match state.previous_raw_lines.get(index) {
+            Some(stored) => stored.as_str(),
+            None => return false,
+        };
+        if stored != IMAGE_RAW_MARKER {
+            return stored == raw;
+        }
+        state.previous_lines.get(index).is_some_and(|normalized| {
+            normalized
+                .strip_suffix(SEGMENT_RESET)
+                .unwrap_or(normalized.as_str())
+                == raw
+        })
+    }
+
     fn apply_viewport_line_resets(
         state: &mut TuiBaseState,
         raw_lines: &[String],
@@ -3163,7 +3202,7 @@ impl TuiBase {
         let window_end = (viewport_top + height + VIEWPORT_RENDER_OVERSCAN).min(raw_lines.len());
         let mut first_raw_changed: Option<usize> = None;
         for (i, raw_line) in raw_lines.iter().enumerate() {
-            if *raw_line == state.previous_raw_lines[i] {
+            if Self::raw_line_matches(state, i, raw_line) {
                 continue;
             }
             if first_raw_changed.is_none() {
@@ -3186,13 +3225,12 @@ impl TuiBase {
 
         let mut lines = state.previous_lines.clone();
         for i in window_start..window_end {
-            if raw_lines[i] == state.previous_raw_lines[i] {
+            if Self::raw_line_matches(state, i, &raw_lines[i]) {
                 continue;
             }
-            // The replaced raw row will not be looked up again; keep the memo from growing.
-            state
-                .normalize_memo
-                .remove(state.previous_raw_lines[i].as_str());
+            // The memo is keyed by the raw row, so the replaced raw row is what must be evicted
+            // (image rows never enter the memo: `normalize_line` returns early for them).
+            state.normalize_memo.remove(raw_lines[i].as_str());
             let (normalized, _) = Self::normalize_line(state, &raw_lines[i]);
             lines[i] = normalized;
         }
@@ -3571,7 +3609,7 @@ impl TuiBase {
                 state.cursor_row = new_lines.len().saturating_sub(1);
                 state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
                 state.previous_lines = new_lines;
-                state.previous_raw_lines = raw_lines;
+                Self::store_previous_raw_lines(&mut state, raw_lines);
                 state.previous_width = width as i64;
                 state.previous_height = height as i64;
                 state.previous_viewport_top = viewport_top;
@@ -3804,7 +3842,7 @@ impl TuiBase {
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
         state.previous_viewport_top = plan.viewport_top;
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
@@ -3860,7 +3898,7 @@ impl TuiBase {
         state.max_lines_rendered = new_lines.len();
         state.previous_viewport_top = buffer_length.saturating_sub(height);
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
@@ -3926,7 +3964,7 @@ impl TuiBase {
         state.max_lines_rendered = new_lines.len();
         state.previous_viewport_top = viewport_top;
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
@@ -3982,7 +4020,7 @@ impl TuiBase {
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
         state.previous_viewport_top = viewport_top;
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
@@ -4079,7 +4117,7 @@ impl TuiBase {
         let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         let mut state = self.state.borrow_mut();
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
@@ -4267,7 +4305,7 @@ impl TuiBase {
         let scroll_top = (final_cursor_row as i64 - height as i64 + 1).max(0) as usize;
         state.previous_viewport_top = (*prev_viewport_top).max(scroll_top);
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         if let Some(kitty_image_ids) = kitty_image_ids {
             state.previous_kitty_image_ids = kitty_image_ids;
         }
@@ -4342,7 +4380,7 @@ impl TuiBase {
         state.previous_viewport_top = buffer_length.saturating_sub(height);
         state.previous_kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         state.previous_lines = new_lines;
-        state.previous_raw_lines = raw_lines;
+        Self::store_previous_raw_lines(&mut state, raw_lines);
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;
@@ -4508,4 +4546,82 @@ impl Default for TuiBase {
 #[allow(unused)]
 fn ensure_get_capabilities_used() -> bool {
     get_capabilities().images_supported
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IMAGE_RAW_MARKER, SEGMENT_RESET, TuiBase, TuiBaseState};
+
+    fn big_image_line() -> String {
+        format!("\x1b_Ga=T,f=100,{}", "A".repeat(200_000))
+    }
+
+    fn stored_state(previous_lines: Vec<String>, raw_lines: Vec<String>) -> TuiBaseState {
+        let mut state = TuiBaseState {
+            previous_lines,
+            ..TuiBaseState::default()
+        };
+        TuiBase::store_previous_raw_lines(&mut state, raw_lines);
+        state
+    }
+
+    #[test]
+    fn image_rows_are_stored_as_markers() {
+        let image = big_image_line();
+        let frame = vec![image.clone(), "plain text".to_owned()];
+        let state = stored_state(frame.clone(), frame.clone());
+
+        assert_eq!(state.previous_raw_lines[0], IMAGE_RAW_MARKER);
+        assert_eq!(state.previous_raw_lines[1], "plain text");
+        let raw_bytes: usize = state.previous_raw_lines.iter().map(String::len).sum();
+        assert!(
+            raw_bytes < 1_000,
+            "previous_raw_lines kept {raw_bytes} bytes"
+        );
+        assert_eq!(state.previous_lines[0], image);
+        assert!(state.previous_lines[0].len() > 200_000);
+    }
+
+    #[test]
+    fn unchanged_image_row_is_detected() {
+        let image = big_image_line();
+        let frame = vec![image.clone()];
+        let state = stored_state(frame.clone(), frame.clone());
+
+        assert!(TuiBase::raw_line_matches(&state, 0, &image));
+    }
+
+    #[test]
+    fn changed_image_row_is_detected() {
+        let image = big_image_line();
+        let frame = vec![image];
+        let state = stored_state(frame.clone(), frame);
+
+        let changed = big_image_line().replace("a=T,f=100", "a=T,f=200");
+        assert!(!TuiBase::raw_line_matches(&state, 0, &changed));
+    }
+
+    #[test]
+    fn image_row_matches_through_the_normalized_entry() {
+        let image = big_image_line();
+        let mut state = stored_state(vec![image.clone()], vec![image.clone()]);
+
+        assert!(TuiBase::raw_line_matches(&state, 0, &image));
+        // The bounded path stores the normalized form, i.e. the raw row plus `SEGMENT_RESET`.
+        state.previous_lines[0] = format!("{image}{SEGMENT_RESET}");
+        assert!(TuiBase::raw_line_matches(&state, 0, &image));
+    }
+
+    #[test]
+    fn text_rows_compare_exactly() {
+        let frame = vec!["hello".to_owned(), String::new()];
+        let state = stored_state(frame.clone(), frame);
+
+        assert!(TuiBase::raw_line_matches(&state, 0, "hello"));
+        assert!(!TuiBase::raw_line_matches(&state, 0, "hellp"));
+        assert!(!TuiBase::raw_line_matches(&state, 0, "hell"));
+        assert!(TuiBase::raw_line_matches(&state, 1, ""));
+        assert!(!TuiBase::raw_line_matches(&state, 1, "\0"));
+        assert!(!TuiBase::raw_line_matches(&state, 2, ""));
+    }
 }
