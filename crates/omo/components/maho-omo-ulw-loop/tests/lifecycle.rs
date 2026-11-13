@@ -620,6 +620,31 @@ impl IdleInjectionCoordinator for RecordingCoordinator {
     }
 }
 
+/// A coordinator retired by session shutdown refuses every enqueue.
+#[derive(Default)]
+struct RetiredCoordinator {
+    scheduled: std::sync::atomic::AtomicUsize,
+}
+impl IdleInjectionCoordinator for RetiredCoordinator {
+    fn enqueue(&self, _: IdleInjection) -> bool {
+        false
+    }
+    fn schedule_flush(&self) {
+        self.scheduled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn flush_soon(&self) {}
+    fn flush_on_idle(&self) -> usize {
+        0
+    }
+    fn pending_count(&self) -> usize {
+        0
+    }
+    fn remove(&self, _: &str) -> bool {
+        false
+    }
+}
+
 fn active_runner() -> maho_omo_ulw_loop::index::StatusReader {
     Arc::new(|_| {
         Box::pin(async {
@@ -750,6 +775,46 @@ async fn queued_completion_and_continuation_share_one_coordinator_queue() {
         1
     );
     assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+/// A retired coordinator refuses the injection ("the queue is gone, the injection is NOT queued
+/// and gets no receipt, so the caller still owns the notification"). Dropping that answer used to
+/// end the turn with no continuation at all; the direct send must still carry it.
+#[tokio::test]
+async fn a_retired_coordinator_falls_back_to_a_direct_continuation() {
+    let (api, actions, _) = coordinator_harness(Some(active_runner()));
+    let coordinator = Arc::new(RetiredCoordinator::default());
+    let mut ctx = support::context();
+    ctx.idle_coordinator = Some(idle_injection::into_slot(
+        Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>
+    ));
+    let mut event = ExtensionEvent::AgentEnd {
+        messages: support::finished_turn(),
+        aborted: Some(false),
+        abort_source: None,
+        will_retry: Some(false),
+    };
+    assert!(matches!(
+        api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx)
+            .await
+            .expect("dispatch"),
+        EventResult::None
+    ));
+    api.registered.handlers[&EventKind::AgentSettled][0](&mut ExtensionEvent::AgentSettled, &ctx)
+        .await
+        .expect("settled");
+    assert_eq!(
+        coordinator
+            .scheduled
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a refused enqueue must not schedule a flush of a queue it never entered"
+    );
+    let messages = actions.0.lock().expect("messages");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0.custom_type, "omo-senpi:ulw-continuation");
+    assert!(!messages[0].0.display);
+    assert!(messages[0].1.trigger_turn);
 }
 
 #[tokio::test]

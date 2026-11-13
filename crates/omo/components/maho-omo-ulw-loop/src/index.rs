@@ -542,7 +542,10 @@ impl Extension for UlwLoopComponent {
                     drop(state);
 
                     if let Some(coordinator) = idle_injection::from_slot(&ctx.idle_coordinator) {
-                        coordinator.enqueue(IdleInjection {
+                        // A retired coordinator refuses the injection and the caller still owns it:
+                        // dropping that answer would end the loop's turn with no continuation queued
+                        // and nothing recorded. Fall back to the direct send below and say so.
+                        let accepted = coordinator.enqueue(IdleInjection {
                             key: ULW_CONTINUATION_INJECTION_KEY.into(),
                             source: IdleInjectionSource::UlwContinuation,
                             custom_type: Some(ULW_CONTINUATION_CUSTOM_TYPE.into()),
@@ -553,8 +556,15 @@ impl Extension for UlwLoopComponent {
                             on_flushed: None,
                             on_delivery_failed: None,
                         });
-                        coordinator.schedule_flush();
-                        return Ok(EventResult::None);
+                        if accepted {
+                            coordinator.schedule_flush();
+                            return Ok(EventResult::None);
+                        }
+                        log_warn(
+                            &ctx.logger,
+                            "omo-senpi ulw-loop continuation injection refused; sending directly",
+                            Some(serde_json::json!({"reason":"coordinator-retired"})),
+                        );
                     }
 
                     let api = ExtensionApi::new(

@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 
 const HOUR_MS: f64 = 3_600_000.0;
 
+#[derive(Clone)]
 struct Bucket {
     tokens: f64,
     at: f64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct WakePacer {
     buckets: BTreeMap<String, Bucket>,
 }

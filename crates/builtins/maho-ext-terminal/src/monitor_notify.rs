@@ -50,16 +50,18 @@ enum NotifierAction {
     Resume(Vec<String>),
 }
 impl MonitorNotifier {
+    /// `send` returns what the host said about the injection; a refusal is rolled back into the
+    /// queue instead of being reported on stderr and forgotten.
     pub fn new(
         settings: crate::settings::MonitorDeliverySettings,
-        send: impl Fn(MonitorInjection) + Send + 'static,
+        send: impl Fn(MonitorInjection) -> MonitorSendResult + Send + 'static,
     ) -> Self {
         Self::with_delivery_guard(settings, || true, send)
     }
     pub fn with_delivery_guard(
         settings: crate::settings::MonitorDeliverySettings,
         available: impl Fn() -> bool + Send + 'static,
-        send: impl Fn(MonitorInjection) + Send + 'static,
+        send: impl Fn(MonitorInjection) -> MonitorSendResult + Send + 'static,
     ) -> Self {
         Self::with_pacing(settings, available, None, None, send)
     }
@@ -69,7 +71,7 @@ impl MonitorNotifier {
         available: impl Fn() -> bool + Send + 'static,
         wakes_per_hour: Option<WakesPerHour>,
         spill_overflow: Option<MonitorSpill>,
-        send: impl Fn(MonitorInjection) + Send + 'static,
+        send: impl Fn(MonitorInjection) -> MonitorSendResult + Send + 'static,
     ) -> Self {
         let settings = resolve_delivery_settings(&settings);
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -85,7 +87,7 @@ impl MonitorNotifier {
                     tokio::select! {action=receiver.recv()=>action,_=tokio::time::sleep_until(due)=>{
                         if !available() {queue.dispose();deadline=None;continue;}
                         let now=epoch.elapsed().as_secs_f64()*1000.0;
-                        if let Some(injection)=queue.flush(now,&settings) {send(injection);}
+                        deliver(&mut queue,now,&settings,&send);
                         deadline=queue.next_delay(now,&settings).map(after);
                         continue;
                     }}
@@ -127,6 +129,36 @@ impl MonitorNotifier {
             .map_err(|error| error.to_string())
     }
 }
+/// Hands one wake to the host and settles the queue on its answer: a refusal puts the wake back
+/// (its lines, its overflow and its pacing token) so the next pass retries it, and a success keeps
+/// the dequeue. Either way the outcome reaches the diagnostics, never just the void.
+fn deliver(
+    queue: &mut MonitorDeliveryQueue,
+    now: f64,
+    settings: &crate::settings::MonitorDeliverySettings,
+    send: &impl Fn(MonitorInjection) -> MonitorSendResult,
+) {
+    let Some((injection, checkpoint)) = queue.flush_with_checkpoint(now, settings) else {
+        return;
+    };
+    let pause_ids = injection.pause_ids.clone();
+    match send(injection) {
+        Ok(()) => {}
+        Err(error) => {
+            queue.rollback(checkpoint);
+            queue.defer_retry(now + settings.rate_limit_ms);
+            maho_ext_api::diagnostic(&format!(
+                "monitor wake not delivered, requeued for the next pass: {error}"
+            ));
+            if !pause_ids.is_empty() {
+                maho_ext_api::diagnostic(&format!(
+                    "monitor wake budget pause not applied to {}: the wake was not delivered",
+                    pause_ids.join(", ")
+                ));
+            }
+        }
+    }
+}
 impl Drop for MonitorNotifier {
     fn drop(&mut self) {
         self.task.abort();
@@ -141,7 +173,26 @@ pub struct MonitorDeliveryQueue {
     last_batch: std::collections::BTreeMap<String, String>,
     consecutive_wakes: usize,
     last_wake: Option<f64>,
+    /// Set after a refused delivery so the requeued wake is retried on the rate-limit cadence
+    /// instead of spinning against a host that keeps refusing it.
+    retry_not_before: Option<f64>,
 }
+/// The queue exactly as it stood before a wake was taken out of it. Taking a wake dequeues its
+/// lines, forgets its overflow and spends its pacing token; if the host then refuses the message
+/// none of that may stand, or the wake is lost with no trace. Restoring this puts every line back
+/// for the next attempt.
+#[derive(Clone)]
+pub struct MonitorCheckpoint {
+    events: Vec<MonitorEvent>,
+    overflow: indexmap::IndexMap<String, crate::monitor_overflow::MonitorOverflow>,
+    pacer: WakePacer,
+    last_injection: std::collections::BTreeMap<String, f64>,
+    last_batch: std::collections::BTreeMap<String, String>,
+    consecutive_wakes: usize,
+    last_wake: Option<f64>,
+}
+/// What the host reports for one wake it was handed.
+pub type MonitorSendResult = Result<(), String>;
 impl Default for MonitorDeliveryQueue {
     fn default() -> Self {
         Self::with_pacing(None, None)
@@ -179,6 +230,7 @@ impl MonitorDeliveryQueue {
             last_batch: Default::default(),
             consecutive_wakes: 0,
             last_wake: None,
+            retry_not_before: None,
         }
     }
     pub fn dispose(&mut self) {
@@ -186,6 +238,7 @@ impl MonitorDeliveryQueue {
         self.overflow.clear();
         self.last_batch.clear();
         self.pacer.clear();
+        self.retry_not_before = None;
     }
     fn ready_at(&mut self, id: &str, now: f64) -> f64 {
         let rate = self.rate_of.as_ref().and_then(|rate_of| rate_of(id));
@@ -275,17 +328,90 @@ impl MonitorDeliveryQueue {
         settings: &crate::settings::MonitorDeliverySettings,
     ) -> Option<f64> {
         let ids = self.pending_ids();
-        ids.iter()
+        let earliest = ids
+            .iter()
             .map(|id| {
                 let ready = self.ready_at(id, now);
                 (self.last_injection.get(id).copied().unwrap_or(now) + settings.rate_limit_ms)
                     .max(ready)
                     - now
             })
-            .min_by(f64::total_cmp)
-            .map(|delay| delay.max(1.0))
+            .min_by(f64::total_cmp);
+        match (earliest, self.retry_not_before) {
+            (Some(delay), Some(at)) => Some(delay.max(at - now).max(1.0)),
+            (Some(delay), None) => Some(delay.max(1.0)),
+            (None, Some(at)) => Some((at - now).max(1.0)),
+            (None, None) => None,
+        }
     }
     pub fn flush(
+        &mut self,
+        now: f64,
+        settings: &crate::settings::MonitorDeliverySettings,
+    ) -> Option<MonitorInjection> {
+        self.take_wake(now, settings)
+    }
+
+    /// Takes the next wake out of the queue together with the state needed to put it back, so a
+    /// refused delivery can be undone with [Self::rollback] instead of dropping the lines.
+    pub fn flush_with_checkpoint(
+        &mut self,
+        now: f64,
+        settings: &crate::settings::MonitorDeliverySettings,
+    ) -> Option<(MonitorInjection, MonitorCheckpoint)> {
+        let checkpoint = self.checkpoint();
+        let injection = self.take_wake(now, settings)?;
+        Some((injection, checkpoint))
+    }
+
+    fn checkpoint(&self) -> MonitorCheckpoint {
+        MonitorCheckpoint {
+            events: self.events.clone(),
+            overflow: self.overflow.snapshot(),
+            pacer: self.pacer.clone(),
+            last_injection: self.last_injection.clone(),
+            last_batch: self.last_batch.clone(),
+            consecutive_wakes: self.consecutive_wakes,
+            last_wake: self.last_wake,
+        }
+    }
+
+    /// Undoes one [Self::flush_with_checkpoint]: the wake's lines are queued again and its pacing
+    /// token and rate-limit stamp are given back, so the next pass retries the same wake.
+    ///
+    /// DIVERGENCE: overflow lines already spilled to their file by the aborted attempt are written
+    /// again by the retry, so that diagnostic file can hold the same chunk twice. Losing the wake
+    /// is worse than a duplicated spill line.
+    pub fn rollback(&mut self, checkpoint: MonitorCheckpoint) {
+        self.events = checkpoint.events;
+        self.overflow.restore(checkpoint.overflow);
+        self.pacer = checkpoint.pacer;
+        self.last_injection = checkpoint.last_injection;
+        self.last_batch = checkpoint.last_batch;
+        self.consecutive_wakes = checkpoint.consecutive_wakes;
+        self.last_wake = checkpoint.last_wake;
+    }
+
+    /// Holds the next attempt until `at` (ms): a requeued wake must not retry in a tight loop.
+    pub fn defer_retry(&mut self, at: f64) {
+        self.retry_not_before = Some(at);
+    }
+
+    fn take_wake(
+        &mut self,
+        now: f64,
+        settings: &crate::settings::MonitorDeliverySettings,
+    ) -> Option<MonitorInjection> {
+        if self.retry_not_before.is_some_and(|at| now < at) {
+            return None;
+        }
+        // The gate is spent the moment it elapses, even with nothing left to send: keeping it would
+        // make next_delay report a delay forever and spin the notifier on an empty queue.
+        self.retry_not_before = None;
+        self.take_ready_wake(now, settings)
+    }
+
+    fn take_ready_wake(
         &mut self,
         now: f64,
         settings: &crate::settings::MonitorDeliverySettings,
@@ -476,9 +602,7 @@ mod tests {
                 checks.send(value).unwrap();
                 value
             },
-            move |injection| {
-                sender.send(injection).unwrap();
-            },
+            move |injection| sender.send(injection).map_err(|error| error.to_string()),
         );
         notifier.notify_event(line("discarded")).unwrap();
         assert_eq!(checked.recv().await, Some(true));
@@ -501,7 +625,7 @@ mod tests {
         settings.coalesce_window_ms = 1.0;
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let notifier = MonitorNotifier::new(settings, move |injection| {
-            sender.send(injection).unwrap();
+            sender.send(injection).map_err(|error| error.to_string())
         });
         notifier.notify_event(line("ready")).unwrap();
         let injection = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
@@ -519,6 +643,73 @@ mod tests {
             human_input: false,
         }
     }
+    /// A refused delivery used to lose the wake: the flush dequeued the lines and spent the pacing
+    /// token before the host could answer. The checkpoint/rollback pair must put the same wake back.
+    #[test]
+    fn a_refused_wake_is_rolled_back_instead_of_lost() {
+        let settings = crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;
+        let mut queue = MonitorDeliveryQueue::with_pacing(Some(Box::new(|_| Some(1.0))), None);
+        queue.notify(line("must survive"), 0.0, &settings);
+        let (injection, checkpoint) = queue
+            .flush_with_checkpoint(0.0, &settings)
+            .expect("wake is ready");
+        assert!(injection.content.contains("must survive"));
+        assert!(
+            queue.flush(0.0, &settings).is_none(),
+            "pacing token was spent"
+        );
+        queue.rollback(checkpoint);
+        let retried = queue
+            .flush(0.0, &settings)
+            .expect("the rolled-back wake is delivered again");
+        assert!(retried.content.contains("must survive"));
+    }
+
+    /// A requeued wake is retried on the delivery cadence, not against the notifier's own clock:
+    /// the loop asks `next_delay` and must be told to wait, or a refusing host spins the queue.
+    #[test]
+    fn a_requeued_wake_is_retried_only_after_the_rate_limit() {
+        let settings = crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;
+        let mut queue = MonitorDeliveryQueue::default();
+        queue.notify(line("must retry"), 0.0, &settings);
+        let (_, checkpoint) = queue
+            .flush_with_checkpoint(0.0, &settings)
+            .expect("wake is ready");
+        queue.rollback(checkpoint);
+        queue.defer_retry(settings.rate_limit_ms);
+        assert!(
+            queue.flush(0.0, &settings).is_none(),
+            "a rolled-back wake must not be retried in the same pass"
+        );
+        assert_eq!(
+            queue.next_delay(0.0, &settings),
+            Some(settings.rate_limit_ms),
+            "the notifier sleep must follow the retry gate"
+        );
+        assert!(
+            queue.flush(settings.rate_limit_ms, &settings).is_some(),
+            "the retry lands once the gate elapses"
+        );
+    }
+
+    /// The wake budget pauses only the monitors a wake reached; a refused wake must not pause them.
+    #[test]
+    fn a_refused_wake_does_not_spend_the_wake_budget_pause() {
+        let mut settings = crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;
+        settings.wake_budget = 1.0;
+        let mut queue = MonitorDeliveryQueue::default();
+        queue.notify(line("one"), 0.0, &settings);
+        let (_, checkpoint) = queue
+            .flush_with_checkpoint(0.0, &settings)
+            .expect("wake is ready");
+        queue.rollback(checkpoint);
+        assert_eq!(queue.consecutive_wakes, 0);
+        let retried = queue
+            .flush(0.0, &settings)
+            .expect("the rolled-back wake is delivered again");
+        assert_eq!(retried.pause_ids, ["b1"]);
+    }
+
     /// monitor-notify-details.ts: a wake carrying a human-input line (inline or overflowed) is
     /// tagged `humanInput`; machine lines are not.
     #[test]

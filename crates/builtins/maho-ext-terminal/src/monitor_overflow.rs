@@ -70,6 +70,14 @@ impl OverflowBook {
     pub fn ids(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()
     }
+    /// The book as it stands now, for a delivery that may have to be undone.
+    pub fn snapshot(&self) -> indexmap::IndexMap<String, MonitorOverflow> {
+        self.entries.clone()
+    }
+    /// Puts a snapshot back: every line it held is queued again for the next wake.
+    pub fn restore(&mut self, entries: indexmap::IndexMap<String, MonitorOverflow>) {
+        self.entries = entries;
+    }
 
     /// `human_input` is true when the event's line is a person's words (upstream `event.humanInput`).
     pub fn record(&mut self, event: &MonitorEvent, body: &str, human_input: bool) {

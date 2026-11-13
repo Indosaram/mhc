@@ -1300,14 +1300,10 @@ impl Extension for TerminalExtension {
                             let Some(delivery_mode) =
                                 *lifecycle_delivery.lock().expect("terminal delivery")
                             else {
-                                return;
+                                // notify is off or no model is bound: queue the wake again rather
+                                // than dropping it; the unavailable gate disposes the queue.
+                                return Err("terminal notifications are disabled".to_owned());
                             };
-                            if !injection.pause_ids.is_empty() {
-                                monitors
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .pause(&injection.pause_ids);
-                            }
                             let force_wake = !injection.pause_ids.is_empty();
                             if let Err(error) = sender.send_message(
                                 CustomMessage {
@@ -1332,10 +1328,16 @@ impl Extension for TerminalExtension {
                                     ),
                                 },
                             ) {
-                                maho_ext_api::diagnostic(&format!(
-                                    "monitor notification failed: {error}"
-                                ));
+                                return Err(error.to_string());
                             }
+                            // A pause is only spent by a wake that actually reached the session.
+                            if !injection.pause_ids.is_empty() {
+                                monitors
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .pause(&injection.pause_ids);
+                            }
+                            Ok(())
                         },
                     );
                     *notifier
