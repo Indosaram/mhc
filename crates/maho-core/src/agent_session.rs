@@ -698,6 +698,10 @@ struct AgentSessionState {
     overflow_recovery_rungs: u8,
     /// senpi `_compactionSkippedTooSmall`: the last overflow compaction found nothing to compact.
     compaction_skipped_too_small: bool,
+    /// A compaction handoff is still running its `on_complete` callback: the transcript is already
+    /// compacted, but the extension has not sent its resume yet. Reported by the extension-facing
+    /// `is_compacting` so the config-reload gate cannot replace the runtime under that send.
+    compaction_handoff_pending: bool,
     messages_awaiting_persistence: Vec<(uuid::Uuid, AgentMessage)>,
     steering_messages: Vec<String>,
     follow_up_messages: Vec<String>,
@@ -2233,6 +2237,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         })
     }
     fn has_pending_messages(&self) -> bool {
+        // Deliberately not counting parked engine wakes here: the config-reload gate reads this, and a
+        // wake parked by a stale runtime would then block the very reload that replaces that runtime.
+        // A parked wake is drained by `resume_parked_engine_wakes` once the replacement is live.
         self.session()
             .is_ok_and(|session| session.pending_message_count() > 0)
     }
@@ -2246,7 +2253,13 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         })
     }
     fn is_compacting(&self) -> bool {
-        self.session().is_ok_and(|session| session.is_compacting())
+        // The handoff window belongs here, not in `AgentSession::is_compacting`: send_message uses that
+        // one to decide whether a wake may be admitted, and the compaction resume is sent from inside
+        // this window. What must not happen in it is a runtime replacement, which is a question only
+        // extensions ask through this context.
+        self.session().is_ok_and(|session| {
+            session.is_compacting() || session.state().compaction_handoff_pending
+        })
     }
     fn check_reload_veto(
         &self,
@@ -2494,6 +2507,10 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn compact(&self, options: maho_ext_api::CompactOptions) {
         if let Ok(session) = self.session() {
             tokio::spawn(async move {
+                // Holds the handoff window open for exactly as long as this task runs, panic
+                // included: the extension's resume send belongs to the callback below, and a
+                // runtime swapped in before it lands leaves that send with a stale ctx.
+                let _handoff = CompactionHandoffWindow::open(session.clone());
                 match session
                     .compact_from_extension(options.custom_instructions.as_deref())
                     .await
@@ -4587,6 +4604,7 @@ impl AgentSession {
             context_usage_cache: None,
             overflow_recovery_rungs: 0,
             compaction_skipped_too_small: false,
+            compaction_handoff_pending: false,
             messages_awaiting_persistence: Vec::new(),
             steering_messages: Vec::new(),
             follow_up_messages: Vec::new(),
@@ -12186,6 +12204,7 @@ impl AgentSession {
             SESSION_REBIND_CHANNEL,
             &serde_json::json!({"reason": reason}),
         );
+        self.resume_parked_engine_wakes();
         Ok(())
     }
 
@@ -14184,6 +14203,9 @@ impl AgentSession {
             SESSION_REBIND_CHANNEL,
             &serde_json::json!({"reason": "reload"}),
         );
+        // The replacement is fully live: dispatch its parked wakes rather than leaving an idle
+        // session sitting on a resume that the old runtime refused to admit.
+        self.resume_parked_engine_wakes();
         Ok(maho_ext_api::ReloadVetoDecision::default())
     }
 
@@ -17128,6 +17150,56 @@ impl AgentSession {
         Ok(())
     }
 
+    /// A wake parked while the old runtime was being replaced never reached admission (its ctx went
+    /// stale mid-dispatch and the refusal only queues the message), so an idle session would sit on it
+    /// until some later turn ended. The replacement is live now: drain it through the ordinary
+    /// continuation, which is also what a completed compaction does for its own queued work.
+    fn resume_parked_engine_wakes(&self) {
+        if self.is_streaming()
+            || self.requires_human_continuation()
+            || self.agent_run_active.load(Ordering::SeqCst)
+            || lock(&self.engine_turn_hold).held()
+            || crate::engine_paused::engine_pause_since_last_turn(
+                &self.with_session_manager(|manager| manager.current_branch()),
+            )
+        {
+            return;
+        }
+        // Only engine wakes parked by a refused admission are drained here. A queued person message
+        // keeps its own delivery path, and a wake its source still holds belongs in notice custody.
+        let parked = self
+            .agent
+            .queued_messages(maho_agent::types::PendingQueue::FollowUp)
+            .into_iter()
+            .filter(|message| {
+                let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) =
+                    message
+                else {
+                    return false;
+                };
+                crate::input_origin::custom_turn_origin(&custom.custom_type)
+                    == crate::input_origin::InputOrigin::Engine
+                    && !lock(&self.engine_turn_hold).holds_source(
+                        &crate::engine_turn_hold::engine_wake_source(&custom.custom_type),
+                    )
+            })
+            .count();
+        if parked == 0 {
+            return;
+        }
+        let session = self.clone();
+        let generation = self.user_abort_generation.load(Ordering::SeqCst);
+        let guard = self.work_barrier.begin();
+        self.spawn_session_task(async move {
+            if let Err(error) = session.continue_session_internal(Some(generation)).await {
+                session.emit(AgentSessionEvent::ContinuationError {
+                    error_message: error,
+                });
+            }
+            drop(guard);
+        });
+    }
+
     /// Rebinds how `reload`/session replacement recreate the bound extension runner (the CLI
     /// installs senpi's resource-loader re-resolution here).
     pub async fn set_extension_runtime_factory(
@@ -19848,6 +19920,16 @@ impl AgentSession {
                 return Ok(false);
             }
             Err(error) => {
+                self.session_logger.warn(
+                    "engine_turn_parked",
+                    Some(&serde_json::Map::from_iter([
+                        (
+                            "customType".to_owned(),
+                            Value::String(message.custom_type.clone()),
+                        ),
+                        ("error".to_owned(), Value::String(error.clone())),
+                    ])),
+                );
                 queue_trigger_for_later();
                 return Err(error);
             }
@@ -22820,6 +22902,27 @@ impl AgentSession {
             receipt.resolve_failed(error.clone());
         }
         result
+    }
+}
+
+/// Closes the compaction handoff window when the extension-compaction task ends, however it ends.
+///
+/// The transcript is already compacted when `on_complete` runs, so `is_compacting` drops before the
+/// extension's resume is sent. A config reload flushed in that gap replaces the runtime and the send
+/// fails on a stale ctx; keeping the window open until the task returns removes the gap.
+struct CompactionHandoffWindow(AgentSession);
+
+impl CompactionHandoffWindow {
+    /// Opens the window on the task itself, so a spawn that never runs cannot leave it open.
+    fn open(session: AgentSession) -> Self {
+        session.state().compaction_handoff_pending = true;
+        Self(session)
+    }
+}
+
+impl Drop for CompactionHandoffWindow {
+    fn drop(&mut self) {
+        self.0.state().compaction_handoff_pending = false;
     }
 }
 

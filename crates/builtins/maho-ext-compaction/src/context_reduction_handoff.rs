@@ -89,12 +89,27 @@ impl ReductionHandoff {
                             .iter()
                             .any(|entry| &entry.id == leaf)
                     });
-                if moved || context.has_pending_messages().unwrap_or(true) {
+                if moved {
                     return;
                 }
-                // A failed follow-up must not surface as a compaction failure; the
-                // user can continue manually.
-                let _ = api.send_message(
+                match context.has_pending_messages() {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    // An unreadable context is the stale-runtime case: the session moved on and this
+                    // handoff no longer owns it. Say so instead of returning as if work were queued.
+                    Err(error) => {
+                        let _ = api.events.try_emit(
+                            "senpi.context-reduction.resume-skipped",
+                            &serde_json::json!({"message": error.message}),
+                        );
+                        return;
+                    }
+                }
+                // A failed follow-up must not surface as a compaction failure; the user can
+                // continue manually. It is not silent, though: a runtime replaced between the
+                // compaction and this call refuses the send with a stale-ctx failure, and that is
+                // exactly the case where the session would otherwise look stuck for minutes.
+                if let Err(error) = api.send_message(
                     CustomMessage {
                         custom_type: CONTEXT_REDUCTION_RESUME_TYPE.into(),
                         content: vec![ToolContent::text(
@@ -107,7 +122,14 @@ impl ReductionHandoff {
                         trigger_turn: true,
                         deliver_as: Some(DeliverAs::FollowUp),
                     },
-                );
+                ) {
+                    // The bus may be stale for the same reason the send was refused; the core
+                    // drains any wake parked this way once a live runtime is installed again.
+                    let _ = api.events.try_emit(
+                        "senpi.context-reduction.resume-refused",
+                        &serde_json::json!({"message": error.message}),
+                    );
+                }
             })
         };
         let result = context.compact(CompactOptions {

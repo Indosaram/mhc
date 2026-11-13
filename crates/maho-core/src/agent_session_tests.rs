@@ -9179,6 +9179,25 @@ fn provider_turn_override_applies_all_validated_backoff_knobs() {
 }
 
 #[tokio::test]
+async fn handoff_window_keeps_the_reload_gate_closed_after_compaction_finishes() {
+    use maho_ext_api::ExtensionContextActions;
+    // Given a compaction whose transcript is already written but whose extension resume has not been sent.
+    let session = test_session();
+    let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+    assert!(!actions.is_compacting());
+    session.state().compaction_handoff_pending = true;
+
+    // Then the extension-facing gate still reports compaction, so a config reload defers instead of
+    // replacing the runtime under the resume send.
+    assert!(actions.is_compacting());
+    assert!(!session.is_compacting());
+
+    // And the wake admission path is untouched: the resume itself may still start a turn.
+    session.state().compaction_handoff_pending = false;
+    assert!(!actions.is_compacting());
+}
+
+#[tokio::test]
 async fn extension_compaction_signal_tracks_abort_and_feedback_completion() {
     use maho_ext_api::ExtensionContextActions;
     let session = test_session();
