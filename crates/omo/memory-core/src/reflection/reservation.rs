@@ -20,9 +20,9 @@ use crate::support::random::random_uuid;
 use crate::support::time::now_iso;
 
 use super::machine::{
-    CapturedConversation, EvaluationAction, JournalSnapshot, MachineState, ReflectionEvent,
-    ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState, ReservedRun,
-    TriggerConfig, complete_transition, evaluate_transitions, reserve_transition,
+    CapturedConversation, CompleteOptions, EvaluationAction, JournalSnapshot, MachineState,
+    ReflectionEvent, ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState,
+    ReservedRun, TriggerConfig, complete_transition, evaluate_transitions, reserve_transition,
 };
 
 /// Resolves the transcript journal for a session id.
@@ -240,6 +240,16 @@ impl ReflectionReservationStore {
         run_id: &str,
         outcome: ReflectionOutcome,
     ) -> Result<CompletionResult, ReservationError> {
+        self.complete_with_options(run_id, outcome, CompleteOptions::default())
+    }
+
+    /// Completes an active reflection run, honoring `options` when promoting a pending request.
+    pub fn complete_with_options(
+        &self,
+        run_id: &str,
+        outcome: ReflectionOutcome,
+        options: CompleteOptions,
+    ) -> Result<CompletionResult, ReservationError> {
         self.locked(Some(run_id), None, || {
             let current = self.read_state_unlocked()?;
             let mut conversation_ids = BTreeSet::new();
@@ -276,7 +286,7 @@ impl ReflectionReservationStore {
                 .is_some_and(|active| active.request.trigger == ReflectionTrigger::Dream);
 
             let transition =
-                complete_transition(current, run_id, outcome, &snapshots, &self.config)
+                complete_transition(current, run_id, outcome, &snapshots, &self.config, options)
                     .map_err(ReservationError::TransitionFailed)?;
 
             for captured in &transition.finalize {

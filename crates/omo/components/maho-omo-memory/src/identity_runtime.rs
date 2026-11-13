@@ -350,6 +350,15 @@ impl crate::worker::runner_types::ReflectionReservationPort for ReflectionReserv
     ) -> Result<memory_core::reflection::CompletionResult, String> {
         ReflectionReservationStore::complete(self, run, outcome).map_err(|error| error.to_string())
     }
+    fn complete_with_options(
+        &self,
+        run: &str,
+        outcome: memory_core::reflection::ReflectionOutcome,
+        options: memory_core::reflection::CompleteOptions,
+    ) -> Result<memory_core::reflection::CompletionResult, String> {
+        ReflectionReservationStore::complete_with_options(self, run, outcome, options)
+            .map_err(|error| error.to_string())
+    }
 }
 #[cfg(test)]
 mod tests {

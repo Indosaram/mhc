@@ -187,6 +187,21 @@ pub struct CompleteTransition {
     pub launch: Option<ReservedRun>,
 }
 
+/// Options controlling how a completed run treats a queued pending request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompleteOptions {
+    /// When false, a pending request stays pending instead of being promoted and launched.
+    pub promote_pending: bool,
+}
+
+impl Default for CompleteOptions {
+    fn default() -> Self {
+        Self {
+            promote_pending: true,
+        }
+    }
+}
+
 /// Evaluates state machine transitions against incoming boundary events.
 pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> EvaluationResult {
     match event {
@@ -244,9 +259,25 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                 };
             }
 
+            let budget = state
+                .config
+                .snapshot_max_bytes
+                .unwrap_or(REFLECTION_SNAPSHOT_MAX_BYTES as u64);
+            // Drain capacity is bounded by the snapshot budget: one run ingests at most `budget`
+            // bytes, so a journal already over budget never catches up when the configured step
+            // threshold (25 by default) is above what a single run can absorb. Collapse the
+            // threshold to one step so consecutive settles drain the backlog back to budget.
+            let backlog_over_budget = budget > 0
+                && state
+                    .journal
+                    .state
+                    .unreflected_bytes
+                    .is_some_and(|bytes| bytes as u64 >= budget);
             let threshold = state.config.step_count.unwrap_or(0);
+            let effective_threshold = if backlog_over_budget { 1 } else { threshold };
             let threshold_ready = threshold > 0
-                && state.journal.state.steps_since_last_successful_reflection >= threshold
+                && state.journal.state.steps_since_last_successful_reflection
+                    >= effective_threshold
                 && !contains_trigger(&state.reservation, ReflectionTrigger::StepCount);
 
             if threshold_ready {
@@ -262,10 +293,6 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                     action: EvaluationAction::Reserve(request),
                 };
             }
-            let budget = state
-                .config
-                .snapshot_max_bytes
-                .unwrap_or(REFLECTION_SNAPSHOT_MAX_BYTES as u64);
             let pressure_ready = budget > 0
                 && state
                     .journal
@@ -366,6 +393,7 @@ pub fn complete_transition(
     outcome: ReflectionOutcome,
     journals: &BTreeMap<String, JournalSnapshot>,
     config: &TriggerConfig,
+    options: CompleteOptions,
 ) -> Result<CompleteTransition, String> {
     if state.active.as_ref().map(|r| r.run_id.as_str()) != Some(run_id) {
         return Err(format!("Reflection run is not active: {run_id}"));
@@ -415,6 +443,20 @@ pub fn complete_transition(
         if let Some(current) = effective_journals.get_mut(id) {
             current.state.pending_compaction = Some(false);
         }
+    }
+
+    if !options.promote_pending {
+        // Reclaiming a dead launcher must not start a fresh run while the session is still booting:
+        // the queued request stays pending for the ordinary completion path to launch later.
+        return Ok(CompleteTransition {
+            state: ReservationState {
+                active: None,
+                pending: state.pending,
+            },
+            finalize,
+            clear_pending_compaction,
+            launch: None,
+        });
     }
 
     let pending = state.pending.take();

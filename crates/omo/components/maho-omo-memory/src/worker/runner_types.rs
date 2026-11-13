@@ -15,6 +15,17 @@ pub trait ReflectionReservationPort {
         run_id: &str,
         outcome: memory_core::reflection::ReflectionOutcome,
     ) -> Result<CompletionResult, String>;
+    /// Completes a run with explicit promotion control. Ports that only implement `complete` keep
+    /// the default promotion behavior; the store-backed port forwards the options.
+    fn complete_with_options(
+        &self,
+        run_id: &str,
+        outcome: memory_core::reflection::ReflectionOutcome,
+        options: memory_core::reflection::CompleteOptions,
+    ) -> Result<CompletionResult, String> {
+        let _ = options;
+        self.complete(run_id, outcome)
+    }
 }
 
 pub struct ReflectionRunResult {

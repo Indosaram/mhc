@@ -66,6 +66,22 @@ pub fn with_run_finalization_claim<T>(
     run_id: &str,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<ClaimedRunResult<T>, String> {
+    with_run_finalization_claim_timeouts(
+        locks,
+        run_dir,
+        run_id,
+        FINALIZE_ATTEMPT_TIMEOUTS_MS,
+        operation,
+    )
+}
+
+fn with_run_finalization_claim_timeouts<T>(
+    locks: &Path,
+    run_dir: &Path,
+    run_id: &str,
+    attempt_timeouts_ms: &[u64],
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<ClaimedRunResult<T>, String> {
     let record = create_lock_record(
         "reflection-finalize",
         CreateLockRecordOptions {
@@ -74,27 +90,56 @@ pub fn with_run_finalization_claim<T>(
     )
     .map_err(|e| e.to_string())?;
     let path = run_finalization_lock_path(locks, run_id).map_err(|e| e.to_string())?;
-    match with_lock(
-        &path,
-        &record,
-        &AcquireLockOptions {
-            wait_timeout_ms: Some(5000),
-            ..Default::default()
-        },
-        || {
-            Ok::<_, String>(match read_terminal_run(run_dir, run_id)? {
-                Some(terminal) => ClaimedRunResult::Terminal(terminal),
-                None => ClaimedRunResult::Completed(operation()?),
-            })
-        },
-    ) {
-        Ok(result) => Ok(result),
-        Err(WithLockError::Acquire(AcquireLockError::Contention(_))) => {
-            Ok(read_terminal_run(run_dir, run_id)?
-                .map_or(ClaimedRunResult::Busy, ClaimedRunResult::Terminal))
+    let mut operation = Some(operation);
+    claim_with_attempts(attempt_timeouts_ms, |wait_timeout_ms| {
+        let claimed = with_lock(
+            &path,
+            &record,
+            &AcquireLockOptions {
+                wait_timeout_ms: Some(wait_timeout_ms),
+                ..Default::default()
+            },
+            || {
+                let operation = operation
+                    .take()
+                    .ok_or_else(|| "Finalization operation ran more than once".to_owned())?;
+                Ok::<_, String>(match read_terminal_run(run_dir, run_id)? {
+                    Some(terminal) => ClaimedRunResult::Terminal(terminal),
+                    None => ClaimedRunResult::Completed(operation()?),
+                })
+            },
+        );
+        match claimed {
+            Ok(result) => Ok(result),
+            Err(WithLockError::Acquire(AcquireLockError::Contention(_))) => {
+                // The child has usually already exited and the holder is a short critical section,
+                // so a contended attempt retries the acquire. Giving up on the first contention
+                // strands the run and its single active slot until the next bind-time reconcile.
+                Ok(match read_terminal_run(run_dir, run_id)? {
+                    Some(terminal) => ClaimedRunResult::Terminal(terminal),
+                    None => ClaimedRunResult::Busy,
+                })
+            }
+            Err(error) => Err(error.to_string()),
         }
-        Err(error) => Err(error.to_string()),
+    })
+}
+
+const FINALIZE_ATTEMPT_TIMEOUTS_MS: &[u64] = &[2_000, 2_000, 5_000];
+
+/// Runs `attempt` once per entry in `attempt_timeouts_ms`, passing that entry in as the bounded
+/// lock wait. `Busy` is the only value that triggers a retry; anything else ends the loop.
+fn claim_with_attempts<T>(
+    attempt_timeouts_ms: &[u64],
+    mut attempt: impl FnMut(u64) -> Result<ClaimedRunResult<T>, String>,
+) -> Result<ClaimedRunResult<T>, String> {
+    for wait_timeout_ms in attempt_timeouts_ms {
+        match attempt(*wait_timeout_ms)? {
+            ClaimedRunResult::Busy => continue,
+            settled => return Ok(settled),
+        }
     }
+    Ok(ClaimedRunResult::Busy)
 }
 
 #[cfg(test)]
@@ -173,6 +218,105 @@ mod tests {
             ))
             .is_err()
         );
+    }
+    #[test]
+    fn claim_retries_a_contended_attempt_until_it_settles() {
+        let root = tempfile::tempdir().unwrap();
+        let run_dir = root.path().join("run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let locks = root.path().join("locks");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let operations = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let holder = scope.spawn(|| {
+                with_run_finalization_claim(&locks, &run_dir, "run", move || {
+                    held_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    Ok("holder")
+                })
+            });
+            held_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let contender = scope.spawn(|| {
+                with_run_finalization_claim_timeouts(
+                    &locks,
+                    &run_dir,
+                    "run",
+                    &[40, 40, 5_000],
+                    || {
+                        operations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok("settled")
+                    },
+                )
+            });
+            // No sleep: the bounded attempt timeouts are the only wait. If the holder releases
+            // before the contender starts, its first attempt simply succeeds.
+            release_tx.send(()).unwrap();
+            assert_eq!(
+                holder.join().unwrap().unwrap(),
+                ClaimedRunResult::Completed("holder")
+            );
+            assert_eq!(
+                contender.join().unwrap().unwrap(),
+                ClaimedRunResult::Completed("settled")
+            );
+        });
+        assert_eq!(operations.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn claim_reports_busy_after_every_attempt_is_contended() {
+        let mut attempts = 0;
+        let result = claim_with_attempts(&[1, 1, 1], |_| {
+            attempts += 1;
+            Ok(ClaimedRunResult::<()>::Busy)
+        })
+        .unwrap();
+        assert_eq!(result, ClaimedRunResult::Busy);
+        assert_eq!(attempts, 3);
+    }
+    #[test]
+    fn claim_runs_the_operation_once_and_never_retries_a_settled_attempt() {
+        let mut attempts = 0;
+        let result = claim_with_attempts(&[1, 1, 1], |_| {
+            attempts += 1;
+            Ok(ClaimedRunResult::Completed("first"))
+        })
+        .unwrap();
+        assert_eq!(result, ClaimedRunResult::Completed("first"));
+        assert_eq!(attempts, 1);
+    }
+    #[test]
+    fn claim_surfaces_a_terminal_sentinel_instead_of_retrying_past_it() {
+        // A contention that observes a terminal sentinel ends the retry loop immediately; only a
+        // genuine Busy (no sentinel yet) is retried.
+        let root = tempfile::tempdir().unwrap();
+        write_run_json_atomic(
+            &root.path().join("final.json"),
+            &serde_json::json!({"version":1,"runId":"run","outcome":"merged"}),
+            0o600,
+        )
+        .unwrap();
+        let mut attempts = 0;
+        let result = claim_with_attempts(&[1, 1, 1], |_| {
+            attempts += 1;
+            Ok::<_, String>(match read_terminal_run(root.path(), "run")? {
+                Some(terminal) => ClaimedRunResult::<()>::Terminal(terminal),
+                None => ClaimedRunResult::Busy,
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            result,
+            ClaimedRunResult::Terminal(FinalizationTerminalResult {
+                run_id: "run".into(),
+                outcome: "merged".into()
+            })
+        );
+        assert_eq!(attempts, 1);
     }
     #[test]
     fn abandoned_terminal_and_admin_tamper_are_retained() {

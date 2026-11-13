@@ -513,13 +513,17 @@ pub fn reconcile_prelaunch_with_signal(
         std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
     }
     throw_if_aborted(signal)?;
-    let transition = context.reservation.complete(
+    let transition = context.reservation.complete_with_options(
         &active.run_id,
         memory_core::reflection::ReflectionOutcome::Failed,
+        memory_core::reflection::CompleteOptions {
+            promote_pending: false,
+        },
     )?;
-    if let (Some(run), Some(launch)) = (&transition.launch, context.launch) {
-        launch(run);
-    }
+    debug_assert!(
+        transition.launch.is_none(),
+        "a reclaim must never launch a fresh run"
+    );
     Ok(Some((active.run_id, "failed".into())))
 }
 

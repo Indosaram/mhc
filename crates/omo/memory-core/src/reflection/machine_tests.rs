@@ -2,14 +2,16 @@ use pretty_assertions::assert_eq;
 
 use std::collections::BTreeMap;
 
-use crate::journal::cursor::{ReflectionSnapshot, ReflectionTranscriptState};
+use crate::journal::cursor::{
+    REFLECTION_SNAPSHOT_MAX_BYTES, ReflectionSnapshot, ReflectionTranscriptState,
+};
 use crate::journal::entries::{TextTranscriptEntry, TranscriptEntry};
 
 use crate::reflection::machine::{
-    CapturedConversation, DreamOrigin, EvaluationAction, JournalSnapshot, MachineState,
-    REFLECTION_PENDING_MAX_CONVERSATIONS, ReflectionEvent, ReflectionOutcome, ReflectionRequest,
-    ReflectionTrigger, ReservationState, TriggerConfig, complete_transition, evaluate_transitions,
-    reserve_transition,
+    CapturedConversation, CompleteOptions, DreamOrigin, EvaluationAction, JournalSnapshot,
+    MachineState, REFLECTION_PENDING_MAX_CONVERSATIONS, ReflectionEvent, ReflectionOutcome,
+    ReflectionRequest, ReflectionTrigger, ReservationState, TriggerConfig, complete_transition,
+    evaluate_transitions, reserve_transition,
 };
 
 #[test]
@@ -57,6 +59,75 @@ fn byte_pressure_reserves_pressure_origin_dream() {
             assert_eq!(request.origin, Some(DreamOrigin::Pressure));
         }
         EvaluationAction::None => panic!("expected pressure reservation"),
+    }
+}
+
+#[test]
+fn an_over_budget_backlog_collapses_the_step_threshold_to_one() {
+    let mut snapshot = journal(1, None);
+    snapshot.state.unreflected_bytes = Some(REFLECTION_SNAPSHOT_MAX_BYTES);
+    let result = evaluate_transitions(
+        MachineState {
+            journal: snapshot,
+            reservation: ReservationState::default(),
+            config: TriggerConfig {
+                step_count: Some(25),
+                on_compaction: None,
+                snapshot_max_bytes: None,
+            },
+        },
+        ReflectionEvent::Settled { success: true },
+    );
+    match result.action {
+        EvaluationAction::Reserve(request) => {
+            assert_eq!(request.trigger, ReflectionTrigger::StepCount);
+            assert_eq!(request.origin, None);
+        }
+        EvaluationAction::None => panic!("expected a drain reservation below the step threshold"),
+    }
+}
+
+#[test]
+fn an_under_budget_backlog_keeps_the_configured_step_threshold() {
+    let mut snapshot = journal(1, None);
+    snapshot.state.unreflected_bytes = Some(1024);
+    let result = evaluate_transitions(
+        MachineState {
+            journal: snapshot,
+            reservation: ReservationState::default(),
+            config: TriggerConfig {
+                step_count: Some(25),
+                on_compaction: None,
+                snapshot_max_bytes: None,
+            },
+        },
+        ReflectionEvent::Settled { success: true },
+    );
+    assert_eq!(result.action, EvaluationAction::None);
+}
+
+#[test]
+fn a_disabled_step_trigger_never_reserves_step_count_even_over_budget() {
+    let mut snapshot = journal(1, None);
+    snapshot.state.unreflected_bytes = Some(REFLECTION_SNAPSHOT_MAX_BYTES);
+    let result = evaluate_transitions(
+        MachineState {
+            journal: snapshot,
+            reservation: ReservationState::default(),
+            config: TriggerConfig {
+                step_count: Some(0),
+                on_compaction: None,
+                snapshot_max_bytes: None,
+            },
+        },
+        ReflectionEvent::Settled { success: true },
+    );
+    match result.action {
+        EvaluationAction::Reserve(request) => {
+            assert_eq!(request.trigger, ReflectionTrigger::Dream);
+            assert_eq!(request.origin, Some(DreamOrigin::Pressure));
+        }
+        EvaluationAction::None => panic!("expected pressure to carry the drain"),
     }
 }
 
@@ -418,7 +489,15 @@ fn given_every_completion_outcome_when_the_active_run_completes_then_only_merged
             snapshot_max_bytes: None,
         };
 
-        let result = complete_transition(active_state, "run", outcome, &journals, &config).unwrap();
+        let result = complete_transition(
+            active_state,
+            "run",
+            outcome,
+            &journals,
+            &config,
+            CompleteOptions::default(),
+        )
+        .unwrap();
         let expected_len =
             if outcome == ReflectionOutcome::Merged || outcome == ReflectionOutcome::NoChanges {
                 1
@@ -452,11 +531,74 @@ fn given_a_failed_active_run_and_a_queued_request_when_completed_then_the_cursor
         snapshot_max_bytes: None,
     };
 
-    let result =
-        complete_transition(s2, "active", ReflectionOutcome::Failed, &journals, &config).unwrap();
+    let result = complete_transition(
+        s2,
+        "active",
+        ReflectionOutcome::Failed,
+        &journals,
+        &config,
+        CompleteOptions::default(),
+    )
+    .unwrap();
     assert!(result.finalize.is_empty());
     assert_eq!(result.launch.as_ref().unwrap().run_id, "pending");
     assert_eq!(result.state.active.as_ref().unwrap().run_id, "pending");
+}
+
+#[test]
+fn given_a_queued_request_when_reclaim_completes_without_promotion_then_it_stays_pending_and_launches_nothing()
+ {
+    let (s1, _) = reserve_transition(
+        ReservationState::default(),
+        request(ReflectionTrigger::Manual, None, None),
+        "active".to_string(),
+    );
+    let (s2, _) = reserve_transition(
+        s1,
+        request(ReflectionTrigger::StepCount, None, None),
+        "pending".to_string(),
+    );
+
+    let mut journals = BTreeMap::new();
+    journals.insert("conversation-a".to_string(), journal(6, None));
+    let config = TriggerConfig {
+        step_count: Some(5),
+        on_compaction: None,
+        snapshot_max_bytes: None,
+    };
+
+    let reclaim = complete_transition(
+        s2,
+        "active",
+        ReflectionOutcome::Failed,
+        &journals,
+        &config,
+        CompleteOptions {
+            promote_pending: false,
+        },
+    )
+    .unwrap();
+    assert!(reclaim.launch.is_none());
+    assert!(reclaim.state.active.is_none());
+    assert_eq!(reclaim.state.pending.as_ref().unwrap().run_id, "pending");
+
+    // The queued request survives the reclaim and is still launched later by the ordinary path.
+    let (later_active, _) = reserve_transition(
+        reclaim.state,
+        request(ReflectionTrigger::Manual, None, None),
+        "next".to_string(),
+    );
+    let promoted = complete_transition(
+        later_active,
+        "next",
+        ReflectionOutcome::Failed,
+        &journals,
+        &config,
+        CompleteOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(promoted.launch.as_ref().unwrap().run_id, "pending");
+    assert_eq!(promoted.state.active.as_ref().unwrap().run_id, "pending");
 }
 
 #[test]
@@ -481,8 +623,15 @@ fn given_pending_automatic_work_became_stale_when_dequeued_then_it_is_dropped_wh
         snapshot_max_bytes: None,
     };
 
-    let stale_result =
-        complete_transition(s2, "active", ReflectionOutcome::Failed, &journals, &config).unwrap();
+    let stale_result = complete_transition(
+        s2,
+        "active",
+        ReflectionOutcome::Failed,
+        &journals,
+        &config,
+        CompleteOptions::default(),
+    )
+    .unwrap();
     assert!(stale_result.launch.is_none());
 
     let (s3, _) = reserve_transition(
@@ -505,6 +654,7 @@ fn given_pending_automatic_work_became_stale_when_dequeued_then_it_is_dropped_wh
         ReflectionOutcome::Failed,
         &journals_zero,
         &config,
+        CompleteOptions::default(),
     )
     .unwrap();
     assert_eq!(

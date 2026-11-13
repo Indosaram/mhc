@@ -30,10 +30,10 @@ pub use description_preflight::{
     DescriptionPreflightWarn, TrimmedDescription, preflight_reflection_descriptions,
 };
 pub use machine::{
-    CapturedConversation, CompleteTransition, DreamOrigin, EvaluationAction, EvaluationResult,
-    JournalSnapshot, MachineState, ReflectionEvent, ReflectionOutcome, ReflectionRequest,
-    ReflectionTrigger, ReservationState, ReservedRun, TriggerConfig, complete_transition,
-    evaluate_transitions, reserve_transition,
+    CapturedConversation, CompleteOptions, CompleteTransition, DreamOrigin, EvaluationAction,
+    EvaluationResult, JournalSnapshot, MachineState, ReflectionEvent, ReflectionOutcome,
+    ReflectionRequest, ReflectionTrigger, ReservationState, ReservedRun, TriggerConfig,
+    complete_transition, evaluate_transitions, reserve_transition,
 };
 pub use orphan_sweep::{
     OrphanKind, REFLECTION_ORPHAN_GRACE_MS, ReflectionLeftovers, ReflectionOrphanReceipt,
