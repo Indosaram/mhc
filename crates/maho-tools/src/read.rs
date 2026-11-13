@@ -327,6 +327,9 @@ fn process_image(
             }
         };
         let (width, height) = (decoded.width(), decoded.height());
+        // JPEG has no alpha channel and `to_rgb8` would flatten transparency, so an alpha image
+        // keeps its PNG candidate whenever that candidate fits the budget.
+        let has_alpha = decoded.color().has_alpha();
         let max_width = resize_options
             .as_ref()
             .and_then(|options| options.max_width)
@@ -379,10 +382,42 @@ fn process_image(
                         .map_err(|e| ToolError::Message(e.to_string()))?;
                     candidates.push((data, "image/jpeg"));
                 }
-                if let Some((data, kind)) = candidates
-                    .into_iter()
-                    .find(|(data, _)| data.len().div_ceil(3) * 4 < original_size_limit)
-                {
+                // Choose between the fitting PNG and the first fitting JPEG. Candidates are ordered
+                // PNG first and then JPEG by descending quality, so the first fitting JPEG is the
+                // highest quality that still fits; picking the smallest candidate by length alone
+                // would silently downgrade every image to the lowest quality. When both fit, the
+                // smaller payload wins: an opaque screenshot PNG can fit the budget while being
+                // several times larger than the JPEG of the same pixels, and that oversized payload
+                // is what is retained in every copy of the request. Alpha content always keeps the
+                // PNG, because `to_rgb8` would flatten transparency.
+                let fits = |len: usize| len.div_ceil(3) * 4 < original_size_limit;
+                // The PNG is always the first candidate; a missing entry fits nothing.
+                let png_len = candidates.first().map(|(data, _)| data.len());
+                let png_fits = png_len.is_some_and(&fits);
+                // Every candidate after the PNG is a JPEG, ordered by descending quality.
+                let jpeg_index = candidates
+                    .iter()
+                    .skip(1)
+                    .position(|(data, _)| fits(data.len()))
+                    .map(|index| index + 1);
+                let jpeg_len = jpeg_index
+                    .and_then(|index| candidates.get(index))
+                    .map(|(data, _)| data.len());
+                let take_png = match jpeg_len {
+                    // PNG is the only option when no JPEG candidate fits the budget.
+                    None => png_fits,
+                    // Alpha content keeps PNG, otherwise the smaller payload wins and a tie keeps
+                    // the lossless PNG.
+                    Some(jpeg_len) => {
+                        png_fits && (has_alpha || png_len.is_some_and(|png| png <= jpeg_len))
+                    }
+                };
+                let chosen = match (take_png, jpeg_index) {
+                    (true, _) => candidates.into_iter().next(),
+                    (false, Some(index)) => candidates.into_iter().nth(index),
+                    (false, None) => None,
+                };
+                if let Some((data, kind)) = chosen {
                     bytes = data;
                     mime = kind.into();
                     hints.push(format!("[Image: original {width}x{height}, displayed at {w}x{h}. Multiply coordinates by {:.2} to map to original image.]", f64::from(width)/f64::from(w)));
