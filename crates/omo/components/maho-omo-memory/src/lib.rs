@@ -140,6 +140,7 @@ pub mod sidecar_model;
 pub mod sidecar_owner;
 pub mod sidecar_start_ladder;
 pub mod sidecar_sweep;
+pub mod sidecar_wake_log;
 pub mod skills_scope;
 pub mod skills_usage;
 pub mod skills_usage_ledger;

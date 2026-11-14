@@ -1101,3 +1101,120 @@ mod sidecar_ownership {
         );
     }
 }
+
+/// The REAL `append_wake_line` against a tempdir plus the reporter the wiring installs, so the record
+/// chain is exercised end to end: a line lands in `sidecars/<encoded>/wakes.ndjson`.
+mod wake_log_wiring {
+    use super::*;
+    use crate::kibitzer_sidecar_outcome::{KibitzerWakeOutcome, KibitzerWakeStatus};
+    use crate::sidecar_wake_log::{AppendEntry, WakeReporter};
+    use std::path::Path;
+
+    fn record_outcome(session_id: &str, status: KibitzerWakeStatus) -> KibitzerWakeOutcome {
+        KibitzerWakeOutcome {
+            session_id: session_id.to_string(),
+            wake: 7,
+            generation: 2,
+            status,
+            cause: None,
+            reason: None,
+            configuration: None,
+            model: None,
+            nudges: Vec::new(),
+            candidate_count: 1,
+            steered: 0,
+            tool_calls: 0,
+            duration_ms: 12,
+            slot_wait_ms: 3,
+            cursors: None,
+            context_tokens: None,
+            usage: None,
+            diagnostic: false,
+        }
+    }
+
+    fn report(root: &tempfile::TempDir, session_id: &str, reporter: &WakeReporter) {
+        let recall = root.path().join("runtime/recall");
+        let append = |recall: &Path, session: &str, line: &str| {
+            append_wake_line(recall, session, line).expect("the tempdir is writable");
+        };
+        let warn = |_: &str| {};
+        let now = || 1_700_000_000_000i64;
+        let entries: AppendEntry = Arc::new(|_: &str, _: Value| {});
+        reporter.report(
+            &record_outcome(session_id, KibitzerWakeStatus::Completed),
+            &crate::sidecar_wake_log::WakeLogDeps {
+                recall: &recall,
+                append: &append,
+                warn: &warn,
+                now_ms: &now,
+            },
+            &entries,
+            Some("recall"),
+        );
+    }
+
+    fn lines(root: &tempfile::TempDir, session_id: &str) -> Vec<String> {
+        let recall = root.path().join("runtime/recall");
+        let path = crate::sidecar_wake_log::wakes_file(&recall, session_id);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => text.lines().map(str::to_string).collect(),
+            Err(error) => panic!("{} unreadable: {error}", path.display()),
+        }
+    }
+
+    #[test]
+    fn a_reported_wake_appends_one_line_to_the_session_log() {
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, SESSION, &reporter);
+
+        let lines = lines(&root, SESSION);
+        assert_eq!(lines.len(), 1);
+        let record: Value = serde_json::from_str(&lines[0]).expect("one JSON line");
+        assert_eq!(record["sessionId"], SESSION);
+        assert_eq!(record["wake"], 7);
+        assert_eq!(record["status"], "completed");
+    }
+
+    #[test]
+    fn repeated_wakes_append_rather_than_overwrite() {
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, SESSION, &reporter);
+        report(&root, SESSION, &reporter);
+        report(&root, SESSION, &reporter);
+
+        assert_eq!(
+            lines(&root, SESSION).len(),
+            3,
+            "the log is append-only across wakes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_wake_log_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, SESSION, &reporter);
+
+        let recall = root.path().join("runtime/recall");
+        let path = crate::sidecar_wake_log::wakes_file(&recall, SESSION);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "upstream writes the record with mode 0o600");
+    }
+
+    #[test]
+    fn two_sessions_write_independent_logs() {
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, "s1", &reporter);
+        report(&root, "s2", &reporter);
+
+        assert_eq!(lines(&root, "s1").len(), 1);
+        assert_eq!(lines(&root, "s2").len(), 1);
+    }
+}

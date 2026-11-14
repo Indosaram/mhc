@@ -29,6 +29,7 @@ use crate::kibitzer_sidecar::{
     KibitzerOfferInput, KibitzerSidecar, KibitzerSidecarOptions, KibitzerWakeSpawn,
 };
 use crate::kibitzer_sidecar_admission::KibitzerBlockingExecutor;
+use crate::kibitzer_sidecar_outcome::KibitzerWakeOutcome;
 use crate::kibitzer_sidecar_wake::KibitzerWakeDeliver;
 use crate::kibitzer_wake_slot::{KibitzerWakeSlot, KibitzerWakeSlotOptions};
 use crate::recall_consumer::{
@@ -111,6 +112,8 @@ pub struct MemoryRecallWiring {
     recall_settings: Mutex<BTreeMap<String, (String, Value)>>,
     /// The process-wide claim on sidecar directories (upstream `Rte`): ownership plus the sweep.
     sidecar_owner: Arc<SidecarOwner>,
+    /// The per-session `wakes.ndjson` records and the two notices (the rest of `Rte.onWake`).
+    wake_reporter: Arc<crate::sidecar_wake_log::WakeReporter>,
 }
 
 /// One recall corpus per memory repository, shared across every session of this host (pin
@@ -191,6 +194,7 @@ impl MemoryRecallWiring {
             tool_args: Mutex::new(ToolArgWindow::new()),
             recall_settings: Mutex::new(BTreeMap::new()),
             sidecar_owner,
+            wake_reporter: Arc::new(crate::sidecar_wake_log::WakeReporter::new()),
         })
     }
 
@@ -420,7 +424,40 @@ impl MemoryRecallWiring {
             timers: Some(Arc::clone(&self.options.timers)),
             now: Some(Arc::clone(&self.options.now_ms)),
             random: Some(Arc::clone(&self.options.random)),
-            on_wake: None,
+            on_wake: Some({
+                let reporter = Arc::clone(&self.wake_reporter);
+                let append_entry = Arc::clone(&self.options.append_entry);
+                let now_ms = Arc::clone(&self.options.now_ms);
+                let warn = Arc::clone(&self.options.warn);
+                let recall = context.identity_paths.recall.clone();
+                // `memory.recall.category`, read once when the sidecar is created: it is the category
+                // the wake's model was resolved from, so it is the one the gate notice names.
+                let category = self
+                    .resolve_recall_settings(&context.binding.identity)
+                    .get("category")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Arc::new(move |outcome: KibitzerWakeOutcome| {
+                    let append = |recall: &std::path::Path, session_id: &str, line: &str| {
+                        if let Err(error) = append_wake_line(recall, session_id, line) {
+                            warn(&format!(
+                                "omo-senpi kibitzer wake record write failed: {error}"
+                            ));
+                        }
+                    };
+                    reporter.report(
+                        &outcome,
+                        &crate::sidecar_wake_log::WakeLogDeps {
+                            recall: &recall,
+                            append: &append,
+                            warn: warn.as_ref(),
+                            now_ms: now_ms.as_ref(),
+                        },
+                        &append_entry,
+                        category.as_deref(),
+                    );
+                })
+            }),
             warn: Some(Arc::clone(&self.options.warn)),
         });
         sidecars.insert(session_id.to_string(), Arc::clone(&sidecar));
@@ -688,6 +725,7 @@ impl KibitzerHookSink for MemoryRecallWiring {
             },
             session_id,
         );
+        self.wake_reporter.forget(session_id);
         // The async cleanup runs on the retained host executor and OWNS the delivery retraction: it
         // awaits `shutdown()` THEN retracts delivery, matching upstream's `await shutdown` before
         // `delivery.onSessionShutdown`. Idempotent: a second shutdown is a no-op.
@@ -705,6 +743,25 @@ impl KibitzerHookSink for MemoryRecallWiring {
             self.delivery.on_compaction_accepted(session_id, &context);
         }
     }
+}
+
+/// Appends one line to a session's `wakes.ndjson`, creating the sidecar directory first (upstream
+/// `p` in `rte.ts`: `mkdir -p` then append with mode `0o600`).
+fn append_wake_line(recall: &std::path::Path, session_id: &str, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = crate::sidecar_sweep::sidecar_dir(recall, session_id);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(crate::sidecar_wake_log::WAKES_FILE_NAME);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(line.as_bytes())
 }
 
 #[cfg(test)]

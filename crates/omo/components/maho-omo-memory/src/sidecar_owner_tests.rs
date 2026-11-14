@@ -235,3 +235,45 @@ fn an_inert_owner_records_ownership_without_taking_a_lock() {
         "the inert registry only records the bookkeeping"
     );
 }
+
+#[tokio::test]
+async fn when_idle_resolves_immediately_when_nothing_is_in_flight() {
+    let fixture = Fixture::new();
+
+    fixture.owner.when_idle().await.unwrap();
+}
+
+#[tokio::test]
+async fn when_idle_waits_for_the_running_sweep_and_wakes_without_polling() {
+    let fixture = Fixture::new();
+    let expired = fixture.expired_sidecar("dead");
+    fixture
+        .owner
+        .own(&fixture.deps(), "s1", &fixture.recall, &fixture.locks);
+    assert_eq!(
+        fixture.owner.in_flight().len(),
+        1,
+        "the ownership kick scheduled a sweep, so the drain point is occupied"
+    );
+
+    // Registered BEFORE the sweep runs: the waiter must be woken by the completion, not by a poll.
+    let idle = fixture.owner.when_idle();
+    tokio::pin!(idle);
+    assert!(
+        futures_poll_once(&mut idle).await.is_pending(),
+        "it must not resolve while the sweep is still queued"
+    );
+
+    fixture.offload.drain();
+
+    idle.await.unwrap();
+    assert!(fixture.owner.in_flight().is_empty());
+    assert!(!expired.exists(), "the sweep it waited for did run");
+}
+
+/// Polls a future exactly once and reports whether it is still pending.
+async fn futures_poll_once<F: std::future::Future>(
+    future: &mut std::pin::Pin<&mut F>,
+) -> std::task::Poll<F::Output> {
+    std::future::poll_fn(|context| std::task::Poll::Ready(future.as_mut().poll(context))).await
+}

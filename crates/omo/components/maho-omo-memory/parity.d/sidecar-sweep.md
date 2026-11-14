@@ -7,15 +7,30 @@ code, so it is not the reference here.
 | TS path | Rust path | status |
 |---|---|---|
 | sidecar-sweep.ts (dir + lock names, `lastActivity`, `isExpired`, `sweep`, `claimAndRemove`) | components/maho-omo-memory/src/sidecar_sweep.rs | done |
-| `Rte` — owner map, `own`, owner lock, sweep kick, session-shutdown release | components/maho-omo-memory/src/sidecar_owner.rs | partial |
-| `Rte` — per-session `wakes.ndjson` write chain | (none) | unported |
-| `Rte` — gate/unavailable `appendEntry` notices | (none) | unported |
+| `Rte` — owner map, `own`, owner lock, sweep kick, session-shutdown release | components/maho-omo-memory/src/sidecar_owner.rs | done |
+| `Rte` — per-session `wakes.ndjson` write chain (`p`, `Mte`) | components/maho-omo-memory/src/sidecar_wake_log.rs | done |
+| `Rte` — gate/unavailable `appendEntry` notices | components/maho-omo-memory/src/sidecar_wake_log.rs | done |
+| `Rte` — `whenIdle` (drain the in-flight sweeps) | components/maho-omo-memory/src/sidecar_owner.rs (`SidecarOwner::when_idle`) | done |
 
 Contract that the port reproduces: `sidecars/<base64url(session)>`, one lock at
 `locks/recall-sidecar.<encoded>.lock` acquired twice (owner for the session's life, sweep claim
 non-blocking), 7-day horizon, `lstat`-based one-level `lastActivity`, `.prune-` tombstone rename before
 recursive removal, and the warn-vs-silent split (listing/claim/removal failures warn; listing `ENOENT`,
 claim contention and a lost rename race are silent).
+
+`wakes.ndjson` contract: one JSON line per settled wake at
+`sidecars/<encoded>/wakes.ndjson`, mode `0o600`, directory created first. Fields are `version`, `at`
+(injected clock, RFC 3339 millis), `sessionId`, `wake`, `generation`, `status`, and then only what the
+wake has: `cause`, `reason`, `configuration`, `model`, `candidateCount`, `nudged` (paths capped at 256
+UTF-16 units), `steered`, `toolCalls`, `durationMs`, `slotWaitMs`, `cursors`, `contextTokens`, `usage`,
+`diagnostic`. A record that would reach 4096 characters drops `reason` and `nudged` and adds
+`truncated: true`; model/category text is redacted (not truncated) when it looks secret-bearing.
+
+Notice contract: `omo-kibitzer:gate` fires on the THIRD consecutive diagnostic failure and once per
+streak, carrying `consecutiveFailures` and the wake number; `omo-kibitzer:unavailable` fires once per
+session for a configuration refusal (`category_unavailable` / `beyond_category`) with at most 16
+`missingProviders`. A non-diagnostic wake clears the streak, so budget/deadline/shutdown ends never
+accumulate toward the gate.
 
 ## Deliberate divergences
 
@@ -34,9 +49,20 @@ claim contention and a lost rename race are silent).
 4. **Recall is gated in the sidecar getter.** `sidecar_for` returns `None` when
    `memory.recall.enabled` is false, matching upstream's getter returning before it builds anything, so
    ownership and the sweep inherit the condition instead of carrying a second gate.
+5. **No promise chain for the wake records.** Upstream keeps a `Map<session, Promise>` tail and appends
+   each record on the previous one's `then`. The mhc append seam is a synchronous `write_all` on an
+   `O_APPEND` file, so the chain collapses to the one call in `WakeReporter::report`; ordering within a
+   session is guaranteed by the write being synchronous, not by queueing.
 
 The one-level `lastActivity` basis is safe because the sidecar's child transcript is a DIRECT child
-appended on every wake; `sidecar_sweep_tests.rs` pins that shape. Upstream's `wakes.ndjson` is a second
-such child and is not ported here.
+appended on every wake, and `wakes.ndjson` is a second such child written on every settled wake;
+`sidecar_sweep_tests.rs` pins the transcript shape and `sidecar_wake_log_tests.rs` pins the record one.
 
-No claim of full `Rte` parity is made: the `wakes.ndjson` write chain and the notice half remain open.
+`Rte` is now fully accounted for: `own`, `onWake` (record chain plus both notices) and `whenIdle` are
+ported; no upstream `Rte` member remains unported.
+
+`whenIdle` is the owner half only: upstream also awaits every live sidecar's `whenIdle` and the
+composition's own idle, both of which already exist as `KibitzerSidecar::when_idle` and are driven by
+the composition, so the owner exposes the sweep drain as an awaitable with no timeout and no polling
+(a `tokio::sync::Notify` registered before the emptiness check, so a sweep finishing between the two
+cannot be missed).

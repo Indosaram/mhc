@@ -58,6 +58,8 @@ pub struct SidecarOwner {
     owned: Mutex<BTreeMap<String, OwnedSidecar>>,
     kick_once: Mutex<BTreeSet<PathBuf>>,
     in_flight: Arc<Mutex<BTreeSet<PathBuf>>>,
+    /// Signalled when `in_flight` becomes empty, so `when_idle` waits on the event, not a poll.
+    idle: Arc<tokio::sync::Notify>,
 }
 
 /// What one ownership operation needs from its caller, read at call time.
@@ -177,6 +179,7 @@ impl SidecarOwner {
         };
         let now_ms = Arc::clone(deps.now_ms);
         let in_flight = Arc::clone(&self.in_flight);
+        let idle = Arc::clone(&self.idle);
         let recall_dir = entry.recall_dir;
         let locks_dir = entry.locks_dir;
         let swept = recall_dir.clone();
@@ -186,10 +189,16 @@ impl SidecarOwner {
                 run_sweep(&recall_dir, &locks_dir, now_ms(), owned, warn.as_ref());
                 // Only the sweep that claimed the slot may clear it; clearing a slot owned by a
                 // still-running sweep would let a second one start on the same directory.
-                in_flight
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&swept);
+                let empty = {
+                    let mut in_flight = in_flight
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    in_flight.remove(&swept);
+                    in_flight.is_empty()
+                };
+                if empty {
+                    idle.notify_waiters();
+                }
             }
         }));
     }
@@ -230,13 +239,20 @@ impl SidecarOwner {
         let warn = Arc::clone(deps.warn);
         let now_ms = Arc::clone(deps.now_ms);
         let in_flight = Arc::clone(&self.in_flight);
+        let idle = Arc::clone(&self.idle);
         let swept = recall_dir.clone();
         (deps.offload)(Box::new(move || {
             run_sweep(&recall_dir, &locks_dir, now_ms(), owned, warn.as_ref());
-            in_flight
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&swept);
+            let empty = {
+                let mut in_flight = in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                in_flight.remove(&swept);
+                in_flight.is_empty()
+            };
+            if empty {
+                idle.notify_waiters();
+            }
         }));
     }
 
@@ -258,6 +274,21 @@ impl SidecarOwner {
             .iter()
             .cloned()
             .collect()
+    }
+
+    /// `Rte.whenIdle`'s owner half: resolves once no sweep is in flight.
+    ///
+    /// The registration happens BEFORE the emptiness check, so a sweep that finishes between the two
+    /// still wakes this waiter - the waiter cannot miss the notification it is waiting for.
+    pub async fn when_idle(&self) -> Result<(), String> {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            if self.in_flight().is_empty() {
+                return Ok(());
+            }
+            notified.await;
+        }
     }
 }
 
