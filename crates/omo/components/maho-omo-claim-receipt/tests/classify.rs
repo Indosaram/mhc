@@ -1,6 +1,8 @@
 //! Port of `claim-receipt/classify.test.ts`.
 
-use maho_omo_claim_receipt::classify::{Claim, ClaimKind, ClaimStrength, classify_claims};
+use maho_omo_claim_receipt::classify::{
+    Claim, ClaimKind, ClaimStrength, classify_claims, mask_quoted_prose,
+};
 
 fn only(text: &str) -> Claim {
     let claims = classify_claims(text);
@@ -253,4 +255,18 @@ fn a_multi_sentence_answer_returns_one_claim_per_claiming_sentence() {
         shape,
         vec![("test", "All tests pass."), ("build", "빌드도 성공했어요.")]
     );
+}
+
+#[test]
+fn large_answers_are_classified_without_panicking_on_the_backtrack_budget() {
+    for text in [
+        "a".repeat(700_000),
+        "\u{AC00}".repeat(240_000),
+        "'a".repeat(350_000),
+        "`".repeat(700_000),
+    ] {
+        let visible = mask_quoted_prose(&text);
+        assert_eq!(visible.len(), text.len());
+        let _ = classify_claims(&text);
+    }
 }

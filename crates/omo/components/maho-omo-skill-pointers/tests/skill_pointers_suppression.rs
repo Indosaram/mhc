@@ -322,3 +322,48 @@ fn strip_quoted_spans_preserves_byte_length_for_multibyte_text() {
         );
     }
 }
+
+#[test]
+fn large_prompts_are_stripped_without_panicking_on_the_backtrack_budget() {
+    for text in [
+        "가".repeat(240_000),
+        "a".repeat(700_000),
+        "`".repeat(700_000),
+        "'".repeat(700_000),
+        "don't use ".repeat(70_000),
+    ] {
+        let visible = strip_quoted_regions(&text);
+        assert_eq!(visible.len(), text.len());
+        assert_eq!(matched_skill_pointer_names(&text), Vec::<&str>::new());
+    }
+}
+
+#[test]
+fn large_prompt_ending_with_a_real_request_still_matches() {
+    for filler in ["가".repeat(240_000), "a".repeat(700_000)] {
+        let text = format!("{filler}\nrun ulw loop");
+        assert_eq!(matched_skill_pointer_names(&text), vec!["ulw-loop"]);
+    }
+}
+
+#[tokio::test]
+async fn given_a_large_prompt_when_it_ends_with_a_real_request_then_the_pointer_is_injected() {
+    let harness = setup_harness("/skills/");
+    let text = format!("{}\nrun ulw loop", "가".repeat(240_000));
+    let result = dispatch_input(
+        &harness,
+        &text,
+        InputSource::Interactive,
+        None,
+        "test-session",
+    )
+    .await;
+    expect_pointer_injections(
+        &harness,
+        &result,
+        &[ExpectedPointer {
+            custom_type: ULW_LOOP_CUSTOM_TYPE,
+            skill_name: "ulw-loop",
+        }],
+    );
+}

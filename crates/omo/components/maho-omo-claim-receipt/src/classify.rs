@@ -6,7 +6,7 @@
 
 use std::sync::LazyLock;
 
-use fancy_regex::Regex as FancyRegex;
+use fancy_regex::{Regex as FancyRegex, RegexBuilder};
 use regex::Regex;
 
 /// The kind of work a claim says was done.
@@ -191,12 +191,34 @@ static CLAIM_RULES: &[ClaimRule] = &[
 static CLAIM_PATTERNS: LazyLock<Vec<FancyRegex>> = LazyLock::new(|| {
     CLAIM_RULES
         .iter()
-        .map(|rule| FancyRegex::new(rule.pattern).expect("valid claim rule regex"))
+        .map(|rule| pattern(rule.pattern))
         .collect()
 });
 
+/// fancy-regex defaults to a 1M backtrack budget, and these scans cover a whole answer, so a long
+/// one (720 KB of Korean, or 700 KB of ASCII) exhausts it: `replace_all` aborts the process and
+/// `is_match` silently reports no match. Every answer-scanning pattern gets this budget instead.
+const BACKTRACK_LIMIT: usize = 500_000_000;
+
 fn pattern(source: &str) -> FancyRegex {
-    FancyRegex::new(source).expect("valid claim regex")
+    match RegexBuilder::new(source)
+        .backtrack_limit(BACKTRACK_LIMIT)
+        .build()
+    {
+        Ok(regex) => regex,
+        Err(error) => panic!("invalid claim regex: {error}"),
+    }
+}
+
+/// Masking replacement, or `None` when the scan gives up. An answer beyond the budget degrades to
+/// a fully masked region, which finds no claims instead of panicking.
+fn masked_replace_all(regex: &FancyRegex, text: &str) -> Option<String> {
+    regex
+        .try_replacen(text, 0, |captures: &fancy_regex::Captures| {
+            mask_region(captures.get(0).map_or("", |matched| matched.as_str()))
+        })
+        .ok()
+        .map(std::borrow::Cow::into_owned)
 }
 
 static NONZERO_FAILURES: LazyLock<FancyRegex> = LazyLock::new(|| {
@@ -304,11 +326,9 @@ fn strip_quoted_spans(text: &str) -> String {
     if RELAY_HEADER.is_match(text).unwrap_or(false) {
         return mask_region(text);
     }
-    let mut visible = match INJECTED_BLOCK.replace_all(text, |captures: &fancy_regex::Captures| {
-        mask_region(captures.get(0).map_or("", |matched| matched.as_str()))
-    }) {
-        std::borrow::Cow::Borrowed(borrowed) => borrowed.to_owned(),
-        std::borrow::Cow::Owned(owned) => owned,
+    let mut visible = match masked_replace_all(&INJECTED_BLOCK, text) {
+        Some(masked) => masked,
+        None => return mask_region(text),
     };
 
     let mut start_pos = 0usize;
@@ -341,23 +361,24 @@ fn strip_quoted_spans(text: &str) -> String {
         start_pos = opening_start + masked_len;
     }
 
-    let visible = INLINE_CODE.replace_all(&visible, |captures: &fancy_regex::Captures| {
-        mask_region(captures.get(0).map_or("", |matched| matched.as_str()))
-    });
+    let visible = match masked_replace_all(&INLINE_CODE, &visible) {
+        Some(masked) => masked,
+        None => return mask_region(text),
+    };
     let visible = BLOCK_QUOTE_LINE.replace_all(&visible, |captures: &regex::Captures<'_>| {
         mask_region(&captures[0])
     });
     let visible = DOUBLE_QUOTED.replace_all(&visible, |captures: &regex::Captures<'_>| {
         mask_region(&captures[0])
     });
-    let visible = SINGLE_QUOTED.replace_all(&visible, |captures: &fancy_regex::Captures| {
-        mask_region(captures.get(0).map_or("", |matched| matched.as_str()))
-    });
-    URL_SPAN
-        .replace_all(&visible, |captures: &fancy_regex::Captures| {
-            mask_region(captures.get(0).map_or("", |matched| matched.as_str()))
-        })
-        .into_owned()
+    let visible = match masked_replace_all(&SINGLE_QUOTED, &visible) {
+        Some(masked) => masked,
+        None => return mask_region(text),
+    };
+    match masked_replace_all(&URL_SPAN, &visible) {
+        Some(masked) => masked,
+        None => mask_region(text),
+    }
 }
 
 #[must_use]

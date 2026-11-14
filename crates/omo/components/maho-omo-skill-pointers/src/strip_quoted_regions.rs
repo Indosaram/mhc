@@ -1,15 +1,42 @@
-use fancy_regex::Regex as FancyRegex;
+use fancy_regex::{Regex as FancyRegex, RegexBuilder};
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// fancy-regex defaults to a 1M backtrack budget, and these patterns scan a whole prompt, so a long
+/// input (720 KB of Korean, or 700 KB of ASCII) exhausts it: `replace_all` aborts the process and
+/// `is_match` silently reports no match. Every prompt-scanning pattern gets this budget instead.
+pub(crate) const BACKTRACK_LIMIT: usize = 500_000_000;
+
+pub(crate) fn prompt_regex(pattern: &str, what: &str) -> FancyRegex {
+    match RegexBuilder::new(pattern)
+        .backtrack_limit(BACKTRACK_LIMIT)
+        .build()
+    {
+        Ok(regex) => regex,
+        Err(error) => panic!("invalid {what} regex: {error}"),
+    }
+}
+
+/// Masking replacement, or `None` when the scan gives up. A prompt beyond the budget degrades to a
+/// fully masked region, which suppresses pointer injection for that turn instead of panicking.
+fn masked_replace_all(regex: &FancyRegex, text: &str) -> Option<String> {
+    regex
+        .try_replacen(text, 0, |caps: &fancy_regex::Captures| {
+            mask(caps.get(0).map_or("", |m| m.as_str()))
+        })
+        .ok()
+        .map(std::borrow::Cow::into_owned)
+}
+
 static INJECTED_BLOCK: LazyLock<FancyRegex> = LazyLock::new(|| {
-    FancyRegex::new(r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>")
-        .expect("valid injected block regex")
+    prompt_regex(
+        r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>",
+        "injected block",
+    )
 });
 
-static INLINE_CODE: LazyLock<FancyRegex> = LazyLock::new(|| {
-    FancyRegex::new(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)").expect("valid inline code regex")
-});
+static INLINE_CODE: LazyLock<FancyRegex> =
+    LazyLock::new(|| prompt_regex(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)", "inline code"));
 
 static RELAY_HEADER: LazyLock<Regex> = LazyLock::new(|| {
     match Regex::new(
@@ -32,22 +59,22 @@ static DOUBLE_QUOTED: LazyLock<Regex> =
         },
     );
 static SINGLE_QUOTED: LazyLock<FancyRegex> = LazyLock::new(|| {
-    FancyRegex::new(r"(?<![A-Za-z0-9_'])'[^'\n]{1,200}'(?![A-Za-z0-9_])|‘[^’\n]{1,200}’")
-        .expect("valid single quote regex")
+    prompt_regex(
+        r"(?<![A-Za-z0-9_'])'[^'\n]{1,200}'(?![A-Za-z0-9_])|‘[^’\n]{1,200}’",
+        "single quote",
+    )
 });
 static URL_SPAN: LazyLock<FancyRegex> = LazyLock::new(|| {
-    match FancyRegex::new(r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#) {
-        Ok(regex) => regex,
-        Err(error) => panic!("invalid URL span regex: {error}"),
-    }
+    prompt_regex(
+        r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#,
+        "URL span",
+    )
 });
 static NEGATED_INVOCATION: LazyLock<FancyRegex> = LazyLock::new(|| {
-    match FancyRegex::new(
+    prompt_regex(
         "(?i)(?<![A-Za-z0-9_])(?:do\\s+not|don['\u{2019}]t|dont|never)\\s+(?:load|use|run|invoke|start|trigger|arm|enable)(?![A-Za-z0-9_])[^.;:!?\\n]*?(?=[.;:!?\\n]|\\s(?:but|then|instead|however)\\b|\\s[\u{2014}\u{2013}-]\\s|$)",
-    ) {
-        Ok(regex) => regex,
-        Err(error) => panic!("invalid negated invocation regex: {error}"),
-    }
+        "negated invocation",
+    )
 });
 
 pub const NOT_AFTER_IDENTIFIER: &str = r"(?<![A-Za-z0-9][-_.]|[/\\])";
@@ -79,11 +106,9 @@ pub fn strip_quoted_spans(text: &str) -> String {
     if RELAY_HEADER.is_match(text) {
         return mask(text);
     }
-    let mut visible = match INJECTED_BLOCK.replace_all(text, |caps: &fancy_regex::Captures| {
-        mask(caps.get(0).map_or("", |m| m.as_str()))
-    }) {
-        std::borrow::Cow::Borrowed(s) => s.to_string(),
-        std::borrow::Cow::Owned(s) => s,
+    let mut visible = match masked_replace_all(&INJECTED_BLOCK, text) {
+        Some(masked) => masked,
+        None => return mask(text),
     };
 
     let mut start_pos = 0;
@@ -129,28 +154,25 @@ pub fn strip_quoted_spans(text: &str) -> String {
         start_pos = opening_start + masked_len;
     }
 
-    let visible = INLINE_CODE.replace_all(&visible, |caps: &fancy_regex::Captures| {
-        mask(caps.get(0).map_or("", |m| m.as_str()))
-    });
+    let visible = match masked_replace_all(&INLINE_CODE, &visible) {
+        Some(masked) => masked,
+        None => return mask(text),
+    };
     let visible =
         BLOCK_QUOTE_LINE.replace_all(&visible, |caps: &regex::Captures<'_>| mask(&caps[0]));
     let visible = DOUBLE_QUOTED.replace_all(&visible, |caps: &regex::Captures<'_>| mask(&caps[0]));
-    let visible = SINGLE_QUOTED.replace_all(&visible, |caps: &fancy_regex::Captures<'_>| {
-        mask(caps.get(0).map_or("", |m| m.as_str()))
-    });
-    URL_SPAN
-        .replace_all(&visible, |caps: &fancy_regex::Captures<'_>| {
-            mask(caps.get(0).map_or("", |m| m.as_str()))
-        })
-        .into_owned()
+    let visible = match masked_replace_all(&SINGLE_QUOTED, &visible) {
+        Some(masked) => masked,
+        None => return mask(text),
+    };
+    match masked_replace_all(&URL_SPAN, &visible) {
+        Some(masked) => masked,
+        None => mask(text),
+    }
 }
 
 pub fn mask_negated_invocations(text: &str) -> String {
-    NEGATED_INVOCATION
-        .replace_all(text, |caps: &fancy_regex::Captures<'_>| {
-            mask(caps.get(0).map_or("", |m| m.as_str()))
-        })
-        .into_owned()
+    masked_replace_all(&NEGATED_INVOCATION, text).unwrap_or_else(|| mask(text))
 }
 
 pub fn strip_quoted_regions(text: &str) -> String {

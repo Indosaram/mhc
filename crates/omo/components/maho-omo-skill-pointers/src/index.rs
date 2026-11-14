@@ -4,7 +4,7 @@ use regex::Regex;
 use std::sync::{Arc, LazyLock};
 
 use crate::strip_quoted_regions::{
-    NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, strip_quoted_regions,
+    NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, prompt_regex, strip_quoted_regions,
 };
 
 pub const ULW_PLAN_CUSTOM_TYPE: &str = "omo-ulw-plan:skill-pointer";
@@ -71,12 +71,12 @@ const WORD_START: &str = r"(?<![A-Za-z0-9_])";
 const WORD_END: &str = r"(?![A-Za-z0-9_])";
 
 fn skill_name_pattern(body: &str) -> FancyRegex {
-    match FancyRegex::new(&format!(
-        r"(?i){NOT_AFTER_IDENTIFIER}{WORD_START}{body}{WORD_END}{NOT_INTO_IDENTIFIER}{NOT_BEFORE_PATH}"
-    )) {
-        Ok(regex) => regex,
-        Err(error) => panic!("invalid skill name regex: {error}"),
-    }
+    prompt_regex(
+        &format!(
+            r"(?i){NOT_AFTER_IDENTIFIER}{WORD_START}{body}{WORD_END}{NOT_INTO_IDENTIFIER}{NOT_BEFORE_PATH}"
+        ),
+        "skill name",
+    )
 }
 
 pub static TARGET_ULW_PLAN: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
@@ -123,7 +123,12 @@ pub fn get_targets() -> [&'static SkillPointerTarget; 3] {
 pub fn binding_forms(command: &str, keyword: &str) -> FancyRegex {
     let lead = r"^\s*(?:\[(?:Image|Pasted text)\b[^\]\n]*\]\s*)*";
     let question = r"(?![\s\S]*[?？])";
-    FancyRegex::new(&format!(r"(?i){lead}/(?:skill:)?{command}(?=\s|$){question}|{lead}(?:run|start|use|do|execute)\s+{keyword}(?=\s*(?:$|[,!:;\n\x00]|\.(?:\s|$)|(?:to|on|for|with|and|now|here)\b)){question}|{lead}{keyword}\s*(?:(?:으로|로|를|을)\s*)?(?:돌려줘|실행해줘|써줘|해줘|돌려|실행해)(?=\s*(?:[.!\n]|$)){question}")).expect("valid binding forms")
+    prompt_regex(
+        &format!(
+            r"(?i){lead}/(?:skill:)?{command}(?=\s|$){question}|{lead}(?:run|start|use|do|execute)\s+{keyword}(?=\s*(?:$|[,!:;\n\x00]|\.(?:\s|$)|(?:to|on|for|with|and|now|here)\b)){question}|{lead}{keyword}\s*(?:(?:으로|로|를|을)\s*)?(?:돌려줘|실행해줘|써줘|해줘|돌려|실행해)(?=\s*(?:[.!\n]|$)){question}"
+        ),
+        "binding forms",
+    )
 }
 
 pub fn binds(target: &SkillPointerTarget, visible: &str) -> bool {
