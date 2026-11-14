@@ -157,26 +157,31 @@ pub fn send_completion_notice(
             view,
             |content, delivery| {
                 use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
-                if let Err(error) = sender.send_message(
-                    CustomMessage {
-                        custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
-                        content: vec![ToolContent::text(content)],
-                        display: false,
-                        details: None,
-                    },
-                    SendMessageOptions {
-                        trigger_turn: true,
-                        deliver_as: Some(
-                            if delivery == crate::notify::NotificationDelivery::Steer {
-                                DeliverAs::Steer
-                            } else {
-                                DeliverAs::FollowUp
-                            },
-                        ),
-                    },
-                ) {
-                    maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
-                }
+                sender
+                    .send_message(
+                        CustomMessage {
+                            custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
+                                .to_owned(),
+                            content: vec![ToolContent::text(content)],
+                            display: false,
+                            details: None,
+                        },
+                        SendMessageOptions {
+                            trigger_turn: true,
+                            deliver_as: Some(
+                                if delivery == crate::notify::NotificationDelivery::Steer {
+                                    DeliverAs::Steer
+                                } else {
+                                    DeliverAs::FollowUp
+                                },
+                            ),
+                        },
+                    )
+                    .map_err(|error| {
+                        maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
+                        error.to_string()
+                    })?;
+                Ok(())
             },
         );
 }

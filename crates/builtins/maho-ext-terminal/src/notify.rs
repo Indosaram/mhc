@@ -70,7 +70,7 @@ impl TerminalNotifier {
         id: &str,
         delivery: Option<NotificationDelivery>,
         view: &TerminalExitView,
-        mut send: impl FnMut(String, NotificationDelivery),
+        mut send: impl FnMut(String, NotificationDelivery) -> Result<(), String>,
     ) {
         if self.notified.contains(id) {
             return;
@@ -78,8 +78,12 @@ impl TerminalNotifier {
         let Some(delivery) = delivery else {
             return;
         };
+        // Once-only means once delivered: a refused notice stays eligible, or the exit is announced
+        // nowhere and nothing replays it.
+        if send(build_notice(id, view), delivery).is_err() {
+            return;
+        }
         self.notified.insert(id.to_owned());
-        send(build_notice(id, view), delivery);
     }
 }
 #[cfg(test)]
@@ -127,19 +131,67 @@ mod tests {
     fn once_only_after_deliverable() {
         let mut notifier = TerminalNotifier::default();
         let mut sent = Vec::new();
-        notifier.notify_completion("bash_1", None, &view(), |text, _| sent.push(text));
+        notifier.notify_completion("bash_1", None, &view(), |text, _| {
+            sent.push(text);
+            Ok(())
+        });
         notifier.notify_completion(
             "bash_1",
             Some(NotificationDelivery::Steer),
             &view(),
-            |text, _| sent.push(text),
+            |text, _| {
+                sent.push(text);
+                Ok(())
+            },
         );
         notifier.notify_completion(
             "bash_1",
             Some(NotificationDelivery::Steer),
             &view(),
-            |text, _| sent.push(text),
+            |text, _| {
+                sent.push(text);
+                Ok(())
+            },
         );
         assert_eq!(sent.len(), 1);
+    }
+
+    /// The notice is burned by a *delivered* message only: a host that refuses it must leave the
+    /// exit announced nowhere (no replay path exists) unless the id stays eligible.
+    #[test]
+    fn a_refused_notice_stays_undelivered() {
+        let mut notifier = TerminalNotifier::default();
+        notifier.notify_completion(
+            "bash_2",
+            Some(NotificationDelivery::Steer),
+            &view(),
+            |_, _| Err("session is shutting down".to_owned()),
+        );
+        let mut sent = Vec::new();
+        notifier.notify_completion(
+            "bash_2",
+            Some(NotificationDelivery::Steer),
+            &view(),
+            |text, _| {
+                sent.push(text);
+                Ok(())
+            },
+        );
+        assert_eq!(
+            sent.len(),
+            1,
+            "the retry delivers the notice it could not send"
+        );
+        let mut again = Vec::new();
+        notifier.notify_completion(
+            "bash_2",
+            Some(NotificationDelivery::Steer),
+            &view(),
+            |text, _| {
+                again.push(text);
+                Ok(())
+            },
+        );
+        assert!(again.is_empty(), "a delivered notice is once-only");
     }
 }
