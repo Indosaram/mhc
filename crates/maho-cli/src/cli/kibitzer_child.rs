@@ -73,10 +73,7 @@ pub type SessionRecallDir = Arc<dyn Fn(&str) -> Option<std::path::PathBuf> + Sen
 /// senpi `sidecar-sweep.ts` `sidecarSessionDir`: `<recall>/sidecars/<base64url(parentSessionId)>`.
 /// Keeping child transcripts here (not the project session dir) keeps them out of `/resume`.
 pub fn kibitzer_session_dir(recall: &std::path::Path, session_id: &str) -> std::path::PathBuf {
-    use base64::Engine;
-    recall
-        .join("sidecars")
-        .join(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_id))
+    maho_omo_memory::sidecar_sweep::sidecar_dir(recall, session_id)
 }
 
 /// The CLI's concrete `KibitzerChildSpawner`.

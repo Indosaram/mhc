@@ -29,12 +29,15 @@ run_step() {
   echo "=== $label"
   local log
   log=$(mktemp)
-  if "$@" >"$log" 2>&1; then
+  # The status is captured FIRST: reading `$?` after an `if` whose branch did not run yields 0, which
+  # would report a failed suite as `verify-local: OK`.
+  local status=0
+  "$@" >"$log" 2>&1 || status=$?
+  if [[ $status -eq 0 ]]; then
     tail -3 "$log"
     rm -f "$log"
     return 0
   fi
-  local status=$?
   echo "FAILED: $label" >&2
   tail -40 "$log" >&2
   rm -f "$log"

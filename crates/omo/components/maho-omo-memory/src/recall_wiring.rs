@@ -44,6 +44,7 @@ use crate::recall_transcript_mentions::{
     BranchMentionIndex, TranscriptMentionIndex, TranscriptMentionInput,
     create_transcript_mention_index,
 };
+use crate::sidecar_owner::SidecarOwner;
 use crate::worker::completion_renderers::ResolveEntryTheme;
 
 const CHILD_SENTINELS: [&str; 2] = ["SENPI_MEMORY_REFLECTION", "SENPI_MEMORY_FACTS"];
@@ -108,6 +109,8 @@ pub struct MemoryRecallWiring {
     /// Per session: the identity and the recall settings resolved at its latest
     /// `before_agent_start`, read by the tool hooks so a config edit takes effect next turn.
     recall_settings: Mutex<BTreeMap<String, (String, Value)>>,
+    /// The process-wide claim on sidecar directories (upstream `Rte`): ownership plus the sweep.
+    sidecar_owner: Arc<SidecarOwner>,
 }
 
 /// One recall corpus per memory repository, shared across every session of this host (pin
@@ -177,6 +180,7 @@ impl MemoryRecallWiring {
             }),
             warn: options.warn.clone(),
         });
+        let sidecar_owner = SidecarOwner::new();
         Arc::new(Self {
             project_scope,
             options,
@@ -186,6 +190,7 @@ impl MemoryRecallWiring {
             mentions: Mutex::new(create_transcript_mention_index()),
             tool_args: Mutex::new(ToolArgWindow::new()),
             recall_settings: Mutex::new(BTreeMap::new()),
+            sidecar_owner,
         })
     }
 
@@ -357,17 +362,28 @@ impl MemoryRecallWiring {
     }
 
     /// The lazily-created resident sidecar for a session.
+    ///
+    /// Gated on `memory.recall.enabled` exactly as upstream's getter is, so ownership and the sweep
+    /// inherit the condition instead of needing a second gate: with recall off nothing is built, and
+    /// nothing accumulates because the child directory is only created from a wake.
     fn sidecar_for(
         &self,
         session_id: &str,
         context: &MemoryIdentityContext,
-    ) -> Arc<KibitzerSidecar> {
+    ) -> Option<Arc<KibitzerSidecar>> {
+        if let Some(sidecar) = self.existing_sidecar(session_id) {
+            return Some(sidecar);
+        }
+        if self.recall_disabled(&context.identity) {
+            return None;
+        }
         let mut sidecars = self
             .sidecars
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Re-checked under the lock: another turn may have built it between the peek and here.
         if let Some(sidecar) = sidecars.get(session_id) {
-            return Arc::clone(sidecar);
+            return Some(Arc::clone(sidecar));
         }
         let now = Arc::clone(&self.options.now_ms);
         let wake_slot = Arc::new(
@@ -408,7 +424,28 @@ impl MemoryRecallWiring {
             warn: Some(Arc::clone(&self.options.warn)),
         });
         sidecars.insert(session_id.to_string(), Arc::clone(&sidecar));
-        sidecar
+        // The sidecar map lock is released before ownership: `own` takes its own locks and schedules
+        // blocking work, and holding one lock across the other is how lock-order defects start.
+        drop(sidecars);
+        self.sidecar_owner.own(
+            &crate::sidecar_owner::OwnerDeps {
+                offload: self.options.offload_blocking.as_ref(),
+                warn: &self.options.warn,
+                now_ms: &self.options.now_ms,
+            },
+            session_id,
+            &context.identity_paths.recall,
+            &context.identity_paths.locks,
+        );
+        Some(sidecar)
+    }
+
+    /// `memory.recall.enabled == false`. Resolved on every creation, matching upstream's getter calling
+    /// `loadConfig` each time it has no sidecar yet; deliberately NOT through `recall_settings`, whose
+    /// cache belongs to the turn's tool hooks and must not be written by a getter.
+    fn recall_disabled(&self, identity: &str) -> bool {
+        let settings = self.resolve_recall_settings(identity);
+        settings.get("enabled").and_then(Value::as_bool) == Some(false)
     }
 
     /// The EXISTING resident sidecar for a session, if any. NEVER creates one: a tool hook that fires
@@ -471,7 +508,11 @@ impl KibitzerHookSink for MemoryRecallWiring {
         let Some(context) = (self.options.resolve_context)(session_id) else {
             return;
         };
-        let sidecar = self.sidecar_for(session_id, &context);
+        let Some(sidecar) = self.sidecar_for(session_id, &context) else {
+            // Recall is disabled for this identity: the hooks stay inert this turn, matching upstream's
+            // getter returning undefined before anything is built.
+            return;
+        };
         // The branch snapshot is captured BEFORE the prompt that follows it; the cursor is the TRUE
         // branch length (not the bounded capture's length), so the events stream shares ONE cursor
         // basis with the candidate collector.
@@ -637,6 +678,16 @@ impl KibitzerHookSink for MemoryRecallWiring {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
+        // Ownership ends with the session, and the sweep that follows it is what may finally reclaim
+        // the directory: the owner lock is released first, then the sweep runs.
+        self.sidecar_owner.release_and_sweep(
+            &crate::sidecar_owner::OwnerDeps {
+                offload: self.options.offload_blocking.as_ref(),
+                warn: &self.options.warn,
+                now_ms: &self.options.now_ms,
+            },
+            session_id,
+        );
         // The async cleanup runs on the retained host executor and OWNS the delivery retraction: it
         // awaits `shutdown()` THEN retracts delivery, matching upstream's `await shutdown` before
         // `delivery.onSessionShutdown`. Idempotent: a second shutdown is a no-op.
