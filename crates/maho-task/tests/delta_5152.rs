@@ -777,6 +777,19 @@ async fn d8_real_child_is_signalled() {
         .spawn()
         .expect("sh");
     let pid = child.id().expect("pid");
+    // Between `spawn` and `exec` the child is still a copy of this test process, so
+    // `/proc/<pid>/cmdline` reads empty or as the parent's and carries no `--session-id`.
+    // `is_task_child` decides by reading that file, so cancel must not be asked before the exec
+    // lands: on a loaded machine the pre-exec read reports `signalled: false`.
+    tokio::time::timeout(LIMIT, async {
+        while !std::fs::read(format!("/proc/{pid}/cmdline"))
+            .is_ok_and(|raw| String::from_utf8_lossy(&raw).contains("--session-id"))
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the child exec'd into its command line");
     fx.manager
         .state()
         .save(&foreign_record("Real", "child-session", pid))

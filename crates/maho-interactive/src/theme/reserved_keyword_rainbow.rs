@@ -143,14 +143,23 @@ pub fn get_reserved_keyword_highlight(
         ColorMode::Truecolor => TerminalColorMode::Truecolor,
         ColorMode::Color256 => TerminalColorMode::Color256,
     };
-    let highlight = std::rc::Rc::new(create_reserved_keyword_highlight(
-        ReservedKeywordHighlightSource {
-            appearance: Box::new(move || appearance),
-            color_mode: Box::new(move || mode),
-            no_color: None,
-        },
-    )?);
-    Some(maho_tui::components::editor::EditorKeywordHighlight {
+    let highlight = create_reserved_keyword_highlight(ReservedKeywordHighlightSource {
+        appearance: Box::new(move || appearance),
+        color_mode: Box::new(move || mode),
+        no_color: None,
+    })?;
+    Some(editor_highlight(highlight))
+}
+
+/// Wraps an already-created styler in the editor's highlight seam. `get_reserved_keyword_highlight`
+/// reads `NO_COLOR` from the process environment, so a caller that must not depend on it - a test
+/// asserting the rainbow paints - builds its [`ReservedKeywordHighlight`] with an explicit source
+/// and passes it here.
+pub fn editor_highlight(
+    highlight: ReservedKeywordHighlight,
+) -> maho_tui::components::editor::EditorKeywordHighlight {
+    let highlight = std::rc::Rc::new(highlight);
+    maho_tui::components::editor::EditorKeywordHighlight {
         find: std::rc::Rc::new(|text: &str| {
             maho_core::reserved_keywords::find_reserved_keyword_runs(text)
                 .into_iter()
@@ -161,7 +170,7 @@ pub fn get_reserved_keyword_highlight(
                 .collect()
         }),
         style: std::rc::Rc::new(move |text, index, length| highlight.style(text, index, length)),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +232,21 @@ mod tests {
         assert!(
             !code.is_empty() && code.bytes().all(|b| b.is_ascii_digit()),
             "{styled:?}"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_built_highlight_paints_without_the_process_environment() {
+        // The editor's own factory reads `NO_COLOR`; a test asserting the rainbow has to pin it,
+        // so `editor_highlight` exists to accept a styler built from an explicit source.
+        let styler = highlight(ThemeAppearance::Dark, TerminalColorMode::Truecolor, None)
+            .expect("highlight");
+        let editor = editor_highlight(styler);
+        let runs = (editor.find)("ulw go");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            (editor.style)("ulw", 0, 3),
+            "\x1b[38;2;248;113;113mulw\x1b[39m"
         );
     }
 

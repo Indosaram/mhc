@@ -78,6 +78,43 @@ are the only bounded waits there, one per external-process site, each with a 10 
 await. Every other team wait awaits its exact event: a notifier signal (`:153`) or the observer
 hook's cancellation record (`:144`).
 
+## Reserved-keyword painting and the terminal environment
+
+`ulw`/`ultrawork` and the mass aliases are painted in the editor by a per-character rainbow
+(`crates/maho-interactive/src/theme/reserved_keyword_rainbow.rs`), matching senpi's
+`reserved-keyword-rainbow.ts`. Two rules govern it:
+
+1. **`NO_COLOR` disables the painting.** `get_reserved_keyword_highlight` passes
+   `no_color: None`, so the styler reads the variable from the process environment
+   (`crates/maho-interactive/src/theme/reserved_keyword_rainbow.rs:126`) exactly as senpi does.
+   A test that asserts painting must therefore pin the variable instead of inheriting the
+   caller's shell: `editor_highlight`
+   (`crates/maho-interactive/src/theme/reserved_keyword_rainbow.rs:158`) accepts a styler built
+   from an explicit source, and
+   `editor_paints_reserved_keywords_but_not_quoted_negated_or_code_mentions`
+   (`crates/maho-interactive/tests/runtime35_render.rs:200`) uses it with `no_color: Some(None)`.
+2. **The footer's activity rows never fold.** A status that renders a spinner - a task group with
+   lines running, or a watching monitor - is partitioned out before the fold and given its own
+   row, up to `MAX_STATUS_ROWS` (`crates/maho-interactive/src/components/footer.rs:114`). The
+   static labels (`waiting:`, `lsp`, `eval-cells`) are what the `+N` marker removes. Only the
+   merged `omo-task` text animates: `interactive_ui_host` folds the `omo-task`/`omo-dag` counts
+   into it and drops the keys it folded
+   (`crates/maho-interactive/src/interactive_ui_host.rs:32`), so a running DAG shows up there.
+
+## Signalling an orphaned task child
+
+`is_task_child` decides whether a pid is still the task's own child by reading
+`/proc/<pid>/cmdline` and looking for `--session-id <session>`
+(`crates/maho-task/src/record.rs:343`). Between `fork` and `exec` that file is empty or still
+holds the parent's command line, so a caller that inspects a freshly spawned child reads no
+session id and concludes the pid was reused. Production records `pid_started_at_ms` from the
+spawn callback and reaches the check only after the runner has exec'd, but a test that spawns a
+child and immediately cancels is racing that window: on a loaded machine the cancel reports
+`signalled: false`. `d8_real_child_is_signalled`
+(`crates/maho-task/tests/delta_5152.rs:768`) therefore waits - bounded by `LIMIT` - until the
+child's command line carries the session id before it cancels. Measured before the fix: 1 failure
+in 25 single-test runs, 284 of 300 spawns read a pre-exec command line.
+
 ## Other checks
 
 - `bun tools/check-omo-sites.mjs` verifies the `.omo` / `.maho` home-directory literals against

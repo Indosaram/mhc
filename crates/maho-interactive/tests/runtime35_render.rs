@@ -199,10 +199,25 @@ fn hidden_diagnostics_are_redacted_and_private() {
 #[test]
 fn editor_paints_reserved_keywords_but_not_quoted_negated_or_code_mentions() {
     let theme = Theme::builtin("dark", ColorMode::Truecolor).expect("theme");
+    // `editor_theme` reads `NO_COLOR` from the process environment so a real session can turn the
+    // rainbow off; pin it here so the caller's shell cannot decide what this test asserts.
+    let highlight =
+        maho_interactive::theme::reserved_keyword_rainbow::create_reserved_keyword_highlight(
+            maho_interactive::theme::reserved_keyword_rainbow::ReservedKeywordHighlightSource {
+                appearance: Box::new(|| maho_interactive::theme::theme_json::ThemeAppearance::Dark),
+                color_mode: Box::new(|| maho_tui::colors::TerminalColorMode::Truecolor),
+                no_color: Some(None),
+            },
+        )
+        .expect("highlight");
+    let highlight = maho_interactive::theme::reserved_keyword_rainbow::editor_highlight(highlight);
     let painted = |text: &str| {
         let mut editor = CustomEditor::new(
             std::rc::Rc::new(EditorHost),
-            editor_theme(&theme),
+            maho_tui::components::editor::EditorTheme {
+                keyword_highlight: Some(highlight.clone()),
+                ..editor_theme(&theme)
+            },
             keybindings(),
             CustomEditorOptions::default(),
         );
