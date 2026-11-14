@@ -110,28 +110,50 @@ impl DagWake {
         self.route(run.parent_session_id, injection, state);
     }
     fn route(&mut self, parent_session: &str, injection: DagWakeInjection, state: ParentState) {
-        match state {
+        // A DAG wake has no retry owner once it is handed to the coordinator, so a refusal must
+        // not drop it: `enqueue -> bool` is a contract, and `false` means the injection was never
+        // queued. Buffer it exactly like a transition-time wake so a later session start replays
+        // it instead of leaving the run silent.
+        let queued = match state {
             ParentState::Compacting
             | ParentState::SessionSwitching
             | ParentState::SessionShutdown => {
-                let entries = self.buffered.entry(parent_session.into()).or_default();
-                if let Some(previous) = entries
-                    .iter_mut()
-                    .find(|previous| previous.key == injection.key)
-                {
-                    *previous = injection;
-                } else {
-                    entries.push(injection);
-                }
+                self.buffer(parent_session, injection);
+                return;
             }
             ParentState::Idle => {
-                self.coordinator.enqueue(injection);
+                let queued = self.coordinator.enqueue(injection.clone());
+                // The flush stays unconditional: unrelated injections already in the queue must
+                // not be delayed just because this wake was refused.
                 self.coordinator.flush_soon();
+                queued
             }
             ParentState::Streaming => {
-                self.coordinator.enqueue(injection);
+                let queued = self.coordinator.enqueue(injection.clone());
                 self.coordinator.schedule_flush();
+                queued
             }
+        };
+        if !queued {
+            // A refused enqueue means the queue never took the wake, so keep the injection
+            // buffered for the next session start instead of losing the run.
+            maho_ext_api::diagnostic(&format!(
+                "DAG wake refused by the idle coordinator; buffering it: runId={} session={parent_session}",
+                run_id_of(&injection)
+            ));
+            self.buffer(parent_session, injection);
+        }
+    }
+    /// Key-collapsing insert shared by every buffering path: one pending wake per run.
+    fn buffer(&mut self, parent_session: &str, injection: DagWakeInjection) {
+        let entries = self.buffered.entry(parent_session.into()).or_default();
+        if let Some(previous) = entries
+            .iter_mut()
+            .find(|previous| previous.key == injection.key)
+        {
+            *previous = injection;
+        } else {
+            entries.push(injection);
         }
     }
     pub fn on_run_event(
@@ -198,11 +220,19 @@ impl DagWake {
     }
     pub fn on_session_start(&mut self, session_id: Option<&str>) {
         let Some(session) = session_id else { return };
-        let Some(entries) = self.buffered.remove(session) else {
-            return;
+        // Drain in place instead of removing the entry up front: a coordinator that still refuses
+        // must keep the wake buffered, or a run would be lost by a session that started before the
+        // queue was live again. Only the entries the queue accepted leave the buffer.
+        let coordinator = Arc::clone(&self.coordinator);
+        let emptied = match self.buffered.get_mut(session) {
+            Some(entries) => {
+                entries.retain(|injection| !coordinator.enqueue(injection.clone()));
+                entries.is_empty()
+            }
+            None => return,
         };
-        for injection in entries {
-            self.coordinator.enqueue(injection);
+        if emptied {
+            self.buffered.remove(session);
         }
         self.coordinator.flush_soon();
     }
@@ -211,7 +241,18 @@ impl DagWake {
     }
 }
 
+/// The run a wake describes, for diagnostics: the run reference rides in `details`.
+fn run_id_of(injection: &DagWakeInjection) -> &str {
+    injection
+        .details
+        .as_ref()
+        .and_then(|details| details.get("runId"))
+        .and_then(Value::as_str)
+        .unwrap_or(&injection.key)
+}
+
 fn make_injection(run_id: &str, content: String, details: Value) -> IdleInjection {
+    let failed_run = run_id.to_owned();
     IdleInjection {
         key: format!("dag-run:{run_id}"),
         source: IdleInjectionSource::DagRun,
@@ -221,7 +262,13 @@ fn make_injection(run_id: &str, content: String, details: Value) -> IdleInjectio
         details: Some(details),
         passive: None,
         on_flushed: None,
-        on_delivery_failed: None,
+        // A wake has no retry owner after enqueue, so a delivery that fails later (session
+        // shutdown retiring the queue) is recorded here instead of vanishing silently.
+        on_delivery_failed: Some(Arc::new(move |error| {
+            maho_ext_api::diagnostic(&format!(
+                "DAG wake delivery failed: runId={failed_run} error={error}"
+            ));
+        })),
     }
 }
 

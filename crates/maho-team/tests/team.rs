@@ -3,7 +3,8 @@ use maho_lsp::hooks::HookChain;
 use maho_task::runner::BoxFuture;
 use maho_task::{
     CancelToken, ModelChoice, Notifier, RunOutcome, RunSpec, SpawnRequest, StateDir, TaskManager,
-    TaskManagerOptions, TaskObserver, TaskRunner, TaskSettings, TaskStatus, bundled_agents,
+    TaskManagerOptions, TaskObserver, TaskRecord, TaskRunner, TaskSettings, TaskStatus,
+    bundled_agents,
 };
 use maho_team::{MemberSpec, Team, TeamLimits, TeamStatus};
 #[cfg(unix)]
@@ -107,32 +108,67 @@ fn member(dir: &Path, name: &str, task: &str) -> MemberSpec {
 
 type Inbox = Arc<Mutex<Vec<String>>>;
 
-fn notifier() -> (Notifier, Inbox) {
+/// Fires once per accepted notice, so a test awaits the notice itself instead of polling the inbox.
+/// The sender lives beside the inbox and is dropped with the test's scope.
+#[derive(Clone, Default)]
+struct NoticeSignal(Arc<tokio::sync::Notify>);
+
+/// A notifier that also signals each accepted notice. The signal fires only AFTER the push, so a
+/// woken test always observes the message it was waiting for.
+fn signalling_notifier() -> (Notifier, Inbox, NoticeSignal) {
     let inbox: Inbox = Arc::default();
+    let signal = NoticeSignal::default();
     let sink = Arc::clone(&inbox);
+    let wake = signal.clone();
     let notifier: Notifier = Arc::new(move |kind: &str, text: &str, _details| {
         assert_eq!(kind, maho_team::UPDATE_MESSAGE_TYPE);
         lock(&sink).push(text.to_owned());
+        wake.0.notify_waiters();
         Ok(())
     });
-    (notifier, inbox)
+    (notifier, inbox, signal)
 }
 
-async fn eventually(what: &str, check: impl Fn() -> bool) {
-    for _ in 0..100 {
+/// Fires when the manager records a task as cancelled. The observer hook runs after the manager has
+/// saved the status, so a woken test reads the committed value rather than racing the write.
+#[derive(Clone, Default)]
+struct CancelledSignal(Arc<tokio::sync::Notify>);
+
+impl CancelledSignal {
+    async fn wait(&self) {
+        let waited = tokio::time::timeout(Duration::from_secs(5), self.0.notified()).await;
+        assert!(waited.is_ok(), "timed out waiting for a cancellation");
+    }
+}
+
+impl TaskObserver for CancelledSignal {
+    fn finished_in(&self, record: &TaskRecord, _state: &StateDir) {
+        if record.status == TaskStatus::Cancelled {
+            self.0.notify_waiters();
+        }
+    }
+}
+
+/// Awaits `check` against the inbox, waking on each accepted notice instead of polling.
+async fn await_notice(signal: &NoticeSignal, what: &str, check: impl Fn() -> bool) {
+    for _ in 0..64 {
         if check() {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let waited = tokio::time::timeout(Duration::from_secs(5), signal.0.notified()).await;
+        if waited.is_err() {
+            assert!(check(), "timed out waiting for {what}");
+            return;
+        }
     }
-    panic!("timed out waiting for {what}");
+    assert!(check(), "gave up waiting for {what}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parallel_limit_updates_and_settled_notice() {
     let dir = tempfile::tempdir().expect("tmp");
     let (manager, runner) = manager(dir.path(), Vec::new());
-    let (notifier, inbox) = notifier();
+    let (notifier, inbox, signal) = signalling_notifier();
     let limits = TeamLimits {
         max_parallel: 2,
         ..TeamLimits::default()
@@ -159,7 +195,7 @@ async fn parallel_limit_updates_and_settled_notice() {
     let record = manager.get("crew-a").expect("member task");
     assert_eq!(record.group.as_deref(), Some("crew"));
     assert!(record.quiet && record.background);
-    eventually("settled notice", || {
+    await_notice(&signal, "settled notice", || {
         lock(&inbox)
             .iter()
             .any(|t| t.contains("all 3 members finished"))
@@ -203,7 +239,7 @@ async fn parallel_limit_updates_and_settled_notice() {
 async fn wait_collects_without_notices_and_messages_resume() {
     let dir = tempfile::tempdir().expect("tmp");
     let (manager, runner) = manager(dir.path(), Vec::new());
-    let (notifier, inbox) = notifier();
+    let (notifier, inbox, signal) = signalling_notifier();
     let members = vec![
         member(dir.path(), "a", "slow a"),
         member(dir.path(), "b", "quick b"),
@@ -230,12 +266,6 @@ async fn wait_collects_without_notices_and_messages_resume() {
         "queued message ran as a follow-up: {text}"
     );
     assert_eq!(manager.get("pair-a").expect("a").runs, 2);
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    assert!(
-        lock(&inbox).is_empty(),
-        "a full wait suppresses updates: {:?}",
-        lock(&inbox)
-    );
 
     // Idle member: delivered at once, same session, one update for the new run.
     let session = manager.get("pair-b").expect("b").session_id;
@@ -244,12 +274,20 @@ async fn wait_collects_without_notices_and_messages_resume() {
         lines[0].contains("delivered (task pair-b, run 2 started)"),
         "{lines:?}"
     );
-    eventually("update for b's second run", || {
+    await_notice(&signal, "update for b's second run", || {
         lock(&inbox)
             .iter()
             .any(|t| t.contains("b completed (task pair-b, run 2)"))
     })
     .await;
+    // Ordering, not elapsed time, proves the suppressed notice never arrived: the driver emits
+    // notices in pass order, so the first update after the collected wait is this run's. A
+    // suppressed notice for the collected run would occupy index 0.
+    let first = lock(&inbox)[0].clone();
+    assert!(
+        first.contains("b completed (task pair-b, run 2)"),
+        "no notice from the collected run precedes it: {first:?}"
+    );
     let record = manager.get("pair-b").expect("b");
     assert_eq!(record.session_id, session);
     assert_eq!(manager.state().read_output("pair-b"), "echo:one more thing");
@@ -266,7 +304,9 @@ async fn wait_collects_without_notices_and_messages_resume() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn timeout_stop_and_limits() {
     let dir = tempfile::tempdir().expect("tmp");
-    let (manager, _runner) = manager(dir.path(), Vec::new());
+    let cancelled = CancelledSignal::default();
+    let watcher = Arc::new(cancelled.clone());
+    let (manager, _runner) = manager(dir.path(), vec![watcher]);
     let members = vec![
         member(dir.path(), "a", "block a"),
         member(dir.path(), "b", "block b"),
@@ -309,12 +349,11 @@ async fn timeout_stop_and_limits() {
     assert!(lines[0].starts_with("a: Cancelling"), "{lines:?}");
     assert_eq!(lines[1], "b: not started");
     assert_eq!(team.file().status, TeamStatus::Stopped);
-    eventually("a cancelled", || {
-        manager
-            .get("hold-a")
-            .is_some_and(|r| r.status == TaskStatus::Cancelled)
-    })
-    .await;
+    cancelled.wait().await;
+    assert_eq!(
+        manager.get("hold-a").expect("a").status,
+        TaskStatus::Cancelled
+    );
     assert!(team.message("a", "hello").unwrap_err().contains("stopped"));
     assert!(manager.get("hold-b").is_none());
 
@@ -353,7 +392,7 @@ async fn timeout_stop_and_limits() {
 async fn wall_clock_limit_stops_the_team() {
     let dir = tempfile::tempdir().expect("tmp");
     let (manager, _runner) = manager(dir.path(), Vec::new());
-    let (notifier, inbox) = notifier();
+    let (notifier, inbox, signal) = signalling_notifier();
     let limits = TeamLimits {
         max_wall_clock: Duration::from_millis(200),
         ..TeamLimits::default()
@@ -367,11 +406,13 @@ async fn wall_clock_limit_stops_the_team() {
         Some(notifier),
     )
     .expect("create");
-    eventually("timed out", || team.file().status == TeamStatus::TimedOut).await;
-    eventually("notice", || {
+    // The notice is emitted by the same driver pass that sets `TimedOut`, so awaiting the notice
+    // covers the status transition too.
+    await_notice(&signal, "wall-clock notice", || {
         lock(&inbox).iter().any(|t| t.contains("wall-clock limit"))
     })
     .await;
+    assert_eq!(team.file().status, TeamStatus::TimedOut);
 }
 
 /// A refused update used to be dropped: the driver printed nothing, the lead never saw the
@@ -384,6 +425,8 @@ async fn a_refused_update_is_retried_until_delivered() {
     let sink = Arc::clone(&inbox);
     let refusals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let budget = Arc::clone(&refusals);
+    let signal = NoticeSignal::default();
+    let wake = signal.clone();
     let notifier: Notifier = Arc::new(move |kind: &str, text: &str, _details| {
         assert_eq!(kind, maho_team::UPDATE_MESSAGE_TYPE);
         // Refuse the first two attempts of every message, then accept.
@@ -391,6 +434,7 @@ async fn a_refused_update_is_retried_until_delivered() {
             return Err("session is switching".to_owned());
         }
         lock(&sink).push(text.to_owned());
+        wake.0.notify_waiters();
         Ok(())
     });
     let limits = TeamLimits {
@@ -406,7 +450,7 @@ async fn a_refused_update_is_retried_until_delivered() {
         Some(notifier),
     )
     .expect("create");
-    eventually("retried notice", || {
+    await_notice(&signal, "retried notice", || {
         lock(&inbox).iter().any(|t| t.contains("wall-clock limit"))
     })
     .await;
@@ -462,12 +506,7 @@ async fn panes_with_fake_tmux() {
     team.wait(None, Duration::from_secs(5), &CancelToken::default())
         .await
         .expect("wait");
-    eventually("pane closed", || {
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .contains("kill-pane -t %7")
-    })
-    .await;
+    await_log_line(&log, "kill-pane -t %7").await;
     let calls = std::fs::read_to_string(&log).expect("calls");
     let first = calls.lines().next().expect("split");
     assert!(
@@ -487,6 +526,41 @@ async fn panes_with_fake_tmux() {
         calls.contains("select-pane -t %7 -T team view · task view-a"),
         "{calls}"
     );
+}
+
+/// Awaits a line in a file another process writes. The writer emits no in-process signal, so this
+/// is the one bounded external wait the plan permits; it wakes on file growth instead of a fixed
+/// cadence, and the timeout bounds a writer that never produces the line.
+async fn await_log_line(path: &Path, needle: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.contains(needle) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {needle:?} in {}",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Awaits a condition on `tmux` output. tmux is an external server with no in-process signal, so
+/// this polls it; the bounded timeout keeps a stuck server from hanging the suite.
+async fn await_tmux(tmux: &impl Fn(&[&str]) -> String, args: &[&str], done: impl Fn(&str) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if done(&tmux(args)) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for tmux {args:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[cfg(unix)]
@@ -557,16 +631,13 @@ async fn panes_with_real_tmux() {
         None,
     )
     .expect("create");
-    eventually("two member panes", || {
-        tmux(&["list-panes", "-a", "-F", "#{pane_id}"])
-            .lines()
-            .count()
-            == 3
+    await_tmux(&tmux, &["list-panes", "-a", "-F", "#{pane_id}"], |out| {
+        out.lines().count() == 3
     })
     .await;
     let pane = observer.pane_of("live-a").expect("pane of a").id;
-    eventually("output in pane", || {
-        tmux(&["capture-pane", "-p", "-t", &pane]).contains("echo:slow visible a")
+    await_tmux(&tmux, &["capture-pane", "-p", "-t", &pane], |out| {
+        out.contains("echo:slow visible a")
     })
     .await;
     let title = tmux(&["display-message", "-p", "-t", &pane, "#{pane_title}"]);
@@ -574,11 +645,8 @@ async fn panes_with_real_tmux() {
     team.wait(None, Duration::from_secs(10), &CancelToken::default())
         .await
         .expect("wait");
-    eventually("panes closed", || {
-        tmux(&["list-panes", "-a", "-F", "#{pane_id}"])
-            .lines()
-            .count()
-            == 1
+    await_tmux(&tmux, &["list-panes", "-a", "-F", "#{pane_id}"], |out| {
+        out.lines().count() == 1
     })
     .await;
     tmux(&["kill-server"]);

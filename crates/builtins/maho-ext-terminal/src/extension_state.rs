@@ -158,7 +158,7 @@ pub fn send_completion_notice(
             |content, delivery| {
                 use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
                 sender
-                    .send_message(
+                    .send_message_with_receipt(
                         CustomMessage {
                             custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
                                 .to_owned(),
@@ -180,8 +180,7 @@ pub fn send_completion_notice(
                     .map_err(|error| {
                         maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
                         error.to_string()
-                    })?;
-                Ok(())
+                    })
             },
         );
 }

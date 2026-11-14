@@ -27,6 +27,7 @@ pub mod monitor_status;
 pub mod monitor_status_ticker;
 pub mod monitor_wake_fit;
 pub mod monitor_wake_pacing;
+mod monitor_wake_undo;
 pub mod notify;
 pub mod orphan_reaper;
 pub mod output_format;

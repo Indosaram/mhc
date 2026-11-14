@@ -51,6 +51,18 @@ impl WakePacer {
         }
     }
 
+    /// Gives back the token one `spend` took: the arithmetic inverse of the spend, so it commutes
+    /// with the refills every `ready_at` performs in between (a bucket snapshot would not: refill
+    /// rewrites `tokens` and `at` on every read). Forget-aware: an id with no bucket (forgotten by
+    /// a summary wake, or cleared) or no valid rate has nothing to return, so this is a no-op.
+    pub(crate) fn return_token(&mut self, id: &str, rate: Option<f64>) {
+        if let Some(rate) = valid_rate(rate)
+            && let Some(bucket) = self.buckets.get_mut(id)
+        {
+            bucket.tokens = rate.min(bucket.tokens + 1.0);
+        }
+    }
+
     pub fn forget(&mut self, id: &str) {
         self.buckets.remove(id);
     }

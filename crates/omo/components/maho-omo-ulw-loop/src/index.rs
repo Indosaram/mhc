@@ -545,7 +545,12 @@ impl Extension for UlwLoopComponent {
                         // A retired coordinator refuses the injection and the caller still owns it:
                         // dropping that answer would end the loop's turn with no continuation queued
                         // and nothing recorded. Fall back to the direct send below and say so.
-                        let accepted = coordinator.enqueue(IdleInjection {
+                        // An ACCEPTED continuation that fails later (the coordinator retires while it
+                        // is still queued) is recorded through `on_delivery_failed`: a log line is
+                        // unobservable here because every ulw-loop test builds this component with
+                        // `logger: None`, while `maho_ext_api::diagnostic` writes to stderr always.
+                        let failed_session = ctx.session_manager.session_id().to_owned();
+                        let injection = IdleInjection {
                             key: ULW_CONTINUATION_INJECTION_KEY.into(),
                             source: IdleInjectionSource::UlwContinuation,
                             custom_type: Some(ULW_CONTINUATION_CUSTOM_TYPE.into()),
@@ -554,8 +559,13 @@ impl Extension for UlwLoopComponent {
                             details: None,
                             passive: Some(false),
                             on_flushed: None,
-                            on_delivery_failed: None,
-                        });
+                            on_delivery_failed: Some(Arc::new(move |error| {
+                                diagnostic(&format!(
+                                    "omo-senpi ulw-loop continuation lost after enqueue: session={failed_session} error={error}"
+                                ));
+                            })),
+                        };
+                        let accepted = coordinator.enqueue(injection);
                         if accepted {
                             coordinator.schedule_flush();
                             return Ok(EventResult::None);

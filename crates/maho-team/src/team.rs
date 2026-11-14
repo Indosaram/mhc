@@ -124,6 +124,77 @@ impl MemberState {
     }
 }
 
+/// A member's identity and current run, for comparing a held notice with live state.
+#[derive(Clone, Debug)]
+struct MemberRun {
+    name: String,
+    runs: u32,
+}
+
+/// The run state a team update describes, captured by the driver pass that produced it.
+///
+/// A refused update is handed to the notifier again on a later pass; by then the run it
+/// announced can already have been collected by `team_wait` or superseded by a newer run of a
+/// member. Re-sending it then would tell the lead to collect results it already has, so the
+/// retry is dropped against this snapshot instead.
+///
+/// `runs` is empty for an update that claims no run (a delivery or start failure); see
+/// `TeamNoticeGeneration::stale_reason` for why such an update is never dropped.
+#[derive(Clone, Debug)]
+struct TeamNoticeGeneration {
+    /// `task id -> member run` as observed when the update was produced.
+    runs: HashMap<String, MemberRun>,
+    /// Whether the team's results were already collected when the update was produced.
+    collected: bool,
+}
+
+impl TeamNoticeGeneration {
+    /// Why a retried update must not be sent again, or `None` to send it.
+    ///
+    /// `collected` is the team's current flag and `current` the current run of every started member
+    /// by task id, so the comparison is against live state rather than the snapshot.
+    ///
+    /// Only a notice that describes a run can go stale, so an update with no run in it (a delivery
+    /// or start failure, the wall-clock stop) is never dropped: those report a loss or a stop, and
+    /// suppressing one because results were collected would hide it.
+    ///
+    /// `collected` coming true is the transition that matters: a collection that happened AFTER
+    /// this update was produced makes it a report of work the lead already holds. A notice produced
+    /// after a collection is not stale, because `team_wait` records the runs it returned before it
+    /// sets the flag, so such a notice describes a run the lead has not seen (a follow-up run, or a
+    /// member outside the wait).
+    fn stale_reason(
+        &self,
+        collected: bool,
+        current: &HashMap<String, MemberRun>,
+    ) -> Option<String> {
+        if self.runs.is_empty() {
+            return None;
+        }
+        if collected && !self.collected {
+            return Some("its run was collected by team_wait".to_owned());
+        }
+        for (id, snapshotted) in &self.runs {
+            let Some(member) = current.get(id) else {
+                continue;
+            };
+            if member.runs > snapshotted.runs {
+                return Some(format!(
+                    "member {} moved on from run {} to run {}",
+                    member.name, snapshotted.runs, member.runs
+                ));
+            }
+        }
+        None
+    }
+}
+
+/// One update the driver hands to the notifier: the text, its message details, and the run state
+/// it describes (which decides whether a retry of it is still news).
+type TeamUpdate = (String, Value, TeamNoticeGeneration);
+/// An update held for another delivery attempt: the update plus the attempts made so far.
+type HeldUpdate = (String, Value, u32, TeamNoticeGeneration);
+
 struct Inner {
     file: TeamFile,
     pending: VecDeque<(String, SpawnRequest)>,
@@ -398,6 +469,41 @@ impl Team {
         member.task_id.as_ref().and_then(|id| self.manager.get(id))
     }
 
+    /// The current run of every started member, by task id.
+    fn current_runs(&self, inner: &Inner) -> HashMap<String, MemberRun> {
+        inner
+            .file
+            .members
+            .iter()
+            .filter_map(|member| {
+                let id = member.task_id.clone()?;
+                let record = self.record(member)?;
+                Some((
+                    id,
+                    MemberRun {
+                        name: member.name.clone(),
+                        runs: record.runs,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Why a held update no longer describes this team, or `None` when it is still current.
+    fn staleness(&self, generation: &TeamNoticeGeneration) -> Option<String> {
+        let (name, collected, current) = {
+            let inner = lock(&self.inner);
+            (
+                inner.file.name.clone(),
+                inner.collected,
+                self.current_runs(&inner),
+            )
+        };
+        generation
+            .stale_reason(collected, &current)
+            .map(|reason| format!("team {name}: {reason}"))
+    }
+
     fn state_of(&self, inner: &Inner, member: &MemberEntry) -> MemberState {
         if member.stopped {
             return MemberState::Stopped;
@@ -453,14 +559,16 @@ impl Team {
         (done, inner.file.members.len(), running, pending)
     }
 
-    /// One driver pass (spec §3); returns the updates to send and whether the team is final.
-    fn step(&self) -> (Vec<(String, Value)>, bool, bool) {
+    /// One driver pass (spec §3); returns the updates to send (each with the run state it
+    /// describes) and whether the team is final.
+    fn step(&self) -> (Vec<TeamUpdate>, bool, bool) {
         let mut updates = Vec::new();
         let mut inner = lock(&self.inner);
         if inner.file.status.is_final() {
             return (updates, true, true);
         }
         if inner.created.elapsed() >= self.limits.max_wall_clock {
+            let collected = inner.collected;
             drop(inner);
             let lines = self.stop_members(None, TeamStatus::TimedOut);
             let name = self.name();
@@ -470,6 +578,10 @@ impl Team {
                     lines.join("\n")
                 ),
                 json!({"team": name, "event": "timed_out"}),
+                TeamNoticeGeneration {
+                    runs: HashMap::new(),
+                    collected,
+                },
             ));
             return (updates, true, true);
         }
@@ -511,6 +623,10 @@ impl Team {
                         member.name
                     ),
                     json!({"team": team, "member": member.name, "event": "delivery_failed"}),
+                    TeamNoticeGeneration {
+                        runs: HashMap::new(),
+                        collected: inner.collected,
+                    },
                 ));
             }
         }
@@ -518,6 +634,10 @@ impl Team {
             updates.push((
                 format!("[team {team}] could not start a pending member: {error}"),
                 json!({"team": team, "event": "start_failed"}),
+                TeamNoticeGeneration {
+                    runs: HashMap::new(),
+                    collected: inner.collected,
+                },
             ));
             inner.pending.clear();
         }
@@ -545,7 +665,21 @@ impl Team {
             text.push_str(&format!(
                 "\nProgress: {done}/{total} done ({running} running, {pending} pending)"
             ));
-            updates.push((text, json!({"team": team, "member": member, "id": record.id, "status": record.status.as_str()})));
+            let runs = HashMap::from([(
+                record.id.clone(),
+                MemberRun {
+                    name: member.clone(),
+                    runs: record.runs,
+                },
+            )]);
+            updates.push((
+                text,
+                json!({"team": team, "member": member, "id": record.id, "status": record.status.as_str()}),
+                TeamNoticeGeneration {
+                    runs,
+                    collected: inner.collected,
+                },
+            ));
         }
         let settled = done == total;
         if settled {
@@ -571,6 +705,10 @@ impl Team {
                         total - failed
                     ),
                     json!({"team": team, "event": "settled"}),
+                    TeamNoticeGeneration {
+                        runs: self.current_runs(&inner),
+                        collected: inner.collected,
+                    },
                 ));
             }
             inner.settled_notified = true;
@@ -581,31 +719,51 @@ impl Team {
         (updates, settled, false)
     }
 
+    /// Hands one held update to `notifier`, or drops it.
+    ///
+    /// `Some` means the update was refused and must be held for another attempt; `None` means it
+    /// is settled one way or another: delivered, out of retries, or dropped because the run it
+    /// describes is no longer current.
+    fn attempt_delivery(&self, held: HeldUpdate, notifier: &Notifier) -> Option<HeldUpdate> {
+        let (text, details, tries, generation) = held;
+        // A settlement the lead has already collected, or one a newer run has replaced, is not
+        // news: drop it rather than tell the lead to look again.
+        if let Some(reason) = self.staleness(&generation) {
+            maho_ext_api::diagnostic(&format!("team update dropped instead of re-sent: {reason}"));
+            return None;
+        }
+        if let Err(error) = notifier(UPDATE_MESSAGE_TYPE, &text, details.clone()) {
+            if tries < NOTICE_RETRIES {
+                return Some((text, details, tries + 1, generation));
+            }
+            maho_ext_api::diagnostic(&format!(
+                "team update not delivered after {tries} retries: {error}"
+            ));
+        }
+        None
+    }
+
     fn spawn_driver(self: &Arc<Self>) {
         let team = Arc::clone(self);
         tokio::spawn(async move {
             // A refused update is not delivered: hold it and hand it over on the next pass. This is
             // the only copy the lead would ever see, so dropping it silently loses the notice.
-            let mut retry: VecDeque<(String, Value, u32)> = VecDeque::new();
+            // Each entry carries the run state of the pass that produced it, so a retry that has
+            // since been collected or superseded is dropped instead of re-announced.
+            let mut retry: VecDeque<HeldUpdate> = VecDeque::new();
             loop {
                 let (updates, settled, finished) = team.step();
                 if let Some(notifier) = &team.notifier {
-                    for (text, details) in updates {
-                        retry.push_back((text, details, 0));
+                    for (text, details, generation) in updates {
+                        retry.push_back((text, details, 0, generation));
                     }
                     let attempts = retry.len();
                     for _ in 0..attempts {
-                        let Some((text, details, tries)) = retry.pop_front() else {
+                        let Some(held) = retry.pop_front() else {
                             break;
                         };
-                        if let Err(error) = notifier(UPDATE_MESSAGE_TYPE, &text, details.clone()) {
-                            if tries < NOTICE_RETRIES {
-                                retry.push_back((text, details, tries + 1));
-                            } else {
-                                maho_ext_api::diagnostic(&format!(
-                                    "team update not delivered after {tries} retries: {error}"
-                                ));
-                            }
+                        if let Some(again) = team.attempt_delivery(held, notifier) {
+                            retry.push_back(again);
                         }
                     }
                 }
@@ -947,6 +1105,11 @@ impl Team {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maho_task::runner::BoxFuture;
+    use maho_task::{
+        ModelChoice, RunOutcome, RunSpec, StateDir, TaskManagerOptions, TaskRunner, TaskSettings,
+        bundled_agents,
+    };
 
     #[test]
     fn names_and_helpers() {
@@ -956,5 +1119,276 @@ mod tests {
         assert!(validate_name("team", &"a".repeat(33)).is_err());
         assert_eq!(tail_lines("a\nb\nc\n", 2), "b\nc");
         assert_eq!(preview("abcdef", 3), "abc…");
+    }
+
+    fn current(entries: &[(&str, &str, u32)]) -> HashMap<String, MemberRun> {
+        entries
+            .iter()
+            .map(|(id, name, runs)| {
+                (
+                    (*id).to_owned(),
+                    MemberRun {
+                        name: (*name).to_owned(),
+                        runs: *runs,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The drop decision: a notice whose run was collected, or one a member has moved past, is
+    /// not news - while the current settlement of an uncollected run still is.
+    #[test]
+    fn a_notice_is_stale_once_its_run_was_collected_or_superseded() {
+        let generation = TeamNoticeGeneration {
+            runs: current(&[("crew-a", "a", 1)]),
+            collected: false,
+        };
+        let reason = generation
+            .stale_reason(true, &current(&[("crew-a", "a", 1)]))
+            .expect("a settlement collected after it was produced is stale");
+        assert!(reason.contains("collected"), "{reason}");
+        let reason = generation
+            .stale_reason(false, &current(&[("crew-a", "a", 2)]))
+            .expect("a superseded settlement is stale");
+        assert!(reason.contains("run 1 to run 2"), "{reason}");
+        assert!(
+            generation
+                .stale_reason(false, &current(&[("crew-a", "a", 1)]))
+                .is_none(),
+            "the current, uncollected settlement is still news"
+        );
+        assert!(
+            generation.stale_reason(false, &HashMap::new()).is_none(),
+            "a member that is gone cannot supersede its notice"
+        );
+        // Collected before the notice was produced: it describes a run the lead has not seen, so
+        // it is not the notice the wait returned.
+        let after_collection = TeamNoticeGeneration {
+            runs: current(&[("crew-a", "a", 2)]),
+            collected: true,
+        };
+        assert!(
+            after_collection
+                .stale_reason(true, &current(&[("crew-a", "a", 2)]))
+                .is_none(),
+            "a settlement produced after the collection still reports a new run"
+        );
+        // Revived work clears the flag and the notice describes a new run: still sendable.
+        let revived = TeamNoticeGeneration {
+            runs: current(&[("crew-a", "a", 2)]),
+            collected: false,
+        };
+        assert!(
+            revived
+                .stale_reason(false, &current(&[("crew-a", "a", 2)]))
+                .is_none()
+        );
+    }
+
+    /// A notice that names no run reports a loss or a stop; collecting results must not hide it.
+    #[test]
+    fn a_notice_without_a_run_is_never_stale() {
+        let failure = TeamNoticeGeneration {
+            runs: HashMap::new(),
+            collected: false,
+        };
+        assert!(
+            failure
+                .stale_reason(true, &current(&[("crew-a", "a", 3)]))
+                .is_none()
+        );
+    }
+
+    /// A child that finishes at once, so a team settles within a driver pass of its start.
+    struct InstantRunner;
+
+    impl TaskRunner for InstantRunner {
+        fn run<'a>(
+            &'a self,
+            spec: &'a RunSpec,
+            _cancel: CancelToken,
+            on_start: Box<dyn FnOnce(Option<u32>) + Send + 'a>,
+        ) -> BoxFuture<'a, RunOutcome> {
+            on_start(None);
+            Box::pin(async move {
+                std::fs::write(&spec.output_path, format!("echo:{}", spec.prompt)).expect("output");
+                RunOutcome {
+                    exit_code: Some(0),
+                    ..RunOutcome::default()
+                }
+            })
+        }
+    }
+
+    fn manager(dir: &Path) -> Arc<TaskManager> {
+        TaskManager::new(TaskManagerOptions {
+            state: StateDir::new(dir.join("state")),
+            settings: TaskSettings::default(),
+            runner: Arc::new(InstantRunner) as Arc<dyn TaskRunner>,
+            isolation: None,
+            observers: Vec::new(),
+            hooks: maho_lsp::hooks::HookChain::default(),
+            depth: 0,
+        })
+    }
+
+    fn member(dir: &Path, name: &str, task: &str) -> MemberSpec {
+        MemberSpec {
+            name: name.to_owned(),
+            request: SpawnRequest {
+                agent: bundled_agents().remove(0),
+                task: task.to_owned(),
+                context: None,
+                name: None,
+                choice: ModelChoice::default(),
+                cwd: dir.to_path_buf(),
+                background: true,
+                isolated: false,
+                group: None,
+                pane: None,
+                quiet: false,
+                owner_session: None,
+                root_session: None,
+            },
+        }
+    }
+
+    /// A notifier that always refuses, recording each update it was handed and signalling the call,
+    /// so a test awaits the exact refusal instead of polling.
+    #[derive(Default)]
+    struct Refusing {
+        refused: Mutex<Vec<String>>,
+        refused_one: tokio::sync::Notify,
+    }
+
+    impl Refusing {
+        fn notifier(self: &Arc<Self>) -> Notifier {
+            let gate = Arc::clone(self);
+            Arc::new(move |kind: &str, text: &str, _details: Value| {
+                assert_eq!(kind, UPDATE_MESSAGE_TYPE);
+                lock(&gate.refused).push(text.to_owned());
+                gate.refused_one.notify_one();
+                Err("session is switching".to_owned())
+            })
+        }
+
+        /// Awaits a refused update whose text satisfies `wanted`, re-checking after every wake.
+        async fn refused_until(&self, wanted: impl Fn(&str) -> bool) {
+            loop {
+                if lock(&self.refused).iter().any(|text| wanted(text)) {
+                    return;
+                }
+                tokio::time::timeout(Duration::from_secs(5), self.refused_one.notified())
+                    .await
+                    .expect("a refusal within the timeout");
+            }
+        }
+    }
+
+    /// A team that settled with its settlement notice refused: the only state in which a held
+    /// settlement is still worth sending, so the pair `drop` and `still send` can be compared.
+    async fn refused_settlement(dir: &Path) -> (Arc<Team>, Arc<Refusing>) {
+        let manager = manager(dir);
+        let gate = Arc::new(Refusing::default());
+        let team = Team::create(
+            Arc::clone(&manager),
+            "crew",
+            None,
+            vec![member(dir, "a", "quick a")],
+            TeamLimits::default(),
+            Some(gate.notifier()),
+        )
+        .expect("create");
+        gate.refused_until(|text| text.contains("a completed (task crew-a, run 1)"))
+            .await;
+        (team, gate)
+    }
+
+    /// The held settlement notice of run 1, snapshotted the way `step` snapshots it.
+    fn settled_notice() -> HeldUpdate {
+        (
+            "[team crew] a completed (task crew-a, run 1)".to_owned(),
+            json!({"team": "crew", "member": "a", "id": "crew-a", "status": "completed"}),
+            0,
+            TeamNoticeGeneration {
+                runs: current(&[("crew-a", "a", 1)]),
+                collected: false,
+            },
+        )
+    }
+
+    fn recorder(sent: &Arc<Mutex<Vec<String>>>) -> Notifier {
+        let sink = Arc::clone(sent);
+        Arc::new(move |_kind: &str, text: &str, _details| {
+            lock(&sink).push(text.to_owned());
+            Ok(())
+        })
+    }
+
+    /// The acceptance criterion, through the exact function the driver retries with: once
+    /// `team_wait` returned the settlement, handing that notice over again is a drop, not a
+    /// second delivery.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_collected_settlement_is_dropped_instead_of_re_sent() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let (team, _gate) = refused_settlement(dir.path()).await;
+        let collected = team
+            .wait(None, Duration::from_secs(10), &CancelToken::default())
+            .await
+            .expect("wait");
+        assert!(collected.starts_with("team crew: 1/1 done"), "{collected}");
+
+        let sent: Arc<Mutex<Vec<String>>> = Arc::default();
+        assert!(
+            team.attempt_delivery(settled_notice(), &recorder(&sent))
+                .is_none(),
+            "a collected settlement must not be held for another attempt"
+        );
+        assert!(
+            lock(&sent).is_empty(),
+            "a collected settlement was re-sent: {:?}",
+            lock(&sent)
+        );
+    }
+
+    /// The guard the drop must not break: an uncollected settlement is delivered unchanged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_uncollected_settlement_is_still_re_sent() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let (team, _gate) = refused_settlement(dir.path()).await;
+
+        let sent: Arc<Mutex<Vec<String>>> = Arc::default();
+        assert!(
+            team.attempt_delivery(settled_notice(), &recorder(&sent))
+                .is_none(),
+            "a delivered update is settled, not held"
+        );
+        assert_eq!(lock(&sent).len(), 1, "{:?}", lock(&sent));
+    }
+
+    /// A member that has moved on to a later run makes its earlier settlement stale, even when the
+    /// team was never collected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_settlement_of_a_superseded_run_is_dropped() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let (team, _gate) = refused_settlement(dir.path()).await;
+        let lines = team.message("a", "again").expect("message");
+        assert!(
+            lines[0].contains("delivered (task crew-a, run 2 started)"),
+            "{lines:?}"
+        );
+        // The held notice still names run 1, which this member has left behind.
+        let sent: Arc<Mutex<Vec<String>>> = Arc::default();
+        assert!(
+            team.attempt_delivery(settled_notice(), &recorder(&sent))
+                .is_none(),
+            "a superseded settlement must not be held for another attempt"
+        );
+        assert!(
+            lock(&sent).is_empty(),
+            "a superseded settlement was re-sent: {:?}",
+            lock(&sent)
+        );
     }
 }

@@ -49,7 +49,8 @@ pub fn notify_host_liveness(
             },
         );
     };
-    coordinator.enqueue(IdleInjection {
+    let failed_task = task_id.to_owned();
+    let queued = coordinator.enqueue(IdleInjection {
         key: format!("task-status:{task_id}"),
         source: IdleInjectionSource::TaskStatus,
         custom_type: Some(TASK_STATUS_MESSAGE_TYPE.into()),
@@ -58,8 +59,22 @@ pub fn notify_host_liveness(
         details: Some(details),
         passive: None,
         on_flushed: None,
-        on_delivery_failed: None,
+        // The notice has no retry owner after enqueue: a coordinator retired while it is queued
+        // reports through this callback instead of dropping the notice silently.
+        on_delivery_failed: Some(Arc::new(move |error| {
+            maho_ext_api::diagnostic(&format!(
+                "task host liveness notice delivery failed: taskId={failed_task} error={error}"
+            ));
+        })),
     });
+    if !queued {
+        // A refused enqueue means the notice was never queued, so scheduling a flush of a queue it
+        // never entered would be a lie. Report the refusal here and let the caller - the single
+        // reporting site, which already diagnoses a returned `Err` - emit the diagnostic.
+        return Err(ExtensionFailure::new(format!(
+            "host liveness notice refused by the idle coordinator: taskId={task_id}"
+        )));
+    }
     if is_streaming() {
         coordinator.schedule_flush();
     } else {

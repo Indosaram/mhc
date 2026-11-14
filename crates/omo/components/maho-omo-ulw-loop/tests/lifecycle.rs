@@ -1236,3 +1236,92 @@ async fn status_calls_constant_over_300_unchanged_results() {
     }
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// A coordinator that queues until `retire()`, then (like the production coordinator) refuses
+/// every enqueue and fails each still-queued injection through its `on_delivery_failed`. Each
+/// callback invocation is captured as `"<key>: <error>"` in `failures`, so the test observes the
+/// delivery-failure owner directly instead of through a log line (`logger: None` makes logs
+/// invisible in every ulw-loop test).
+struct RetiringCoordinator {
+    queued: Mutex<Vec<IdleInjection>>,
+    retired: std::sync::atomic::AtomicBool,
+    failures: Arc<Mutex<Vec<String>>>,
+}
+const RETIRED_ERROR: &str = "idle coordinator retired before delivery";
+impl IdleInjectionCoordinator for RetiringCoordinator {
+    fn enqueue(&self, injection: IdleInjection) -> bool {
+        if self.retired.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        self.queued.lock().expect("queued").push(injection);
+        true
+    }
+    fn retire(&self) {
+        self.retired
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let dropped: Vec<IdleInjection> = self.queued.lock().expect("queued").drain(..).collect();
+        for injection in dropped {
+            if let Some(callback) = &injection.on_delivery_failed {
+                callback(RETIRED_ERROR);
+                self.failures
+                    .lock()
+                    .expect("failures")
+                    .push(format!("{}: {RETIRED_ERROR}", injection.key));
+            }
+        }
+    }
+    fn schedule_flush(&self) {}
+    fn flush_soon(&self) {}
+    fn flush_on_idle(&self) -> usize {
+        0
+    }
+    fn pending_count(&self) -> usize {
+        self.queued.lock().expect("queued").len()
+    }
+    fn remove(&self, _: &str) -> bool {
+        false
+    }
+}
+
+/// An ACCEPTED continuation that the coordinator later fails (session shutdown retires the queue
+/// while it is still pending) must be handed back through `on_delivery_failed`, not vanish.
+#[tokio::test]
+async fn a_queued_continuation_failed_by_retire_reports_through_its_delivery_failure_owner() {
+    let (api, actions, _) = coordinator_harness(Some(active_runner()));
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    let coordinator = Arc::new(RetiringCoordinator {
+        queued: Mutex::new(Vec::new()),
+        retired: std::sync::atomic::AtomicBool::new(false),
+        failures: Arc::clone(&failures),
+    });
+    let mut ctx = support::context();
+    ctx.idle_coordinator = Some(idle_injection::into_slot(
+        Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>
+    ));
+    let mut event = ExtensionEvent::AgentEnd {
+        messages: support::finished_turn(),
+        aborted: Some(false),
+        abort_source: None,
+        will_retry: Some(false),
+    };
+    api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx)
+        .await
+        .expect("agent end");
+    api.registered.handlers[&EventKind::AgentSettled][0](&mut ExtensionEvent::AgentSettled, &ctx)
+        .await
+        .expect("settled");
+    // The continuation was accepted into the queue, so nothing went out directly.
+    assert_eq!(coordinator.pending_count(), 1);
+    assert!(actions.0.lock().expect("messages").is_empty());
+    assert!(failures.lock().expect("failures").is_empty());
+
+    coordinator.retire();
+
+    assert_eq!(coordinator.pending_count(), 0);
+    assert_eq!(
+        *failures.lock().expect("failures"),
+        vec![format!("omo-senpi-ulw-loop-continuation: {RETIRED_ERROR}")]
+    );
+    // The failure owner records; it does not retry by sending directly.
+    assert!(actions.0.lock().expect("messages").is_empty());
+}

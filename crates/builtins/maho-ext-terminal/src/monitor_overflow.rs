@@ -162,6 +162,18 @@ impl OverflowBook {
         notices.join("\n")
     }
 
+    /// Deletes `id`'s entry and returns it with the index it held, so the deletion can be undone.
+    pub(crate) fn remove_full(&mut self, id: &str) -> Option<(usize, MonitorOverflow)> {
+        self.entries
+            .shift_remove_full(id)
+            .map(|(index, _, entry)| (index, entry))
+    }
+    /// Puts `entry` back at `index` (clamped to the book's length); its id must not be in the book.
+    pub(crate) fn insert_at(&mut self, index: usize, entry: MonitorOverflow) {
+        let index = index.min(self.entries.len());
+        self.entries.shift_insert(index, entry.id.clone(), entry);
+    }
+
     pub fn delete(&mut self, id: &str) {
         self.entries.shift_remove(id);
     }

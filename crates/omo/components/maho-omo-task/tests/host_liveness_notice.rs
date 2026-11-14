@@ -180,3 +180,72 @@ fn the_manager_hook_notifies_only_this_sessions_children_and_follows_the_turn_st
     assert_eq!(*queue.calls.lock().expect("calls"), vec!["schedule_flush"]);
     assert!(actions.0.lock().expect("messages").is_empty());
 }
+
+/// A coordinator retired by session shutdown: it refuses every enqueue but still records the
+/// attempt, so the test can count hand-offs and flushes.
+#[derive(Default)]
+struct RetiredQueue {
+    attempts: Mutex<Vec<IdleInjection>>,
+    calls: Mutex<Vec<&'static str>>,
+}
+impl IdleInjectionCoordinator for RetiredQueue {
+    fn enqueue(&self, injection: IdleInjection) -> bool {
+        self.attempts.lock().expect("attempts").push(injection);
+        false
+    }
+    fn schedule_flush(&self) {
+        self.calls.lock().expect("calls").push("schedule_flush");
+    }
+    fn flush_soon(&self) {
+        self.calls.lock().expect("calls").push("flush_soon");
+    }
+    fn flush_on_idle(&self) -> usize {
+        0
+    }
+    fn pending_count(&self) -> usize {
+        0
+    }
+    fn remove(&self, _: &str) -> bool {
+        false
+    }
+}
+
+/// The caller (`child_liveness_notice`) is the single reporting site: it diagnoses a returned
+/// `Err`. So the refusal is asserted on the returned error alone, never on a second report.
+#[test]
+fn a_refused_notice_returns_the_failure_and_schedules_no_flush() {
+    for streaming in [true, false] {
+        let actions = Actions::default();
+        let queue = Arc::new(RetiredQueue::default());
+        let coordinator: Arc<dyn IdleInjectionCoordinator> = queue.clone();
+        let error = notify_host_liveness(
+            &actions,
+            Some(&coordinator),
+            "st_1",
+            3,
+            HostLivenessStatus::Unresponsive { since: SINCE },
+            || streaming,
+        )
+        .expect_err("a refused enqueue must not report success");
+        assert!(
+            error.message.contains("refused") && error.message.contains("taskId=st_1"),
+            "unexpected error: {}",
+            error.message
+        );
+        let attempts = queue.attempts.lock().expect("attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].key, "task-status:st_1");
+        assert!(
+            attempts[0].on_delivery_failed.is_some(),
+            "a notice with no retry owner after enqueue must register a delivery-failure callback"
+        );
+        assert!(
+            queue.calls.lock().expect("calls").is_empty(),
+            "no flush for a queue the notice never entered"
+        );
+        assert!(
+            actions.0.lock().expect("messages").is_empty(),
+            "a refusal is reported, not silently re-sent"
+        );
+    }
+}

@@ -1286,6 +1286,7 @@ impl Extension for TerminalExtension {
                     });
                     let spill_monitors = monitors.clone();
                     let spill_ctx = ctx.clone();
+                    let commit_monitors = monitors.clone();
                     let warned = Mutex::new(std::collections::BTreeSet::<String>::new());
                     let spill: crate::monitor_overflow::MonitorSpill =
                         Box::new(move |id, lines| {
@@ -1296,7 +1297,7 @@ impl Extension for TerminalExtension {
                         move || available.lock().expect("terminal delivery").is_some(),
                         Some(wakes_per_hour),
                         Some(spill),
-                        move |injection| {
+                        Arc::new(move |injection: crate::monitor_notify::MonitorInjection| {
                             let Some(delivery_mode) =
                                 *lifecycle_delivery.lock().expect("terminal delivery")
                             else {
@@ -1305,40 +1306,48 @@ impl Extension for TerminalExtension {
                                 return Err("terminal notifications are disabled".to_owned());
                             };
                             let force_wake = !injection.pause_ids.is_empty();
-                            if let Err(error) = sender.send_message(
-                                CustomMessage {
-                                    custom_type:
-                                        crate::monitor_notify::MONITOR_NOTIFICATION_CUSTOM_TYPE
-                                            .to_owned(),
-                                    content: vec![ToolContent::text(injection.content)],
-                                    display: false,
-                                    details: Some(injection.details),
-                                },
-                                SendMessageOptions {
-                                    trigger_turn: true,
-                                    deliver_as: Some(
-                                        if delivery_mode
-                                            == crate::notify::NotificationDelivery::Steer
-                                            || force_wake
-                                        {
-                                            DeliverAs::Steer
-                                        } else {
-                                            DeliverAs::FollowUp
-                                        },
-                                    ),
-                                },
-                            ) {
-                                return Err(error.to_string());
+                            let pause_ids = injection.pause_ids;
+                            let receipt = sender
+                                .send_message_with_receipt(
+                                    CustomMessage {
+                                        custom_type:
+                                            crate::monitor_notify::MONITOR_NOTIFICATION_CUSTOM_TYPE
+                                                .to_owned(),
+                                        content: vec![ToolContent::text(injection.content)],
+                                        display: false,
+                                        details: Some(injection.details),
+                                    },
+                                    SendMessageOptions {
+                                        trigger_turn: true,
+                                        deliver_as: Some(
+                                            if delivery_mode
+                                                == crate::notify::NotificationDelivery::Steer
+                                                || force_wake
+                                            {
+                                                DeliverAs::Steer
+                                            } else {
+                                                DeliverAs::FollowUp
+                                            },
+                                        ),
+                                    },
+                                )
+                                .map_err(|error| error.to_string())?;
+                            // The pause is spent by the commit hook, not here: a wake the host
+                            // refused or dropped must not cost a monitored session its budget.
+                            Ok(crate::monitor_notify::MonitorAdmission {
+                                receipt: Some(receipt),
+                                pause_ids,
+                            })
+                        }),
+                        Some(Arc::new(move |pause_ids: &[String]| {
+                            if pause_ids.is_empty() {
+                                return;
                             }
-                            // A pause is only spent by a wake that actually reached the session.
-                            if !injection.pause_ids.is_empty() {
-                                monitors
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .pause(&injection.pause_ids);
-                            }
-                            Ok(())
-                        },
+                            commit_monitors
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .pause(pause_ids);
+                        })),
                     );
                     *notifier
                         .lock()
