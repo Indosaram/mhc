@@ -112,12 +112,13 @@ const UNKNOWN_STATUS_FOLD_PRIORITY: u8 = 30;
 /// Status rows beyond the first are used by animated statuses, so a spinner is never hidden by
 /// the fold marker. Three rows is the ceiling; anything still overflowing folds as before.
 const MAX_STATUS_ROWS: usize = 3;
-/// Whether the status renders a spinner: a running task group or a watching monitor. These are
-/// activity, not decoration, so they take their own row instead of folding into `+N`.
+/// Whether the status renders a spinner. The task group is the only merged activity status:
+/// `interactive_ui_host` folds `omo-task`/`omo-dag` JSON into one `omo-task` text, so `omo-dag`
+/// only survives here as its unmerged `dag tracking N runs` label, which does not animate.
 fn status_is_vital(key: &str, text: &str) -> bool {
     match key {
         "monitors" => monitor_watching(text),
-        "omo-task" | "omo-dag" => text.contains(" running"),
+        "omo-task" => text.contains(" running"),
         _ => false,
     }
 }
@@ -1039,6 +1040,28 @@ mod tests {
             "the second spinner gets its own row: {all:?}"
         );
         for line in &lines {
+            assert!(visible_width(line) <= width, "{line:?}");
+        }
+        // `interactive_ui_host` hands the footer an already-rendered task text rather than the raw
+        // counts, so the same rule has to hold for that shape too.
+        let merged = FooterComponent::new(FooterSnapshot {
+            extension_statuses: BTreeMap::from([
+                ("omo-task".into(), "⠋ 2 tasks running · 4/9 done".to_owned()),
+                ("monitors".into(), "◉ 1 monitor watching · deploy".into()),
+                (
+                    "todo-waiting".into(),
+                    "waiting: terminal-monitors, active-goal".into(),
+                ),
+            ]),
+            ..Default::default()
+        });
+        let merged_lines = merged.render(width, &theme).unwrap();
+        let merged_all = merged_lines.join("\n");
+        assert!(
+            merged_all.contains("tasks running") && merged_all.contains("monitor watching"),
+            "the merged production text keeps both spinners: {merged_all:?}"
+        );
+        for line in &merged_lines {
             assert!(visible_width(line) <= width, "{line:?}");
         }
     }
