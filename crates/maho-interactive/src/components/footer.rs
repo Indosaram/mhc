@@ -659,11 +659,20 @@ impl FooterComponent {
         };
         let foldable = foldable_of(&rest);
         let fold = plan_status_fold(&foldable, budget, gap);
-        let mut left: Vec<FooterGroup> = vital
-            .iter()
-            .map(|(group, _, _)| group.clone())
-            .chain(fold.kept.iter().map(|&i| rest[i].0.clone()))
-            .collect();
+        // Fill the first row with as many vital statuses as fit, then the kept static ones; the
+        // rest of the vital statuses move to their own rows so no spinner is ever folded away.
+        let mut left: Vec<FooterGroup> = Vec::new();
+        let mut overflow: Vec<FooterGroup> = Vec::new();
+        for (group, _, _) in &vital {
+            let mut candidate = left.clone();
+            candidate.push(group.clone());
+            if groups_width(&candidate, gap) <= budget {
+                left = candidate;
+            } else {
+                overflow.push(group.clone());
+            }
+        }
+        left.extend(fold.kept.iter().map(|&i| rest[i].0.clone()));
         if fold.folded > 0 {
             left.push(FooterGroup::run(
                 format!("+{}", fold.folded),
@@ -691,33 +700,29 @@ impl FooterComponent {
             ),
             None => left_colored,
         };
-        // Whatever the vital statuses could not fit on the first row spills onto extra rows, one
-        // frame each, so several spinners stay visible at a narrow width.
         let mut rows = vec![first];
-        let mut spill: Vec<FooterGroup> = Vec::new();
-        for (group, _, _) in &vital {
-            let mut candidate = spill.clone();
+        let mut row: Vec<FooterGroup> = Vec::new();
+        for group in overflow {
+            let mut candidate = row.clone();
             candidate.push(group.clone());
-            if groups_width(&candidate, gap) <= width {
-                spill = candidate;
+            if row.is_empty() || groups_width(&candidate, gap) <= width {
+                row = candidate;
             } else {
                 rows.push(
-                    spill
-                        .iter()
+                    row.iter()
                         .map(|g| render_group(g, theme))
                         .collect::<Vec<_>>()
                         .join(&" ".repeat(gap)),
                 );
-                spill = vec![group.clone()];
+                row = vec![group];
             }
             if rows.len() >= MAX_STATUS_ROWS {
                 break;
             }
         }
-        if !spill.is_empty() && rows.len() < MAX_STATUS_ROWS {
+        if !row.is_empty() && rows.len() < MAX_STATUS_ROWS {
             rows.push(
-                spill
-                    .iter()
+                row.iter()
                     .map(|g| render_group(g, theme))
                     .collect::<Vec<_>>()
                     .join(&" ".repeat(gap)),
@@ -1026,8 +1031,12 @@ mod tests {
             "the watching monitor stays visible: {all:?}"
         );
         assert!(
-            !lines[1].contains("waiting:"),
-            "static labels fold before activity: {all:?}"
+            !all.contains("waiting: terminal-monitors, active-goal"),
+            "the static label gives up its text before any spinner does: {all:?}"
+        );
+        assert!(
+            lines.len() > 2,
+            "the second spinner gets its own row: {all:?}"
         );
         for line in &lines {
             assert!(visible_width(line) <= width, "{line:?}");
