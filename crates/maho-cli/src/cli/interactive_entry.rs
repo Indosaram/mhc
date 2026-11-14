@@ -9,6 +9,11 @@ use std::{
 /// Longest an idle frame loop goes without rebuilding the mode's lines, for a change that reached
 /// the mode without a repaint signal.
 const IDLE_REBUILD_BACKSTOP_MS: u64 = 1_000;
+/// Longest stdin wait while nothing on screen is animating. The loop used to wait one frame
+/// interval (16 ms) forever, so an idle session ran its whole bookkeeping body ~40-60 times a
+/// second and burned a fifth of a core with no input and no turn. `terminal.pump` still returns
+/// early for input and for its own timers, and the render backstop above still runs on time.
+const IDLE_POLL_INTERVAL_MS: u64 = 250;
 
 struct EditorHost {
     rows: Cell<usize>,
@@ -576,14 +581,23 @@ pub async fn run(
             // once per frame cost one frame of stdin wait per await. Keep advancing it while its
             // waker fires (the runtime's timers and IO run at each yield), up to one frame of
             // budget, then paint and read input.
+            // While something on screen animates, keep the frame cadence. When nothing does, the
+            // per-frame bookkeeping above (mode event drains, control-surface publishing, footer
+            // polls, settings reads) is pure waste: wait for input up to a coarse idle interval
+            // instead. Input and the terminal's own timers still cut the wait short.
             let frame_ms = screen.base().min_render_interval_ms();
+            let wait_ms = if mode.frame_is_animating() || mode.has_parked_actions() {
+                frame_ms
+            } else {
+                frame_ms.max(IDLE_POLL_INTERVAL_MS)
+            };
             let budget = std::time::Instant::now() + std::time::Duration::from_millis(frame_ms);
             while mode.has_parked_actions() && std::time::Instant::now() < budget {
                 tokio::task::yield_now().await;
                 if !parked_wake.woken.swap(false, std::sync::atomic::Ordering::SeqCst) { break; }
                 mode.poll_turn_with(&parked_waker);
             }
-            match terminal.pump(frame_ms) {
+            match terminal.pump(wait_ms) {
                 Ok(()) => {}
                 // The terminal closed without a SIGHUP reaching this process (the PTY master went
                 // away): shut down like the hangup signal instead of polling a dead stdin forever.

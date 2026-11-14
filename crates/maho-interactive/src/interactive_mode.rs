@@ -1335,6 +1335,13 @@ impl InteractiveMode {
     pub(crate) fn clock_ms(&self) -> u64 {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
+    /// Whether a time-driven element repaints every frame: the working row, spinners, reveal
+    /// pacing, dialogs, animations, or the transcript warm-up. The host uses this to keep a fast
+    /// frame cadence while something animates and to idle-sleep when nothing does.
+    pub fn frame_is_animating(&self) -> bool {
+        self.frame_animating()
+    }
+
     /// Whether the host must rebuild the mode's lines this frame. senpi repaints only when
     /// something calls `requestRender`: here a state change the frame reads sets `frame_dirty`,
     /// footer sources and UI intervals are polled, and a running time-driven element (working row,
@@ -14468,10 +14475,16 @@ impl InteractiveMode {
             changed = true;
         }
         // The git branch is polled at senpi's watcher cadence, not every frame.
-        if self
+        //
+        // Two callers sample this with different `Instant` origins: the host loop passes its own
+        // clock and `tick` passes `self.clock`, which was created earlier, so its sample is always
+        // the larger of the two. Treating a smaller sample as "the clock restarted" made the
+        // slower caller poll on every frame (about 110 HEAD stats per second). A sample below the
+        // watermark is simply early: the faster clock still advances it once the interval passes.
+        let due = self
             .footer_poll_ms
-            .is_none_or(|last| now_ms < last || now_ms - last >= FOOTER_POLL_INTERVAL_MS)
-        {
+            .is_none_or(|last| now_ms >= last && now_ms - last >= FOOTER_POLL_INTERVAL_MS);
+        if due {
             self.footer_poll_ms = Some(now_ms);
             let before = self.footer_data.git_branch();
             self.footer_data.refresh_branch();
