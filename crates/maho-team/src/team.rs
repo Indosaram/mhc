@@ -18,6 +18,8 @@ pub const UPDATE_MESSAGE_TYPE: &str = "team-update";
 /// Longest team or member name.
 pub const MAX_NAME_LEN: usize = 32;
 const POLL: Duration = Duration::from_millis(250);
+/// Times a refused team update is handed to the notifier again before it is reported as lost.
+const NOTICE_RETRIES: u32 = 3;
 const RESULT_PREVIEW_CHARS: usize = 500;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -582,17 +584,38 @@ impl Team {
     fn spawn_driver(self: &Arc<Self>) {
         let team = Arc::clone(self);
         tokio::spawn(async move {
+            // A refused update is not delivered: hold it and hand it over on the next pass. This is
+            // the only copy the lead would ever see, so dropping it silently loses the notice.
+            let mut retry: VecDeque<(String, Value, u32)> = VecDeque::new();
             loop {
                 let (updates, settled, finished) = team.step();
                 if let Some(notifier) = &team.notifier {
-                    for (text, details) in &updates {
-                        notifier(UPDATE_MESSAGE_TYPE, text, details.clone());
+                    for (text, details) in updates {
+                        retry.push_back((text, details, 0));
+                    }
+                    let attempts = retry.len();
+                    for _ in 0..attempts {
+                        let Some((text, details, tries)) = retry.pop_front() else {
+                            break;
+                        };
+                        if let Err(error) = notifier(UPDATE_MESSAGE_TYPE, &text, details.clone()) {
+                            if tries < NOTICE_RETRIES {
+                                retry.push_back((text, details, tries + 1));
+                            } else {
+                                maho_ext_api::diagnostic(&format!(
+                                    "team update not delivered after {tries} retries: {error}"
+                                ));
+                            }
+                        }
                     }
                 }
-                if finished {
+                // A finished team still owes its last notice: the settle and wall-clock notices are
+                // produced by the very pass that returns `finished`, so breaking here would drop a
+                // refused one. Each retry is bounded, so draining it terminates.
+                if finished && retry.is_empty() {
                     break;
                 }
-                if settled {
+                if settled && retry.is_empty() {
                     team.wake.notified().await;
                 } else {
                     tokio::select! {

@@ -286,6 +286,7 @@ fn collector() -> (
     let notifier: maho_task::Notifier = Arc::new(move |kind: &str, text: &str, details: Value| {
         assert_eq!(kind, tool::UPDATE_MESSAGE_TYPE);
         let _ = tx.send((text.to_owned(), details));
+        Ok(())
     });
     (notifier, rx)
 }

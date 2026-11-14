@@ -519,8 +519,13 @@ fn deliver_ask_user(
     tokio::spawn(async move {
         if let Ok(result) = dispatch(&ctx, input).await {
             let details = lifecycle_result_details("Notification", Some(&result));
-            if let Some(message) = lifecycle_message("Notification", &details, None) {
-                let _ = sender.send_message(message, SendMessageOptions::default());
+            if let Some(message) = lifecycle_message("Notification", &details, None)
+                && let Err(error) = sender.send_message(message, SendMessageOptions::default())
+            {
+                // Nothing owns a retry for this one-shot hook output; say it was lost.
+                maho_ext_api::diagnostic(&format!(
+                    "ask-user Notification hook message not delivered: {error}"
+                ));
             }
         }
     });

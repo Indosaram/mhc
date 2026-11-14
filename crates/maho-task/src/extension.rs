@@ -58,7 +58,12 @@ pub struct TaskExtension {
 
 /// Sends a displayed follow-up message (`custom_type`, text, details) to the session that owns
 /// the tools; the message triggers a turn.
-pub type Notifier = Arc<dyn Fn(&str, &str, Value) + Send + Sync>;
+/// One notification to the owning session.
+///
+/// The result is the host's answer, and it is not optional on purpose: a caller that cannot see a
+/// refusal will mark its notice as sent and never try again, which is how a "sent" notification
+/// ends up in no transcript at all. Callers log a failure (or keep it queued) rather than discard it.
+pub type Notifier = Arc<dyn Fn(&str, &str, Value) -> Result<(), String> + Send + Sync>;
 
 /// Per-call access to the delegation machinery for tools layered on top of it.
 #[derive(Clone)]
@@ -164,18 +169,20 @@ impl TaskScope {
         let sender = self.shared.sender.clone()?;
         Some(Arc::new(
             move |custom_type: &str, text: &str, details: Value| {
-                let _ = sender.send_message(
-                    CustomMessage {
-                        custom_type: custom_type.to_owned(),
-                        content: vec![ToolContent::text(text)],
-                        display: true,
-                        details: Some(details),
-                    },
-                    SendMessageOptions {
-                        trigger_turn: true,
-                        deliver_as: Some(DeliverAs::FollowUp),
-                    },
-                );
+                sender
+                    .send_message(
+                        CustomMessage {
+                            custom_type: custom_type.to_owned(),
+                            content: vec![ToolContent::text(text)],
+                            display: true,
+                            details: Some(details),
+                        },
+                        SendMessageOptions {
+                            trigger_turn: true,
+                            deliver_as: Some(DeliverAs::FollowUp),
+                        },
+                    )
+                    .map_err(|error| error.to_string())
             },
         ))
     }

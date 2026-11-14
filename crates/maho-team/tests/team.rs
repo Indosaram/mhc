@@ -113,6 +113,7 @@ fn notifier() -> (Notifier, Inbox) {
     let notifier: Notifier = Arc::new(move |kind: &str, text: &str, _details| {
         assert_eq!(kind, maho_team::UPDATE_MESSAGE_TYPE);
         lock(&sink).push(text.to_owned());
+        Ok(())
     });
     (notifier, inbox)
 }
@@ -368,6 +369,44 @@ async fn wall_clock_limit_stops_the_team() {
     .expect("create");
     eventually("timed out", || team.file().status == TeamStatus::TimedOut).await;
     eventually("notice", || {
+        lock(&inbox).iter().any(|t| t.contains("wall-clock limit"))
+    })
+    .await;
+}
+
+/// A refused update used to be dropped: the driver printed nothing, the lead never saw the
+/// notice, and nothing retried it. The driver must hand it over again on a later pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_update_is_retried_until_delivered() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let (manager, _runner) = manager(dir.path(), Vec::new());
+    let inbox: Inbox = Arc::default();
+    let sink = Arc::clone(&inbox);
+    let refusals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let budget = Arc::clone(&refusals);
+    let notifier: Notifier = Arc::new(move |kind: &str, text: &str, _details| {
+        assert_eq!(kind, maho_team::UPDATE_MESSAGE_TYPE);
+        // Refuse the first two attempts of every message, then accept.
+        if budget.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+            return Err("session is switching".to_owned());
+        }
+        lock(&sink).push(text.to_owned());
+        Ok(())
+    });
+    let limits = TeamLimits {
+        max_wall_clock: Duration::from_millis(200),
+        ..TeamLimits::default()
+    };
+    let _team = Team::create(
+        Arc::clone(&manager),
+        "retry",
+        None,
+        vec![member(dir.path(), "a", "block")],
+        limits,
+        Some(notifier),
+    )
+    .expect("create");
+    eventually("retried notice", || {
         lock(&inbox).iter().any(|t| t.contains("wall-clock limit"))
     })
     .await;

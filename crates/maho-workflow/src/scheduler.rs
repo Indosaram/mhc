@@ -941,7 +941,11 @@ fn node_notice(live: &LiveRun, run_id: &str, node: &NodeRecord) -> Option<Notice
 
 fn deliver(notices: Vec<Notice>) {
     for (notifier, text, details) in notices {
-        notifier(NOTICE_TYPE, &text, details);
+        // A workflow notice is the only wake the detached run produces; a refusal has to be visible
+        // because the run itself already moved on and will not notice again.
+        if let Err(error) = notifier(NOTICE_TYPE, &text, details) {
+            maho_ext_api::diagnostic(&format!("workflow notice not delivered: {error}"));
+        }
     }
 }
 

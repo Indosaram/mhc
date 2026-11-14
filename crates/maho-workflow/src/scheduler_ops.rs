@@ -358,12 +358,14 @@ impl WorkflowScheduler {
         self.persist(&mut run);
         let snapshot = run.clone();
         drop(run);
-        if let Some(waker) = waker {
-            (waker.notifier)(
+        if let Some(waker) = waker
+            && let Err(error) = (waker.notifier)(
                 crate::scheduler::NOTICE_TYPE,
                 &format!("Workflow {} ({run_id}) cancelled.", snapshot.name),
                 json!({"run_id": run_id, "status": "cancelled", "kind": "run_settled"}),
-            );
+            )
+        {
+            maho_ext_api::diagnostic(&format!("workflow cancel notice not delivered: {error}"));
         }
         Ok(snapshot)
     }
