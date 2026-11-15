@@ -298,6 +298,10 @@ struct PendingSettingsWrite {
 struct CompactionQueueState {
     queued: Vec<crate::compaction_queue_transfer::CompactionQueuedMessage>,
     in_flight: Vec<crate::compaction_queue_transfer::CompactionQueuedMessage>,
+    /// The unknown-command refusals the running transfer consumed, each as (rejection, submitted).
+    /// senpi reports each from inside the transfer; the transfer owns no editor, so it parks them
+    /// here and the mode reports them when the transfer ends, in queue order.
+    rejections: Vec<(String, String)>,
 }
 
 /// senpi `flushCompactionQueue`'s transfer dependencies. Messages are identified by their reserved
@@ -310,6 +314,30 @@ struct CompactionQueueTransfer {
     tasks: tokio::task::JoinSet<()>,
     events: tokio::sync::mpsc::UnboundedSender<maho_ext_api::AgentSessionEvent>,
     failure: Option<String>,
+}
+
+/// The refusal `error` is, when it is one: the session's own catalog message when this process can
+/// reproduce it, else the refusal's shape, because a host session refuses with a catalog this
+/// process holds no copy of.
+fn unknown_command_refusal(
+    session: &AgentSession,
+    message: &crate::compaction_queue_transfer::CompactionQueuedMessage,
+    error: &str,
+) -> Option<String> {
+    session
+        .unknown_command_rejection(
+            &message.text,
+            &PromptOptions {
+                unknown_command_as_text: message.unknown_command_as_text,
+                ..Default::default()
+            },
+        )
+        .map(|rejection| rejection.to_string())
+        .filter(|rejection| rejection == maho_core::unknown_command::refusal_message(error))
+        .or_else(|| {
+            maho_core::unknown_command::is_refusal_message(error)
+                .then(|| maho_core::unknown_command::refusal_message(error).to_owned())
+        })
 }
 
 impl crate::compaction_queue_transfer::TransferDependencies for CompactionQueueTransfer {
@@ -387,50 +415,70 @@ impl crate::compaction_queue_transfer::TransferDependencies for CompactionQueueT
         message: &crate::compaction_queue_transfer::CompactionQueuedMessage,
     ) -> Result<PromptDisposition, String> {
         let behavior = message.mode;
-        if let Some(host) = self.host.clone() {
-            return host
-                .prompt(
-                    message.text.clone(),
-                    PromptOptions {
-                        streaming_behavior: Some(behavior),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map(|_| PromptDisposition::Started);
-        }
-        let session = self.session.clone();
-        let text = message.text.clone();
-        let events = self.events.clone();
-        crate::compaction_queue_transfer::wait_for_prompt_disposition(
-            &mut self.tasks,
-            move |preflight, disposition| async move {
-                let admitted: Arc<dyn Fn(PromptDisposition) + Send + Sync> =
-                    Arc::new(move |next| {
-                        preflight(true);
-                        disposition(next);
+        let unknown_command_as_text = message.unknown_command_as_text;
+        let delivered = if let Some(host) = self.host.clone() {
+            host.prompt(
+                message.text.clone(),
+                PromptOptions {
+                    streaming_behavior: Some(behavior),
+                    unknown_command_as_text,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|_| PromptDisposition::Started)
+        } else {
+            let session = self.session.clone();
+            let text = message.text.clone();
+            let events = self.events.clone();
+            crate::compaction_queue_transfer::wait_for_prompt_disposition(
+                &mut self.tasks,
+                move |preflight, disposition| async move {
+                    let admitted: Arc<dyn Fn(PromptDisposition) + Send + Sync> =
+                        Arc::new(move |next| {
+                            preflight(true);
+                            disposition(next);
+                        });
+                    session
+                        .prompt(
+                            &text,
+                            PromptOptions {
+                                streaming_behavior: Some(behavior),
+                                unknown_command_as_text,
+                                prompt_admitted: Some(admitted),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                },
+                move |error: String| {
+                    let _ = events.send(maho_ext_api::AgentSessionEvent::ContinuationError {
+                        error_message: format!("Queued prompt failed after acceptance: {error}"),
                     });
-                session
-                    .prompt(
-                        &text,
-                        PromptOptions {
-                            streaming_behavior: Some(behavior),
-                            prompt_admitted: Some(admitted),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .map(|_| ())
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())
+        };
+        match delivered {
+            Ok(disposition) => Ok(disposition),
+            // senpi deliverFirstPrompt: a rejected unknown command is consumed here, so it cannot
+            // block the messages queued behind it. The editor feedback follows when this transfer
+            // ends, because the transfer owns no editor.
+            Err(error) => match unknown_command_refusal(&self.session, message, &error) {
+                Some(rejection) => {
+                    self.state
+                        .borrow_mut()
+                        .rejections
+                        .push((rejection, message.text.clone()));
+                    Ok(PromptDisposition::Handled)
+                }
+                None => Err(error),
             },
-            move |error: String| {
-                let _ = events.send(maho_ext_api::AgentSessionEvent::ContinuationError {
-                    error_message: format!("Queued prompt failed after acceptance: {error}"),
-                });
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())
+        }
     }
+
     async fn deliver_queued(
         &mut self,
         message: &crate::compaction_queue_transfer::CompactionQueuedMessage,
@@ -1169,6 +1217,12 @@ pub struct InteractiveMode {
     provisional_user_echo: Option<Rc<RefCell<dyn Component>>>,
     /// Working indicator painted before `AgentStart`. Cleared if the turn fails first.
     provisional_working: bool,
+    /// The text of the in-flight turn and whether it was already confirmed as text, so a refusal
+    /// can be classified against the catalog the submission ran with.
+    pending_turn_submission: Option<(String, bool)>,
+    /// senpi `confirmsRefusedUnknownCommand`: the submitted text a refusal armed, so the next submit
+    /// of the same text is sent as a message instead of being refused again.
+    refused_unknown_command_text: Option<String>,
     /// `/model <term>` whose cached selector is on screen while a catalog refresh is parked.
     model_search_term: Option<String>,
     /// Default-model writes deferred off the UI thread. See [`PendingSettingsWrite`].
@@ -3140,6 +3194,8 @@ impl InteractiveMode {
             defer_turn_poll: false,
             provisional_user_echo: None,
             provisional_working: false,
+            pending_turn_submission: None,
+            refused_unknown_command_text: None,
             model_search_term: None,
             pending_settings_writes: Rc::new(RefCell::new(std::collections::VecDeque::new())),
             pending_keybindings_edit: None,
@@ -5755,6 +5811,9 @@ impl InteractiveMode {
         let mut options = PromptOptions {
             images,
             streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer),
+            // senpi `confirmsRefusedUnknownCommand`: the second submit of a refused text sends it
+            // as a message instead of being refused again.
+            unknown_command_as_text: self.confirms_refused_unknown_command(typed),
             ..Default::default()
         };
         // senpi `session.prompt(initialMessage, { sessionTitlePrompt: initialTitlePrompt ?? false })`.
@@ -6160,10 +6219,12 @@ impl InteractiveMode {
             // senpi: ordinary text joins the compaction queue as a follow-up, delivered after
             // compaction settles; the queue carries text only, so attachments are dropped visibly.
             let images = self.take_submission_images(&text);
+            let unknown_command_as_text = self.confirms_refused_unknown_command(&text);
             self.queue_compaction_submission(
                 &text,
                 Some(images),
                 maho_ext_api::StreamingBehavior::FollowUp,
+                unknown_command_as_text,
             );
             return Ok(());
         }
@@ -6177,6 +6238,7 @@ impl InteractiveMode {
                 PromptOptions {
                     images: (!images.is_empty()).then_some(images),
                     streaming_behavior: Some(maho_ext_api::StreamingBehavior::FollowUp),
+                    unknown_command_as_text: self.confirms_refused_unknown_command(&text),
                     ..Default::default()
                 }
             };
@@ -6620,10 +6682,11 @@ impl InteractiveMode {
         text: &str,
         images: Option<Vec<maho_ai::types::ImageContent>>,
         mode: maho_ext_api::StreamingBehavior,
+        unknown_command_as_text: bool,
     ) {
         let count = images.map_or(0, |images| images.len());
         if count == 0 {
-            self.queue_compaction_message(text, 0, mode);
+            self.queue_compaction_message(text, 0, mode, unknown_command_as_text);
             return;
         }
         let queued = maho_tui::image_markers::IMAGE_MARKER_REGEX
@@ -6631,7 +6694,7 @@ impl InteractiveMode {
             .trim()
             .to_owned();
         if !queued.is_empty() {
-            self.queue_compaction_message(&queued, count, mode);
+            self.queue_compaction_message(&queued, count, mode, unknown_command_as_text);
             return;
         }
         self.show_status(format!("Dropped {count} image{}: messages sent during compaction cannot carry images - paste again after compaction finishes", if count > 1 { "s" } else { "" }));
@@ -6643,6 +6706,7 @@ impl InteractiveMode {
         text: &str,
         dropped_image_count: usize,
         mode: maho_ext_api::StreamingBehavior,
+        unknown_command_as_text: bool,
     ) {
         let enqueue_order = self.session.reserve_queued_input_order();
         self.compaction_queue.borrow_mut().queued.push(
@@ -6651,7 +6715,7 @@ impl InteractiveMode {
                 mode,
                 enqueue_order: Some(enqueue_order),
                 pending_echo_id: None,
-                unknown_command_as_text: false,
+                unknown_command_as_text,
             },
         );
         self.editor.editor.add_to_history(text);
@@ -7114,6 +7178,7 @@ impl InteractiveMode {
                 text.trim(),
                 options.images.clone(),
                 maho_ext_api::StreamingBehavior::Steer,
+                options.unknown_command_as_text,
             );
             return Ok(PromptDisposition::Handled);
         }
@@ -7133,6 +7198,7 @@ impl InteractiveMode {
     /// Initiate a provider turn without waiting for it to finish.
     fn start_turn(&mut self, text: String, options: PromptOptions) {
         self.paint_turn_feedback(&text);
+        self.pending_turn_submission = Some((text.clone(), options.unknown_command_as_text));
         let turn: TurnFuture = match self.session_host.clone() {
             Some(host) => Box::pin(async move {
                 host.prompt(text, options)
@@ -7197,6 +7263,58 @@ impl InteractiveMode {
             self.provisional_working = false;
             self.agent_idle = true;
             self.working_started_ms = None;
+        }
+    }
+
+    /// senpi `reportUnknownCommandRejection`: a refused `/name` goes back into an empty editor with
+    /// the rejection and a confirm hint, and the next submit of that text is sent as a message.
+    /// Returns whether `error` was an unknown-command rejection.
+    fn report_unknown_command_rejection(&mut self, error: &str, submitted_text: &str) -> bool {
+        let rejection = self
+            .session
+            .unknown_command_rejection(
+                submitted_text,
+                &PromptOptions {
+                    unknown_command_as_text: false,
+                    ..Default::default()
+                },
+            )
+            .map(|rejection| rejection.to_string())
+            // A host session refuses with its own catalog's message, so a mismatch falls back to the
+            // refusal's shape rather than losing the editor feedback the user needs.
+            .filter(|rejection| rejection == maho_core::unknown_command::refusal_message(error))
+            .or_else(|| {
+                maho_core::unknown_command::is_refusal_message(error)
+                    .then(|| maho_core::unknown_command::refusal_message(error).to_owned())
+            });
+        let Some(rejection) = rejection else {
+            return false;
+        };
+        crate::unknown_command_feedback::report_unknown_command(
+            Some(&rejection),
+            submitted_text,
+            self,
+        );
+        true
+    }
+
+    /// senpi `confirmsRefusedUnknownCommand`: take the armed text when this submission matches it.
+    fn confirms_refused_unknown_command(&mut self, text: &str) -> bool {
+        let confirmed = self.refused_unknown_command_text.as_deref() == Some(text);
+        if confirmed {
+            self.refused_unknown_command_text = None;
+        }
+        confirmed
+    }
+
+    /// senpi `UnknownCommandFeedbackTarget` for the interactive editor.
+    fn unknown_command_confirm_hint(&self) -> String {
+        let submit = crate::components::keybinding_hints::key_display_text("tui.input.submit");
+        let interrupt = crate::components::keybinding_hints::key_display_text("app.interrupt");
+        if self.host_is_streaming() {
+            format!("{submit} again sends it as a message.")
+        } else {
+            format!("{submit} again sends it as a message; {interrupt} keeps editing.")
         }
     }
 
@@ -8564,6 +8682,7 @@ impl InteractiveMode {
     /// Enqueue into a live turn without awaiting it on the UI task. Failures surface when the
     /// parked future settles, in park order.
     fn park_prompt_enqueue(&mut self, text: String, options: PromptOptions) {
+        let submitted = text.clone();
         let host = self.session_host.clone();
         let session = self.session.clone();
         self.park_action(
@@ -8573,9 +8692,13 @@ impl InteractiveMode {
                     None => session.prompt(&text, options).await.map(|_| ()),
                 }
             },
-            |mode, result| {
+            move |mode, result| {
                 if let Err(error) = result {
-                    mode.show_error(&error);
+                    // senpi `reportUnknownCommandRejection`: a refused `/name` returns to the editor
+                    // with its confirm hint instead of a red error line.
+                    if !mode.report_unknown_command_rejection(&error, &submitted) {
+                        mode.show_error(&error);
+                    }
                 } else {
                     mode.drain_events();
                 }
@@ -8681,10 +8804,24 @@ impl InteractiveMode {
         if let Some(result) = turn_result {
             self.pending_turn = None;
             self.frame_dirty = true;
-            if let Err(error) = result {
-                self.keyword_turn_glow = false;
-                self.show_status(error);
-                self.clear_provisional_turn_feedback();
+            let submission = self.pending_turn_submission.take();
+            match result {
+                Err(error) => {
+                    self.keyword_turn_glow = false;
+                    // senpi `reportUnknownCommandRejection`: a refused `/name` returns to the editor
+                    // with its confirm hint instead of reading as a failed turn.
+                    let reported = submission.as_ref().is_some_and(|(text, confirmed)| {
+                        !*confirmed && self.report_unknown_command_rejection(&error, text)
+                    });
+                    if !reported {
+                        self.show_status(error);
+                    }
+                    self.clear_provisional_turn_feedback();
+                }
+                // A submission that resolved without starting a turn emits no `AgentIdle`, so the
+                // working row painted for it would spin forever.
+                Ok(PromptDisposition::Handled) => self.clear_provisional_turn_feedback(),
+                Ok(PromptDisposition::Started | PromptDisposition::Queued) => {}
             }
         }
         let bash_result = self.pending_bash.as_mut().and_then(|(_, execution)| {
@@ -8719,6 +8856,12 @@ impl InteractiveMode {
         if let Some(failure) = flush_result {
             self.pending_compaction_flush = None;
             self.frame_dirty = true;
+            // Refusals the transfer consumed surface exactly like a direct submit's refusal, and
+            // only after the transfer ends so each warning lands once, in queue order.
+            let refusals = std::mem::take(&mut self.compaction_queue.borrow_mut().rejections);
+            for (rejection, submitted) in refusals {
+                self.report_unknown_command_rejection(&rejection, &submitted);
+            }
             if let Some(failure) = failure {
                 self.show_error(&failure);
             }
@@ -15895,6 +16038,31 @@ pub fn prepare_import_destination(
         suffix += 1;
     }
     Ok(candidate)
+}
+
+/// senpi `UnknownCommandFeedbackTarget` for the interactive editor: the refused text returns to an
+/// empty editor, the confirmation arms against it, and the warning renders through the transcript.
+impl crate::unknown_command_feedback::UnknownCommandFeedbackTarget for InteractiveMode {
+    fn editor_text(&self) -> String {
+        self.editor.editor.get_text()
+    }
+
+    fn set_editor_text(&mut self, text: &str) {
+        self.editor.editor.set_text(text);
+        self.frame_dirty = true;
+    }
+
+    fn arm_confirmation(&mut self, text: &str) {
+        self.refused_unknown_command_text = Some(text.to_owned());
+    }
+
+    fn confirm_hint(&self) -> String {
+        self.unknown_command_confirm_hint()
+    }
+
+    fn show_warning(&mut self, message: &str) {
+        InteractiveMode::show_warning(self, message);
+    }
 }
 
 #[cfg(test)]

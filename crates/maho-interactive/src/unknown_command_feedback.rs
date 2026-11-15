@@ -5,6 +5,12 @@
 
 /// A `/...` submission typed after leading whitespace is sent as text instead of checked as a
 /// command. `raw_text` is senpi's `EditorSubmitDetails.rawText` (the editor text before trimming).
+///
+/// Rust has no `rawText` seam: the editor hands the submit callback `&str` already trimmed
+/// (`SubmitCallback = Box<dyn FnMut(&str)>`), so the interactive mode cannot ask this predicate what
+/// the user typed before the trim. The leading-whitespace rule therefore lives in the session
+/// instead, which still holds the untrimmed text at `prompt_with_readiness`/`queue_user_input`; this
+/// predicate stays as the ported senpi helper and its unit test, not as a caller.
 pub fn submits_command_as_text(text: &str, raw_text: Option<&str>) -> bool {
     text.starts_with('/')
         && raw_text.is_some_and(|raw| raw.chars().next().is_some_and(char::is_whitespace))

@@ -1066,6 +1066,9 @@ fn prompt_options_to_wire(options: &maho_core::agent_session::PromptOptions) -> 
     if let Some(expand) = options.expand_prompt_templates {
         value["expandPromptTemplates"] = expand.into();
     }
+    if options.unknown_command_as_text {
+        value["unknownCommandAsText"] = true.into();
+    }
     value
 }
 

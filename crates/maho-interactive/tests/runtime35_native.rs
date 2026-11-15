@@ -6719,3 +6719,290 @@ async fn a_stop_updates_the_pause_footer_and_the_resume_hint() {
         "the footer names /resume as the way out"
     );
 }
+
+/// A `/name` that no command resolves must not run a model turn: the refusal stops the working row
+/// that the submit painted, returns the text to the editor, and a second submit sends it as a
+/// message. senpi's `_rejectUnknownCommand` + `reportUnknownCommandRejection`.
+#[tokio::test]
+async fn an_unknown_command_is_refused_instead_of_running_a_turn() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "faux",
+        "faux-1",
+        false,
+    );
+    mode.enqueue_submission("/agreement", None);
+    assert_eq!(
+        mode.dispatch_submission().await.expect("dispatch"),
+        Some(maho_core::agent_session::PromptDisposition::Started),
+        "the submission is taken and a turn is painted"
+    );
+    assert!(
+        mode.working_frame(0.0).is_some(),
+        "the submit paints the working row"
+    );
+    let waker = std::task::Waker::noop();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if !mode.has_pending_turn() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the refused turn settles");
+
+    assert!(
+        mode.working_frame(0.0).is_none(),
+        "the working row stops instead of spinning forever"
+    );
+    let rendered = mode.render(80).join("\n");
+    assert!(
+        rendered.contains("Unknown command /agreement"),
+        "the refusal is shown: {rendered}"
+    );
+    assert!(
+        rendered.contains("again sends it as a message"),
+        "the confirm hint is shown: {rendered}"
+    );
+    assert_eq!(
+        mode.editor.editor.get_text(),
+        "/agreement",
+        "the refused text returns to the editor"
+    );
+    assert!(
+        session
+            .messages()
+            .iter()
+            .all(|message| message.role() != "user"),
+        "the refused command never reached the model"
+    );
+
+    // The second submit of the same text is the confirmation: it goes through as a message.
+    mode.enqueue_submission("/agreement", None);
+    assert_eq!(
+        mode.dispatch_submission().await.expect("confirm"),
+        Some(maho_core::agent_session::PromptDisposition::Started)
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if !mode.has_pending_turn() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the confirmed message settles");
+    assert!(
+        session
+            .messages()
+            .iter()
+            .any(|message| message.role() == "user"),
+        "the confirmed text reached the model as a message"
+    );
+}
+
+/// A command-shaped message queued while compaction runs is refused by the prompt path, not by the
+/// editor: the transfer consumes the rejection so it cannot block the queue, and the mode reports it
+/// (editor text, warning, confirm arming) once the transfer ends. senpi's `deliverFirstPrompt`
+/// rejection branch plus `reportUnknownCommandRejection` when `flushCompactionQueue` settles.
+#[tokio::test]
+async fn a_queued_unknown_command_is_reported_when_compaction_ends() {
+    use maho_interactive::interactive_host_runtime::{
+        RemoteSessionState, SessionEventListener, SessionSubscription,
+    };
+    use maho_interactive::interactive_session::{
+        ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture,
+    };
+    use maho_tui::tui::Component;
+    use std::sync::{Arc, Mutex};
+
+    /// A host that reports itself compacting (so submits queue) and refuses the command-shaped
+    /// prompt the flush delivers, the way a remote session's own catalog refuses it.
+    struct RefusingHost {
+        listener: Arc<Mutex<Option<SessionEventListener>>>,
+        prompted: Arc<Mutex<Vec<String>>>,
+    }
+    impl InteractiveSession for RefusingHost {
+        fn session_id(&self) -> Option<String> {
+            None
+        }
+        fn session_file(&self) -> Option<String> {
+            None
+        }
+        fn cwd(&self) -> String {
+            String::new()
+        }
+        fn is_reconnecting(&self) -> bool {
+            false
+        }
+        fn is_fallback(&self) -> bool {
+            false
+        }
+        fn remote_state(&self) -> Option<RemoteSessionState> {
+            Some(RemoteSessionState {
+                is_compacting: true,
+                ..Default::default()
+            })
+        }
+        fn subscribe_session_events(
+            &self,
+            listener: SessionEventListener,
+        ) -> Option<SessionSubscription> {
+            *self
+                .listener
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(listener);
+            None
+        }
+        fn request_remote_history(
+            &self,
+            _generation: u64,
+            _sender: tokio::sync::mpsc::UnboundedSender<(
+                u64,
+                Result<Vec<serde_json::Value>, String>,
+            )>,
+        ) {
+        }
+        fn prompt(
+            &self,
+            message: String,
+            _options: maho_core::agent_session::PromptOptions,
+        ) -> SessionFuture<'_, Result<(), String>> {
+            self.prompted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(message);
+            // A remote session refuses with its own catalog message, which this process cannot
+            // reproduce; the mode must still recognize it by shape.
+            Box::pin(async { Err("Unknown command /agreement.".to_owned()) })
+        }
+        fn new_session(
+            &self,
+            _parent_session: Option<String>,
+        ) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+            Box::pin(async { Ok(ReplacementOutcome::Cancelled) })
+        }
+        fn switch_session(
+            &self,
+            _session_path: String,
+        ) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+            Box::pin(async { Ok(ReplacementOutcome::Cancelled) })
+        }
+        fn fork(
+            &self,
+            _entry_id: String,
+            _include_entry: bool,
+        ) -> SessionFuture<'_, Result<ForkOutcome, String>> {
+            Box::pin(async {
+                Ok(ForkOutcome {
+                    outcome: ReplacementOutcome::Cancelled,
+                    editor_text: None,
+                })
+            })
+        }
+        fn dispose(&self) -> SessionFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "faux",
+        "faux-1",
+        false,
+    );
+    let listener = Arc::new(Mutex::new(None));
+    let prompted = Arc::new(Mutex::new(Vec::new()));
+    mode.set_session_host(Arc::new(RefusingHost {
+        listener: listener.clone(),
+        prompted: prompted.clone(),
+    }));
+
+    // The typed text sits in the editor when the submit is taken.
+    mode.editor.editor.set_text("/agreement");
+    // Compaction runs, so the command-shaped message cannot start a turn and is queued instead.
+    mode.enqueue_submission("/agreement", None);
+    assert_eq!(
+        mode.dispatch_submission().await.expect("dispatch"),
+        Some(maho_core::agent_session::PromptDisposition::Handled),
+        "a submit during compaction is queued, not run"
+    );
+    assert!(
+        !mode.has_pending_turn(),
+        "nothing was painted as a running turn"
+    );
+    assert_eq!(
+        mode.editor.editor.get_text(),
+        "",
+        "queueing clears the editor"
+    );
+
+    let emit = listener
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .expect("the mode subscribed its event bridge");
+    emit(&maho_ext_api::AgentSessionEvent::CompactionEnd {
+        reason: maho_ext_api::CompactionReason::Manual,
+        result: None,
+        aborted: false,
+        will_retry: false,
+        accepted: Some(true),
+        rejection_cause: None,
+        error_message: None,
+        request_id: None,
+    });
+
+    // The flush delivers the queued message; the refusal must surface as editor feedback, not as a
+    // silent drop and not as a failed queued prompt.
+    let waker = std::task::Waker::noop();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if mode.editor.editor.get_text() == "/agreement" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the queued refusal is reported when the transfer ends");
+
+    let sent = prompted
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        sent,
+        vec!["/agreement".to_owned()],
+        "the queued message reached the host, not a local turn"
+    );
+    let rendered = mode.render(80).join("\n");
+    assert!(
+        rendered.contains("Unknown command /agreement"),
+        "the refusal is shown: {rendered}"
+    );
+    assert!(
+        rendered.contains("again sends it as a message"),
+        "the confirm hint is shown: {rendered}"
+    );
+    assert!(
+        !rendered.contains("Failed to send queued message"),
+        "the refusal is not reported as a delivery failure: {rendered}"
+    );
+    assert!(
+        session
+            .messages()
+            .iter()
+            .all(|message| message.role() != "user"),
+        "the refused command never reached the session"
+    );
+}
