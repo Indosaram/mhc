@@ -254,41 +254,62 @@ pub fn add_human_agreement(
     sort_agreements(&rest)
 }
 
-/// Resets a counted item; `None` when the id is unknown.
-pub fn ack_agreement(existing: &[AgreementItem], id: &str) -> Option<Vec<AgreementItem>> {
-    if !existing.iter().any(|item| item.id == id) {
+/// The ledger after a multi-id `/agreements ack` or `drop`, plus the ids that matched no item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgreementsEdit {
+    pub items: Vec<AgreementItem>,
+    pub unknown: Vec<String>,
+}
+
+/// Resets every named item to `n: 0`/active; `None` when no id matched.
+pub fn ack_agreements(existing: &[AgreementItem], ids: &[String]) -> Option<AgreementsEdit> {
+    edit_agreements(existing, ids, true)
+}
+
+/// Removes every named item; `None` when no id matched.
+pub fn drop_agreements(existing: &[AgreementItem], ids: &[String]) -> Option<AgreementsEdit> {
+    edit_agreements(existing, ids, false)
+}
+
+/// Ids with no item are reported back rather than silently ignored; a batch of only unknown ids is `None`.
+fn edit_agreements(
+    existing: &[AgreementItem],
+    ids: &[String],
+    ack: bool,
+) -> Option<AgreementsEdit> {
+    let mut unknown: Vec<String> = Vec::new();
+    for id in ids {
+        if !existing.iter().any(|item| &item.id == id) && !unknown.contains(id) {
+            unknown.push(id.clone());
+        }
+    }
+    if ids.iter().all(|id| unknown.contains(id)) {
         return None;
     }
-    Some(
-        existing
-            .iter()
-            .map(|item| {
-                if item.id == id {
-                    AgreementItem {
-                        n: 0,
-                        status: AgreementStatus::Active,
-                        ..item.clone()
-                    }
-                } else {
-                    item.clone()
-                }
+    let items = existing
+        .iter()
+        .filter_map(|item| {
+            if !ids.contains(&item.id) {
+                return Some(item.clone());
+            }
+            ack.then(|| AgreementItem {
+                n: 0,
+                status: AgreementStatus::Active,
+                ..item.clone()
             })
-            .collect(),
-    )
+        })
+        .collect();
+    Some(AgreementsEdit { items, unknown })
+}
+
+/// Resets a counted item; `None` when the id is unknown.
+pub fn ack_agreement(existing: &[AgreementItem], id: &str) -> Option<Vec<AgreementItem>> {
+    ack_agreements(existing, &[id.to_owned()]).map(|edit| edit.items)
 }
 
 /// Removes an item; `None` when the id is unknown.
 pub fn drop_agreement(existing: &[AgreementItem], id: &str) -> Option<Vec<AgreementItem>> {
-    if !existing.iter().any(|item| item.id == id) {
-        return None;
-    }
-    Some(
-        existing
-            .iter()
-            .filter(|item| item.id != id)
-            .cloned()
-            .collect(),
-    )
+    drop_agreements(existing, &[id.to_owned()]).map(|edit| edit.items)
 }
 
 fn find_agreement(items: &[AgreementItem], text: &str) -> Option<usize> {

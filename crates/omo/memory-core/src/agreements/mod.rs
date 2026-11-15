@@ -27,8 +27,9 @@ pub use ledger_file::{
     render_agreements_file, render_agreements_file_with_receipts,
 };
 pub use mutate::{
-    AgreementEvent, AgreementsMutation, ack_agreement, add_human_agreement,
-    apply_agreement_records, apply_agreement_records_with_receipts, drop_agreement,
+    AgreementEvent, AgreementsEdit, AgreementsMutation, ack_agreement, ack_agreements,
+    add_human_agreement, apply_agreement_records, apply_agreement_records_with_receipts,
+    drop_agreement, drop_agreements,
 };
 pub use notice_watermark::{
     AGREEMENTS_NOTICE_WATERMARK_FILENAME, AgreementsNoticeError, AgreementsWarnSink,

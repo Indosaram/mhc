@@ -1,7 +1,8 @@
 use pretty_assertions::assert_eq;
 
 use super::{
-    AgreementEvent, ack_agreement, add_human_agreement, apply_agreement_records, drop_agreement,
+    AgreementEvent, ack_agreement, ack_agreements, add_human_agreement, apply_agreement_records,
+    drop_agreement, drop_agreements,
 };
 use crate::agreements::format::agreement_id;
 use crate::agreements::types::{
@@ -176,4 +177,39 @@ fn human_add_ack_and_drop() {
         Some(vec![])
     );
     assert_eq!(drop_agreement(&[flagged], "ffffffffff"), None);
+}
+
+#[test]
+fn multi_id_ack_and_drop_report_unknown_ids() {
+    let items = vec![
+        agent("Be brief", 3, "2026-01-01"),
+        agent("Ask first", 5, "2026-01-01"),
+        agent("Run tests", 2, "2026-01-01"),
+    ];
+    let ids = |indexes: &[usize]| -> Vec<String> {
+        indexes
+            .iter()
+            .map(|index| items[*index].id.clone())
+            .collect()
+    };
+
+    let acked = ack_agreements(&items, &ids(&[0, 2])).expect("ack both");
+    assert!(acked.unknown.is_empty());
+    let counts: Vec<u64> = acked.items.iter().map(|item| item.n).collect();
+    assert_eq!(counts, vec![0, 5, 0]);
+
+    let dropped = drop_agreements(&items, &ids(&[0, 2])).expect("drop both");
+    assert!(dropped.unknown.is_empty());
+    assert_eq!(dropped.items, vec![items[1].clone()]);
+
+    let mut batch = ids(&[1]);
+    batch.push("ffffffffff".to_owned());
+    let partial = drop_agreements(&items, &batch).expect("known id applies");
+    assert_eq!(partial.items.len(), 2);
+    assert_eq!(partial.unknown, vec!["ffffffffff".to_owned()]);
+
+    assert_eq!(drop_agreements(&items, &["ffffffffff".to_owned()]), None);
+    let repeated = ack_agreements(&items, &ids(&[0, 0])).expect("duplicates are harmless");
+    assert!(repeated.unknown.is_empty());
+    assert_eq!(repeated.items.len(), 3);
 }

@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use maho_ext_api::ExtensionApi;
 use memory_core::agreements::{
-    AGREEMENTS_PATH, AgreementItem, AgreementScope, AgreementStatus, ack_agreement,
-    add_human_agreement, agreement_items_of, agreement_text_problem, clean_agreement_text,
-    drop_agreement, read_agreements_worktree, render_agreements_file, sort_agreements,
+    AGREEMENTS_PATH, AgreementItem, AgreementScope, AgreementStatus, AgreementsEdit,
+    ack_agreements, add_human_agreement, agreement_items_of, agreement_text_problem,
+    clean_agreement_text, drop_agreements, read_agreements_worktree, render_agreements_file,
+    sort_agreements,
 };
 use memory_core::git::{GitCommitAuthor, GitMemoryRepo};
 use memory_core::locks::{
@@ -23,7 +24,7 @@ use super::types::{
 };
 
 pub const AGREEMENTS_USAGE: &str =
-    "usage: /agreements [list] | add [--project] <agreement> | ack <id> | drop <id>";
+    "usage: /agreements [list] | add [--project] <agreement> | ack <id>... | drop <id>...";
 const NOT_INITIALIZED: &str = "memory repository is not initialized yet; run /memfs init first";
 
 pub async fn handle_agreements(
@@ -51,25 +52,22 @@ pub async fn handle_agreements(
             Err(error) => respond(ctx, error, NotifyLevel::Error),
         },
         "add" => add(deps, ctx, &identity, &repo, &rest),
-        "ack" | "drop" if rest.len() == 1 => {
-            let id = rest[0].to_owned();
-            let missing = format!("no agreement has id {id}");
+        "ack" | "drop" if !rest.is_empty() => {
+            let ids: Vec<String> = rest.iter().map(|id| (*id).to_owned()).collect();
+            let missing = format!("no agreement has id {}", ids.join(", "));
+            let reason = if ids.len() == 1 {
+                format!("{verb} agreement {}", ids[0])
+            } else {
+                format!("{verb} agreements")
+            };
             let is_ack = verb == "ack";
-            write(
-                deps,
-                ctx,
-                &identity,
-                &repo,
-                &format!("{verb} agreement {id}"),
-                &missing,
-                &|items| {
-                    if is_ack {
-                        ack_agreement(items, &id)
-                    } else {
-                        drop_agreement(items, &id)
-                    }
-                },
-            )
+            write(deps, ctx, &identity, &repo, &reason, &missing, &|items| {
+                if is_ack {
+                    ack_agreements(items, &ids)
+                } else {
+                    drop_agreements(items, &ids)
+                }
+            })
         }
         _ => respond(ctx, AGREEMENTS_USAGE, NotifyLevel::Error),
     }
@@ -112,7 +110,12 @@ fn add(
         repo,
         "add agreement",
         "nothing to change",
-        &|items| Some(add_human_agreement(items, &text, scope, &today)),
+        &|items| {
+            Some(AgreementsEdit {
+                items: add_human_agreement(items, &text, scope, &today),
+                unknown: Vec::new(),
+            })
+        },
     )
 }
 
@@ -123,7 +126,7 @@ fn write(
     repo: &GitMemoryRepo,
     reason: &str,
     missing: &str,
-    change: &dyn Fn(&[AgreementItem]) -> Option<Vec<AgreementItem>>,
+    change: &dyn Fn(&[AgreementItem]) -> Option<AgreementsEdit>,
 ) -> CommandResponse {
     let author = GitCommitAuthor {
         agent_id: identity.identity.clone(),
@@ -151,11 +154,17 @@ fn write(
         &memory_writer_lock_path(&identity.identity_paths.locks),
         &record,
         &options,
-        || -> Result<Option<String>, String> {
+        || -> Result<Option<(String, String)>, String> {
             let existing =
                 read_agreements_worktree(&repo.dir).map_err(|error| error.to_string())?;
-            let Some(next) = change(&agreement_items_of(existing.as_deref())) else {
+            let Some(edit) = change(&agreement_items_of(existing.as_deref())) else {
                 return Ok(None);
+            };
+            let next = edit.items;
+            let note = if edit.unknown.is_empty() {
+                String::new()
+            } else {
+                format!("\nno agreement has id {}", edit.unknown.join(", "))
             };
             std::fs::create_dir_all(repo.dir.join("system")).map_err(|error| error.to_string())?;
             let rendered = render_agreements_file(existing.as_deref(), &next)
@@ -176,12 +185,12 @@ fn write(
             let committed = repo
                 .commit_write(&[AGREEMENTS_PATH], &message, &author)
                 .map_err(|error| error.to_string())?;
-            Ok(Some(committed.sha))
+            Ok(Some((committed.sha, note)))
         },
     );
     match outcome {
         Ok(None) => respond(ctx, missing, NotifyLevel::Error),
-        Ok(Some(sha)) => {
+        Ok(Some((sha, note))) => {
             (deps.bust_prompt_cache)();
             let short: String = sha.chars().take(7).collect();
             let listing = read_items(repo)
@@ -189,7 +198,7 @@ fn write(
                 .unwrap_or_else(|error| error);
             respond(
                 ctx,
-                format!("/agreements {reason} committed ({short}).\n{listing}"),
+                format!("/agreements {reason} committed ({short}).{note}\n{listing}"),
                 NotifyLevel::Info,
             )
         }
@@ -233,7 +242,7 @@ pub fn register_agreements_command(api: &mut ExtensionApi, deps: Arc<MemoryComma
     api.register_command(
         "agreements",
         Some("List, add, acknowledge, or drop your standing agreements with the agent.".to_owned()),
-        Some("[list] | add [--project] <text> | ack <id> | drop <id>".to_owned()),
+        Some("[list] | add [--project] <text> | ack <id>... | drop <id>...".to_owned()),
         Arc::new(move |args, context| {
             let deps = deps.clone();
             let context = command_context_from(context);
@@ -359,5 +368,81 @@ mod tests {
         assert!(dropped.text.contains("no agreements yet"));
         let usage = handle_agreements(&fake.deps, &context.ctx, "ack").await;
         assert_eq!(usage.text, AGREEMENTS_USAGE);
+    }
+
+    async fn add_two(fake: &FakeDeps, context: &FakeContext) -> Vec<String> {
+        for text in ["run the tests", "never force push"] {
+            let added = handle_agreements(&fake.deps, &context.ctx, &format!("add {text}")).await;
+            assert!(!added.is_error(), "{}", added.text);
+        }
+        let listing = handle_agreements(&fake.deps, &context.ctx, "list").await;
+        let ids: Vec<String> = listing
+            .text
+            .lines()
+            .filter(|line| line.contains("[human]"))
+            .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+            .collect();
+        assert_eq!(ids.len(), 2, "{}", listing.text);
+        ids
+    }
+
+    #[tokio::test]
+    async fn drop_takes_several_ids_in_one_commit() {
+        let (_root, identity) = temp_identity();
+        seeded_repo(
+            &identity,
+            vec![seed(
+                "system/persona.md",
+                "---\ndescription: Persona\n---\nbody\n",
+            )],
+        );
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let context = fake_command_context(FakeContextOptions::default());
+        let ids = add_two(&fake, &context).await;
+
+        let dropped = handle_agreements(
+            &fake.deps,
+            &context.ctx,
+            &format!("drop {} {}", ids[0], ids[1]),
+        )
+        .await;
+        assert!(!dropped.is_error(), "{}", dropped.text);
+        assert!(
+            dropped.text.contains("drop agreements committed"),
+            "{}",
+            dropped.text
+        );
+        assert!(
+            dropped.text.contains("no agreements yet"),
+            "{}",
+            dropped.text
+        );
+        for id in &ids {
+            assert!(!dropped.text.contains(id.as_str()), "{}", dropped.text);
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_applies_the_known_ids_and_names_the_unknown_ones() {
+        let (_root, identity) = temp_identity();
+        seeded_repo(&identity, vec![]);
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let context = fake_command_context(FakeContextOptions::default());
+        let ids = add_two(&fake, &context).await;
+
+        let partial = handle_agreements(
+            &fake.deps,
+            &context.ctx,
+            &format!("drop 0000000000 {}", ids[0]),
+        )
+        .await;
+        assert!(!partial.is_error(), "{}", partial.text);
+        assert!(
+            partial.text.contains("no agreement has id 0000000000"),
+            "{}",
+            partial.text
+        );
+        assert!(!partial.text.contains(&ids[0]), "{}", partial.text);
+        assert!(partial.text.contains(&ids[1]), "{}", partial.text);
     }
 }
