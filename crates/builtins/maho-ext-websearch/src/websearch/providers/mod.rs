@@ -3,15 +3,33 @@ pub mod brave;
 pub mod chatgpt_subscription;
 pub mod deepseek;
 pub mod duckduckgo_html;
+pub mod ecosia;
 pub mod exa;
+pub mod exa_mcp;
+pub mod firecrawl;
 pub mod google;
 pub mod google_cse;
+pub mod google_html;
+pub mod jina;
+pub mod kagi;
+pub mod keenable;
 pub mod kimi;
+pub mod mojeek;
+pub mod ollama;
 pub mod openai_responses;
+pub mod openrouter;
+pub mod parallel;
 pub mod perplexity;
+pub mod public;
+pub mod response_stream;
+pub mod searxng;
+pub mod serpdive;
 pub mod serper;
 pub mod shared;
+pub mod startpage;
+pub mod synthetic;
 pub mod tavily;
+pub mod tinyfish;
 pub mod xai;
 pub mod z_ai;
 use super::{
@@ -20,10 +38,30 @@ use super::{
 };
 use serde_json::Value;
 use shared::{BuildContext, BuiltSearchRequest, SearchResultItem, resolve_domain_filters};
+/// Why a provider could not turn a request into an HTTP call: a bad configured URL, or a provider
+/// that has no endpoint of its own (`public` fans out instead of calling one).
+#[derive(Debug)]
+pub enum SearchBuildError {
+    Url(url::ParseError),
+    Message(String),
+}
+impl std::fmt::Display for SearchBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Url(error) => error.fmt(f),
+            Self::Message(message) => message.fmt(f),
+        }
+    }
+}
+impl From<url::ParseError> for SearchBuildError {
+    fn from(error: url::ParseError) -> Self {
+        Self::Url(error)
+    }
+}
 pub fn build_search_request(
     config: &SearchProviderConfig,
     request: &SearchRequest,
-) -> Result<BuiltSearchRequest, url::ParseError> {
+) -> Result<BuiltSearchRequest, SearchBuildError> {
     let (allowed, blocked) = resolve_domain_filters(
         config.allowed_domains.as_deref(),
         config.blocked_domains.as_deref(),
@@ -71,6 +109,27 @@ pub fn build_search_request(
         SearchProvider::Perplexity => perplexity::build_request(&ctx, model, size),
         SearchProvider::Xai => xai::build_request(&ctx, model),
         SearchProvider::Kimi => kimi::build_request(&ctx),
+        SearchProvider::Kagi => kagi::build_request(&ctx),
+        SearchProvider::Startpage => startpage::build_request(&ctx)?,
+        SearchProvider::Mojeek => mojeek::build_request(&ctx)?,
+        SearchProvider::Ecosia => ecosia::build_request(&ctx)?,
+        SearchProvider::GoogleHtml => google_html::build_request(&ctx)?,
+        SearchProvider::Searxng => searxng::build_request(&ctx)?,
+        SearchProvider::Serpdive => serpdive::build_request(&ctx),
+        SearchProvider::ExaMcp => exa_mcp::build_request(&ctx)?,
+        SearchProvider::Keenable => keenable::build_request(&ctx),
+        SearchProvider::Firecrawl => firecrawl::build_request(&ctx),
+        SearchProvider::Jina => jina::build_request(&ctx),
+        SearchProvider::Ollama => ollama::build_request(&ctx),
+        SearchProvider::OpenRouter => openrouter::build_request(&ctx, model),
+        SearchProvider::Parallel => parallel::build_request(&ctx),
+        SearchProvider::Synthetic => synthetic::build_request(&ctx),
+        SearchProvider::Tinyfish => tinyfish::build_request(&ctx),
+        SearchProvider::Public => {
+            return Err(SearchBuildError::Message(
+                "Provider public has no endpoint of its own; it fans out to its engines.".into(),
+            ));
+        }
     };
     if config.provider == SearchProvider::ChatgptSubscription {
         built.headers = chatgpt_subscription::with_config_headers(
@@ -86,7 +145,7 @@ pub fn build_search_request(
 pub fn parse_search_body(provider: SearchProvider, body_text: &str) -> Option<Value> {
     match provider {
         SearchProvider::ChatgptSubscription => Some(
-            super::engines::response_stream::collect_response_stream(body_text),
+            super::providers::response_stream::collect_response_stream(body_text),
         ),
         _ => None,
     }
@@ -113,6 +172,31 @@ pub fn normalize_search_response(
         SearchProvider::Perplexity => perplexity::normalize_response(payload),
         SearchProvider::Xai => xai::normalize_response(payload),
         SearchProvider::Kimi => kimi::normalize_response(payload),
+        SearchProvider::Kagi => kagi::normalize_response(payload),
+        SearchProvider::Startpage => {
+            startpage::normalize_html(payload["html"].as_str().unwrap_or_default())
+        }
+        SearchProvider::Mojeek => {
+            mojeek::normalize_html(payload["html"].as_str().unwrap_or_default())
+        }
+        SearchProvider::Ecosia => {
+            ecosia::normalize_html(payload["html"].as_str().unwrap_or_default())
+        }
+        SearchProvider::GoogleHtml => {
+            google_html::normalize_html(payload["html"].as_str().unwrap_or_default())
+        }
+        SearchProvider::Searxng => searxng::normalize_response(payload),
+        SearchProvider::Serpdive => serpdive::normalize_response(payload),
+        SearchProvider::ExaMcp => exa_mcp::normalize_response(payload),
+        SearchProvider::Keenable => keenable::normalize_response(payload),
+        SearchProvider::Firecrawl => firecrawl::normalize_response(payload),
+        SearchProvider::Jina => jina::normalize_response(payload),
+        SearchProvider::Ollama => ollama::normalize_response(payload),
+        SearchProvider::OpenRouter => openrouter::normalize_response(payload),
+        SearchProvider::Parallel => parallel::normalize_response(payload),
+        SearchProvider::Synthetic => synthetic::normalize_response(payload),
+        SearchProvider::Tinyfish => tinyfish::normalize_response(payload),
+        SearchProvider::Public => Vec::new(),
     }
 }
 #[cfg(test)]
@@ -156,6 +240,21 @@ mod tests {
             SearchProvider::Perplexity,
             SearchProvider::Xai,
             SearchProvider::Kimi,
+            SearchProvider::Kagi,
+            SearchProvider::Startpage,
+            SearchProvider::Mojeek,
+            SearchProvider::Ecosia,
+            SearchProvider::GoogleHtml,
+            SearchProvider::ExaMcp,
+            SearchProvider::Serpdive,
+            SearchProvider::Keenable,
+            SearchProvider::Firecrawl,
+            SearchProvider::Jina,
+            SearchProvider::Ollama,
+            SearchProvider::OpenRouter,
+            SearchProvider::Parallel,
+            SearchProvider::Synthetic,
+            SearchProvider::Tinyfish,
         ] {
             let config = SearchProviderConfig::new(provider);
             let request = SearchRequest {
@@ -172,5 +271,36 @@ mod tests {
             );
             assert!(normalize_search_response(provider, &Value::Bool(true)).is_empty());
         }
+    }
+
+    #[test]
+    fn keyed_and_self_hosted_providers_need_their_own_endpoints() {
+        let request = SearchRequest {
+            query: "q".into(),
+            max_results: 1.,
+            allowed_domains: None,
+            blocked_domains: None,
+        };
+        let error =
+            build_search_request(&SearchProviderConfig::new(SearchProvider::Public), &request)
+                .expect_err("public fans out instead of calling an endpoint");
+        assert_eq!(
+            error.to_string(),
+            "Provider public has no endpoint of its own; it fans out to its engines."
+        );
+        let error = build_search_request(
+            &SearchProviderConfig::new(SearchProvider::Searxng),
+            &request,
+        )
+        .expect_err("searxng is self-hosted and needs a base URL");
+        assert!(error.to_string().contains("relative URL without a base"));
+        let mut searxng = SearchProviderConfig::new(SearchProvider::Searxng);
+        searxng.base_url = Some("https://searx.test".into());
+        assert_eq!(
+            build_search_request(&searxng, &request)
+                .expect("searxng request")
+                .url,
+            "https://searx.test/search?q=q&format=json"
+        );
     }
 }

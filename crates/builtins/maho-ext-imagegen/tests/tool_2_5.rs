@@ -19,14 +19,67 @@ async fn defaults_to_sunburst_and_saves_the_returned_png() {
     .await;
 
     let (model, _, _) = stub.first_call().expect("call");
-    assert_eq!(model.id, "gpt-image-2.5-sunburst");
-    assert_eq!(model.name, "GPT Image 2.5 Sunburst");
+    assert_eq!(model.id, "gpt-image-2.6-sunburst");
+    assert_eq!(model.name, "GPT Image 2.6 Sunburst");
     assert_eq!(model.input, vec![InputModality::Text, InputModality::Image]);
-    assert_eq!(result.details["model"], "gpt-image-2.5-sunburst");
+    assert_eq!(result.details["model"], "gpt-image-2.6-sunburst");
     assert_eq!(
         std::fs::read(root.path().join("fox.png")).expect("bytes"),
         base64_decode(support::PNG_BASE64)
     );
+}
+
+#[tokio::test]
+async fn sends_complexity_only_to_2_6_models() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
+    let root = tempfile::tempdir().expect("temp");
+    let stub = Arc::new(support::StubImages::one());
+    support::run(
+        root.path(),
+        false,
+        stub.clone(),
+        "complexity",
+        json!({"prompt":"a red fox","model":"gpt-image-2.6-flare","complexity":"low"}),
+    )
+    .await;
+    let (model, _, options) = stub.first_call().expect("call");
+    assert_eq!(model.id, "gpt-image-2.6-flare");
+    assert_eq!(model.name, "GPT Image 2.6 Flare");
+    assert_eq!(options.extra["complexity"], json!("low"));
+
+    let root = tempfile::tempdir().expect("temp");
+    let stub = Arc::new(support::StubImages::one());
+    let result = support::run(
+        root.path(),
+        false,
+        stub.clone(),
+        "no-complexity",
+        json!({"prompt":"a red fox","model":"gpt-image-2.5-sunburst","complexity":"high"}),
+    )
+    .await;
+    assert_eq!(result.details["reason"], "invalid_params");
+    assert_eq!(stub.call_count(), 0);
+}
+
+#[tokio::test]
+async fn serves_2_6_rows_from_the_2_5_catalog_rates() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
+    let root = tempfile::tempdir().expect("temp");
+    let stub = Arc::new(support::StubImages::one());
+    let result = support::run(
+        root.path(),
+        false,
+        stub.clone(),
+        "rates",
+        json!({"prompt":"a red fox","model":"gpt-image-2.6-sunburst","output_path":"fox.png"}),
+    )
+    .await;
+    let (model, _, _) = stub.first_call().expect("call");
+    assert_eq!(
+        (model.cost.input, model.cost.output, model.cost.cache_read),
+        (5.0, 30.0, 1.25)
+    );
+    assert_eq!(result.details["model"], "gpt-image-2.6-sunburst");
 }
 
 #[tokio::test]

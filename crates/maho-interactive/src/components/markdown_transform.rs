@@ -120,6 +120,11 @@ pub fn get_markdown_theme(theme: &Theme) -> MarkdownTheme {
         italic: Arc::new(move |text| italic.italic(text)),
         underline: Arc::new(move |text| underline.underline(text)),
         strikethrough: Arc::new(move |text| strike.strikethrough(text)),
+        // senpi installs the emphasis hooks only for themes that set `mdBold`/`mdItalic`/`mdStrikethrough`;
+        // this port has no such tokens yet, so every theme keeps the plain bold/italic/strikethrough path.
+        strong: None,
+        emphasis: None,
+        deleted: None,
         highlight_code: Some(Arc::new(move |code, language| {
             crate::theme::highlight_code(&highlight, code, language)
         })),

@@ -23,6 +23,7 @@ pub mod loopback;
 pub mod meta;
 pub mod oauth_page;
 pub mod openai_chatgpt;
+pub mod openai_chatgpt_model_catalog;
 pub mod openrouter;
 pub mod pkce;
 pub mod radius;

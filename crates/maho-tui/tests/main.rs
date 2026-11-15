@@ -11,6 +11,8 @@ pub mod editor_tests;
 pub mod input_tests;
 #[path = "layout_tests.rs"]
 pub mod layout_tests;
+#[path = "markdown_emphasis.rs"]
+pub mod markdown_emphasis;
 #[path = "markdown_golden.rs"]
 pub mod markdown_golden;
 #[path = "mouse_input_tests.rs"]

@@ -41,6 +41,9 @@ fn markdown_theme(theme: Theme) -> MarkdownTheme {
         italic: Arc::new(move |text| italic.italic(text)),
         strikethrough: Arc::new(move |text| strike.strikethrough(text)),
         underline: Arc::new(move |text| underline.underline(text)),
+        strong: None,
+        emphasis: None,
+        deleted: None,
         highlight_code: None,
         code_block_indent: None,
     }

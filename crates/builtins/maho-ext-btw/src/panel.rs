@@ -75,6 +75,9 @@ impl BtwPanel {
             italic,
             strikethrough,
             underline,
+            strong: None,
+            emphasis: None,
+            deleted: None,
             highlight_code: None,
             code_block_indent: None,
         };

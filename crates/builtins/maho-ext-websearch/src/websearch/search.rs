@@ -15,13 +15,29 @@ use std::{
 pub const ENGINE_COOLDOWN_BASE_MS: f64 = 60_000.;
 pub const ENGINE_COOLDOWN_MAX_MS: f64 = 15. * 60_000.;
 /// Engines that need no key or account; a block on any of them puts it on a per-session cooldown.
-/// Only the keyless engines this crate dispatches are listed; the rest join when their variants land.
 pub fn is_keyless_provider(provider: SearchProvider) -> bool {
-    matches!(provider, SearchProvider::DuckduckgoHtml)
+    matches!(
+        provider,
+        SearchProvider::DuckduckgoHtml
+            | SearchProvider::Startpage
+            | SearchProvider::Mojeek
+            | SearchProvider::Ecosia
+            | SearchProvider::GoogleHtml
+            | SearchProvider::ExaMcp
+            | SearchProvider::Searxng
+            | SearchProvider::Keenable
+    )
 }
 fn engine_name(provider: SearchProvider) -> &'static str {
     match provider {
         SearchProvider::DuckduckgoHtml => "DuckDuckGo",
+        SearchProvider::Startpage => "Startpage",
+        SearchProvider::Mojeek => "Mojeek",
+        SearchProvider::Ecosia => "Ecosia",
+        SearchProvider::GoogleHtml => "Google",
+        SearchProvider::ExaMcp => "Exa MCP",
+        SearchProvider::Searxng => "SearXNG",
+        SearchProvider::Keenable => "Keenable",
         other => other.as_str(),
     }
 }
@@ -288,6 +304,10 @@ fn detect_search_challenge(
 ) -> Option<&'static str> {
     match provider {
         SearchProvider::DuckduckgoHtml => super::providers::duckduckgo_html::detect_challenge(page),
+        SearchProvider::Startpage => super::providers::startpage::detect_challenge(page),
+        SearchProvider::Mojeek => super::providers::mojeek::detect_challenge(page),
+        SearchProvider::Ecosia => super::providers::ecosia::detect_challenge(page),
+        SearchProvider::GoogleHtml => super::providers::google_html::detect_challenge(page),
         _ => None,
     }
 }
@@ -365,7 +385,14 @@ pub async fn perform_provider_search(
         super::providers::parse_search_body(config.config.provider, &page.body)
     {
         parsed
-    } else if config.config.provider == SearchProvider::DuckduckgoHtml {
+    } else if matches!(
+        config.config.provider,
+        SearchProvider::DuckduckgoHtml
+            | SearchProvider::Startpage
+            | SearchProvider::Mojeek
+            | SearchProvider::Ecosia
+            | SearchProvider::GoogleHtml
+    ) {
         json!({"html":page.body,"url":page.url})
     } else if page.body.is_empty() {
         json!({})

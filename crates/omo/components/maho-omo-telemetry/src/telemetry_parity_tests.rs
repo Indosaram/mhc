@@ -320,6 +320,63 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
 }
 
 #[tokio::test]
+async fn consent_withdrawn_after_sampling_sends_no_turn_completed() {
+    let dir = tempfile::tempdir().unwrap();
+    let consented = Arc::new(AtomicBool::new(true));
+    let storage = create_summary_storage(
+        dir.path(),
+        crate::session_summary_owner::ProcessOwner {
+            pid: std::process::id(),
+            boot_id: "boot-self".into(),
+        },
+        Probes {
+            is_pid_alive: Some(Arc::new(|_| false)),
+            process_start_time: Some(Arc::new(|_| None)),
+        },
+        Some(Arc::new(|| 1000.0)),
+    );
+    let publish: SummaryPublish = Arc::new(|_| async { Ok(()) }.boxed() as BoxFuture<'static, _>);
+    let gate = Arc::clone(&consented);
+    // A 1.0 sample rate decides "sampled" for every session, so the only thing that can stop the
+    // send is the consent check, which the handler reads after the sampling decision.
+    let summary = SessionSummaryRecorder::new(SessionSummaryOptions {
+        is_consented: Arc::new(move |_| gate.load(Ordering::SeqCst)),
+        consent_scope: Arc::new(|| ConsentScope {
+            cwd: Some("/repo".into()),
+            config: None,
+        }),
+        is_scope_consented: Arc::new(|_| true),
+        storage,
+        publish,
+        session_role: crate::session_role::TelemetrySessionRole::Root,
+        sample_rate: Arc::new(|| 1.0),
+        now: Some(Arc::new(|| 1000.0)),
+        diagnostics: None,
+        dropped_events: None,
+        is_pid_alive: None,
+    });
+    let session = "consent-withdrawn";
+    assert!(summary.is_raw_turn_sampled(session));
+    let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&sent);
+    let gate = Arc::clone(&consented);
+    let handler = crate::omo_native_turns::OmoNativeTurnHandlerOptions {
+        capture: Arc::new(move |name, _| captured.lock().unwrap().push(name.to_string())),
+        diagnostics: None,
+        is_consented: Arc::new(move || gate.load(Ordering::SeqCst)),
+        session_id: session.into(),
+        session_role: crate::session_role::TelemetrySessionRole::Root,
+        summary,
+    };
+    consented.store(false, Ordering::SeqCst);
+    crate::omo_native_turns::handle_turn_end(&handler, &turn_event()).await;
+    assert!(
+        sent.lock().unwrap().is_empty(),
+        "consent withdrawn after sampling must suppress turn_completed"
+    );
+}
+
+#[tokio::test]
 async fn orphan_window_is_claimed_once_and_uses_originating_consent() {
     let dir = tempfile::tempdir().unwrap();
     let rows: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));

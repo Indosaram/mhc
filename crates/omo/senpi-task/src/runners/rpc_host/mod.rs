@@ -12,6 +12,7 @@ pub mod handle_teardown;
 pub mod host_command_dispatch;
 pub mod host_warmup;
 pub mod open_session;
+pub mod own_endpoint;
 pub mod reattach_port;
 pub mod session_client_connection;
 pub mod session_client_opening;

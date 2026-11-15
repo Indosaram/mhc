@@ -117,6 +117,17 @@ fn missing_user_config_creation_is_watched() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 #[test]
+fn cwd_at_home_retains_user_config_target() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".omo/agent"))?;
+    let r = resolve_omo_config_watch_target_resolution(&home, &home, &BTreeMap::new());
+    assert!(!r.targets.is_empty());
+    assert!(r.targets.iter().any(|t| t.path == home.join(".omo")));
+    Ok(())
+}
+
+#[test]
 fn existing_user_config_watched() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");

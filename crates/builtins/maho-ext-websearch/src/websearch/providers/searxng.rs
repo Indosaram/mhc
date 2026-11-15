@@ -16,7 +16,7 @@ fn searxng_search_url(base_url: &str) -> Result<url::Url, url::ParseError> {
 }
 
 pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::ParseError> {
-    let base = ctx.base_url.ok_or(url::ParseError::EmptyHost)?;
+    let base = ctx.base_url.unwrap_or_default();
     let mut url = searxng_search_url(base)?;
     url.query_pairs_mut()
         .append_pair(

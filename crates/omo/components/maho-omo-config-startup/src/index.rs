@@ -16,6 +16,10 @@ use model_core::{DEVIN_SWE2_SERVED_LANES, is_unserved_devin_swe2_selector};
 use omo_config_core::*;
 use serde_json::Value;
 
+use crate::opencode_routing_notice::{
+    RoutingNoticePlanOptions, create_open_code_routing_notice_plan,
+};
+
 #[derive(Default)]
 pub struct SenpiStartupMigrationResult {
     pub error: Option<String>,
@@ -64,6 +68,13 @@ pub fn run_senpi_startup_migration_with_options<'a>(
         };
     }
     let discovery_error = std::cell::RefCell::new(None);
+    let path_operations = if options.platform == Some(config_migration::Platform::Win32)
+        || (options.platform.is_none() && cfg!(windows))
+    {
+        PathOperations::Win32
+    } else {
+        PathOperations::Posix
+    };
     let batch = run_migrations(RunMigrationsOptions {
         after_migrations: None,
         clock: options.clock,
@@ -76,14 +87,7 @@ pub fn run_senpi_startup_migration_with_options<'a>(
                         environment,
                         file_system: options.discovery_file_system,
                         home_dir,
-                        path_operations: if options.platform
-                            == Some(config_migration::Platform::Win32)
-                            || (options.platform.is_none() && cfg!(windows))
-                        {
-                            PathOperations::Win32
-                        } else {
-                            PathOperations::Posix
-                        },
+                        path_operations,
                         platform: options.platform.or(if cfg!(windows) {
                             Some(config_migration::Platform::Win32)
                         } else {
@@ -99,6 +103,15 @@ pub fn run_senpi_startup_migration_with_options<'a>(
                     return Vec::new();
                 }
             };
+            let mut plans = plans;
+            // Native-only: what it reports is what the native harness ignores.
+            plans.push(create_open_code_routing_notice_plan(
+                &RoutingNoticePlanOptions {
+                    environment,
+                    home_dir,
+                    target_path: path_operations.join(&[home_dir, ".omo", "omo.jsonc"]),
+                },
+            ));
             plans
                 .iter()
                 .map(|plan| {
@@ -367,6 +380,11 @@ pub struct ConfigStartupComponent {
 
 impl Extension for ConfigStartupComponent {
     fn register(&self, api: &mut ExtensionApi) {
+        // senpi loads every extension even for a launch that only prints metadata; those must not
+        // touch the user's config, so the migration is skipped for them.
+        if crate::is_metadata_only_launch(&std::env::args().skip(1).collect::<Vec<_>>()) {
+            return;
+        }
         let cwd = api.cwd.to_string_lossy().into_owned();
         let mut env: BTreeMap<_, _> = std::env::vars().collect();
         let home = env

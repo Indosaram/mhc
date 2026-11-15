@@ -382,6 +382,114 @@ pub fn with_omo_native_attribution(
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    fn env(pairs: &[(&str, &str)]) -> telemetry_core::TelemetryEnv {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+    fn sha256_hex(value: &str) -> String {
+        let mut hash = Sha256::new();
+        hash.update(value.as_bytes());
+        format!("{:x}", hash.finalize())
+    }
+    #[test]
+    fn attribution_defaults_to_cli_and_persists_one_install_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = OmoNativeAttributionInput {
+            env: None,
+            state_dir: Some(dir.path()),
+        };
+        let first = get_omo_native_attribution(&input);
+        assert_eq!(first.surface, "cli");
+        assert!(!first.ci);
+        // The raw id never ships; the hash is sha256 of the persisted 64-hex id.
+        let persisted = read_install_id(&dir.path().join(INSTALL_ID_FILE_NAME)).unwrap();
+        assert!(is_install_id(&persisted));
+        assert_eq!(first.install_hash, sha256_hex(&persisted));
+        assert_ne!(first.install_hash, persisted);
+        // A second resolve reuses the same id rather than minting a new one.
+        assert_eq!(
+            get_omo_native_attribution(&input).install_hash,
+            first.install_hash
+        );
+    }
+    #[test]
+    fn desktop_surface_env_pin_wins_over_local_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let pinned = "a".repeat(64);
+        let pinned_env = env(&[
+            ("OMO_NATIVE_SURFACE", "desktop"),
+            ("OMO_NATIVE_INSTALL_ID", pinned.as_str()),
+        ]);
+        let attributed = get_omo_native_attribution(&OmoNativeAttributionInput {
+            env: Some(&pinned_env),
+            state_dir: Some(dir.path()),
+        });
+        assert_eq!(attributed.surface, "desktop");
+        assert_eq!(attributed.install_hash, sha256_hex(&pinned));
+        // The env pin is authoritative: nothing is minted into the local state dir.
+        assert!(read_install_id(&dir.path().join(INSTALL_ID_FILE_NAME)).is_none());
+    }
+    #[test]
+    fn ci_env_reflects_truthiness() {
+        for (value, expected) in [
+            (Some("true"), true),
+            (Some("1"), true),
+            (Some("TRUE"), true),
+            (Some("false"), false),
+            (Some("0"), false),
+            (Some("  "), false),
+            (None, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let owned = value.map(|value| env(&[("CI", value)]));
+            let attributed = get_omo_native_attribution(&OmoNativeAttributionInput {
+                env: owned.as_ref(),
+                state_dir: Some(dir.path()),
+            });
+            assert_eq!(attributed.ci, expected, "CI={value:?}");
+        }
+    }
+    #[test]
+    fn attribution_merged_into_product_preserves_existing_extras() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut product = create_omo_native_product_config();
+        product.additional_properties = Some(serde_json::Map::from_iter([(
+            "kept".to_string(),
+            serde_json::json!("yes"),
+        )]));
+        let merged = with_omo_native_attribution(
+            product,
+            &OmoNativeAttributionInput {
+                env: None,
+                state_dir: Some(dir.path()),
+            },
+        );
+        let properties = merged.additional_properties.unwrap();
+        assert_eq!(properties.get("kept"), Some(&serde_json::json!("yes")));
+        assert_eq!(properties.get("surface"), Some(&serde_json::json!("cli")));
+        assert_eq!(properties.get("ci"), Some(&serde_json::json!(false)));
+        assert!(properties.contains_key("install_hash"));
+    }
+    #[test]
+    fn every_event_property_declares_its_type() {
+        let schemas = omo_native_event_schemas();
+        let events = schemas.as_object().expect("event schemas are an object");
+        assert!(!events.is_empty());
+        for (event, properties) in events {
+            let properties = properties.as_object().expect("properties are an object");
+            assert!(!properties.is_empty(), "{event} declares no properties");
+            for (property, spec) in properties {
+                let typed = spec
+                    .as_object()
+                    .and_then(|spec| spec.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| matches!(kind, "string" | "number" | "boolean"));
+                assert!(typed, "{event}.{property} declares no scalar type");
+            }
+        }
+    }
     #[test]
     fn package_version_uses_build_metadata() {
         assert_eq!(

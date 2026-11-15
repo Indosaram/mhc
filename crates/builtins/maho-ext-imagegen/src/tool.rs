@@ -137,6 +137,15 @@ pub async fn execute_image(
             "none",
         );
     }
+    if args.get("complexity").is_some() && !crate::params::supports_complexity(model_id) {
+        return fail(
+            &format!(
+                "Error: complexity is supported only on GPT Image 2.6 models, not {model_id}."
+            ),
+            FailureReason::InvalidParams,
+            "none",
+        );
+    }
     let mut candidates = crate::auth::context_image_gen_candidates(ctx)?;
     let Some(first) = candidates.next().await else {
         return fail(SETUP_REASON, FailureReason::MissingConfig, "none");
@@ -224,7 +233,13 @@ pub async fn execute_image(
             );
         }
     }
+    // A 2.6 id is not in the generated catalog yet, so its row comes from the 2.5 counterpart: the
+    // pair bills at the same rates and takes the same input modalities (senpi#5820).
     let base_model = maho_ai::image_models::get_image_model("openai", model_id)
+        .or_else(|| {
+            crate::params::fallback_model(model_id)
+                .and_then(|fallback| maho_ai::image_models::get_image_model("openai", fallback))
+        })
         .ok_or_else(|| ExtensionFailure::new("Unknown image model"))?
         .clone();
     let controller = maho_ai::utils::abort::AbortController::new();
@@ -237,10 +252,15 @@ pub async fn execute_image(
         ("output_format", "outputFormat"),
         ("output_compression", "outputCompression"),
         ("moderation", "moderation"),
+        ("complexity", "complexity"),
     ] {
         if let Some(value) = args.get(field) {
             extra.insert(key.into(), value.clone());
         }
+    }
+    // 2.5 and older reject the field, so it never reaches the wire for them.
+    if !crate::params::supports_complexity(model_id) {
+        extra.remove("complexity");
     }
     extra.entry("size").or_insert(json!(size));
     extra.entry("quality").or_insert(json!(quality));
@@ -269,6 +289,10 @@ pub async fn execute_image(
     let request = |candidate: &ImageGenCandidate| {
         let resolved = candidate.resolved.clone();
         let mut model = base_model.clone();
+        model.id = model_id.to_string();
+        if let Some(name) = crate::params::model_display_name(model_id) {
+            model.name = name.to_string();
+        }
         model.provider = resolved
             .provider_id
             .clone()

@@ -603,6 +603,7 @@ fn tour_skills_root(env: &std::collections::BTreeMap<String, String>, packaged: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn the_tour_names_a_valid_override_and_keeps_the_packaged_root_otherwise() {
@@ -630,6 +631,35 @@ mod tests {
             session_history: Some(Arc::new(|| None)),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_failed_scan_is_retried_and_only_success_is_kept() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let once = SyncOnce::new(Arc::new(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            (n > 0).then(|| format!("SCAN-RETRY-OK-{n}"))
+        }));
+        assert_eq!(once.get(), None);
+        assert_eq!(once.get(), Some("SCAN-RETRY-OK-1".into()));
+        assert_eq!(once.get(), Some("SCAN-RETRY-OK-1".into()));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_panicking_scan_is_retried_not_cached() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let once = SyncOnce::new(Arc::new(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            assert!(n > 0, "first scan panics");
+            Some("ok".to_string())
+        }));
+        assert_eq!(once.get(), None);
+        assert_eq!(once.get(), Some("ok".into()));
+        assert_eq!(once.get(), Some("ok".into()));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     fn register(path: &std::path::Path) -> ExtensionApi {

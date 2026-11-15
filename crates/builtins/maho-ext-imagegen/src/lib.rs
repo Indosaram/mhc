@@ -82,7 +82,7 @@ impl Extension for ImageGen {
     fn register(&self, api: &mut ExtensionApi) {
         let mut definition = ToolDefinition::new(
             "generate_image",
-            "Generate or edit an image with OpenAI gpt-image-2.5 (Sunburst by default, the most capable; Flare when speed matters more than quality) and save it as a png, jpeg, or webp file, optionally with a transparent background. Pass reference_image_paths to edit or reference existing images. Generate directly when the request is clear instead of asking for confirmation. Returns the saved file paths.",
+            "Generate or edit an image with OpenAI gpt-image-2.6 (Sunburst by default, the most capable; Flare when speed matters more than quality; an endpoint without 2.6 falls back to 2.5) and save it as a png, jpeg, or webp file, optionally with a transparent background. Pass reference_image_paths to edit or reference existing images. Generate directly when the request is clear instead of asking for confirmation. Returns the saved file paths.",
             params::parameters(),
             Arc::new(|_| {
                 Box::pin(async { Err(ToolError::Message("Extension context required".into())) })

@@ -1,12 +1,46 @@
 use serde_json::Value;
 
-pub const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2.5-sunburst";
+pub const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2.6-sunburst";
+
+/// The native Responses `image_generation` tool has no client-side retry, so it stays on the newest
+/// model verified end to end through the ChatGPT subscription backend until 2.6 is proven there
+/// (senpi#5820).
+pub const NATIVE_IMAGE_MODEL: &str = "gpt-image-2.5-sunburst";
 
 pub const IMAGE_MODEL_NAMES: &[(&str, &str)] = &[
+    ("gpt-image-2.6-sunburst", "GPT Image 2.6 Sunburst"),
+    ("gpt-image-2.6-flare", "GPT Image 2.6 Flare"),
     ("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst"),
     ("gpt-image-2.5-flare", "GPT Image 2.5 Flare"),
     ("gpt-image-2", "GPT Image 2"),
 ];
+
+/// Gateway allowlists lag OpenAI releases: a 2.6 id an endpoint does not serve answers on its 2.5
+/// counterpart, which also supplies the 2.6 row's input modalities and rates (the 2.6 pair bills at
+/// the 2.5 rates).
+pub const IMAGE_MODEL_FALLBACKS: &[(&str, &str)] = &[
+    ("gpt-image-2.6-sunburst", "gpt-image-2.5-sunburst"),
+    ("gpt-image-2.6-flare", "gpt-image-2.5-flare"),
+];
+
+/// Only GPT Image 2.6 accepts the `complexity` request field; older models reject it.
+pub fn supports_complexity(model: &str) -> bool {
+    matches!(model, "gpt-image-2.6-sunburst" | "gpt-image-2.6-flare")
+}
+
+pub fn model_display_name(model: &str) -> Option<&'static str> {
+    IMAGE_MODEL_NAMES
+        .iter()
+        .find(|(id, _)| *id == model)
+        .map(|(_, name)| *name)
+}
+
+pub fn fallback_model(model: &str) -> Option<&'static str> {
+    IMAGE_MODEL_FALLBACKS
+        .iter()
+        .find(|(id, _)| *id == model)
+        .map(|(_, fallback)| *fallback)
+}
 pub struct GenerateImageBase<'a> {
     pub model: &'a str,
     pub size: &'a str,
@@ -60,6 +94,14 @@ pub fn parameters() -> Value {
           "anyOf": [
             {
               "type": "string",
+              "const": "gpt-image-2.6-sunburst"
+            },
+            {
+              "type": "string",
+              "const": "gpt-image-2.6-flare"
+            },
+            {
+              "type": "string",
               "const": "gpt-image-2.5-sunburst"
             },
             {
@@ -71,8 +113,8 @@ pub fn parameters() -> Value {
               "const": "gpt-image-2"
             }
           ],
-          "default": "gpt-image-2.5-sunburst",
-          "description": "Sunburst (default) is the most capable: highest quality, precise edits, reference fidelity, best for final assets; Flare is the small model optimized for speed, with quality comparable to gpt-image-2; gpt-image-2 is the previous generation."
+          "default": "gpt-image-2.6-sunburst",
+          "description": "gpt-image-2.6-sunburst (default) is the most capable: highest quality, dense text, and the most consistent details across repeated edits; gpt-image-2.6-flare is the fast model for iteration and layouts. The 2.5 pair and gpt-image-2 are previous generations."
         },
         "size": {
           "type": "string",
@@ -107,7 +149,24 @@ pub fn parameters() -> Value {
             }
           ],
           "default": "auto",
-          "description": "Rendering quality. Defaults to auto. xhigh/max are gpt-image-2.5 only, slower and costlier."
+          "description": "Rendering quality. Defaults to auto. xhigh/max need gpt-image-2.5 or 2.6 and are slower and costlier."
+        },
+        "complexity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "low"
+            },
+            {
+              "type": "string",
+              "const": "medium"
+            },
+            {
+              "type": "string",
+              "const": "high"
+            }
+          ],
+          "description": "GPT Image 2.6 only: how much the model plans before rendering, at no extra cost. Omitted means high. low suits focused edits; medium/high help dense text and complex layouts but are slower and may change more."
         },
         "reference_image_paths": {
           "type": "array",

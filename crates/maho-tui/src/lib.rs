@@ -36,6 +36,7 @@ pub mod oklab; // ledger sync-5152
 pub mod paste_markers; // todo 8
 pub mod process_env; // todo 6
 pub mod process_stdio; // todo 6
+pub mod program_status; // ledger sync-5152
 pub mod slash_command_autocomplete; // todo 8
 pub mod stderr_observer; // todo 6
 pub mod stdin_buffer; // todo 6

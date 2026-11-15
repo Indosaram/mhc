@@ -50,7 +50,7 @@ async fn saves_image_reports_path_and_records_revised_prompts() {
         result.details["revisedPrompts"],
         json!(["A richly detailed red fox"])
     );
-    assert_eq!(result.details["model"], "gpt-image-2.5-sunburst");
+    assert_eq!(result.details["model"], "gpt-image-2.6-sunburst");
     assert_eq!(result.details["requested"], 1);
     assert_eq!(result.details["generated"], 1);
     assert_eq!(result.details["size"], "auto");
@@ -145,7 +145,7 @@ async fn gateway_base_url_provider_and_key_thread_through_options() {
     assert_eq!(model.base_url, "https://gateway.example/openai/v1");
     assert_eq!(model.provider, "quotio-openai");
     assert_eq!(model.api, "openai-images");
-    assert_eq!(model.id, "gpt-image-2.5-sunburst");
+    assert_eq!(model.id, "gpt-image-2.6-sunburst");
     assert_eq!(options.request.api_key.as_deref(), Some("gateway-secret"));
     assert_eq!(options.extra["size"], json!("1024x1536"));
     assert_eq!(options.extra["quality"], json!("high"));

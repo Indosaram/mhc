@@ -658,6 +658,92 @@ pub fn convert_model_choices(
     }
 }
 
+// omo-config-core loader/resolution.ts folds a legacy `[senpi]` block under `[native]`.
+const NATIVE_BLOCKS: [&str; 2] = ["[senpi]", "[native]"];
+
+fn is_configured(document: &Value, section: &str, name: &str) -> bool {
+    std::iter::once(document.get(section))
+        .chain(
+            NATIVE_BLOCKS
+                .iter()
+                .map(|key| document.get(*key).and_then(|block| block.get(section))),
+        )
+        .any(|entries| record(entries).contains_key(name))
+}
+
+/// The omo.jsonc member that sets `value` for `section.name` in the native harness.
+fn native_routing_line(section: &str, name: &str, value: &Value) -> String {
+    let members = value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, member)| format!("\"{key}\": {member}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    format!("\"[native]\": {{ \"{section}\": {{ \"{name}\": {{ {members} }} }} }}")
+}
+
+/// Port of `openCodeRoutingGap`: the edition's model settings `document` does not use, one line
+/// each with the omo.jsonc member that would set it natively. Reports only, never converts.
+pub fn open_code_routing_gap(document: &Value, edition: &EditionRouting) -> Vec<String> {
+    let mut raw = RawModelChoices::default();
+    let (categories, agents) = edition_choices(edition, document.get("[opencode]"));
+    raw.categories = categories;
+    raw.agents = agents;
+    let context = Context {
+        registry: None,
+        oauth_providers: &HashSet::new(),
+    };
+    let mut dropped = Vec::new();
+    let categories = convert_categories(&raw, &context, &mut dropped);
+    let agents = convert_agents(&raw, &context, &mut dropped);
+    let mut lines = Vec::new();
+    for (section, choices) in [("categories", categories), ("agents", agents)] {
+        let noun = if section == "agents" {
+            "agent"
+        } else {
+            "category"
+        };
+        for choice in choices {
+            if is_configured(document, section, &choice.name) {
+                continue;
+            }
+            lines.push(format!(
+                "{noun} {}: add {}",
+                choice.from,
+                native_routing_line(section, &choice.name, &choice.entry)
+            ));
+        }
+    }
+    for item in dropped {
+        let Some(target) = item.target else {
+            lines.push(item.text);
+            continue;
+        };
+        if is_configured(document, target.section, &target.name) {
+            continue;
+        }
+        let model = target
+            .model
+            .clone()
+            .unwrap_or_else(|| "<provider>/<model>".to_owned());
+        let line = native_routing_line(target.section, &target.name, &json!({ "model": model }));
+        lines.push(format!("{}: add {line}", item.text));
+    }
+    lines
+}
+
+/// Port of `openCodeRoutingNotice`: the one-line lead of the report.
+pub fn open_code_routing_notice(lines: &[String]) -> String {
+    format!(
+        "OpenCode edition model settings Native does not use; run omo setup to carry them over, or set them in omo.jsonc: {}",
+        lines.join("; ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,5 +863,66 @@ mod tests {
         );
         assert!(has_model_choices(&raw));
         assert!(!has_model_choices(&RawModelChoices::default()));
+    }
+
+    fn edition(categories: Value, agents: Value) -> EditionRouting {
+        EditionRouting {
+            agents: agents.as_object().cloned().expect("agents object"),
+            categories: categories.as_object().cloned().expect("categories object"),
+            notices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_routing_gap_names_only_settings_the_document_does_not_already_set() {
+        let edition = edition(
+            json!({"deep": {"model": "opencode-go/glm-5.2"}}),
+            json!({"metis": {"model": "openai/gpt-5"}}),
+        );
+        let gap = open_code_routing_gap(&json!({}), &edition);
+        assert_eq!(gap.len(), 2, "{gap:?}");
+        assert!(
+            gap[0].starts_with("category deep: add \"[native]\": { \"categories\": { \"deep-low\": { \"model\": \"opencode-go/glm-5.2\" }"),
+            "{}",
+            gap[0]
+        );
+        assert!(
+            gap[1].starts_with("agent metis: add \"[native]\": { \"agents\": { \"plan-consultant\": { \"model\": \"openai/gpt-5\" }"),
+            "{}",
+            gap[1]
+        );
+    }
+
+    #[test]
+    fn a_setting_already_configured_natively_is_not_reported() {
+        let edition = edition(
+            json!({"quick": {"model": "openai/gpt-5"}}),
+            json!({"plan-consultant": {"model": "openai/gpt-5"}}),
+        );
+        let document = json!({
+            "categories": {"quick": {"model": "openai/gpt-5"}},
+            "[senpi]": {"agents": {"plan-consultant": {"model": "openai/gpt-5"}}}
+        });
+        assert_eq!(
+            open_code_routing_gap(&document, &edition),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_opencode_block_of_the_document_overlays_the_edition() {
+        let edition = edition(json!({}), json!({}));
+        let document = json!({"[opencode]": {"categories": {"quick": {"model": "openai/gpt-5"}}}});
+        let gap = open_code_routing_gap(&document, &edition);
+        assert_eq!(gap.len(), 1, "{gap:?}");
+        assert!(gap[0].starts_with("category quick: add "), "{}", gap[0]);
+    }
+
+    #[test]
+    fn the_notice_joins_the_gap_lines_after_one_lead() {
+        assert_eq!(
+            open_code_routing_notice(&["a".to_owned(), "b".to_owned()]),
+            "OpenCode edition model settings Native does not use; run omo setup to carry them over, or set them in omo.jsonc: a; b"
+        );
     }
 }

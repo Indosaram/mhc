@@ -26,7 +26,7 @@ async fn defaults_to_sunburst_and_prices_from_the_static_catalog() {
     .await;
 
     let (model, _, _) = stub.first_call().expect("call");
-    assert_eq!(model.id, "gpt-image-2.5-sunburst");
+    assert_eq!(model.id, "gpt-image-2.6-sunburst");
     assert_eq!(
         (
             model.cost.input,
@@ -36,7 +36,7 @@ async fn defaults_to_sunburst_and_prices_from_the_static_catalog() {
         ),
         (5.0, 30.0, 1.25, 0.0)
     );
-    assert_eq!(result.details["model"], "gpt-image-2.5-sunburst");
+    assert_eq!(result.details["model"], "gpt-image-2.6-sunburst");
 }
 
 #[tokio::test]

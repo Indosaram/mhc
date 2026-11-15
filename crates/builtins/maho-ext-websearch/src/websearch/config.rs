@@ -73,6 +73,23 @@ fn provider(value: &str) -> Option<SearchProvider> {
         "perplexity" => SearchProvider::Perplexity,
         "xai" => SearchProvider::Xai,
         "kimi" => SearchProvider::Kimi,
+        "kagi" => SearchProvider::Kagi,
+        "startpage" => SearchProvider::Startpage,
+        "mojeek" => SearchProvider::Mojeek,
+        "ecosia" => SearchProvider::Ecosia,
+        "google-html" => SearchProvider::GoogleHtml,
+        "searxng" => SearchProvider::Searxng,
+        "serpdive" => SearchProvider::Serpdive,
+        "exa-mcp" => SearchProvider::ExaMcp,
+        "keenable" => SearchProvider::Keenable,
+        "firecrawl" => SearchProvider::Firecrawl,
+        "jina" => SearchProvider::Jina,
+        "ollama" => SearchProvider::Ollama,
+        "openrouter" => SearchProvider::OpenRouter,
+        "parallel" => SearchProvider::Parallel,
+        "public" => SearchProvider::Public,
+        "synthetic" => SearchProvider::Synthetic,
+        "tinyfish" => SearchProvider::Tinyfish,
         _ => return None,
     })
 }
@@ -192,6 +209,14 @@ pub fn validate_provider_config(
         ));
     }
     let missing = |message: String| Err((ConfigLoadFailureReason::MissingApiKey, message));
+    if config.provider == SearchProvider::Searxng
+        && config.base_url.as_ref().is_none_or(String::is_empty)
+    {
+        return Err((
+            ConfigLoadFailureReason::InvalidConfig,
+            "Provider searxng requires baseUrl.".into(),
+        ));
+    }
     if config.provider == SearchProvider::GoogleCse
         && config
             .search_engine_id

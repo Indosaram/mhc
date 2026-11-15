@@ -52,6 +52,12 @@ pub struct MarkdownTheme {
     pub italic: ThemeFn,
     pub strikethrough: ThemeFn,
     pub underline: ThemeFn,
+    /// Inline `**strong**` text (default: `bold`).
+    pub strong: Option<ThemeFn>,
+    /// Inline `*emphasis*` text (default: `italic`).
+    pub emphasis: Option<ThemeFn>,
+    /// Inline `~~deleted~~` text (default: `strikethrough`).
+    pub deleted: Option<ThemeFn>,
     pub highlight_code: Option<HighlightFn>,
     pub code_block_indent: Option<String>,
 }
@@ -459,6 +465,37 @@ impl Markdown {
             .unwrap_or_default()
     }
 
+    /// Inline `strong`/`em`/`del` through a theme hook. The hook applies inside the surrounding
+    /// style context, so a color it sets wins over the heading or default text color instead of
+    /// being overridden by it.
+    // The composed hook holds the surrounding context's `apply_text`, which is not `Send`/`Sync`:
+    // rendering is single-threaded and `InlineStyleContext` is a per-call value, never shared.
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn render_emphasis_hook(
+        &mut self,
+        tokens: &[Token],
+        style_context: &InlineStyleContext,
+        style_fn: &ThemeFn,
+    ) -> String {
+        let inner = InlineStyleContext {
+            apply_text: {
+                let apply = style_context.apply_text.clone();
+                let style = style_fn.clone();
+                Arc::new(move |text: &str| apply(&style(text)))
+            },
+            style_prefix: format!(
+                "{}{}",
+                style_context.style_prefix,
+                Self::get_style_prefix(style_fn)
+            ),
+        };
+        format!(
+            "{}{}",
+            style_fn(&self.render_inline_tokens(tokens, Some(&inner))),
+            style_context.style_prefix
+        )
+    }
+
     fn default_inline_style_context(&mut self) -> InlineStyleContext {
         let prefix = self.get_default_style_prefix();
         let style = self.default_text_style.clone();
@@ -795,14 +832,30 @@ impl Markdown {
                     result.push_str(&self.render_inline_tokens(tokens.tokens(), Some(&resolved)));
                 }
                 Token::Strong { tokens, .. } => {
-                    let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
-                    result.push_str(&(self.theme.bold)(&content));
-                    result.push_str(&style_prefix);
+                    if let Some(strong) = self.theme.strong.clone() {
+                        result.push_str(&self.render_emphasis_hook(
+                            tokens.tokens(),
+                            &resolved,
+                            &strong,
+                        ));
+                    } else {
+                        let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
+                        result.push_str(&(self.theme.bold)(&content));
+                        result.push_str(&style_prefix);
+                    }
                 }
                 Token::Em { tokens, .. } => {
-                    let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
-                    result.push_str(&(self.theme.italic)(&content));
-                    result.push_str(&style_prefix);
+                    if let Some(emphasis) = self.theme.emphasis.clone() {
+                        result.push_str(&self.render_emphasis_hook(
+                            tokens.tokens(),
+                            &resolved,
+                            &emphasis,
+                        ));
+                    } else {
+                        let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
+                        result.push_str(&(self.theme.italic)(&content));
+                        result.push_str(&style_prefix);
+                    }
                 }
                 Token::Codespan { text, .. } => {
                     result.push_str(&(self.theme.code)(text));
@@ -841,9 +894,17 @@ impl Markdown {
                 }
                 Token::Br { .. } => result.push('\n'),
                 Token::Del { tokens, .. } => {
-                    let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
-                    result.push_str(&(self.theme.strikethrough)(&content));
-                    result.push_str(&style_prefix);
+                    if let Some(deleted) = self.theme.deleted.clone() {
+                        result.push_str(&self.render_emphasis_hook(
+                            tokens.tokens(),
+                            &resolved,
+                            &deleted,
+                        ));
+                    } else {
+                        let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
+                        result.push_str(&(self.theme.strikethrough)(&content));
+                        result.push_str(&style_prefix);
+                    }
                 }
                 Token::Html { raw, .. } => result.push_str(&apply_text_with_newlines(raw)),
                 other => {
