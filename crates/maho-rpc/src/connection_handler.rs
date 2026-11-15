@@ -1031,6 +1031,7 @@ async fn run_prompt_command(
         thinking_level,
         session_title_prompt,
         expand_prompt_templates,
+        unknown_command_as_text,
     } = &command.body
     else {
         unreachable!("only prompt commands are routed here")
@@ -1073,6 +1074,7 @@ async fn run_prompt_command(
                 thinking_level,
                 session_title_prompt,
                 expand_prompt_templates: *expand_prompt_templates,
+                unknown_command_as_text: unknown_command_as_text.unwrap_or(false),
                 streaming_behavior: streaming_behavior.map(|behavior| match behavior {
                     crate::rpc_types::StreamingBehavior::Steer => {
                         maho_ext_api::StreamingBehavior::Steer
@@ -1086,6 +1088,13 @@ async fn run_prompt_command(
             })
         })();
         let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The session moved its options into the run, so classification rebuilds the two fields the
+        // refusal check reads. `prompt` fails with exactly this rejection's message when it refuses.
+        let classification = maho_core::agent_session::PromptOptions {
+            source: Some(maho_ext_api::InputSource::Rpc),
+            unknown_command_as_text: unknown_command_as_text.unwrap_or(false),
+            ..Default::default()
+        };
         let result = match options {
             Err(error) => Err(error),
             Ok(mut options) => {
@@ -1119,6 +1128,33 @@ async fn run_prompt_command(
         if admitted.load(std::sync::atomic::Ordering::SeqCst) {
             return None;
         }
+        // senpi client-input-handler: a refusal carries its own error code and data so a client can
+        // offer to resend the text as a message instead of showing a bare failure.
+        let rejection = match &result {
+            Err(error) => session
+                .unknown_command_rejection(message, &classification)
+                .filter(|rejection| rejection.to_string() == *error),
+            Ok(_) => None,
+        };
+        if let Some(rejection) = rejection {
+            let error = format!(
+                "{} {}",
+                rejection,
+                maho_core::unknown_command::UNKNOWN_COMMAND_CONFIRM_HINT
+            );
+            return Some(command_response_coded(
+                session,
+                command,
+                "prompt",
+                Err(error),
+                Some(crate::rpc_types::RPC_ERROR_UNKNOWN_COMMAND),
+                Some(serde_json::json!({
+                    "command": rejection.command,
+                    "suggestions": rejection.suggestions,
+                    "reason": rejection.reason.as_str(),
+                })),
+            ));
+        }
         Some(command_response(session, command, "prompt", result))
     }
 }
@@ -1127,6 +1163,16 @@ fn command_response(
     command: &RpcCommand,
     kind: &str,
     result: Result<Option<serde_json::Value>, String>,
+) -> RpcResponse {
+    command_response_coded(session, command, kind, result, None, None)
+}
+fn command_response_coded(
+    session: &AgentSession,
+    command: &RpcCommand,
+    kind: &str,
+    result: Result<Option<serde_json::Value>, String>,
+    error_code: Option<&str>,
+    error_data: Option<serde_json::Value>,
 ) -> RpcResponse {
     RpcResponse {
         id: command.id.clone(),
@@ -1137,8 +1183,8 @@ fn command_response(
             Ok(data) => RpcResponseResult::Success { data },
             Err(error) => RpcResponseResult::Error {
                 error,
-                error_code: None,
-                error_data: default_error_data(session, kind),
+                error_code: error_code.map(str::to_owned),
+                error_data: error_data.or_else(|| default_error_data(session, kind)),
             },
         },
     }
@@ -1236,7 +1282,7 @@ async fn handle_session_command_with_sink(
             let kind=if matches!(&command.body,RpcCommandBody::Steer{..}){"steer"}else{"follow_up"};
             let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose();
             let result=match images{Err(error)=>Err(error.to_string()),Ok(images)=>{
-                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false};
+                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false,..Default::default()};
                 if kind=="steer"{session.steer(message,images,options).await}else{session.follow_up(message,images,options).await}
             }};
             (kind,result.map(|()|None))

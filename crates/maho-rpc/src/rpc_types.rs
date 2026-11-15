@@ -150,6 +150,10 @@ pub enum RpcCommandBody {
         session_title_prompt: Option<SessionTitlePrompt>,
         #[serde(skip_serializing_if = "Option::is_none")]
         expand_prompt_templates: Option<bool>,
+        /// senpi `unknownCommandAsText`: the client confirmed a refusal and wants this text sent as
+        /// a message rather than refused again.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unknown_command_as_text: Option<bool>,
     },
     SendCustomMessage {
         custom_type: String,

@@ -332,3 +332,92 @@ async fn message_dispatch_updates_persisted_context_and_acknowledges_control_com
     );
     session.dispose().await;
 }
+
+/// A `prompt` whose message is a `/name` no command resolves must fail with the coded refusal and
+/// the resend hint, not run a turn; `unknownCommandAsText: true` is the client's confirmation.
+#[tokio::test]
+async fn an_unknown_command_prompt_is_refused_with_a_resend_hint() {
+    let temp = tempfile::tempdir().expect("root");
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let directory = temp.path().join("sessions");
+    let manager = SessionManager::create(&cwd, Some(directory.to_str().expect("directory")), None);
+    let provider =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    let model = provider.get_model(Some("faux-1")).expect("model");
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+        providers: Some(vec![provider.provider.clone()]),
+        ..Default::default()
+    })
+    .expect("valid model runtime");
+    let session = create_agent_session(CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()),
+        agent_dir: Some(cwd),
+        model_runtime: Some(runtime),
+        model: Some(model),
+        session_manager: Some(manager),
+        settings_manager: Some(SettingsManager::from_storage(
+            Box::new(InMemorySettingsStorage::default()),
+            false,
+        )),
+        no_tools: Some(NoToolsMode::All),
+        auto_title_sessions: Some(false),
+        ..Default::default()
+    })
+    .await
+    .expect("session")
+    .session;
+
+    let refused = command(&session, json!({"type":"prompt","message":"/agreement"})).await;
+    assert_eq!(refused["success"], false, "response: {refused}");
+    assert_eq!(
+        refused["errorCode"],
+        maho_rpc::rpc_types::RPC_ERROR_UNKNOWN_COMMAND
+    );
+    assert_eq!(refused["errorData"]["command"], "agreement");
+    assert_eq!(refused["errorData"]["reason"], "unknown");
+    assert!(
+        refused["errorData"]["suggestions"].is_array(),
+        "the refusal carries its suggestion list: {refused}"
+    );
+    let error = refused["error"].as_str().expect("error string");
+    assert!(
+        error.starts_with("Unknown command /agreement."),
+        "the refusal names the command: {error}"
+    );
+    assert!(
+        error.ends_with(maho_core::unknown_command::UNKNOWN_COMMAND_CONFIRM_HINT),
+        "the refusal carries the resend hint: {error}"
+    );
+    assert!(
+        session
+            .messages()
+            .iter()
+            .all(|message| message.role() != "user"),
+        "the refused command never reached the model"
+    );
+
+    // The client confirms: the same text now goes through as a message.
+    provider.append_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message("fixture assistant", Default::default())
+            .into(),
+    ]);
+    let confirmed = command(
+        &session,
+        json!({"type":"prompt","message":"/agreement","unknownCommandAsText":true}),
+    )
+    .await;
+    assert_eq!(confirmed["success"], true, "response: {confirmed}");
+    assert_eq!(confirmed["data"]["disposition"], "started");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !session
+            .messages()
+            .iter()
+            .any(|message| message.role() == "user")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the confirmed message reaches the model context");
+    session.dispose().await;
+}
