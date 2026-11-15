@@ -16,16 +16,33 @@ pub type MahoAllocator = std::alloc::System;
 pub const ALLOCATOR: MahoAllocator = std::alloc::System;
 
 /// Read by jemalloc at its first allocation; `_RJEM_MALLOC_CONF` in the environment still overrides it.
-/// jemalloc only builds its background purge thread on non-Mach-O pthread targets, so other
-/// unix targets leave `background_thread` out instead of warning at every startup.
+///
+/// `retain:false` bounds the footprint of a long-lived session on macOS, and whether it buys
+/// anything depends on how the OS accounts for a purged-but-retained page:
+///
+/// - macOS counts it. With jemalloc's default `retain:true` the purged pages stay in retained VM
+///   areas and `phys_footprint` keeps the peak it ever reached, which showed up as hundreds of MB of
+///   `App-Specific Tag 15` in a single session whose live heap was a few MB. Measured on one session
+///   over six identical turns: 170 -> 106 MB footprint, 216 -> 98 MB RSS. A probe that freed 64 MiB
+///   then purged kept 81 MB `retained` with the default and 0 MB with `retain:false`.
+/// - Linux does not, so its config leaves `retain` at the default: measured on a 131 MiB session,
+///   steady RSS was 452 MB both ways and `allocated` was 283 MB both ways, while only `retained`
+///   address space moved, 1144 MB -> 0 MB. Turning the knob on there would cost a re-mmap whenever
+///   the heap regrows and buy no resident memory.
+///
+/// `dirty_decay_ms:0`/`muzzy_decay_ms:0` release dirty and muzzy pages immediately, one arena keeps
+/// the purge addressable as a single unit, the 4 KiB slabs mean a slab pinned by one surviving
+/// object holds one page instead of a multi-page run, and `tcache_max:1024` bounds the per-thread
+/// cache. jemalloc only builds its background purge thread on non-Mach-O pthread targets, so the
+/// non-Linux unix targets leave `background_thread` out instead of warning at every startup.
 #[cfg(target_os = "linux")]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static JEMALLOC_CONF: &[u8; 103] =
     b"background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1,slab_sizes:1-4096:1,tcache_max:1024\0";
 #[cfg(all(unix, not(target_os = "linux")))]
 #[unsafe(export_name = "_rjem_malloc_conf")]
-pub static JEMALLOC_CONF: &[u8; 80] =
-    b"dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1,slab_sizes:1-4096:1,tcache_max:1024\0";
+pub static JEMALLOC_CONF: &[u8; 93] =
+    b"retain:false,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1,slab_sizes:1-4096:1,tcache_max:1024\0";
 
 /// jemalloc's process-wide byte counters (`stats.*`), refreshed when read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +175,8 @@ mod tests {
         if std::env::var_os("_RJEM_MALLOC_CONF").is_some() {
             return;
         }
+        #[cfg(not(target_os = "linux"))]
+        assert!(!option::<bool>(b"opt.retain\0"));
         assert_eq!(option::<isize>(b"opt.dirty_decay_ms\0"), 0);
         assert_eq!(option::<isize>(b"opt.muzzy_decay_ms\0"), 0);
         assert_eq!(option::<u32>(b"opt.narenas\0"), 1);
@@ -177,6 +196,29 @@ mod tests {
         );
         assert!(during.active >= during.allocated && during.resident >= during.active / 2);
         drop(block);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn purged_pages_are_returned_instead_of_retained() {
+        if std::env::var_os("_RJEM_MALLOC_CONF").is_some() {
+            return;
+        }
+        let block = vec![9u8; 32 << 20];
+        let grown = heap_stats().expect("jemalloc stats");
+        assert!(grown.allocated >= 32 << 20, "{grown:?}");
+        drop(block);
+        reclaim_unused_heap();
+        let after = heap_stats().expect("jemalloc stats");
+        // With jemalloc's default `retain:true` these pages stay in retained VM areas, so the
+        // process keeps ~32 MiB of address space and footprint after the allocation is gone.
+        assert!(
+            after.retained < 8 << 20,
+            "retained {} bytes after a 32 MiB free (active {}, resident {})",
+            after.retained,
+            after.active,
+            after.resident
+        );
     }
 
     #[cfg(target_os = "linux")]

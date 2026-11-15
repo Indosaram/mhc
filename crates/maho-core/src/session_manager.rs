@@ -1600,6 +1600,15 @@ impl SessionManager {
             // list. Here each entry's large strings move into a staging store as its line is parsed and are
             // handed to the resident store once this session's blob directory is settled, so loading never
             // holds the whole parsed history and leaves far less fragmented heap. Same entries and strings.
+            //
+            // The threshold matches the idle park's 1 KiB rather than the 32 KiB
+            // `externalize_in_place` default: measured on a 131 MiB session, strings below 32 KiB were
+            // 82.5 MiB of the 122.7 MiB of string payload (8-32 KiB: 48.2 MiB over 3,160 strings,
+            // 1-8 KiB: 34.3 MiB over 10,106), so a 32 KiB floor left most of the payload resident for the
+            // whole session. Every string externalized here is one the idle park would externalize, but
+            // the park then spills all of them to disk while this only sends what exceeds the store's
+            // budget there.
+            const LOAD_EXTERNALIZE_MIN_BYTES: usize = 1024;
             let staging = crate::session_resident_store::ResidentStringStore::new(
                 crate::session_resident_store::ResidentStringStoreOptions {
                     max_bytes: Some(usize::MAX),
@@ -1607,7 +1616,7 @@ impl SessionManager {
                 },
             );
             let mut prepare = |entry: &mut Value| {
-                staging.externalize_in_place(entry);
+                staging.externalize_in_place_with_min(entry, LOAD_EXTERNALIZE_MIN_BYTES);
                 shrink_json_to_fit(entry);
             };
             let (entries, identity) = if self.captures_transcript_base {
@@ -1785,12 +1794,14 @@ impl SessionManager {
             self.leaf_id = Some(id.clone());
             self.accumulate_usage(entry);
             if entry_type(entry) == "session_info" {
+                // A name of 1 KiB or more is a resident-store token at this point; caching the token
+                // would show it as the session title and, through the label path below, persist it.
                 self.session_name_cache = entry
                     .get("name")
                     .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned);
+                    .map(|name| self.resident_store.materialize_string(name, None))
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty());
             }
             if entry_type(entry) == "label" {
                 let target = entry
@@ -1801,6 +1812,7 @@ impl SessionManager {
                 match entry
                     .get("label")
                     .and_then(Value::as_str)
+                    .map(|label| self.resident_store.materialize_string(label, None))
                     .filter(|label| !label.is_empty())
                 {
                     Some(label) => {
@@ -1925,9 +1937,7 @@ impl SessionManager {
         let mut content = String::new();
         for entry in &self.file_entries {
             // PERF-DIVERGENCE(senpi session-manager.ts): upstream serializes each stored object directly; this borrows entries without resident tokens instead of deep-cloning them through materialize. Serialized text is identical.
-            content.push_str(&serialize_entry(
-                &self.resident_store.materialize_cow(entry),
-            ));
+            content.push_str(&serialize_entry(&self.materialize_for_write(entry)));
             content.push('\n');
         }
         let mut captured: Option<Option<crate::session_file_identity::FileIdentity>> = None;
@@ -1978,9 +1988,7 @@ impl SessionManager {
                     self.report_recovery(recovery);
                 }
             }
-            let persisted_entry = self
-                .resident_store
-                .materialize_cow(&self.file_entries[order]);
+            let persisted_entry = self.materialize_for_write(&self.file_entries[order]);
             let appended = append_line(&session_file, &persisted_entry);
             if let Err(error) = &appended {
                 self.tail_may_be_torn = true;
@@ -2093,7 +2101,7 @@ impl SessionManager {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let serialized = serialize_entry(&self.resident_store.materialize_cow(committed));
+            let serialized = serialize_entry(&self.materialize_for_write(committed));
             let persistence = self.transcript_persistence();
             if let Some(journal) = &mut self.transcript_journal {
                 journal.record([
@@ -2242,7 +2250,7 @@ impl SessionManager {
             base,
             tail,
             self.leaf_id.as_deref(),
-            &mut |entry| serialize_entry(&self.resident_store.materialize_cow(entry)),
+            &mut |entry| serialize_entry(&self.materialize_for_write(entry)),
             self.transcript_persistence().as_ref(),
         )
     }
@@ -2719,6 +2727,29 @@ impl SessionManager {
             Some(session_file) => load_entries_from_file(session_file),
             None => self.file_entries.clone(),
         }
+    }
+
+    /// Materializes an entry for a write, recovering from the JSONL when the store no longer holds a
+    /// string: the resident store is a bounded cache and `release_blobs_dir_unless_shared` may have
+    /// dropped its directory, and a write that fell back to the token would persist it as the text.
+    /// Borrows the entry unchanged when it holds no token, which is the common case.
+    fn materialize_for_write<'a>(&self, entry: &'a Value) -> std::borrow::Cow<'a, Value> {
+        let std::borrow::Cow::Owned(materialized) = self.resident_store.materialize_cow(entry)
+        else {
+            return std::borrow::Cow::Borrowed(entry);
+        };
+        let missing = std::cell::Cell::new(false);
+        let recovered = self.resident_store.materialize_with(
+            &materialized,
+            Some(&|_| {
+                missing.set(true);
+                None
+            }),
+        );
+        if missing.get() {
+            return std::borrow::Cow::Owned(self.materialize_entry(entry));
+        }
+        std::borrow::Cow::Owned(recovered)
     }
 
     fn materialize_entry(&self, entry: &Value) -> Value {
