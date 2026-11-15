@@ -2764,6 +2764,202 @@ fn test_session() -> AgentSession {
     test_session_with_stream_function(true)
 }
 
+/// A session whose catalog resolves `agreements` (the extension-style command a typo'd `/agreement`
+/// suggests) and the prompt template `handoff`. Built through the same `set_prompt_resources` and
+/// extension-command seams the loader uses, so the catalog is the production one.
+fn session_with_agreements_and_handoff() -> AgentSession {
+    let session = test_session();
+    session.set_prompt_resources(
+        vec![crate::prompt_templates::PromptTemplate {
+            name: "handoff".to_owned(),
+            description: String::new(),
+            argument_hint: None,
+            requires_arguments: false,
+            content: "hand off".to_owned(),
+            source_info: crate::source_info::create_synthetic_source_info(
+                "/tmp/handoff.md",
+                crate::source_info::SyntheticSourceInfoOptions::default(),
+            ),
+            file_path: "/tmp/handoff.md".to_owned(),
+        }],
+        Vec::new(),
+    );
+    session
+        .state()
+        .extension_commands
+        .push(maho_ext_api::SlashCommandInfo {
+            name: "agreements".into(),
+            description: Some("List, add, acknowledge, or drop your standing agreements".into()),
+            argument_hint: None,
+            source_info: None,
+        });
+    session
+}
+
+/// The reported defect: `/agreement` ran a full model turn while the working row spun. A prompt
+/// whose name resolves to no command, template, or skill is refused before the model sees it, and
+/// the refusal names the close command.
+#[tokio::test]
+async fn an_unknown_command_is_refused_with_the_close_command_suggested() {
+    let session = session_with_agreements_and_handoff();
+    let error = session
+        .prompt("/agreement", PromptOptions::default())
+        .await
+        .expect_err("unknown command must be refused");
+    assert_eq!(
+        error,
+        crate::unknown_command::find_unknown_command("/agreement", &session.command_catalog())
+            .expect("catalog refuses it")
+            .to_string()
+    );
+    assert_eq!(
+        error,
+        "Unknown command /agreement. Did you mean /agreements?"
+    );
+    assert!(
+        session.messages().is_empty(),
+        "the refused command never reached the model"
+    );
+}
+
+/// Every shape that must NOT be refused: a resolved command, a template, a path, a prompt typed
+/// after leading whitespace, an extension source, and text a client confirmed as a message.
+#[tokio::test]
+async fn resolvable_commands_paths_and_confirmed_text_are_not_refused() {
+    let session = session_with_agreements_and_handoff();
+    for text in [
+        "/agreements",
+        "/handoff",
+        "/agreements add --project keep main green",
+        "/tmp/a.txt",
+    ] {
+        assert!(
+            session
+                .unknown_command_rejection(text, &PromptOptions::default())
+                .is_none(),
+            "{text} resolves, or is a path rather than a command"
+        );
+    }
+    // The leading-whitespace rule lives at the prompt entry point, which is where senpi checks it:
+    // text typed after a space is sent as a message instead of being inspected as a command name.
+    // The stub agent cannot run a real turn, so what this proves is that the failure is not the
+    // refusal -- a refused command is the only failure that carries the refusal's shape.
+    for leading in [" /agreement", "\t/agreement"] {
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.prompt(leading, PromptOptions::default()),
+        )
+        .await
+        .expect("bounded turn");
+        if let Err(error) = outcome {
+            assert!(
+                !crate::unknown_command::is_refusal_message(&error),
+                "{leading:?} is sent as text, not refused: {error}"
+            );
+        }
+    }
+    // An extension sending command-shaped text is not a person's prompt, so it is never refused.
+    assert!(
+        session
+            .unknown_command_rejection(
+                "/agreement",
+                &PromptOptions {
+                    source: Some(maho_ext_api::InputSource::Extension),
+                    ..Default::default()
+                },
+            )
+            .is_none()
+    );
+    // A client confirming a refusal resends the same text as a message.
+    assert!(
+        session
+            .unknown_command_rejection(
+                "/agreement",
+                &PromptOptions {
+                    unknown_command_as_text: true,
+                    ..Default::default()
+                },
+            )
+            .is_none()
+    );
+}
+
+/// The streaming half of the same defect: senpi rejects before the text joins the queue, so a
+/// refused `/name` must never become a queued message that reaches the model after the turn.
+#[tokio::test]
+async fn a_refused_command_is_rejected_instead_of_queued_while_streaming() {
+    let session = session_with_agreements_and_handoff();
+    let error = session
+        .follow_up(
+            "/agreement",
+            None,
+            QueuedInputOptions {
+                from_prompt: true,
+                submitted_text: Some("/agreement".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("queued input refuses an unknown command");
+    assert_eq!(
+        error,
+        "Unknown command /agreement. Did you mean /agreements?"
+    );
+    assert!(
+        native_queued_texts(&session).is_empty(),
+        "nothing was queued for the next turn"
+    );
+    // The same text confirmed as a message is queued normally.
+    session
+        .follow_up(
+            "/agreement",
+            None,
+            QueuedInputOptions {
+                from_prompt: true,
+                submitted_text: Some("/agreement".to_owned()),
+                unknown_command_as_text: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("confirmed text queues");
+    assert_eq!(native_queued_texts(&session), ["/agreement"]);
+}
+
+/// A direct `steer()`/`follow_up()` caller sends text rather than a prompt the session may refuse.
+#[tokio::test]
+async fn a_direct_steer_caller_is_never_refused() {
+    let session = session_with_agreements_and_handoff();
+    session
+        .steer("/agreement", None, QueuedInputOptions::default())
+        .await
+        .expect("direct steer queues as text");
+    assert_eq!(native_queued_texts(&session), ["/agreement"]);
+}
+
+/// The refusal is a command-shaped rejection, so the interactive mode can restore the text and arm
+/// the confirmation instead of painting a failed turn.
+#[test]
+fn the_refusal_is_recognized_as_an_unknown_command_rejection() {
+    let session = session_with_agreements_and_handoff();
+    let refusal = session
+        .unknown_command_rejection("/agreement", &PromptOptions::default())
+        .expect("refused")
+        .to_string();
+    assert!(crate::unknown_command::is_refusal_message(&refusal));
+    assert_eq!(
+        crate::unknown_command::refusal_message(&format!(
+            "{refusal} {}",
+            crate::unknown_command::UNKNOWN_COMMAND_CONFIRM_HINT
+        )),
+        refusal
+    );
+    // An ordinary failure keeps its own text and is not mistaken for a refusal.
+    assert!(!crate::unknown_command::is_refusal_message(
+        "No API key found for faux"
+    ));
+}
+
 struct Recorder(std::sync::Mutex<Vec<String>>);
 impl crate::lifecycle_session_binding::LifecycleBindingHost for Recorder {
     fn event(&self, name: &str, _: Value) {

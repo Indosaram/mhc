@@ -81,7 +81,7 @@ fn format_unknown_command_message(
     reason: UnknownCommandReason,
 ) -> String {
     if reason == UnknownCommandReason::InteractiveOnly {
-        return format!("/{command} is an interactive command and cannot be sent as a prompt.");
+        return format!("/{command}{INTERACTIVE_ONLY_SUFFIX}");
     }
     let hint = if suggestions.is_empty() {
         String::new()
@@ -101,6 +101,39 @@ fn format_unknown_command_message(
 /// How a protocol client confirms that a refused unknown command should be sent as text.
 pub const UNKNOWN_COMMAND_CONFIRM_HINT: &str =
     "Resend with \"unknownCommandAsText\": true to send it as text.";
+
+/// The rejection text without the protocol confirm hint a host appends to it.
+pub fn refusal_message(error: &str) -> &str {
+    error
+        .strip_suffix(UNKNOWN_COMMAND_CONFIRM_HINT)
+        .map_or(error, str::trim_end)
+}
+
+/// Whether `error` is this module's refusal text, with or without the confirm hint. A host session
+/// refuses with its own catalog's message, which this process holds no copy of, so a caller
+/// recognizes that refusal by the shape [`format_unknown_command_message`] produced.
+pub fn is_refusal_message(error: &str) -> bool {
+    let bare = refusal_message(error);
+    let interactive_only = bare
+        .strip_prefix('/')
+        .and_then(|rest| rest.strip_suffix(INTERACTIVE_ONLY_SUFFIX));
+    if let Some(name) = interactive_only {
+        return !name.is_empty() && !name.contains(char::is_whitespace);
+    }
+    let Some(rest) = bare.strip_prefix("Unknown command /") else {
+        return false;
+    };
+    let Some((name, tail)) = rest.split_once('.') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_:-".contains(character))
+        && (tail.is_empty() || tail.starts_with(" Did you mean /"))
+}
+
+const INTERACTIVE_ONLY_SUFFIX: &str = " is an interactive command and cannot be sent as a prompt.";
 
 /// Rebuild the typed rejection from an RPC `unknown_command` failure's `errorData`, if it is well formed.
 pub fn unknown_command_error_from_wire(data: &Value) -> Option<UnknownCommandError> {
@@ -227,6 +260,46 @@ mod tests {
             UnknownCommandError::new("x", Vec::new(), UnknownCommandReason::Unknown).to_string(),
             "Unknown command /x."
         );
+    }
+
+    /// A host session refuses with its own catalog message, so the interactive mode recognizes a
+    /// refusal by shape rather than by comparing against a message only the refusing process owns.
+    #[test]
+    fn a_refusal_is_recognized_with_or_without_the_confirm_hint() {
+        let rejected = UnknownCommandError::new(
+            "agreement",
+            vec!["agreements".into()],
+            UnknownCommandReason::Unknown,
+        )
+        .to_string();
+        let with_hint = format!("{rejected} {UNKNOWN_COMMAND_CONFIRM_HINT}");
+        assert_eq!(refusal_message(&rejected), rejected);
+        assert_eq!(refusal_message(&with_hint), rejected);
+        assert!(is_refusal_message(&rejected));
+        assert!(is_refusal_message(&with_hint));
+        assert!(is_refusal_message(
+            "Unknown command /typo. Did you mean /typed?"
+        ));
+        assert!(is_refusal_message(
+            "/model is an interactive command and cannot be sent as a prompt."
+        ));
+        assert!(is_refusal_message(&format!(
+            "/model is an interactive command and cannot be sent as a prompt. {UNKNOWN_COMMAND_CONFIRM_HINT}"
+        )));
+    }
+
+    #[test]
+    fn ordinary_failures_are_not_refusals() {
+        for error in [
+            "No API key found for faux",
+            "Unknown command without a leading slash.",
+            "Unknown command /two words.",
+            "Unknown command /.empty",
+            "",
+        ] {
+            assert!(!is_refusal_message(error), "{error}");
+            assert_eq!(refusal_message(error), error);
+        }
     }
 
     #[test]

@@ -306,6 +306,14 @@ pub struct QueuedInputOptions {
     pub source: Option<InputSource>,
     /// Internal: the input already went through `prompt()`, so a held session was already released for it.
     pub from_prompt: bool,
+    /// Internal: the text as the caller submitted it, set only by `prompt()`. Its presence marks the
+    /// input as one the session may refuse as an unknown command, and the pre-expansion text the
+    /// rejection reads.
+    pub submitted_text: Option<String>,
+    /// Internal: senpi `expandPromptTemplates`; unset means the prompt path's default (expand).
+    pub expand_prompt_templates: Option<bool>,
+    /// Internal: the client confirmed this text is a message, not a command.
+    pub unknown_command_as_text: bool,
 }
 
 #[derive(Clone)]
@@ -368,6 +376,10 @@ pub struct PromptOptions {
     pub observed_pause_seq: Option<u64>,
     pub hold_after_preparation: bool,
     pub expand_prompt_templates: Option<bool>,
+    /// senpi `unknownCommandAsText`: send command-shaped text as an ordinary message even though no
+    /// command resolves it. Set by a client confirming a refusal, so the second submission of the
+    /// same text reaches the model instead of being refused again.
+    pub unknown_command_as_text: bool,
     pub images: Option<Vec<ImageContent>>,
     pub streaming_behavior: Option<StreamingBehavior>,
     pub thinking_level: Option<ThinkingLevel>,
@@ -7361,6 +7373,9 @@ impl AgentSession {
         readiness: &mut Option<tokio::sync::oneshot::Sender<()>>,
         disposition_reported: &mut bool,
     ) -> Result<PromptDisposition, String> {
+        // senpi `prompt()`'s `text`: captured before input handlers rewrite it, because
+        // `_rejectUnknownCommand`'s leading-whitespace check looks at what the caller submitted.
+        let submitted_text = text;
         if options
             .signal
             .as_ref()
@@ -7508,6 +7523,9 @@ impl AgentSession {
                     QueuedInputOptions {
                         source: options.source,
                         from_prompt: true,
+                        submitted_text: Some(submitted_text.to_owned()),
+                        expand_prompt_templates: options.expand_prompt_templates,
+                        unknown_command_as_text: options.unknown_command_as_text,
                         ..Default::default()
                     },
                 )
@@ -7525,7 +7543,7 @@ impl AgentSession {
             self.prompt_admission.lock().await
         };
         let weak = Arc::downgrade(&self.inner);
-        let _prompt_signal_bridge = options.signal.map(|signal| {
+        let _prompt_signal_bridge = options.signal.clone().map(|signal| {
             AbortSignalBridge(tokio::spawn(async move {
                 signal.cancelled().await;
                 if let Some(inner) = weak.upgrade() {
@@ -7539,13 +7557,41 @@ impl AgentSession {
         if !self.is_streaming() {
             self.restore_fallback_primary().await;
         }
+        let expand_prompt_templates = options.expand_prompt_templates;
         let Some((text, images, input_id)) =
             heap_future(|| self.run_input_handlers(text, options.images, options.source, None))
                 .await?
         else {
             return Ok(PromptDisposition::Handled);
         };
-        let text = self.expand_input(&text, options.expand_prompt_templates.unwrap_or(true))?;
+        let expanded = self.expand_input(&text, expand_prompt_templates.unwrap_or(true))?;
+        // senpi `_rejectUnknownCommand`: command-shaped text that resolves to no extension command,
+        // prompt template, or loaded skill is refused here instead of being sent to the model as a
+        // message. Only when expansion changed nothing -- an expanded skill or template is not a
+        // command -- and never for a submission typed after leading whitespace, which senpi sends
+        // as text instead of checking.
+        if expand_prompt_templates.unwrap_or(true)
+            && expanded == text
+            && !submitted_text.starts_with(char::is_whitespace)
+            && let Some(rejection) = self.unknown_command_rejection(
+                &text,
+                &PromptOptions {
+                    source: options.source,
+                    unknown_command_as_text: options.unknown_command_as_text,
+                    ..Default::default()
+                },
+            )
+        {
+            heap_future(|| {
+                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                    input_id,
+                    disposition: maho_ext_api::InputDisposition::Rejected,
+                })
+            })
+            .await;
+            return Err(rejection.to_string());
+        }
+        let text = expanded;
         let compaction_failed = {
             let state = self.state();
             let lifecycle = state.compaction_lifecycle.state();
@@ -8072,6 +8118,7 @@ impl AgentSession {
         }
     }
 
+    /// senpi `queueSteer`/`queueFollowUp` for a streaming session.
     async fn queue_user_input(
         &self,
         text: &str,
@@ -8126,7 +8173,34 @@ impl AgentSession {
         else {
             return Ok(());
         };
-        let text = self.expand_input(&text, true)?;
+        let submitted_text = options.submitted_text.as_deref().unwrap_or(&text);
+        let expand = options.expand_prompt_templates.unwrap_or(true);
+        let expanded = self.expand_input(&text, expand)?;
+        // senpi `_rejectUnknownCommand` runs before the streaming queue, so a refused `/name` never
+        // becomes a queued message that later reaches the model. Only a prompt qualifies: a direct
+        // `steer()` caller sends text, not input the session can refuse. The handler above may have
+        // rewritten the text, so unchanged expansion is what marks it command-shaped.
+        if options.submitted_text.is_some()
+            && expand
+            && expanded == text
+            && !submitted_text.starts_with(char::is_whitespace)
+            && let Some(rejection) = self.unknown_command_rejection(
+                &text,
+                &PromptOptions {
+                    source: options.source,
+                    unknown_command_as_text: options.unknown_command_as_text,
+                    ..Default::default()
+                },
+            )
+        {
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                input_id,
+                disposition: maho_ext_api::InputDisposition::Rejected,
+            })
+            .await;
+            return Err(rejection.to_string());
+        }
+        let text = expanded;
         self.queue_expanded_input(text, images, mode, options.enqueue_order, options.source);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id,
@@ -17845,6 +17919,50 @@ impl AgentSession {
                     session.admit_cursor_context(transformed)
                 })
             })));
+    }
+
+    /// senpi `_rejectUnknownCommand`: the rejection for command-shaped `text` that no extension
+    /// command, prompt template, or loaded skill resolves. `None` for ordinary prose, a path, or a
+    /// resolvable command, and for prompts an extension authored or a client confirmed as text.
+    ///
+    /// The session calls this after input handlers and expansion, where it refuses the prompt; the
+    /// RPC and TUI layers call it on a prompt failure to classify that failure for the client. A
+    /// caller that classifies must also compare the failure's message against this rejection, since
+    /// a text an input handler rewrote never reaches the session's check.
+    pub fn unknown_command_rejection(
+        &self,
+        text: &str,
+        options: &PromptOptions,
+    ) -> Option<crate::unknown_command::UnknownCommandError> {
+        if options.source == Some(InputSource::Extension) || options.unknown_command_as_text {
+            return None;
+        }
+        crate::unknown_command::find_unknown_command(text, &self.command_catalog())
+    }
+
+    /// senpi `_rejectUnknownCommand`'s command sets: the names a prompt can resolve itself
+    /// (extension commands, prompt templates, `skill:<name>`) and the TUI builtins that only the
+    /// interactive editor dispatches, which a prompt therefore cannot run.
+    pub fn command_catalog(&self) -> crate::unknown_command::CommandCatalog {
+        let (extensions, templates, skills) = self.command_groups();
+        let prompt_commands = extensions
+            .into_iter()
+            .map(|command| command.name)
+            .chain(templates.into_iter().map(|template| template.name))
+            .chain(
+                skills
+                    .into_iter()
+                    .map(|skill| format!("skill:{}", skill.name)),
+            )
+            .collect();
+        let interactive_commands = crate::slash_commands::builtin_slash_commands()
+            .into_iter()
+            .map(|command| command.name.to_owned())
+            .collect();
+        crate::unknown_command::CommandCatalog {
+            prompt_commands,
+            interactive_commands,
+        }
     }
 
     /// The three command groups `get_commands` merges, each still classified by its real source.
