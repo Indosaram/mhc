@@ -749,6 +749,62 @@ impl MonitorRegistry {
         }
         true
     }
+    /// `stop_command`: kill one command monitor by runtime id or stable `mon_` id.
+    pub fn stop_command(&mut self, id: &str) -> bool {
+        let key = {
+            let records = self.records.lock().expect("monitor records");
+            if records.contains_key(id) {
+                Some(id.to_owned())
+            } else {
+                records.iter().find_map(|(k, v)| {
+                    if v.snapshot.monitor_id.as_deref() == Some(id) || v.snapshot.id == id {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
+                })
+            }
+        };
+        let Some(key) = key else {
+            return false;
+        };
+        let Some(mut record) = self
+            .records
+            .lock()
+            .expect("monitor records")
+            .shift_remove(&key)
+        else {
+            return false;
+        };
+        self.publish_state();
+        if let Some(event) = record.settle("watcher killed".to_owned(), now_ms()) {
+            (self.emit)(event);
+        }
+        emit_ended(
+            &self.ended,
+            &record.snapshot,
+            MonitorEndedReason::Killed,
+            None,
+            now_ms(),
+        );
+        true
+    }
+    /// `stop_all_commands`: kill all command monitors and release their records.
+    pub fn stop_all_commands(&mut self) -> usize {
+        let keys = self
+            .records
+            .lock()
+            .expect("monitor records")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter().filter(|k| self.stop_command(k)).count()
+    }
+    #[cfg(test)]
+    pub fn seed_command_for_test(&mut self, id: &str, record: CommandMonitor) {
+        self.records.lock().unwrap().insert(id.to_owned(), record);
+        self.publish_state();
+    }
     pub fn file_checkpoint(
         &self,
         id: &str,

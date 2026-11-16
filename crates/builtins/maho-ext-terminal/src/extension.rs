@@ -517,6 +517,15 @@ impl TakeoverContext {
             for monitor_id in &settled {
                 lifecycle.writer.forget_restored(monitor_id);
             }
+            if !settled.is_empty() {
+                let mut monitors = self
+                    .monitors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for monitor_id in &settled {
+                    monitors.stop_command(monitor_id);
+                }
+            }
             // Upstream `persistRestored`: a readable manifest is rewritten to the restore's truth,
             // so a watch that did not come back is gone from disk and never re-run.
             if readable_manifest {

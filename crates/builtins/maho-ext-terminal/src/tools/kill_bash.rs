@@ -85,8 +85,8 @@ pub async fn execute_kill_bash_with_monitors(
             .size();
         // Upstream `stopAllFiles` + `stopAllRpc`: every file watch (and every registration still
         // proving its target) and every rpc watch ends. They run the monitor-ended callbacks, so
-        // the manager lock is not held across them.
-        let (monitor_ids, file_count, rpc_count) = {
+        // the manager lock is not held across them. Also stops all command monitors.
+        let (monitor_ids, file_count, rpc_count, command_count) = {
             let mut monitors = monitors
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -97,7 +97,8 @@ pub async fn execute_kill_bash_with_monitors(
                 .collect::<Vec<_>>();
             let file_count = monitors.stop_all_files();
             let rpc_count = monitors.stop_all_rpc();
-            (monitor_ids, file_count, rpc_count)
+            let command_count = monitors.stop_all_commands();
+            (monitor_ids, file_count, rpc_count, command_count)
         };
         if let Err(error) = crate::manager::teardown_shared(manager).await {
             return error_result(error.to_string());
@@ -107,7 +108,7 @@ pub async fn execute_kill_bash_with_monitors(
         }
         return text_result(format!(
             "Killed {} session(s).",
-            terminal_count + file_count + rpc_count
+            terminal_count + file_count + rpc_count + command_count
         ));
     }
     let Some(id) = id.filter(|id| !id.is_empty()) else {
@@ -129,7 +130,10 @@ pub async fn execute_kill_bash_with_monitors(
         let mut monitors = monitors
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        monitors.stop_file(&resolved) || monitors.stop_rpc(&resolved)
+        monitors.stop_file(&resolved)
+            || monitors.stop_rpc(&resolved)
+            || monitors.stop_command(id)
+            || monitors.stop_command(&resolved)
     };
     if stopped {
         drop_state_dir(monitor_id.as_deref());
@@ -319,6 +323,38 @@ mod tests {
                 .await;
         assert_eq!(all.content[0].text, "Killed 1 session(s).");
         assert!(monitors.lock().unwrap().snapshot().is_empty());
+    }
+    #[tokio::test]
+    async fn command_watch_is_killed_by_monitor_id_when_process_is_dead_or_evicted() {
+        let (manager, monitors, terminal) = shared_fixture();
+        let monitor_id = "mon_DEADPROCESS001";
+        // Directly seed a command monitor record into the registry simulating an evicted/dead process.
+        let entry = crate::monitor_registry::MonitorSnapshotEntry {
+            id: "bash_dead_99".into(),
+            monitor_id: Some(monitor_id.to_owned()),
+            description: "dead watch".into(),
+            ..Default::default()
+        };
+        let record = crate::monitor_registry::CommandMonitor::new(entry, None);
+        monitors
+            .lock()
+            .unwrap()
+            .seed_command_for_test("bash_dead_99", record);
+        crate::monitor_state_dir::ensure_monitor_state_dir_sync(terminal.path(), monitor_id)
+            .unwrap();
+        assert_eq!(monitors.lock().unwrap().snapshot().len(), 1);
+
+        let killed = execute_kill_bash_with_monitors(
+            &manager,
+            &monitors,
+            Some(terminal.path()),
+            Some(monitor_id),
+            false,
+        )
+        .await;
+        assert_eq!(killed.content[0].text, format!("Killed {monitor_id}."));
+        assert!(monitors.lock().unwrap().snapshot().is_empty());
+        assert!(!crate::monitor_state_dir::monitor_state_dir(terminal.path(), monitor_id).exists());
     }
     #[test]
     fn stable_monitor_id_kills_live_runtime_and_all_clears_bindings() {
