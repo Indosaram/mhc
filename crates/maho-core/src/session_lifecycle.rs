@@ -1,5 +1,6 @@
 //! Durable session lifecycle controller, shared by session front ends.
 use crate::lifecycle_children::LifecycleChildren;
+use crate::lifecycle_json_int::safe_non_negative_integer;
 use crate::lifecycle_ledger::{LedgerUpdate, LifecycleLedger};
 use crate::lifecycle_stop::{DeadlineStopCapture, RunStopFacts, same_stop, stop_detail};
 use crate::lifecycle_wait_items::{WaitSourceItems, project_wait_items};
@@ -14,6 +15,54 @@ pub use crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY;
 
 /// Children reports a parent's waits name; the rest are counted in `childReportsOmitted`.
 const MAX_CHILD_REPORTS: usize = 32;
+
+/// A durable record that fails its whole-schema read still projects instead of aborting: its state string is
+/// already validated by `read_lifecycle_state`, and a record we cannot interpret reports paused rather than done
+/// so automatic work never proceeds on it.
+fn degraded_lifecycle(raw: &Value) -> SessionLifecycle {
+    use crate::session_lifecycle_types::*;
+    let number = |key: &str| {
+        raw[key]
+            .as_u64()
+            .or_else(|| safe_non_negative_integer(&raw[key]))
+            .unwrap_or(0)
+    };
+    SessionLifecycle {
+        state: crate::lifecycle_record::read_lifecycle_state(&raw["state"])
+            .and_then(|state| serde_json::from_value(json!(state)).ok())
+            .unwrap_or(SessionLifecycleState::Paused),
+        seq: number("seq"),
+        epoch: number("epoch"),
+        epoch_origin: if raw["epochOrigin"] == "human" {
+            EpochOrigin::Human
+        } else {
+            EpochOrigin::Automatic
+        },
+        completion_id: raw["completionId"].as_str().map(str::to_owned),
+        human_input_revision: number("humanInputRevision"),
+        self_settle_eligible: raw["selfSettleEligible"].as_bool().unwrap_or(false),
+        settle_decision: serde_json::from_value(raw["settleDecision"].clone()).ok(),
+        restoring: raw["restoring"].as_bool().unwrap_or(false),
+        persisted: raw["persisted"].as_bool().unwrap_or(false),
+        run_paused: raw["runPaused"].as_bool().unwrap_or(false),
+        since: raw["since"].as_str().unwrap_or_default().to_owned(),
+        role: if raw["role"] == "child" {
+            SessionRole::Child
+        } else {
+            SessionRole::Root
+        },
+        root_session_id: raw["rootSessionId"].as_str().unwrap_or_default().to_owned(),
+        parent_session_id: raw["parentSessionId"].as_str().map(str::to_owned),
+        task_id: raw["taskId"].as_str().map(str::to_owned),
+        waiting_on: serde_json::from_value(raw["waitingOn"].clone()).ok(),
+        holds: serde_json::from_value(raw["holds"].clone()).ok(),
+        last_stop: serde_json::from_value(raw["lastStop"].clone()).ok(),
+        activity: serde_json::from_value(raw["activity"].clone()).ok(),
+        activity_revision: serde_json::from_value(raw["activityRevision"].clone()).ok(),
+        completion: serde_json::from_value(raw["completion"].clone()).ok(),
+        failure: serde_json::from_value(raw["failure"].clone()).ok(),
+    }
+}
 
 #[derive(Clone, Debug)]
 struct OutstandingTool {
@@ -215,8 +264,11 @@ impl SessionLifecycleController {
     }
     pub fn snapshot(&mut self) -> SessionLifecycle {
         self.recompute();
-        serde_json::from_value(self.ledger.snapshot().clone())
-            .expect("validated lifecycle snapshot")
+        let raw = self.ledger.snapshot().clone();
+        serde_json::from_value(raw.clone()).unwrap_or_else(|error| {
+            eprintln!("mhc lifecycle: unreadable record projected conservatively: {error}");
+            degraded_lifecycle(&raw)
+        })
     }
     pub fn requires_human_continuation(&self) -> bool {
         self.ledger.interrupted && !self.pending_human
@@ -371,12 +423,12 @@ impl SessionLifecycleController {
         self.goal_changed(goal);
     }
     pub fn goal_changed(&mut self, goal: Option<Value>) {
-        self.goal_service.transition(goal.as_ref().map(|g| {
-            maho_ext_api::goal_lifecycle::LifecycleGoal {
-                id: g["id"].as_str().expect("goal id").to_owned(),
-                status: g["status"].as_str().expect("goal status").to_owned(),
+        self.goal_service.transition(goal.as_ref().and_then(|g| {
+            Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
+                id: g["id"].as_str()?.to_owned(),
+                status: g["status"].as_str()?.to_owned(),
                 continuation_stopped: g.get("continuationStoppedAt").is_some(),
-            }
+            })
         }));
         if let Some(g) = goal.as_ref().filter(|g| g["status"] == "complete")
             && self
@@ -392,11 +444,18 @@ impl SessionLifecycleController {
         self.recompute();
     }
     pub fn report_child(&mut self, report: ChildLifecycleReport) {
-        let value = serde_json::to_value(&report).expect("child report");
+        let Some(value) = serde_json::to_value(&report).ok() else {
+            return;
+        };
         let append = self.options.append_child.clone();
         let result = self.children.report(&value, |v| {
             if let Some(append) = append {
-                append(serde_json::from_value(v.clone()).expect("child report"));
+                match serde_json::from_value(v.clone()) {
+                    Ok(record) => append(record),
+                    Err(error) => {
+                        eprintln!("mhc lifecycle: child report not persisted, unreadable: {error}")
+                    }
+                }
             }
             Ok(())
         });
@@ -423,8 +482,19 @@ impl SessionLifecycleController {
         }
         self.recompute();
         let append = self.options.append.clone();
-        serde_json::from_value(self.ledger.request_self_settle(|r| append(r)))
-            .expect("settle result")
+        let recorded = self.ledger.request_self_settle(|r| append(r));
+        serde_json::from_value(recorded.clone()).unwrap_or_else(|error| {
+            eprintln!("mhc lifecycle: settle result unreadable: {error}");
+            // The ledger already settled; report it rather than invite a duplicate request.
+            SelfSettleResult {
+                recorded: true,
+                reason: None,
+                epoch: self.ledger.current["epoch"].as_u64().unwrap_or(0),
+                human_input_revision: self.ledger.current["humanInputRevision"]
+                    .as_u64()
+                    .unwrap_or(0),
+            }
+        })
     }
     pub fn recompute(&mut self) {
         let shared = self.goal_service.snapshot();
@@ -525,8 +595,9 @@ impl SessionLifecycleController {
             runtime
                 .human
                 .iter()
-                .map(|h| serde_json::to_value(h).expect("human wait"))
-                .collect::<Vec<_>>()
+                .map(|h| serde_json::to_value(h).ok())
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
         } else {
             vec![]
         };
@@ -546,11 +617,11 @@ impl SessionLifecycleController {
         let holds = runtime
             .holds
             .iter()
-            .map(|h| serde_json::to_value(h).expect("hold"))
+            .filter_map(|h| serde_json::to_value(h).ok())
             .collect::<Vec<_>>();
         let terminal = own.and_then(|r| r["terminal"].as_str());
         let state = crate::lifecycle_runtime_facts::lifecycle_state(
-            self.ledger.current["role"].as_str().expect("role"),
+            self.ledger.current["role"].as_str().unwrap_or("root"),
             terminal,
             &holds,
             &waits,
@@ -575,7 +646,7 @@ impl SessionLifecycleController {
                 waits,
                 holds,
                 failure: facts.failure,
-                last_stop: last_stop.map(|stop| serde_json::to_value(stop).expect("last stop")),
+                last_stop: last_stop.and_then(|stop| serde_json::to_value(stop).ok()),
                 activity,
             },
             |r| append(r),
@@ -666,9 +737,9 @@ pub fn evaluate_turn_facts(
                     };
                     let mut b = json!({"source":source,"activeCount":1});
                     if source == "provider-retry"
-                        && let Some(at) = input.get("providerRetryAtMs")
+                        && let Some(at) = safe_non_negative_integer(&input["providerRetryAtMs"])
                     {
-                        b["retryAtMs"] = at.clone();
+                        b["retryAtMs"] = json!(at);
                     }
                     background.push(b);
                 }
@@ -741,8 +812,8 @@ pub fn evaluate_turn_facts(
         })
         .map(|i| {
             let mut f = json!({"reason":"provider_error"});
-            if let Some(at) = i.get("providerRetryAtMs") {
-                f["retryAtMs"] = at.clone();
+            if let Some(at) = safe_non_negative_integer(&i["providerRetryAtMs"]) {
+                f["retryAtMs"] = json!(at);
             }
             f
         });

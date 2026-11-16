@@ -1,17 +1,12 @@
 //! Durable child reports, fenced by run epoch and generation.
 use crate::lifecycle_attention::read_human_wait;
+use crate::lifecycle_json_int::{MAX_SAFE_INTEGER, safe_non_negative_integer};
 use crate::lifecycle_record::read_lifecycle_state;
 use crate::lifecycle_wait_items::read_wait_items;
 use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
 
 const MAX_CHILD_REPORTS: usize = 32;
-const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-
-fn safe_non_negative_integer(value: &Value) -> Option<u64> {
-    let number = value.as_f64()?;
-    (number.fract() == 0.0 && (0.0..=MAX_SAFE_INTEGER).contains(&number)).then_some(number as u64)
-}
 
 fn valid_since(value: &Value) -> Option<&str> {
     value
@@ -25,7 +20,7 @@ fn read_source(source: &Value, with_retry: bool) -> Option<Value> {
     item.insert("source".into(), json!(source.get("source")?.as_str()?));
     item.insert(
         "activeCount".into(),
-        Value::Number(source.get("activeCount")?.as_number()?.clone()),
+        json!(safe_non_negative_integer(&source["activeCount"])?),
     );
     let named = read_wait_items(source.get("items"), source.get("omittedItems"));
     if let Some(items) = named.items {
@@ -34,8 +29,8 @@ fn read_source(source: &Value, with_retry: bool) -> Option<Value> {
     if let Some(omitted) = named.omitted_items {
         item.insert("omittedItems".into(), json!(omitted));
     }
-    if with_retry && source["retryAtMs"].is_number() {
-        item.insert("retryAtMs".into(), source["retryAtMs"].clone());
+    if with_retry && let Some(at) = safe_non_negative_integer(&source["retryAtMs"]) {
+        item.insert("retryAtMs".into(), json!(at));
     }
     Some(Value::Object(item))
 }
@@ -43,7 +38,7 @@ fn read_source(source: &Value, with_retry: bool) -> Option<Value> {
 /// senpi `readWaits`: the one reader of a durable or reported `waitingOn`; named detail never invalidates the
 /// counts.
 pub fn read_waits(v: &Value) -> Option<Value> {
-    let children = v.get("children")?.as_number()?;
+    let children = safe_non_negative_integer(v.get("children")?)?;
     let background: Vec<Value> = v["background"]
         .as_array()
         .into_iter()

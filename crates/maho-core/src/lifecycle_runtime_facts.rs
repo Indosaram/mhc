@@ -50,14 +50,12 @@ pub fn lifecycle_state(
         } else {
             SessionRole::Root
         },
-        terminal: terminal.map(|v| {
-            serde_json::from_value(serde_json::json!(v)).expect("validated child terminal")
-        }),
+        terminal: terminal.and_then(|v| serde_json::from_value(serde_json::json!(v)).ok()),
         holds: holds
             .iter()
-            .map(|v| serde_json::from_value(v.clone()).expect("validated lifecycle hold"))
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
             .collect(),
-        waits: serde_json::from_value(waits.clone()).expect("validated lifecycle waits"),
+        waits: serde_json::from_value(waits.clone()).unwrap_or_default(),
         running,
         failure: failure.then_some(LifecycleFailure {
             reason: FailureReason::ProviderError,
@@ -68,15 +66,15 @@ pub fn lifecycle_state(
         }),
     };
     serde_json::to_value(crate::session_lifecycle_reducer::lifecycle_state(&facts))
-        .expect("lifecycle state")
-        .as_str()
-        .expect("state string")
-        .to_owned()
+        .ok()
+        .and_then(|state| state.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "done".to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle_record::read_waits;
     use serde_json::json;
     #[test]
     fn typed_adapter_preserves_terminal_and_hold_precedence() {
@@ -107,6 +105,40 @@ mod tests {
             "done"
         );
     }
+    /// A durable record written by the TypeScript side carries integral numbers as `f64`, so `retryAtMs` can arrive
+    /// as `1000.0`. Reading it must not abort the process (macOS crashes 2026-11-15/16: a panic during a double panic
+    /// in a destructor) and the projection must carry a plain integer.
+    #[test]
+    fn float_retry_timestamps_do_not_abort_the_projection() {
+        let waits = read_waits(&json!({
+            "children": 1.0,
+            "background": [{"source": "monitor", "activeCount": 1.0, "retryAtMs": 1000.0}],
+            "human": []
+        }))
+        .expect("waits with float counts");
+        assert_eq!(waits["children"], json!(1));
+        assert_eq!(waits["background"][0]["activeCount"], json!(1));
+        assert_eq!(waits["background"][0]["retryAtMs"], json!(1000));
+        // An outstanding child wait outranks a failure, so this only proves the read did not abort.
+        assert_eq!(
+            lifecycle_state("root", None, &[], &waits, false, true),
+            "waiting_children"
+        );
+        // With no children left, the retry wait itself is what the projection reports.
+        let retrying = read_waits(&json!({
+            "children": 0.0,
+            "background": [{"source": "provider-retry", "activeCount": 1.0, "retryAtMs": 1000.0}],
+            "human": []
+        }))
+        .expect("waits with float retry");
+        assert_eq!(retrying["children"], json!(0));
+        assert_eq!(retrying["background"][0]["retryAtMs"], json!(1000));
+        assert_eq!(
+            lifecycle_state("root", None, &[], &retrying, false, true),
+            "waiting_background"
+        );
+    }
+
     fn hold(
         kind: crate::engine_turn_hold::HoldKind,
         key: &str,

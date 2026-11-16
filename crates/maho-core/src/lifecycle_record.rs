@@ -1,5 +1,6 @@
 //! Validation of durable lifecycle records; unknown/private JSON never bypasses validation.
 use crate::lifecycle_attention::read_human_wait;
+use crate::lifecycle_json_int::safe_non_negative_integer;
 use serde_json::{Value, json};
 pub fn read_lifecycle_state(v: &Value) -> Option<&str> {
     v.as_str().filter(|s| {
@@ -39,7 +40,7 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
         v.get(k)?.as_str()?;
     }
     for k in ["seq", "epoch", "humanInputRevision"] {
-        v.get(k)?.as_number()?;
+        safe_non_negative_integer(v.get(k)?)?;
     }
     for k in ["selfSettleEligible", "runPaused"] {
         v.get(k)?.as_bool()?;
@@ -49,7 +50,7 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
     {
         return None;
     }
-    let mut r = json!({"state":state,"restoring":true,"attentionSeq":v["attentionSeq"].as_number().cloned().unwrap_or_else(||0.into())});
+    let mut r = json!({"state":state,"restoring":true,"attentionSeq":safe_non_negative_integer(&v["attentionSeq"]).unwrap_or(0)});
     for k in [
         "sessionId",
         "since",
@@ -63,6 +64,12 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
         "role",
     ] {
         r[k] = v[k].clone();
+    }
+    // The three integer fields were just validated, so a float never reaches the typed reader as a float.
+    for k in ["seq", "epoch", "humanInputRevision"] {
+        if let Some(number) = safe_non_negative_integer(&v[k]) {
+            r[k] = json!(number);
+        }
     }
     for k in ["persisted", "epochSealed", "runActive", "interrupted"] {
         r[k] = json!(v[k] == true);
@@ -98,9 +105,11 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
     if v["settleDecision"]["decisionId"].is_string() {
         r["settleDecision"] = json!({"decisionId":v["settleDecision"]["decisionId"]});
     }
-    if v["settleRequest"]["epoch"].is_number() && v["settleRequest"]["revision"].is_number() {
-        r["settleRequest"] =
-            json!({"epoch":v["settleRequest"]["epoch"],"revision":v["settleRequest"]["revision"]});
+    if let (Some(epoch), Some(revision)) = (
+        safe_non_negative_integer(&v["settleRequest"]["epoch"]),
+        safe_non_negative_integer(&v["settleRequest"]["revision"]),
+    ) {
+        r["settleRequest"] = json!({"epoch":epoch,"revision":revision});
     }
     if ["goal", "run", "agent", "reply"].contains(&v["completion"]["kind"].as_str().unwrap_or(""))
         && v["completion"]["at"].is_string()
@@ -129,8 +138,8 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
             }
         }
         for k in ["retryAtMs", "runEpoch"] {
-            if v["failure"][k].is_number() {
-                f[k] = v["failure"][k].clone();
+            if let Some(number) = safe_non_negative_integer(&v["failure"][k]) {
+                f[k] = json!(number);
             }
         }
         r["failure"] = f;
@@ -153,8 +162,8 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
         && t["budgetSpent"].is_boolean()
     {
         let mut end = json!({"endedBy":t["endedBy"],"deadlineStop":t["deadlineStop"],"budgetSpent":t["budgetSpent"]});
-        if t["providerRetryAtMs"].is_number() {
-            end["providerRetryAtMs"] = t["providerRetryAtMs"].clone();
+        if let Some(at) = safe_non_negative_integer(&t["providerRetryAtMs"]) {
+            end["providerRetryAtMs"] = json!(at);
         }
         r["lastTurnEnd"] = end;
     }
@@ -193,5 +202,24 @@ mod tests {
         v["lastStop"]["runId"] = json!("other");
         let r = read_lifecycle_record(&v).expect("valid record");
         assert!(r.get("lastStop").is_none());
+    }
+
+    /// A record written by the TypeScript side carries integral numbers as `f64`. Every integer the typed reader
+    /// deserializes must therefore come out of the reader as a plain integer, or the restore path aborts.
+    #[test]
+    fn float_integers_in_a_restored_record_are_normalized() {
+        let mut v = record();
+        v["seq"] = json!(3.0);
+        v["epoch"] = json!(2.0);
+        v["humanInputRevision"] = json!(4.0);
+        v["failure"] = json!({"reason":"provider_error","retryAtMs":1000.0,"runEpoch":2.0});
+        v["lastTurnEnd"] = json!({"endedBy":"clean","deadlineStop":false,"budgetSpent":false,"providerRetryAtMs":1000.0});
+        let r = read_lifecycle_record(&v).expect("valid record");
+        assert_eq!(r["seq"], json!(3));
+        assert_eq!(r["epoch"], json!(2));
+        assert_eq!(r["humanInputRevision"], json!(4));
+        assert_eq!(r["failure"]["retryAtMs"], json!(1000));
+        assert_eq!(r["failure"]["runEpoch"], json!(2));
+        assert_eq!(r["lastTurnEnd"]["providerRetryAtMs"], json!(1000));
     }
 }

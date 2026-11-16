@@ -370,6 +370,7 @@ pub mod lifecycle_edit_leaf;
 pub mod lifecycle_goal;
 pub mod lifecycle_history;
 pub mod lifecycle_human_input;
+pub mod lifecycle_json_int;
 pub mod lifecycle_ledger;
 pub mod lifecycle_record;
 pub mod lifecycle_runtime_facts;

@@ -39,7 +39,7 @@ pub struct TurnEndLivenessInput {
     pub continuation_queued: Option<String>,
     pub expectations: Vec<WakeExpectation>,
     pub budget_spent: bool,
-    pub provider_retry_at_ms: Option<f64>,
+    pub provider_retry_at_ms: Option<i64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -59,7 +59,7 @@ pub enum TurnEndLivenessVerdict {
     Stalled {
         reason: String,
         #[serde(rename = "retryAtMs", skip_serializing_if = "Option::is_none")]
-        retry_at_ms: Option<f64>,
+        retry_at_ms: Option<i64>,
         #[serde(rename = "abortSource", skip_serializing_if = "Option::is_none")]
         abort_source: Option<String>,
     },
@@ -249,7 +249,7 @@ mod tests {
                         i.expectations = serde_json::from_value(value.clone()).unwrap()
                     }
                     "budgetSpent" => i.budget_spent = value.as_bool().unwrap(),
-                    "providerRetryAtMs" => i.provider_retry_at_ms = value.as_f64(),
+                    "providerRetryAtMs" => i.provider_retry_at_ms = value.as_i64(),
                     other => panic!("untranslated upstream input {other}"),
                 }
             }
@@ -453,7 +453,7 @@ mod upstream_invariants {
     }
     #[test]
     fn last_stall_deduplication_resets_at_user_and_matches_retry_time() {
-        let stall = |reason: &str, retry: Option<f64>| maho_ext_api::SessionEntry {
+        let stall = |reason: &str, retry: Option<i64>| maho_ext_api::SessionEntry {
             id: "s".into(),
             parent_id: None,
             timestamp: String::new(),
@@ -462,15 +462,15 @@ mod upstream_invariants {
         };
         let verdict = TurnEndLivenessVerdict::Stalled {
             reason: "provider-error".into(),
-            retry_at_ms: Some(1000.0),
+            retry_at_ms: Some(1000),
             abort_source: None,
         };
         assert!(repeats_last_stall(
-            &[stall("provider-error", Some(1000.0))],
+            &[stall("provider-error", Some(1000))],
             &verdict
         ));
         assert!(!repeats_last_stall(
-            &[stall("provider-error", Some(2000.0))],
+            &[stall("provider-error", Some(2000))],
             &verdict
         ));
         let user = maho_ext_api::SessionEntry {
@@ -481,9 +481,27 @@ mod upstream_invariants {
             data: serde_json::json!({"message":{"role":"user"}}),
         };
         assert!(!repeats_last_stall(
-            &[stall("provider-error", Some(1000.0)), user],
+            &[stall("provider-error", Some(1000)), user],
             &verdict
         ));
         assert!(!repeats_last_stall(&[], &verdict));
+    }
+
+    /// The persisted verdict is read back by the lifecycle ledger, which deserializes `retryAtMs` into `u64`. An
+    /// integral instant must therefore serialize as an integer, never as `1000.0`.
+    #[test]
+    fn a_stalled_verdict_writes_an_integer_retry_timestamp() {
+        let verdict = TurnEndLivenessVerdict::Stalled {
+            reason: "provider-error".into(),
+            retry_at_ms: Some(1000),
+            abort_source: None,
+        };
+        let value = serde_json::to_value(&verdict).expect("serializable verdict");
+        assert_eq!(value["retryAtMs"], serde_json::json!(1000));
+        assert!(
+            !value["retryAtMs"].to_string().contains('.'),
+            "integer instant must not serialize with a fraction: {}",
+            value["retryAtMs"]
+        );
     }
 }

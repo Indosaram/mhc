@@ -104,8 +104,7 @@ pub fn collect_turn_end_liveness_input(
         budget_spent: goal.is_some_and(|goal| {
             goal.status == GoalStatus::Active && goal.continuation_stopped_at.is_some()
         }) || matches!(todo_outcome, Some("cap" | "capped")),
-        provider_retry_at_ms: crate::provider_retry::provider_retry_at(&event.messages, now)
-            .map(|time| time as f64),
+        provider_retry_at_ms: crate::provider_retry::provider_retry_at(&event.messages, now),
     })
 }
 pub fn report_turn_end_liveness(

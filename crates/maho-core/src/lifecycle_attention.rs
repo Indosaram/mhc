@@ -1,4 +1,5 @@
 //! Durable synthetic human-attention occurrences (senpi lifecycle-attention.ts).
+use crate::lifecycle_json_int::safe_non_negative_integer;
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 
@@ -16,7 +17,7 @@ pub fn read_human_wait(value: &Value) -> Option<Value> {
     {
         return None;
     }
-    let mut result = json!({"kind":kind,"originSessionId":value.get("originSessionId")?.as_str()?,"requestId":value.get("requestId")?.as_str()?,"revision":value.get("revision")?.as_number()?,"since":value.get("since")?.as_str()?});
+    let mut result = json!({"kind":kind,"originSessionId":value.get("originSessionId")?.as_str()?,"requestId":value.get("requestId")?.as_str()?,"revision":safe_non_negative_integer(&value["revision"])?,"since":value.get("since")?.as_str()?});
     for key in ["childSessionId", "childLabel"] {
         if let Some(text) = value[key].as_str() {
             result[key] = json!(text);
