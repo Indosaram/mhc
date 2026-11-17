@@ -1,6 +1,7 @@
 use crate::detectors::repetitive_turns::{
     REPETITIVE_TURNS_MIN_NORMALIZED_CHARS, REPETITIVE_TURNS_RULE_NAME,
-    REPETITIVE_TURNS_SIMILARITY_THRESHOLD, RepetitiveTurnsState, create_repetitive_turns_state,
+    REPETITIVE_TURNS_SIMILARITY_THRESHOLD, REPETITIVE_TURNS_STREAK_LENGTH, RepetitiveTurnsState,
+    create_repetitive_turns_state,
     jaccard_counts, normalize_turn_text, record_turn_text, turn_trigrams, turn_words,
 };
 use serde_json::Value;
@@ -146,12 +147,22 @@ impl RepetitiveTurnsLane {
     pub const fn armed(&self) -> bool {
         self.armed
     }
+    /// The streaming abort cuts a turn mid-flight, so it must only fire on the turn that
+    /// completes the streak the batch detector requires. `streak` counts the similar pairs
+    /// already recorded among completed turns, and the turn being streamed is the next one,
+    /// so arming is legal only when `streak + 1` reaches the same bound `record_turn_text`
+    /// uses. Without this, the second similar turn aborted while the wording promised three.
+    fn stream_streak_reached(&self) -> bool {
+        !self.state.latched
+            && self.state.streak + 1 >= REPETITIVE_TURNS_STREAK_LENGTH - 1
+    }
     pub fn observe_text_delta(&mut self, delta: &str, can_arm: bool) -> bool {
         self.current_turn_text.push_str(delta);
         if self.enabled
             && !self.armed
             && !self.recovering
             && can_arm
+            && self.stream_streak_reached()
             && let Some(previous) = &self.last_completed_turn_grams
             && self
                 .committed
@@ -167,6 +178,11 @@ impl RepetitiveTurnsLane {
         if let Some(text) = text {
             self.last_completed_turn_grams = Some(turn_trigrams(&normalize_turn_text(text)));
             self.committed = CommittedTurnPrefix::default();
+            // The aborted turn still happened: advancing the detector state here is what latches
+            // the rule, so one streak cycle aborts at most once instead of re-arming on every
+            // following similar turn. The verdict is deliberately discarded - the nudge for this
+            // turn is already being built by the caller.
+            let _ = record_turn_text(&mut self.state, text);
         }
     }
     pub fn record_completed_turn(&mut self, text: &str) {
@@ -187,12 +203,68 @@ mod tests {
     use super::*;
     const TEXT: &str = "The current matrix is progressing through the native integration checks while the remaining jobs continue running.";
     #[test]
-    fn previous_turn_arms_matching_stream() {
+    fn stream_does_not_arm_before_the_streak_is_reached() {
         let mut lane = RepetitiveTurnsLane::default();
         lane.record_completed_turn(TEXT);
         lane.reset_turn();
         let result = lane.observe_text_delta(TEXT, true);
+        assert!(!result);
+    }
+    #[test]
+    fn stream_arms_on_the_turn_that_completes_the_batch_streak() {
+        let mut lane = RepetitiveTurnsLane::default();
+        lane.record_completed_turn(TEXT);
+        lane.record_completed_turn(TEXT);
+        lane.reset_turn();
+        let result = lane.observe_text_delta(TEXT, true);
         assert!(result);
+    }
+    #[test]
+    fn stream_and_batch_agree_on_the_firing_turn() {
+        for completed in 1..=3_usize {
+            let mut lane = RepetitiveTurnsLane::default();
+            for _ in 0..completed {
+                lane.record_completed_turn(TEXT);
+            }
+            let batch = {
+                let mut state = create_repetitive_turns_state();
+                for _ in 0..completed {
+                    record_turn_text(&mut state, TEXT);
+                }
+                record_turn_text(&mut state, TEXT).is_some()
+            };
+            lane.reset_turn();
+            assert_eq!(lane.observe_text_delta(TEXT, true), batch, "completed={completed}");
+        }
+    }
+    #[test]
+    fn stream_stays_silent_once_latched() {
+        let mut lane = RepetitiveTurnsLane::default();
+        for _ in 0..3 {
+            lane.record_completed_turn(TEXT);
+        }
+        assert!(lane.state.latched);
+        lane.reset_turn();
+        let result = lane.observe_text_delta(TEXT, true);
+        assert!(!result);
+    }
+    #[test]
+    fn an_aborted_turn_advances_the_streak_so_the_next_similar_turn_does_not_abort() {
+        let mut lane = RepetitiveTurnsLane::default();
+        lane.record_completed_turn(TEXT);
+        lane.record_completed_turn(TEXT);
+        lane.reset_turn();
+        assert!(lane.observe_text_delta(TEXT, true), "the third turn aborts once");
+        lane.commit_armed_turn(Some(TEXT));
+        assert!(lane.state.latched, "the aborted turn is still part of the streak");
+        // `commit_armed_turn` arms recovery mode, which would mask the latch. Clear it so the
+        // assertion below can only pass because the streak latched, not because recovery did.
+        lane.recovering = false;
+        lane.reset_turn();
+        assert!(
+            !lane.observe_text_delta(TEXT, true),
+            "a fourth near-identical turn must not abort again in the same streak"
+        );
     }
     #[test]
     fn disabled_rule_does_not_arm() {
