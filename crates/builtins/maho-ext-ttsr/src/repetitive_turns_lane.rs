@@ -1,8 +1,8 @@
 use crate::detectors::repetitive_turns::{
     REPETITIVE_TURNS_MIN_NORMALIZED_CHARS, REPETITIVE_TURNS_RULE_NAME,
     REPETITIVE_TURNS_SIMILARITY_THRESHOLD, REPETITIVE_TURNS_STREAK_LENGTH, RepetitiveTurnsState,
-    create_repetitive_turns_state,
-    jaccard_counts, normalize_turn_text, record_turn_text, turn_trigrams, turn_words,
+    create_repetitive_turns_state, jaccard_counts, normalize_turn_text, record_turn_text,
+    turn_trigrams, turn_words,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -147,14 +147,18 @@ impl RepetitiveTurnsLane {
     pub const fn armed(&self) -> bool {
         self.armed
     }
+    // SAFETY-DIVERGENCE(senpi ttsr/repetitive-turns-lane.ts): upstream arms the streaming abort on
+    // the first near-duplicate delta (`observeTextDelta` has no streak check) and never feeds an
+    // aborted turn back through `recordTurnText`, so it cuts the second similar turn while the rule
+    // text promises three; arming is gated on the advertised streak here and the aborted turn is
+    // recorded below, keeping the stream and the batch detector on the same firing turn.
     /// The streaming abort cuts a turn mid-flight, so it must only fire on the turn that
     /// completes the streak the batch detector requires. `streak` counts the similar pairs
     /// already recorded among completed turns, and the turn being streamed is the next one,
     /// so arming is legal only when `streak + 1` reaches the same bound `record_turn_text`
     /// uses. Without this, the second similar turn aborted while the wording promised three.
     fn stream_streak_reached(&self) -> bool {
-        !self.state.latched
-            && self.state.streak + 1 >= REPETITIVE_TURNS_STREAK_LENGTH - 1
+        !self.state.latched && self.state.streak + 1 >= REPETITIVE_TURNS_STREAK_LENGTH - 1
     }
     pub fn observe_text_delta(&mut self, delta: &str, can_arm: bool) -> bool {
         self.current_turn_text.push_str(delta);
@@ -178,8 +182,10 @@ impl RepetitiveTurnsLane {
         if let Some(text) = text {
             self.last_completed_turn_grams = Some(turn_trigrams(&normalize_turn_text(text)));
             self.committed = CommittedTurnPrefix::default();
-            // The aborted turn still happened: advancing the detector state here is what latches
-            // the rule, so one streak cycle aborts at most once instead of re-arming on every
+            // SAFETY-DIVERGENCE(senpi ttsr/repetitive-turns-lane.ts): upstream's `commitArmedTurn`
+            // only remembers the aborted text, leaving the detector streak where it was. The
+            // aborted turn still happened, so advancing the detector state here is what latches
+            // the rule and keeps one streak cycle to a single abort instead of re-arming on every
             // following similar turn. The verdict is deliberately discarded - the nudge for this
             // turn is already being built by the caller.
             let _ = record_turn_text(&mut self.state, text);
@@ -234,7 +240,11 @@ mod tests {
                 record_turn_text(&mut state, TEXT).is_some()
             };
             lane.reset_turn();
-            assert_eq!(lane.observe_text_delta(TEXT, true), batch, "completed={completed}");
+            assert_eq!(
+                lane.observe_text_delta(TEXT, true),
+                batch,
+                "completed={completed}"
+            );
         }
     }
     #[test]
@@ -254,9 +264,15 @@ mod tests {
         lane.record_completed_turn(TEXT);
         lane.record_completed_turn(TEXT);
         lane.reset_turn();
-        assert!(lane.observe_text_delta(TEXT, true), "the third turn aborts once");
+        assert!(
+            lane.observe_text_delta(TEXT, true),
+            "the third turn aborts once"
+        );
         lane.commit_armed_turn(Some(TEXT));
-        assert!(lane.state.latched, "the aborted turn is still part of the streak");
+        assert!(
+            lane.state.latched,
+            "the aborted turn is still part of the streak"
+        );
         // `commit_armed_turn` arms recovery mode, which would mask the latch. Clear it so the
         // assertion below can only pass because the streak latched, not because recovery did.
         lane.recovering = false;
