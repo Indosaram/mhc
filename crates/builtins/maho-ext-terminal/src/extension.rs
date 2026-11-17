@@ -517,15 +517,11 @@ impl TakeoverContext {
             for monitor_id in &settled {
                 lifecycle.writer.forget_restored(monitor_id);
             }
-            if !settled.is_empty() {
-                let mut monitors = self
-                    .monitors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for monitor_id in &settled {
-                    monitors.stop_command(monitor_id);
-                }
-            }
+            // The restore never releases a record: the registry's own exit watcher is the one and
+            // only settle owner (upstream `#settle` is reached from `onExit` alone, so its summary
+            // always describes a real exit). A watch that exited inside the grace window was
+            // already shifted out there and reported with its real status; releasing it here again
+            // would also overwrite that outcome with a fabricated `watcher killed`.
             // Upstream `persistRestored`: a readable manifest is rewritten to the restore's truth,
             // so a watch that did not come back is gone from disk and never re-run.
             if readable_manifest {
@@ -3719,6 +3715,72 @@ mod persistence_tests {
         assert_eq!(monitors[0].monitor_id, "mon_PIDREUSED000001");
         assert_eq!(monitors[0].outcome, "restored");
         stop_waiting(&keeper).await;
+        teardown(&fixture);
+    }
+
+    /// A restored command that exits 0 inside the grace window is reported from its REAL exit.
+    /// The restore used to settle that watch a second time as `watcher killed`, inventing a kill
+    /// that never happened; upstream's only settle owner is the registered exit watcher.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_completed_restored_watch_reports_its_real_exit_not_a_fabricated_kill() {
+        let mut fixture = fixture(1, None);
+        persisted_command(&fixture, "mon_COMPLETEDFAB01", "true").await;
+        // Subscribe to the exact end event BEFORE the restore can emit it, so the assertion cannot
+        // be satisfied by a snapshot that was already empty.
+        let (events_tx, mut events_rx) = tokio::sync::watch::channel(vec![]);
+        let summaries: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        {
+            let summaries = summaries.clone();
+            fixture.context.monitors = Arc::new(Mutex::new(
+                crate::monitor_registry::MonitorRegistry::new_with_ended(
+                    move |event: crate::monitor_registry::MonitorEvent| {
+                        if let crate::monitor_registry::MonitorEvent::Summary { summary, .. } =
+                            event
+                        {
+                            summaries.lock().unwrap().push(summary);
+                        }
+                    },
+                    move |event: crate::monitor_registry::MonitorEndedEvent| {
+                        let mut seen = events_tx.borrow().clone();
+                        seen.push(event);
+                        events_tx.send_replace(seen);
+                    },
+                ),
+            ));
+        }
+        own_once(&mut fixture).await;
+        let monitor = pending_monitors(&fixture).pop().expect("decided digest");
+        assert_eq!(monitor.outcome, "completed");
+        let events = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            events_rx.wait_for(|events| !events.is_empty()),
+        )
+        .await
+        .expect("the restored watch reports its end in time")
+        .expect("monitor ended channel open")
+        .clone();
+        let matching = events
+            .iter()
+            .filter(|event| event.monitor_id.as_deref() == Some("mon_COMPLETEDFAB01"))
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "reported once, by its one settle owner");
+        assert_eq!(
+            matching[0].reason,
+            crate::monitor_registry::MonitorEndedReason::Exit
+        );
+        assert_eq!(matching[0].exit_code, Some(0));
+        let summaries = summaries.lock().unwrap();
+        assert!(
+            summaries
+                .iter()
+                .any(|summary| summary == "watcher completed (exit code 0)"),
+            "the real status is what the session hears: {summaries:?}"
+        );
+        assert!(
+            !summaries.iter().any(|summary| summary == "watcher killed"),
+            "no kill is invented for a watch that exited on its own"
+        );
         teardown(&fixture);
     }
 
