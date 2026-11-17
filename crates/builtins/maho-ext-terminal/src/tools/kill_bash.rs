@@ -85,8 +85,10 @@ pub async fn execute_kill_bash_with_monitors(
             .size();
         // Upstream `stopAllFiles` + `stopAllRpc`: every file watch (and every registration still
         // proving its target) and every rpc watch ends. They run the monitor-ended callbacks, so
-        // the manager lock is not held across them. Also stops all command monitors.
-        let (monitor_ids, file_count, rpc_count, command_count) = {
+        // the manager lock is not held across them. Command watches are manager sessions, so
+        // `teardown_shared` already ends them (and their exit watchers settle the records);
+        // releasing the records here only settles them early.
+        let (monitor_ids, file_count, rpc_count) = {
             let mut monitors = monitors
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -97,8 +99,8 @@ pub async fn execute_kill_bash_with_monitors(
                 .collect::<Vec<_>>();
             let file_count = monitors.stop_all_files();
             let rpc_count = monitors.stop_all_rpc();
-            let command_count = monitors.stop_all_commands();
-            (monitor_ids, file_count, rpc_count, command_count)
+            monitors.stop_all_commands();
+            (monitor_ids, file_count, rpc_count)
         };
         if let Err(error) = crate::manager::teardown_shared(manager).await {
             return error_result(error.to_string());
@@ -106,9 +108,11 @@ pub async fn execute_kill_bash_with_monitors(
         for monitor_id in &monitor_ids {
             drop_state_dir(Some(monitor_id));
         }
+        // kill-bash.ts counts `terminalCount + fileCount + rpcCount`: a command watch is one of the
+        // terminal sessions already counted above, never a second session of its own.
         return text_result(format!(
             "Killed {} session(s).",
-            terminal_count + file_count + rpc_count + command_count
+            terminal_count + file_count + rpc_count
         ));
     }
     let Some(id) = id.filter(|id| !id.is_empty()) else {
@@ -130,21 +134,34 @@ pub async fn execute_kill_bash_with_monitors(
         let mut monitors = monitors
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        monitors.stop_file(&resolved)
-            || monitors.stop_rpc(&resolved)
-            || monitors.stop_command(id)
-            || monitors.stop_command(&resolved)
+        monitors.stop_file(&resolved) || monitors.stop_rpc(&resolved)
     };
     if stopped {
         drop_state_dir(monitor_id.as_deref());
         return text_result(format!("Killed {id}."));
     }
+    // kill-bash.ts stops the file/rpc watch first and then the runtime; a command watch IS that
+    // runtime, so releasing its record must never stand in for killing the process.
     match crate::manager::stop_shared(manager, &resolved).await {
         Ok(true) => {
             drop_state_dir(monitor_id.as_deref());
             text_result(format!("Killed {id}."))
         }
-        Ok(false) => error_result(format!("No terminal session found with id: {id}")),
+        Ok(false) => {
+            // No live runtime: only a command watch whose process is already dead or evicted still
+            // has a record to release, and releasing it is the whole kill.
+            let settled = {
+                let mut monitors = monitors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                monitors.stop_command(id) || monitors.stop_command(&resolved)
+            };
+            if settled {
+                drop_state_dir(monitor_id.as_deref());
+                return text_result(format!("Killed {id}."));
+            }
+            error_result(format!("No terminal session found with id: {id}"))
+        }
         Err(error) => error_result(error.to_string()),
     }
 }
@@ -482,5 +499,103 @@ mod tests {
                 .size(),
             0
         );
+    }
+    /// kill-bash.ts stops the runtime after the file/rpc watch, so killing a command watch by its
+    /// stable `mon_` id ends the watched process; releasing the record is never the whole kill.
+    #[tokio::test]
+    async fn live_command_watch_is_killed_by_its_monitor_id() {
+        let (manager, monitors, terminal) = shared_fixture();
+        let monitor_id = "mon_LIVEPROCESS001";
+        let id = manager
+            .lock()
+            .unwrap()
+            .create("read", crate::shared::test_sh_options("read value"))
+            .unwrap();
+        {
+            let mut manager = manager.lock().unwrap();
+            let entry = crate::monitor_registry::MonitorSnapshotEntry {
+                id: id.clone(),
+                monitor_id: Some(monitor_id.to_owned()),
+                description: "live watch".into(),
+                ..Default::default()
+            };
+            let record = crate::monitor_registry::CommandMonitor::new(entry, None);
+            monitors
+                .lock()
+                .unwrap()
+                .register(manager.get(&id).unwrap(), record)
+                .unwrap();
+            manager.bind_monitor_id(monitor_id, &id);
+        }
+        let mut exit = manager.lock().unwrap().get(&id).unwrap().subscribe_exit();
+        let mut state = monitors.lock().unwrap().subscribe_state();
+        crate::monitor_state_dir::ensure_monitor_state_dir_sync(terminal.path(), monitor_id)
+            .unwrap();
+        assert_eq!(monitors.lock().unwrap().snapshot().len(), 1);
+
+        let killed = execute_kill_bash_with_monitors(
+            &manager,
+            &monitors,
+            Some(terminal.path()),
+            Some(monitor_id),
+            false,
+        )
+        .await;
+        assert_eq!(killed.content[0].text, format!("Killed {monitor_id}."));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            exit.wait_for(Option::is_some),
+        )
+        .await
+        .expect("the killed command's process must exit")
+        .unwrap();
+        assert!(manager.lock().unwrap().get(&id).unwrap().exited().unwrap());
+        // The exit watcher releases the record; await that exact transition instead of assuming
+        // it already ran when the kill returned.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            state.wait_for(Vec::is_empty),
+        )
+        .await
+        .expect("the killed watch must leave the registry snapshot")
+        .unwrap();
+        assert!(!crate::monitor_state_dir::monitor_state_dir(terminal.path(), monitor_id).exists());
+    }
+    /// kill-bash.ts counts `terminalCount + fileCount + rpcCount`: a command watch is one of the
+    /// terminal sessions, so `all` never reports the same session twice.
+    #[tokio::test]
+    async fn all_kill_counts_a_monitored_session_once() {
+        let (manager, monitors, terminal) = shared_fixture();
+        let monitor_id = "mon_COUNTOUNCE0001";
+        let id = manager
+            .lock()
+            .unwrap()
+            .create("read", crate::shared::test_sh_options("read value"))
+            .unwrap();
+        {
+            let mut manager = manager.lock().unwrap();
+            let entry = crate::monitor_registry::MonitorSnapshotEntry {
+                id: id.clone(),
+                monitor_id: Some(monitor_id.to_owned()),
+                description: "counted watch".into(),
+                ..Default::default()
+            };
+            let record = crate::monitor_registry::CommandMonitor::new(entry, None);
+            monitors
+                .lock()
+                .unwrap()
+                .register(manager.get(&id).unwrap(), record)
+                .unwrap();
+            manager.bind_monitor_id(monitor_id, &id);
+        }
+        assert_eq!(manager.lock().unwrap().size(), 1);
+        assert_eq!(monitors.lock().unwrap().snapshot().len(), 1);
+
+        let all =
+            execute_kill_bash_with_monitors(&manager, &monitors, Some(terminal.path()), None, true)
+                .await;
+        assert_eq!(all.content[0].text, "Killed 1 session(s).");
+        assert_eq!(manager.lock().unwrap().size(), 0);
+        assert!(monitors.lock().unwrap().snapshot().is_empty());
     }
 }
