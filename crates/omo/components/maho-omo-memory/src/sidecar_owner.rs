@@ -39,14 +39,26 @@ const LOCK_PURPOSE: &str = "recall-sidecar";
 
 /// One session's claim on its sidecar directory.
 ///
-/// `acquired` carries the record the acquire actually wrote. Releasing needs the SAME nonce, so a
-/// freshly-built record cannot release the lock.
+/// The acquire and the release run as two INDEPENDENT offloaded tasks, so a shutdown can land while
+/// the acquire is still sleeping. `hold` is the handoff between them:
+///
+/// - `held` carries the record the acquire actually wrote. Releasing needs the SAME nonce, so a
+///   freshly-built record cannot release the lock.
+/// - `ended` is set synchronously by the release. An acquire that settles afterwards must not leave
+///   its publication behind: nobody is left to release it, and a lock file nobody owns blocks every
+///   later sweep of that directory, in this process and every other one.
+#[derive(Default)]
+struct HoldState {
+    held: Option<LockRecord>,
+    ended: bool,
+}
+
 struct OwnedSidecar {
     encoded: String,
     lock_path: PathBuf,
     recall_dir: PathBuf,
     locks_dir: PathBuf,
-    acquired: Arc<Mutex<Option<LockRecord>>>,
+    hold: Arc<Mutex<HoldState>>,
 }
 
 /// The process-wide owner registry: one per `MemoryRecallWiring`, which the mount builds once per host.
@@ -89,6 +101,12 @@ impl SidecarOwner {
     /// The entry is recorded BEFORE the lock is acquired, so a sweep kicked from here already sees the
     /// encoded name as owned. The acquire itself is blocking (it sleeps and fsyncs the record), so it
     /// runs on the offload seam.
+    ///
+    /// A session that is already owned keeps its FIRST claim. Replacing the entry would drop the only
+    /// holder of the record that can release the lock file already on disk and strand it forever.
+    ///
+    /// The acquire may settle after a shutdown released the claim. It then releases its own
+    /// publication with the nonce it wrote, so a shutdown that beats the acquisition leaves no lock.
     pub fn own(&self, deps: &OwnerDeps<'_>, session_id: &str, recall_dir: &Path, locks_dir: &Path) {
         let encoded = crate::sidecar_sweep::encode_session(session_id);
         let lock_path = crate::sidecar_sweep::sidecar_owner_lock(locks_dir, &encoded);
@@ -97,23 +115,32 @@ impl SidecarOwner {
             lock_path: lock_path.clone(),
             recall_dir: recall_dir.to_path_buf(),
             locks_dir: locks_dir.to_path_buf(),
-            acquired: Arc::new(Mutex::new(None)),
+            hold: Arc::new(Mutex::new(HoldState::default())),
         };
-        let acquired = Arc::clone(&entry.acquired);
-        let replaced = self
-            .owned
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id.to_string(), entry);
-        if replaced.is_some() {
-            return;
-        }
+        // The map lock is scoped: the offload seam below is caller code and must never run while a
+        // registry lock is held. Neither may `warn` - it is the wiring's callback, not ours.
+        let settle = {
+            let mut owned = self
+                .owned
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if owned.contains_key(session_id) {
+                return;
+            }
+            let hold = Arc::clone(&entry.hold);
+            owned.insert(session_id.to_string(), entry);
+            hold
+        };
         let warn = Arc::clone(deps.warn);
         (deps.offload)(Box::new(move || {
+            // Shutdown beat the acquisition to the pool: publish nothing, so there is nothing to leak.
+            if hold_ended(&settle) {
+                return;
+            }
             let record = match create_lock_record(
                 LOCK_PURPOSE,
                 CreateLockRecordOptions {
-                    run_id: Some(encoded.clone()),
+                    run_id: Some(encoded),
                 },
             ) {
                 Ok(record) => record,
@@ -139,10 +166,13 @@ impl SidecarOwner {
                 return;
             }
             // Kept for the release: `release_lock` verifies this nonce, so the record built at
-            // acquire time is the only one that can release the lock.
-            *acquired
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record);
+            // acquire time is the only one that can release the lock. If the claim ended while the
+            // acquire slept, the handoff gives the record back and this acquire undoes its own
+            // publication - the release found nothing to release.
+            let Some(late) = settle_publication(&settle, record) else {
+                return;
+            };
+            release_record(&lock_path, &late, warn.as_ref());
         }));
         self.kick_sweep_once(deps, recall_dir, locks_dir);
     }
@@ -150,8 +180,8 @@ impl SidecarOwner {
     /// Releases a session's ownership: drop the entry, release the lock, then sweep. The release is
     /// what makes the directory eligible, so it must precede the sweep.
     ///
-    /// Called from `session_shutdown` AFTER `sidecar.shutdown()` resolves, which has no identity context
-    /// left to resolve, so the paths come from the stored entry.
+    /// Called from `session_shutdown` synchronously, before the sidecar's own disposal is spawned: there
+    /// is no identity context left to resolve by then, so the paths come from the stored entry.
     pub fn release_and_sweep(&self, deps: &OwnerDeps<'_>, session_id: &str) {
         let entry = self
             .owned
@@ -161,8 +191,11 @@ impl SidecarOwner {
         let Some(entry) = entry else {
             return;
         };
+        // Ending the claim is synchronous, so no acquire can settle into a live claim after this
+        // returns. A record the acquire already published comes back here and is released by the task
+        // below; one it publishes later is handed back to the acquire itself.
+        let held = end_hold(&entry.hold);
         let warn = Arc::clone(deps.warn);
-        let acquired = Arc::clone(&entry.acquired);
         let lock_path = entry.lock_path.clone();
         // Release and sweep are ONE task, in that order. Two tasks would race on a real thread pool,
         // and a sweep that runs first finds its own session's lock still held and keeps the directory.
@@ -184,7 +217,9 @@ impl SidecarOwner {
         let locks_dir = entry.locks_dir;
         let swept = recall_dir.clone();
         (deps.offload)(Box::new(move || {
-            release_held_lock(&lock_path, &acquired, warn.as_ref());
+            if let Some(record) = held {
+                release_record(&lock_path, &record, warn.as_ref());
+            }
             if sweep_after {
                 run_sweep(&recall_dir, &locks_dir, now_ms(), owned, warn.as_ref());
                 // Only the sweep that claimed the slot may clear it; clearing a slot owned by a
@@ -221,11 +256,15 @@ impl SidecarOwner {
     }
 
     fn kick_sweep_once(&self, deps: &OwnerDeps<'_>, recall_dir: &Path, locks_dir: &Path) {
-        let first = self
-            .kick_once
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(recall_dir.to_path_buf());
+        // The guard is scoped to this statement: `sweep` reaches the offload seam, which is the
+        // caller's code, and a seam that claims a directory of its own must not deadlock on it.
+        let first = {
+            let mut kick_once = self
+                .kick_once
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            kick_once.insert(recall_dir.to_path_buf())
+        };
         if first {
             self.sweep(deps, recall_dir.to_path_buf(), locks_dir.to_path_buf());
         }
@@ -292,18 +331,40 @@ impl SidecarOwner {
     }
 }
 
-fn release_held_lock(
-    lock_path: &Path,
-    acquired: &Mutex<Option<LockRecord>>,
-    warn: &(dyn Fn(&str) + Send + Sync),
-) {
-    let held = acquired
-        .lock()
+/// Reports whether the claim was already released.
+fn hold_ended(hold: &Mutex<HoldState>) -> bool {
+    hold.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
-    if let Some(record) = held
-        && let Err(error) = release_lock(lock_path, &record)
-    {
+        .ended
+}
+
+/// Ends a claim. The record it had published, if any, is returned for the caller to release; a later
+/// publication is handed back to the acquire by `settle_publication` instead.
+fn end_hold(hold: &Mutex<HoldState>) -> Option<LockRecord> {
+    let mut hold = hold
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    hold.ended = true;
+    hold.held.take()
+}
+
+/// Records the lock a finished acquire published. `Some` means the claim ended while the acquire was
+/// still running: the caller must release it, because the release ran before the publication existed.
+fn settle_publication(hold: &Mutex<HoldState>, record: LockRecord) -> Option<LockRecord> {
+    let mut hold = hold
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if hold.ended {
+        return Some(record);
+    }
+    hold.held = Some(record);
+    None
+}
+
+/// Releases one held lock with the record that acquired it. `release_lock` verifies the nonce, so a
+/// record from anywhere else cannot remove a lock this claim does not own.
+fn release_record(lock_path: &Path, record: &LockRecord, warn: &(dyn Fn(&str) + Send + Sync)) {
+    if let Err(error) = release_lock(lock_path, record) {
         warn(&format!(
             "omo-senpi kibitzer sidecar directory owner lock release failed: {error}"
         ));
