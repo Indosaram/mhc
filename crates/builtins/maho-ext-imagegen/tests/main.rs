@@ -23,6 +23,8 @@ pub mod skill_gating;
 pub mod tool;
 #[path = "tool_2_5.rs"]
 pub mod tool_2_5;
+#[path = "tool_fallback_2_5.rs"]
+pub mod tool_fallback_2_5;
 #[path = "tool_output_options.rs"]
 pub mod tool_output_options;
 #[path = "write_images.rs"]

@@ -1,6 +1,8 @@
 //! Port of senpi imagegen/request.ts.
 use crate::auth::{ImageGenCandidate, ImageGenCandidates};
-use maho_ai::types::{AssistantImages, ImagesStopReason};
+use maho_ai::types::{
+    AssistantImages, ImagesStopReason, ProviderDiagnosticCategory, ProviderDiagnosticEvidence,
+};
 use std::future::Future;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +32,86 @@ fn missing_images_endpoint_status(images: &AssistantImages) -> Option<u16> {
         .as_ref()?
         .http_status
         .filter(|status| matches!(status, 404 | 405))
+}
+
+/// Rejections a model retry must never mask: billing, auth, limits, moderation and transport.
+const NON_RETRYABLE_CODES: &[&str] = &[
+    "authentication_error",
+    "invalid_api_key",
+    "permission_error",
+    "billing_error",
+    "insufficient_quota",
+    "usage_limit_reached",
+    "usage_not_included",
+    "rate_limit_error",
+    "rate_limit_exceeded",
+    "content_policy_violation",
+    "moderation_blocked",
+    "content_filter",
+    "safety_violation",
+];
+
+const UNSERVED_MODEL_CODES: &[&str] = &[
+    "model_not_found",
+    "model_not_supported",
+    "model_unsupported",
+    "unsupported_model",
+    "invalid_model",
+    "unknown_model",
+];
+
+fn mentions_content_policy(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "moderation",
+        "content policy",
+        "content_policy",
+        "safety system",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker))
+}
+
+fn is_rejected_model_request(diagnostic: &maho_ai::types::ProviderDiagnostic) -> bool {
+    diagnostic.evidence != ProviderDiagnosticEvidence::StructuredTransport
+        && matches!(
+            diagnostic.category,
+            ProviderDiagnosticCategory::InvalidRequest | ProviderDiagnosticCategory::Unknown
+        )
+        && diagnostic
+            .http_status
+            .is_none_or(|status| matches!(status, 400 | 404 | 422))
+}
+
+/// The matching 2.5 id when a 2.6 request failed because the route does not serve that 2.6 id; auth,
+/// billing, limit, transport, transient and moderation failures keep their single attempt.
+pub fn unsupported_model_fallback(
+    images: &AssistantImages,
+    requested_model: &str,
+) -> Option<&'static str> {
+    if images.stop_reason != ImagesStopReason::Error {
+        return None;
+    }
+    let fallback = crate::params::fallback_model(requested_model)?;
+    let message = images.error_message.as_deref().unwrap_or_default();
+    if mentions_content_policy(message) {
+        return None;
+    }
+    let named_code = images
+        .provider_diagnostic
+        .as_ref()
+        .and_then(|diagnostic| diagnostic.code.as_deref());
+    if named_code.is_some_and(|code| NON_RETRYABLE_CODES.contains(&code)) {
+        return None;
+    }
+    if let Some(diagnostic) = images.provider_diagnostic.as_ref()
+        && !is_rejected_model_request(diagnostic)
+    {
+        return None;
+    }
+    let names_unserved_model = named_code.is_some_and(|code| UNSERVED_MODEL_CODES.contains(&code))
+        || maho_ai::is_model_config_error(Some(message));
+    names_unserved_model.then_some(fallback)
 }
 
 /// Sends the request to `first`, then moves to the next candidate only while the current one is a

@@ -2,12 +2,13 @@
 
 use maho_ai::types::{
     AssistantImages, ContentBlock, ImageContent, ImagesBackground, ImagesContext, ImagesModel,
-    ImagesOptions, ImagesStopReason, TextContent, Usage,
+    ImagesOptions, ImagesStopReason, ProviderDiagnostic, TextContent, Usage,
 };
 use maho_ext_api::*;
 use maho_ext_imagegen::auth::ImageGenAuthRegistry;
 use maho_ext_imagegen::state::{set_image_gen_registry_override, set_native_bypass};
 use std::{
+    collections::VecDeque,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -358,6 +359,13 @@ pub struct StubImages {
     pub error: Option<String>,
     pub mime_type: Option<String>,
     pub background: Option<ImagesBackground>,
+    pub replies: Mutex<VecDeque<(String, StubReply)>>,
+}
+
+#[derive(Clone)]
+pub struct StubReply {
+    pub error: Option<String>,
+    pub diagnostic: Option<ProviderDiagnostic>,
 }
 
 impl StubImages {
@@ -366,6 +374,13 @@ impl StubImages {
             images: 1,
             ..Default::default()
         }
+    }
+    pub fn with_reply(self, model: &str, reply: StubReply) -> Self {
+        self.replies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back((model.into(), reply));
+        self
     }
     pub fn call_count(&self) -> usize {
         self.calls
@@ -379,6 +394,14 @@ impl StubImages {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .first()
             .cloned()
+    }
+    pub fn model_ids(&self) -> Vec<String> {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(model, _, _)| model.id.clone())
+            .collect()
     }
 }
 
@@ -400,7 +423,21 @@ impl maho_ai::types::ProviderImages for StubImages {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let error = self.error.clone();
+        let reply = {
+            let mut replies = self
+                .replies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            replies
+                .iter()
+                .position(|(queued, _)| queued == &model.id)
+                .and_then(|index| replies.remove(index))
+                .map(|(_, reply)| reply)
+        };
+        let (error, diagnostic) = match reply {
+            Some(reply) => (reply.error, reply.diagnostic),
+            None => (self.error.clone(), None),
+        };
         let usage = self.usage;
         let background = self.background;
         let mime = self.mime_type.clone().unwrap_or_else(|| {
@@ -434,6 +471,7 @@ impl maho_ai::types::ProviderImages for StubImages {
                 return Ok(AssistantImages {
                     stop_reason: ImagesStopReason::Error,
                     error_message: Some(error),
+                    provider_diagnostic: diagnostic,
                     ..base
                 });
             }

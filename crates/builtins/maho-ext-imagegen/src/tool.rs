@@ -86,7 +86,7 @@ use crate::{
     paths::*,
     request::{
         ImageRequestOutcome, exhausted_providers_message, request_images_across_candidates,
-        skipped_providers_note,
+        skipped_providers_note, unsupported_model_fallback,
     },
 };
 use maho_ext_api::*;
@@ -286,35 +286,57 @@ pub async fn execute_image(
     ]
     .concat();
     let image_context = maho_ai::types::ImagesContext { input };
+    let retried_model = std::sync::Arc::new(std::sync::Mutex::new(None::<&'static str>));
     let request = |candidate: &ImageGenCandidate| {
         let resolved = candidate.resolved.clone();
-        let mut model = base_model.clone();
-        model.id = model_id.to_string();
-        if let Some(name) = crate::params::model_display_name(model_id) {
-            model.name = name.to_string();
-        }
-        model.provider = resolved
-            .provider_id
-            .clone()
-            .unwrap_or_else(|| "openai".into());
-        model.base_url = resolved.base_url.clone();
-        model.api = "openai-images".into();
-        let mut options = maho_ai::types::ImagesOptions::default();
-        options.request.api_key = Some(resolved.api_key);
-        options.request.headers = Some(
-            resolved
-                .headers
-                .into_iter()
-                .map(|(name, value)| (name, Some(value)))
-                .collect(),
-        );
-        options.request.signal = Some(controller.signal());
-        options.extra = extra.clone();
+        let extra = extra.clone();
+        let base_model = base_model.clone();
+        let retried_model = retried_model.clone();
+        let image_signal = controller.signal();
         let image_context = &image_context;
         async move {
-            maho_ai::images::generate_images(&model, image_context, Some(options))
-                .await
-                .map_err(|error| ExtensionFailure::new(error.to_string()))
+            let send = |attempt: &str, extra: serde_json::Map<String, Value>| {
+                let mut model = base_model.clone();
+                model.id = attempt.to_string();
+                if let Some(name) = crate::params::model_display_name(attempt) {
+                    model.name = name.to_string();
+                }
+                model.provider = resolved
+                    .provider_id
+                    .clone()
+                    .unwrap_or_else(|| "openai".into());
+                model.base_url = resolved.base_url.clone();
+                model.api = "openai-images".into();
+                let mut options = maho_ai::types::ImagesOptions::default();
+                options.request.api_key = Some(resolved.api_key.clone());
+                options.request.headers = Some(
+                    resolved
+                        .headers
+                        .iter()
+                        .map(|(name, value)| (name.clone(), Some(value.clone())))
+                        .collect(),
+                );
+                options.request.signal = Some(image_signal.clone());
+                options.extra = extra;
+                async move {
+                    maho_ai::images::generate_images(&model, image_context, Some(options))
+                        .await
+                        .map_err(|error| ExtensionFailure::new(error.to_string()))
+                }
+            };
+            let images = send(model_id, extra.clone()).await?;
+            let Some(fallback) = unsupported_model_fallback(&images, model_id) else {
+                return Ok::<_, ExtensionFailure>(images);
+            };
+            let mut fallback_extra = extra;
+            fallback_extra.remove("complexity");
+            let images = send(fallback, fallback_extra).await?;
+            if images.stop_reason == maho_ai::types::ImagesStopReason::Stop {
+                *retried_model
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fallback);
+            }
+            Ok(images)
         }
     };
     let generation = request_images_across_candidates(first, &mut candidates, request);
@@ -351,6 +373,9 @@ pub async fn execute_image(
             &source,
         );
     }
+    let served_fallback = *retried_model
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let generated = collect_images(&images.output);
     if generated.is_empty() {
         return fail(
@@ -409,6 +434,9 @@ pub async fn execute_image(
         OutputFormat::Webp => "webp",
     };
     let mut details = json!({"paths":saved,"model":model_id,"source":source,"size":size,"quality":quality,"background":background,"outputFormat":saved_format,"requested":requested,"generated":generated.len(),"revisedPrompts":revised});
+    if let Some(served) = served_fallback {
+        details["fallbackModel"] = json!(served);
+    }
     if let Some(background) = images.background {
         details["transparentBackground"] =
             json!(background == maho_ai::types::ImagesBackground::Transparent);
@@ -418,6 +446,11 @@ pub async fn execute_image(
         generated.len(),
         if generated.len() == 1 { "" } else { "s" }
     )];
+    if let Some(served) = served_fallback {
+        summary.push(format!(
+            "Note: {model_id} is not served by this endpoint; retried with {served}."
+        ));
+    }
     summary.extend(saved.iter().map(|path| format!("- {path}")));
     if saved_format != format {
         summary.push(format!("Note: the provider returned {saved_format} instead of the requested {format}; saved with the matching extension."));
