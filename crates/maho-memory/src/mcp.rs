@@ -233,6 +233,14 @@ fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, Value> {
     str_arg(args, key).ok_or_else(|| json!({"error": format!("{key} is required")}))
 }
 
+fn valid_at_arg(args: &Value) -> Result<Option<String>, String> {
+    match args.get("valid_at") {
+        None => Ok(None),
+        Some(Value::String(text)) => crate::recall::parse_valid_at(text).map(Some),
+        Some(_) => Err("valid_at must be an ISO instant string".into()),
+    }
+}
+
 impl ServerConfig {
     fn bank<'a>(&'a self, args: &'a Value) -> &'a str {
         str_arg(args, "bank").unwrap_or(&self.bank)
@@ -289,6 +297,7 @@ impl ServerConfig {
             }
             "mnemopi_recall" => {
                 let query = req!("query");
+                let valid_at = valid_at_arg(args)?;
                 let top_k = num_arg(args, "top_k")
                     .or_else(|| num_arg(args, "limit"))
                     .unwrap_or(5.0)
@@ -297,7 +306,7 @@ impl ServerConfig {
                 let options = RecallOptions {
                     temporal_weight: num_arg(args, "temporal_weight"),
                     query_time: str_arg(args, "query_time").map(str::to_owned),
-                    valid_at: str_arg(args, "valid_at").map(str::to_owned),
+                    valid_at,
                     temporal_halflife_hours: num_arg(args, "temporal_halflife").unwrap_or(24.0),
                     vec_weight: num_arg(args, "vec_weight").unwrap_or(defaults.vec_weight),
                     fts_weight: num_arg(args, "fts_weight").unwrap_or(defaults.fts_weight),
@@ -544,6 +553,56 @@ mod tests {
             scored["count"], 1,
             "query_time is not a temporal filter: {scored}"
         );
+    }
+
+    #[test]
+    fn recall_rejects_a_valid_at_that_is_not_an_instant_before_touching_the_bank() {
+        let (dir, config) = config();
+        for bad in [
+            json!("last tuesday"),
+            json!(""),
+            json!("2026-13-01"),
+            json!("2026-10-27T06:33"),
+            json!(20260101),
+            json!(["2020-01-01"]),
+            Value::Null,
+        ] {
+            let response = config
+                .handle_request(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 9,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mnemopi_recall",
+                        "arguments": {"query": "cache default", "valid_at": bad},
+                    },
+                }))
+                .expect("response");
+            assert_eq!(response["result"]["isError"], true, "{bad}");
+            let text = response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text");
+            let payload: Value = serde_json::from_str(text).expect("payload");
+            assert_eq!(payload["status"], "error", "{bad}");
+            assert!(payload.get("results").is_none(), "{bad}");
+            assert!(payload.get("count").is_none(), "{bad}");
+        }
+        assert!(
+            !dir.path().join("mnemopi.db").exists(),
+            "a refused bound is reported before the bank is opened"
+        );
+    }
+
+    #[test]
+    fn recall_without_a_valid_at_answers_now() {
+        let (_dir, config) = config();
+        call(
+            &config,
+            "mnemopi_remember",
+            json!({"content": "the cache is disabled by default"}),
+        );
+        let recalled = call(&config, "mnemopi_recall", json!({"query": "cache default"}));
+        assert_eq!(recalled["count"], 1);
     }
 
     #[test]

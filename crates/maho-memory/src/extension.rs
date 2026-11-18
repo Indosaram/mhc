@@ -132,13 +132,7 @@ impl MemoryContext {
         valid_at: Option<&str>,
     ) -> Result<(Vec<RecallResult>, Option<String>), String> {
         let resolved = match valid_at {
-            Some(given) => Some(
-                crate::expiry::parse_expiry_instant(given)
-                    .and_then(crate::time_format::format_millis)
-                    .ok_or_else(|| {
-                        format!("`{given}` is not an instant (try 2026-03-01 or 2026-03-01T10:30Z)")
-                    })?,
-            ),
+            Some(given) => Some(crate::recall::parse_valid_at(given)?),
             None => None,
         };
         let options = RecallOptions {

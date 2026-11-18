@@ -177,17 +177,22 @@ fn veracity_weight(label: &str) -> f64 {
     }
 }
 
+/// A caller-supplied bound as stored text, or the error every input layer reports for one that is
+/// not an instant.
+pub(crate) fn parse_valid_at(value: &str) -> Result<String> {
+    crate::expiry::parse_expiry_instant(value)
+        .and_then(crate::time_format::format_millis)
+        .ok_or_else(|| format!("`{value}` is not an instant (try 2026-03-01 or 2026-03-01T10:30Z)"))
+}
+
 fn valid_at(options: &RecallOptions) -> String {
-    match options.valid_at.as_deref() {
-        // The comparison in `visibility` and `fts_hits` is textual, so the boundary has to be in
-        // the same shape the rows are written in. A caller passing `2026-03-01` or an offset form
-        // would otherwise compare as a string and land on the wrong side of a deadline; a value
-        // that does not parse at all would sort above every row and silently mean "now".
-        Some(given) => crate::expiry::parse_expiry_instant(given)
-            .and_then(crate::time_format::format_millis)
-            .unwrap_or_else(now_iso),
-        None => now_iso(),
-    }
+    options
+        .valid_at
+        .as_deref()
+        .and_then(|given| {
+            crate::expiry::parse_expiry_instant(given).and_then(crate::time_format::format_millis)
+        })
+        .unwrap_or_else(now_iso)
 }
 
 fn tier_weight(tier: i64) -> f64 {
