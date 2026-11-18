@@ -81,6 +81,66 @@ pub fn unique(values: &[String]) -> Vec<String> {
     }
     result
 }
+fn normalized_host(value: &str) -> String {
+    let value = value.trim().trim_end_matches('.').to_lowercase();
+    match value.strip_prefix("www.") {
+        Some(rest) => rest.to_owned(),
+        None => value,
+    }
+}
+/// `docs.example.com` is inside `example.com`; `notexample.com` is not.
+pub fn host_matches_domain(host: &str, domain: &str) -> bool {
+    let host = normalized_host(host);
+    let domain = normalized_host(domain.trim_start_matches('*').trim_start_matches('.'));
+    if domain.is_empty() {
+        return false;
+    }
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+fn allowed_host_matches(allowed: &[String], host: Option<&str>) -> bool {
+    host.is_some_and(|host| {
+        allowed
+            .iter()
+            .any(|domain| host_matches_domain(host, domain))
+    })
+}
+
+fn blocked_host_matches(blocked: &[String], host: Option<&str>) -> bool {
+    host.is_some_and(|host| {
+        blocked
+            .iter()
+            .any(|domain| host_matches_domain(host, domain))
+    })
+}
+
+pub fn filter_result_domains(
+    items: Vec<SearchResultItem>,
+    allowed: Option<&[String]>,
+    blocked: Option<&[String]>,
+) -> Vec<SearchResultItem> {
+    let allowed = allowed.filter(|domains| !domains.is_empty());
+    let blocked = blocked.filter(|domains| !domains.is_empty());
+    if allowed.is_none() && blocked.is_none() {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| {
+            let host = url::Url::parse(&item.url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned));
+            if let Some(blocked) = blocked
+                && blocked_host_matches(blocked, host.as_deref())
+            {
+                return false;
+            }
+            match allowed {
+                None => true,
+                Some(allowed) => allowed_host_matches(allowed, host.as_deref()),
+            }
+        })
+        .collect()
+}
 fn non_empty(values: Vec<String>) -> Vec<String> {
     if values.is_empty() {
         vec!["invalid.invalid".into()]
@@ -329,5 +389,50 @@ mod tests {
     fn invalid_results_dropped() {
         assert!(result(Some(""), Some("url"), None, None, None).is_none());
         assert!(result(Some("title"), None, None, None, None).is_none());
+    }
+
+    #[test]
+    fn domain_matching_stops_at_the_label_boundary() {
+        assert!(host_matches_domain("example.com", "example.com"));
+        assert!(host_matches_domain("docs.example.com", "example.com"));
+        assert!(host_matches_domain("WWW.Example.COM.", "www.example.com"));
+        assert!(host_matches_domain("docs.example.com", "*.example.com"));
+        assert!(!host_matches_domain("notexample.com", "example.com"));
+        assert!(!host_matches_domain("example.com", "docs.example.com"));
+        assert!(!host_matches_domain("example.com", ""));
+    }
+
+    fn domain_item(url: &str) -> SearchResultItem {
+        result(Some("t"), Some(url), None, None, None).expect("result")
+    }
+
+    #[test]
+    fn result_filter_keeps_only_the_allowed_domains() {
+        let items = vec![
+            domain_item("https://docs.example.com/a"),
+            domain_item("https://example.com/b"),
+            domain_item("https://other.test/c"),
+            domain_item("not a url"),
+        ];
+        let allowed = vec!["example.com".into()];
+        let kept: Vec<_> = filter_result_domains(items.clone(), Some(&allowed), None)
+            .into_iter()
+            .map(|item| item.url)
+            .collect();
+        assert_eq!(
+            kept,
+            ["https://docs.example.com/a", "https://example.com/b"]
+        );
+        let kept: Vec<_> = filter_result_domains(items, None, Some(&allowed))
+            .into_iter()
+            .map(|item| item.url)
+            .collect();
+        assert_eq!(kept, ["https://other.test/c", "not a url"]);
+    }
+
+    #[test]
+    fn an_unrestricted_search_keeps_every_result() {
+        let items = vec![domain_item("https://a.test"), domain_item("not a url")];
+        assert_eq!(filter_result_domains(items.clone(), None, None), items);
     }
 }

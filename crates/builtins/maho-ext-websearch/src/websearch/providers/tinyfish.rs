@@ -17,7 +17,7 @@ struct Query<'a> {
     blocked_domains: Option<&'a [String]>,
 }
 
-fn tinyfish_request(ctx: &BuildContext<'_>, page: usize) -> BuiltSearchRequest {
+pub fn page_request(ctx: &BuildContext<'_>, page: usize) -> BuiltSearchRequest {
     let query = Query {
         query: ctx.query,
         count: clamp(ctx.max_results, 1.0, 20.0),
@@ -77,7 +77,15 @@ fn url_encode(value: &str) -> String {
 }
 
 pub fn build_request(ctx: &BuildContext<'_>) -> BuiltSearchRequest {
-    tinyfish_request(ctx, 0)
+    page_request(ctx, 0)
+}
+
+pub fn has_next_page(payload: &Value, max_results: f64, page_index: usize) -> bool {
+    if page_index + 1 >= MAX_PAGES {
+        return false;
+    }
+    let rows = payload["results"].as_array().map_or(0, Vec::len);
+    (rows as f64) >= clamp(max_results, 1.0, 20.0).min(MAX_PAGE_RESULTS)
 }
 
 pub fn next_page(
@@ -85,15 +93,7 @@ pub fn next_page(
     payload: &Value,
     page_index: usize,
 ) -> Option<BuiltSearchRequest> {
-    let count = clamp(ctx.max_results, 1.0, 20.0);
-    if page_index + 1 >= MAX_PAGES {
-        return None;
-    }
-    let rows = payload["results"].as_array().map_or(0, Vec::len);
-    if (rows as f64) < count.min(MAX_PAGE_RESULTS) {
-        return None;
-    }
-    Some(tinyfish_request(ctx, page_index + 1))
+    has_next_page(payload, ctx.max_results, page_index).then(|| page_request(ctx, page_index + 1))
 }
 
 pub fn normalize_response(data: &Value) -> Vec<SearchResultItem> {
@@ -164,6 +164,27 @@ mod tests {
         let short = json!({"results": [{"url": "https://a.test"}]});
         assert!(next_page(&context, &short, 0).is_none());
         assert!(next_page(&context, &full, MAX_PAGES - 1).is_none());
+    }
+
+    #[test]
+    fn a_page_request_carries_the_page_index_on_top_of_the_first_request() {
+        let context = ctx(None, None, 15.0);
+        let first = build_request(&context);
+        let second = page_request(&context, 1);
+        assert!(first.url.ends_with("&page=0"));
+        assert_eq!(
+            second.url,
+            first.url.trim_end_matches("page=0").to_owned() + "page=1"
+        );
+    }
+
+    #[test]
+    fn a_full_page_reports_another_page_until_the_page_cap() {
+        let full = json!({"results": vec![json!({"url": "https://a.test"}); 10]});
+        assert!(has_next_page(&full, 15.0, 0));
+        assert!(has_next_page(&full, 20.0, 1));
+        assert!(!has_next_page(&full, 15.0, MAX_PAGES - 1));
+        assert!(!has_next_page(&json!({"results": []}), 15.0, 0));
     }
 
     #[test]

@@ -24,6 +24,7 @@ reqwest = { version = "=0.13.2", default-features = false, features = ["rustls"]
 tokio = { version = "=1.52.3", features = ["time", "net", "io-util", "macros", "rt", "fs", "sync"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 maho-ext-host = { path = "../../maho-ext-host" }
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }

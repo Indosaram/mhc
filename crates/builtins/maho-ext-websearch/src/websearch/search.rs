@@ -1,16 +1,17 @@
-use super::providers::{build_search_request, normalize_search_response};
+use super::providers::{
+    DomainFilters, build_context, build_search_request, normalize_search_response,
+    shared::{BuiltSearchRequest, FetchedPage, SearchResultItem, filter_result_domains},
+};
 pub use super::route_attempts::provider_entry_label;
 use super::route_attempts::{attempt_route_label, route_attempt_entries};
 use super::types::{
     RoutingStrategy, SearchAttempt, SearchBlockReason, SearchDetails, SearchProvider,
-    SearchProviderEntry, SearchRequest, WebsearchConfig,
+    SearchProviderConfig, SearchProviderEntry, SearchRequest, WebsearchConfig,
 };
 use maho_tools::definition::{AbortSignal, ToolError};
 use serde_json::{Value, json};
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, time::Duration};
+use tokio::time::Instant;
 /// First cooldown after a keyless engine blocks a search; each consecutive block doubles it up to the cap.
 pub const ENGINE_COOLDOWN_BASE_MS: f64 = 60_000.;
 pub const ENGINE_COOLDOWN_MAX_MS: f64 = 15. * 60_000.;
@@ -25,6 +26,7 @@ pub fn is_keyless_provider(provider: SearchProvider) -> bool {
             | SearchProvider::GoogleHtml
             | SearchProvider::ExaMcp
             | SearchProvider::Searxng
+            | SearchProvider::Public
             | SearchProvider::Keenable
     )
 }
@@ -316,29 +318,34 @@ fn now_ms() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0., |elapsed| elapsed.as_secs_f64() * 1000.)
 }
-pub async fn perform_provider_search(
-    config: &SearchProviderEntry,
-    request: &SearchRequest,
-    signal: Option<&AbortSignal>,
-) -> Result<SearchDetails, ToolError> {
-    let started = Instant::now();
-    let built = build_search_request(&config.config, request)
-        .map_err(|error| ToolError::Message(error.to_string()))?;
-    let signal = signal.cloned().unwrap_or_default();
-    signal.check()?;
-    let timeout_ms = config.config.timeout_ms.unwrap_or(60_000.).trunc().max(1.) as u64;
-    let failure = |error: String,
-                   blocked: Option<SearchBlockReason>,
-                   retry_after_seconds: Option<f64>| SearchDetails {
-        provider: config.config.provider,
-        entry_id: config.config.id.clone(),
-        query: request.query.clone(),
-        duration_ms: started.elapsed().as_secs_f64() * 1000.,
-        error: Some(error),
-        blocked,
-        retry_after_seconds,
-        ..Default::default()
-    };
+const DEFAULT_TIMEOUT_MS: f64 = 60_000.;
+
+struct PageFailure {
+    message: String,
+    blocked: Option<SearchBlockReason>,
+    retry_after_seconds: Option<f64>,
+}
+
+struct PageOutcome {
+    payload: Value,
+    results: Vec<SearchResultItem>,
+}
+
+enum FetchFailure {
+    Aborted,
+    Timeout,
+    Network(String),
+}
+
+async fn fetch_page(
+    built: &BuiltSearchRequest,
+    deadline: Instant,
+    signal: &AbortSignal,
+) -> Result<(FetchedPage, reqwest::header::HeaderMap), FetchFailure> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(FetchFailure::Timeout);
+    }
     let future = async {
         let client = reqwest::Client::new();
         let mut outgoing = if built.method == "GET" {
@@ -361,65 +368,203 @@ pub async fn perform_provider_search(
         let text = response.text().await.map_err(|error| error.to_string())?;
         Ok::<_, String>((status, url, headers, text))
     };
-    let fetched = tokio::select! { biased; ()=signal.cancelled()=>return Err(ToolError::Aborted), result=tokio::time::timeout(Duration::from_millis(timeout_ms),future)=>match result { Ok(result)=>result,Err(_)=>Err(format!("Search timed out after {timeout_ms}ms")) } };
-    let (status, url, headers, text) = match fetched {
-        Ok(fetched) => fetched,
-        Err(error) => return Ok(failure(error, Some(SearchBlockReason::Network), None)),
+    let fetched = tokio::select! {
+        biased;
+        ()=signal.cancelled()=>return Err(FetchFailure::Aborted),
+        result=tokio::time::timeout(remaining,future)=>match result {
+            Ok(result)=>result,
+            Err(_)=>return Err(FetchFailure::Timeout),
+        }
     };
-    let page = super::providers::shared::FetchedPage {
-        status: status.as_u16(),
-        url,
-        body: text,
-    };
-    if let Some(challenge) = detect_search_challenge(config.config.provider, &page) {
-        return Ok(failure(
-            format!(
-                "{} served a bot challenge ({challenge}) that needs a browser to pass.",
-                engine_name(config.config.provider)
-            ),
-            Some(SearchBlockReason::Challenge),
-            None,
-        ));
+    match fetched {
+        Ok((status, url, headers, text)) => Ok((
+            FetchedPage {
+                status: status.as_u16(),
+                url,
+                body: text,
+            },
+            headers,
+        )),
+        Err(error) => Err(FetchFailure::Network(error)),
     }
-    let payload = if let Some(parsed) =
-        super::providers::parse_search_body(config.config.provider, &page.body)
-    {
-        parsed
-    } else if matches!(
-        config.config.provider,
-        SearchProvider::DuckduckgoHtml
-            | SearchProvider::Startpage
-            | SearchProvider::Mojeek
-            | SearchProvider::Ecosia
-            | SearchProvider::GoogleHtml
-    ) {
-        json!({"html":page.body,"url":page.url})
-    } else if page.body.is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(&page.body).unwrap_or_else(|_| json!({}))
-    };
-    if !status.is_success() {
+}
+
+fn interpret_page(
+    config: &SearchProviderConfig,
+    (page, headers): (FetchedPage, reqwest::header::HeaderMap),
+) -> Result<PageOutcome, PageFailure> {
+    if let Some(challenge) = detect_search_challenge(config.provider, &page) {
+        return Err(PageFailure {
+            message: format!(
+                "{} served a bot challenge ({challenge}) that needs a browser to pass.",
+                engine_name(config.provider)
+            ),
+            blocked: Some(SearchBlockReason::Challenge),
+            retry_after_seconds: None,
+        });
+    }
+    let payload =
+        if let Some(parsed) = super::providers::parse_search_body(config.provider, &page.body) {
+            parsed
+        } else if matches!(
+            config.provider,
+            SearchProvider::DuckduckgoHtml
+                | SearchProvider::Startpage
+                | SearchProvider::Mojeek
+                | SearchProvider::Ecosia
+                | SearchProvider::GoogleHtml
+        ) {
+            json!({"html":page.body,"url":page.url})
+        } else if page.body.is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&page.body).unwrap_or_else(|_| json!({}))
+        };
+    if !(200..300).contains(&page.status) {
         let detail = error_detail(&payload, &page.body);
         let message = if detail.is_empty() {
-            format!("Search failed with HTTP {}", status.as_u16())
+            format!("Search failed with HTTP {}", page.status)
         } else {
-            format!("Search failed with HTTP {}: {detail}", status.as_u16())
+            format!("Search failed with HTTP {}: {detail}", page.status)
         };
-        return Ok(failure(
+        return Err(PageFailure {
             message,
-            block_for_status(status.as_u16()),
-            retry_after_seconds(&headers, now_ms()),
-        ));
+            blocked: block_for_status(page.status),
+            retry_after_seconds: retry_after_seconds(&headers, now_ms()),
+        });
     }
-    let mut details = SearchDetails {
+    let results = normalize_search_response(config.provider, &payload);
+    Ok(PageOutcome { payload, results })
+}
+
+fn payload_error(payload: &Value) -> String {
+    payload
+        .get("error")
+        .map(|error| error_detail(&json!({"error":error}), ""))
+        .unwrap_or_default()
+}
+
+async fn provider_search(
+    config: &SearchProviderEntry,
+    request: &SearchRequest,
+    signal: Option<&AbortSignal>,
+    deadline: Option<Instant>,
+) -> Result<SearchDetails, ToolError> {
+    let started = Instant::now();
+    let signal = signal.cloned().unwrap_or_default();
+    signal.check()?;
+    let timeout_ms = config
+        .config
+        .timeout_ms
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .trunc()
+        .max(1.) as u64;
+    let deadline = deadline.unwrap_or_else(|| started + Duration::from_millis(timeout_ms));
+    let filters = DomainFilters::resolve(&config.config, request);
+    let failure = |error: String,
+                   blocked: Option<SearchBlockReason>,
+                   retry_after_seconds: Option<f64>| SearchDetails {
         provider: config.config.provider,
         entry_id: config.config.id.clone(),
         query: request.query.clone(),
+        duration_ms: started.elapsed().as_secs_f64() * 1000.,
+        error: Some(error),
+        blocked,
+        retry_after_seconds,
         ..Default::default()
     };
-    let results = normalize_search_response(config.config.provider, &payload);
-    details.truncated = results.len() as f64 > request.max_results;
+    let limit = (request.max_results >= 0.).then(|| request.max_results.trunc() as usize);
+    let page_size = config.config.max_results.unwrap_or(request.max_results);
+    let paged = config.config.provider == SearchProvider::Tinyfish;
+    let mut collected = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut overflowed = false;
+    let mut returned = 0usize;
+    let mut page_index = 0usize;
+    let error_suffix = loop {
+        let built = if page_index == 0 {
+            build_search_request(&config.config, request)
+                .map_err(|error| ToolError::Message(error.to_string()))?
+        } else {
+            let ctx = build_context(&config.config, request, &filters);
+            let mut page = super::providers::tinyfish::page_request(&ctx, page_index);
+            super::providers::shared::with_auth_headers(
+                config.config.headers.as_ref(),
+                &mut page.headers,
+            );
+            page
+        };
+        let fetched = match fetch_page(&built, deadline, &signal).await {
+            Ok(fetched) => fetched,
+            Err(FetchFailure::Aborted) => return Err(ToolError::Aborted),
+            Err(FetchFailure::Timeout) => {
+                return Ok(failure(
+                    format!("Search timed out after {timeout_ms}ms"),
+                    Some(SearchBlockReason::Network),
+                    None,
+                ));
+            }
+            Err(FetchFailure::Network(error)) => {
+                return Ok(failure(error, Some(SearchBlockReason::Network), None));
+            }
+        };
+        let outcome = match interpret_page(&config.config, fetched) {
+            Ok(outcome) => outcome,
+            Err(page_failure) => {
+                return Ok(failure(
+                    page_failure.message,
+                    page_failure.blocked,
+                    page_failure.retry_after_seconds,
+                ));
+            }
+        };
+        returned += outcome.results.len();
+        let accepted = if config.config.provider == SearchProvider::OpenRouter {
+            let from_config = filter_result_domains(
+                outcome.results,
+                config.config.allowed_domains.as_deref(),
+                config.config.blocked_domains.as_deref(),
+            );
+            filter_result_domains(
+                from_config,
+                request.allowed_domains.as_deref(),
+                request.blocked_domains.as_deref(),
+            )
+        } else {
+            outcome.results
+        };
+        for item in accepted {
+            if paged && !seen.insert(super::providers::public::public_dedupe_key(&item.url)) {
+                continue;
+            }
+            if limit.is_some_and(|limit| collected.len() >= limit) {
+                overflowed = true;
+                break;
+            }
+            collected.push(item);
+        }
+        let more_pages = paged
+            && super::providers::tinyfish::has_next_page(&outcome.payload, page_size, page_index);
+        if !more_pages || overflowed || limit.is_some_and(|limit| collected.len() >= limit) {
+            break payload_error(&outcome.payload);
+        }
+        page_index += 1;
+    };
+    let domain_restricted = [&filters.allowed, &filters.blocked]
+        .into_iter()
+        .any(|domains| domains.as_ref().is_some_and(|domains| !domains.is_empty()));
+    let results = collected;
+    if config.config.provider == SearchProvider::OpenRouter
+        && results.is_empty()
+        && returned > 0
+        && domain_restricted
+    {
+        return Ok(failure(
+            super::providers::openrouter::domains_unsupported_error(returned),
+            None,
+            None,
+        ));
+    }
     let count = if request.max_results < 0. {
         results
             .len()
@@ -427,29 +572,176 @@ pub async fn perform_provider_search(
     } else {
         request.max_results.trunc() as usize
     };
-    details.results = results.into_iter().take(count).collect();
+    let truncated = overflowed || results.len() > count;
+    let mut details = SearchDetails {
+        provider: config.config.provider,
+        entry_id: config.config.id.clone(),
+        query: request.query.clone(),
+        truncated,
+        results: results.into_iter().take(count).collect(),
+        ..Default::default()
+    };
     if details.results.is_empty() {
-        let payload_error = payload
-            .get("error")
-            .map(|error| error_detail(&json!({"error":error}), ""))
-            .unwrap_or_default();
         let label = provider_entry_label(
             config.config.provider.as_str(),
             config.config.id.as_deref(),
             None,
         );
-        details.error = Some(if payload_error.is_empty() {
+        details.error = Some(if error_suffix.is_empty() {
             format!(
                 "Search provider {label} returned no results for \"{}\".",
                 request.query
             )
         } else {
-            format!("Search provider {label} failed: {payload_error}")
+            format!("Search provider {label} failed: {error_suffix}")
         });
     }
     details.duration_ms = started.elapsed().as_secs_f64() * 1000.;
     Ok(details)
 }
+
+fn public_engine_config(
+    config: &SearchProviderConfig,
+    engine: SearchProvider,
+    timeout_ms: u64,
+) -> SearchProviderConfig {
+    let mut engine_config = SearchProviderConfig::new(engine);
+    engine_config.base_url = config
+        .base_url
+        .as_ref()
+        .map(|base| format!("{}/{}", base.trim_end_matches('/'), engine.as_str()));
+    engine_config.max_results = config.max_results;
+    engine_config.allowed_domains = config.allowed_domains.clone();
+    engine_config.blocked_domains = config.blocked_domains.clone();
+    engine_config.timeout_ms = Some(timeout_ms as f64);
+    engine_config
+}
+
+fn shared_block_reason(blocked: &[Option<SearchBlockReason>]) -> Option<SearchBlockReason> {
+    let first = *blocked.first()?;
+    first.filter(|_| blocked.iter().all(|reason| *reason == first))
+}
+
+async fn public_search(
+    config: &SearchProviderEntry,
+    request: &SearchRequest,
+    signal: Option<&AbortSignal>,
+) -> Result<SearchDetails, ToolError> {
+    let started = Instant::now();
+    let signal = signal.cloned().unwrap_or_default();
+    signal.check()?;
+    let hard_ms = config
+        .config
+        .timeout_ms
+        .unwrap_or(super::providers::public::PUBLIC_HARD_DEADLINE_MS as f64)
+        .trunc()
+        .clamp(1., super::providers::public::PUBLIC_HARD_DEADLINE_MS as f64)
+        as u64;
+    let hard_deadline = started + Duration::from_millis(hard_ms);
+    let engines = super::providers::public::PUBLIC_ENGINES;
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, engine) in engines.iter().copied().enumerate() {
+        let entry = SearchProviderEntry {
+            config: public_engine_config(&config.config, engine, hard_ms),
+            priority: None,
+            weight: None,
+            fallback_model: None,
+        };
+        let request = request.clone();
+        let signal = signal.clone();
+        tasks.spawn(async move {
+            (
+                index,
+                provider_search(&entry, &request, Some(&signal), Some(hard_deadline)).await,
+            )
+        });
+    }
+    finish_public_search(config, request, &signal, started, hard_ms, tasks).await
+}
+
+async fn finish_public_search(
+    config: &SearchProviderEntry,
+    request: &SearchRequest,
+    signal: &AbortSignal,
+    started: Instant,
+    hard_ms: u64,
+    mut tasks: tokio::task::JoinSet<(usize, Result<SearchDetails, ToolError>)>,
+) -> Result<SearchDetails, ToolError> {
+    let hard_deadline = started + Duration::from_millis(hard_ms);
+    let soft_deadline = started
+        + Duration::from_millis(hard_ms.min(super::providers::public::PUBLIC_SOFT_DEADLINE_MS));
+    let count = super::providers::public::PUBLIC_ENGINES.len();
+    let mut answers: Vec<Option<Vec<SearchResultItem>>> = vec![None; count];
+    let mut failures: Vec<Option<String>> = vec![None; count];
+    let mut blocked: Vec<Option<SearchBlockReason>> = vec![None; count];
+    let mut answered = 0usize;
+    while !tasks.is_empty() {
+        let deadline = if answered > 0 {
+            soft_deadline
+        } else {
+            hard_deadline
+        };
+        let joined = tokio::select! {
+            biased;
+            ()=signal.cancelled()=>return Err(ToolError::Aborted),
+            joined=tasks.join_next()=>joined,
+            ()=tokio::time::sleep_until(deadline)=>break,
+        };
+        match joined {
+            Some(Ok((index, Ok(details)))) => {
+                if details.error.is_none() {
+                    answers[index] = Some(details.results);
+                    answered += 1;
+                } else {
+                    blocked[index] = details.blocked;
+                    failures[index] = details.error;
+                }
+            }
+            Some(Ok((_, Err(ToolError::Aborted)))) => return Err(ToolError::Aborted),
+            Some(Ok((index, Err(error)))) => failures[index] = Some(error.to_string()),
+            Some(Err(_)) => continue,
+            None => break,
+        }
+    }
+    let duration_ms = started.elapsed().as_secs_f64() * 1000.;
+    let (merged, truncated) =
+        super::providers::public::merge_engine_results(&answers, request.max_results);
+    let filters = DomainFilters::resolve(&config.config, request);
+    let merged = filter_result_domains(
+        merged,
+        filters.allowed.as_deref(),
+        filters.blocked.as_deref(),
+    );
+    let mut details = SearchDetails {
+        provider: SearchProvider::Public,
+        entry_id: config.config.id.clone(),
+        query: request.query.clone(),
+        duration_ms,
+        truncated,
+        results: merged,
+        ..Default::default()
+    };
+    if details.results.is_empty() {
+        details.error = Some(super::providers::public::all_engines_failed_error(
+            &failures,
+            hard_ms as f64,
+        ));
+        details.blocked = shared_block_reason(&blocked);
+    }
+    Ok(details)
+}
+
+pub async fn perform_provider_search(
+    config: &SearchProviderEntry,
+    request: &SearchRequest,
+    signal: Option<&AbortSignal>,
+) -> Result<SearchDetails, ToolError> {
+    if config.config.provider == SearchProvider::Public {
+        return public_search(config, request, signal).await;
+    }
+    provider_search(config, request, signal, None).await
+}
+
 pub type SearchAttemptListener<'a> =
     dyn Fn(&str, &[SearchAttempt], &[String]) -> Result<(), ToolError> + Send + Sync + 'a;
 fn attempt_from_details(details: &SearchDetails) -> SearchAttempt {
@@ -883,5 +1175,75 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod public_deadline_tests {
+    use super::*;
+    use crate::websearch::providers::public::{PUBLIC_ENGINES, PUBLIC_SOFT_DEADLINE_MS};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_public_engine_cannot_hold_the_merged_answer() {
+        let hard_ms = PUBLIC_SOFT_DEADLINE_MS * 3;
+        for fast_answer in [true, false] {
+            let mut tasks = tokio::task::JoinSet::new();
+            for index in 0..PUBLIC_ENGINES.len() {
+                tasks.spawn(async move {
+                    if index != 0 || !fast_answer {
+                        return std::future::pending().await;
+                    }
+                    let item = super::super::providers::shared::result(
+                        Some("result"),
+                        Some("https://example.test/found"),
+                        None,
+                        None,
+                        None,
+                    )
+                    .expect("item");
+                    (
+                        index,
+                        Ok(SearchDetails {
+                            results: vec![item],
+                            ..Default::default()
+                        }),
+                    )
+                });
+            }
+            let entry = SearchProviderEntry {
+                config: SearchProviderConfig::new(SearchProvider::Public),
+                priority: None,
+                weight: None,
+                fallback_model: None,
+            };
+            let request = SearchRequest {
+                query: "example".into(),
+                max_results: 10.,
+                allowed_domains: None,
+                blocked_domains: None,
+            };
+            let start = Instant::now();
+            let details = finish_public_search(
+                &entry,
+                &request,
+                &AbortSignal::default(),
+                start,
+                hard_ms,
+                tasks,
+            )
+            .await
+            .expect("public search");
+            let expected = Duration::from_millis(if fast_answer {
+                PUBLIC_SOFT_DEADLINE_MS
+            } else {
+                hard_ms
+            });
+            assert!((expected..=expected + Duration::from_millis(1)).contains(&start.elapsed()));
+            assert_eq!(details.error.is_none(), fast_answer);
+            assert_eq!(details.results.len(), usize::from(fast_answer));
+            if fast_answer {
+                assert_eq!(details.results[0].url, "https://example.test/found");
+            }
+        }
     }
 }

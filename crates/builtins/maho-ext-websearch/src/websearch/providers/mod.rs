@@ -38,6 +38,39 @@ use super::{
 };
 use serde_json::Value;
 use shared::{BuildContext, BuiltSearchRequest, SearchResultItem, resolve_domain_filters};
+
+pub struct DomainFilters {
+    pub allowed: Option<Vec<String>>,
+    pub blocked: Option<Vec<String>>,
+}
+
+impl DomainFilters {
+    pub fn resolve(config: &SearchProviderConfig, request: &SearchRequest) -> Self {
+        let (allowed, blocked) = resolve_domain_filters(
+            config.allowed_domains.as_deref(),
+            config.blocked_domains.as_deref(),
+            request.allowed_domains.as_deref(),
+            request.blocked_domains.as_deref(),
+        );
+        Self { allowed, blocked }
+    }
+}
+
+pub fn build_context<'a>(
+    config: &'a SearchProviderConfig,
+    request: &'a SearchRequest,
+    filters: &'a DomainFilters,
+) -> BuildContext<'a> {
+    BuildContext {
+        query: &request.query,
+        max_results: config.max_results.unwrap_or(request.max_results),
+        api_key: config.api_key.as_deref(),
+        base_url: config.base_url.as_deref(),
+        allowed_domains: filters.allowed.as_deref(),
+        blocked_domains: filters.blocked.as_deref(),
+    }
+}
+
 /// Why a provider could not turn a request into an HTTP call: a bad configured URL, or a provider
 /// that has no endpoint of its own (`public` fans out instead of calling one).
 #[derive(Debug)]
@@ -62,20 +95,8 @@ pub fn build_search_request(
     config: &SearchProviderConfig,
     request: &SearchRequest,
 ) -> Result<BuiltSearchRequest, SearchBuildError> {
-    let (allowed, blocked) = resolve_domain_filters(
-        config.allowed_domains.as_deref(),
-        config.blocked_domains.as_deref(),
-        request.allowed_domains.as_deref(),
-        request.blocked_domains.as_deref(),
-    );
-    let ctx = BuildContext {
-        query: &request.query,
-        max_results: config.max_results.unwrap_or(request.max_results),
-        api_key: config.api_key.as_deref(),
-        base_url: config.base_url.as_deref(),
-        allowed_domains: allowed.as_deref(),
-        blocked_domains: blocked.as_deref(),
-    };
+    let filters = DomainFilters::resolve(config, request);
+    let ctx = build_context(config, request, &filters);
     let model = config.model.as_deref();
     let size = config.search_context_size.map(|size| size.as_str());
     let mut built = match config.provider {

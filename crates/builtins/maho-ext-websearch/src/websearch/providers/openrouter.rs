@@ -1,12 +1,18 @@
 //! Port of senpi `websearch/websearch/providers/openrouter.ts`.
 use crate::websearch::providers::shared::{
-    BuildContext, BuiltSearchRequest, SearchResultItem, clamp, collect, content_headers, result,
-    unique_by_url,
+    BuildContext, BuiltSearchRequest, SearchResultItem, append_domain_filters, clamp, collect,
+    content_headers, result, unique_by_url,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const DEFAULT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+
+pub fn domains_unsupported_error(returned: usize) -> String {
+    format!(
+        "Search provider openrouter cannot restrict citations to the requested domains; all {returned} citations it returned were outside them."
+    )
+}
 
 fn chat_completions_url<'a>(base_url: Option<&'a str>) -> std::borrow::Cow<'a, str> {
     let root = base_url.unwrap_or(DEFAULT_URL).trim_end_matches('/');
@@ -26,7 +32,7 @@ fn http_url(value: Option<&str>) -> Option<&str> {
 pub fn build_request(ctx: &BuildContext<'_>, model: Option<&str>) -> BuiltSearchRequest {
     let mut body = json!({
         "plugins": [{"id": "web", "max_results": clamp(ctx.max_results, 1.0, 50.0)}],
-        "messages": [{"role": "user", "content": ctx.query}],
+        "messages": [{"role": "user", "content": append_domain_filters(ctx.query, ctx.allowed_domains, ctx.blocked_domains)}],
     });
     if let Some(model) = model {
         body["model"] = json!(model);
@@ -137,5 +143,27 @@ mod tests {
             normalize_response(&json!({"choices":[{"message":{"content":"text"}}]})).is_empty()
         );
         assert!(normalize_response(&json!({"choices":[]})).is_empty());
+    }
+
+    #[test]
+    fn pushes_the_domain_restriction_into_the_query() {
+        let allowed = vec!["docs.example".to_string()];
+        let blocked = vec!["spam.example".to_string()];
+        let mut context = ctx(None, 5.0);
+        context.allowed_domains = Some(&allowed);
+        let body = build_request(&context, None).body.expect("body");
+        assert_eq!(body["messages"][0]["content"], "who won site:docs.example");
+        let mut context = ctx(None, 5.0);
+        context.blocked_domains = Some(&blocked);
+        let body = build_request(&context, None).body.expect("body");
+        assert_eq!(body["messages"][0]["content"], "who won -site:spam.example");
+    }
+
+    #[test]
+    fn names_the_citation_count_when_every_url_was_outside_the_domains() {
+        assert_eq!(
+            domains_unsupported_error(3),
+            "Search provider openrouter cannot restrict citations to the requested domains; all 3 citations it returned were outside them."
+        );
     }
 }

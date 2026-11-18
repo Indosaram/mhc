@@ -15,3 +15,5 @@ mod native_registry;
 mod native_render;
 #[path = "provider_source_config.rs"]
 mod provider_source_config;
+#[path = "public_and_paged_search.rs"]
+mod public_and_paged_search;
