@@ -166,6 +166,8 @@ pub mod radius_relay;
 pub mod radius_relay_host;
 #[path = "reasoning_host.rs"]
 pub mod reasoning_host;
+#[path = "release_scripts.rs"]
+pub mod release_scripts;
 #[path = "rpc_entry.rs"]
 pub mod rpc_entry;
 #[path = "rpc_fast_mode.rs"]
