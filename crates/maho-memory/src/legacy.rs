@@ -7,12 +7,16 @@
 use crate::store::{RememberOptions, Store, now_iso, sha256_hex16};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Files larger than this are skipped.
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const IMPORTER: &str = "maho-memory legacy-v1";
+/// Stands in for a commit sha on the revision read from the working tree.
+const WORKTREE_REVISION: &str = "worktree";
 
 /// What to import.
 #[derive(Clone, Debug)]
@@ -372,6 +376,28 @@ fn relative(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
+/// Whether a content-root-relative path is imported at all.
+///
+/// An identity repo has known content homes; a flat `--from <dir>` keeps the historical "every
+/// Markdown file" behaviour so arbitrary folders still import. Both the working-tree and the history
+/// pass ask this one function, so neither can import what the other refuses.
+fn keeps(content: &ContentRoot, rel: &str) -> bool {
+    if content.label.is_empty() {
+        !rel.starts_with("runtime/") && !rel.starts_with("transient-runs/")
+    } else {
+        is_content(rel)
+    }
+}
+
+/// The `legacy_path` an identity's file is filed under: its label, then the content-relative path.
+fn legacy_path_of(content: &ContentRoot, rel: &str) -> String {
+    if content.label.is_empty() {
+        rel.to_owned()
+    } else {
+        format!("{}/{rel}", content.label)
+    }
+}
+
 fn month_hint(path: &str) -> Option<String> {
     let name = path.rsplit('/').next()?;
     let bytes = name.as_bytes();
@@ -522,12 +548,12 @@ pub fn import_at(
     for content in content_roots(root) {
         let mut files = Vec::new();
         collect_files(&content.path, &content.path, &mut report, &mut files);
-        // With history on, the newest revision of a file is its current text, so the working-tree
-        // pass only covers files whose repo history could not be read (untracked files, or a root
-        // outside any work tree). Importing both would store the same block twice under two
-        // different timestamps.
+        // With history on, the history pass also imports a tracked file's uncommitted working copy,
+        // so this pass covers only files whose repo history could not be read at all (untracked
+        // files, or a root outside any work tree). Importing both would store the same block twice
+        // under two different timestamps.
         let covered = if options.history {
-            import_history(store, options, &content, &files, &imported_at, &mut report)
+            import_history(store, options, &content, &files, &imported_at, &mut report)?
         } else {
             Vec::new()
         };
@@ -563,122 +589,255 @@ fn import_history(
     files: &[PathBuf],
     imported_at: &str,
     report: &mut ImportReport,
-) -> Vec<PathBuf> {
+) -> Result<Vec<PathBuf>, String> {
     let mut covered: Vec<PathBuf> = Vec::new();
     for path in files {
         let rel = relative(&content.path, path);
-        if !content.label.is_empty() && !is_content(&rel) {
+        if !keeps(content, &rel) {
             continue;
         }
-        if content.label.is_empty()
-            && (rel.starts_with("runtime/") || rel.starts_with("transient-runs/"))
-        {
+        let kind = kind_of(&rel);
+        // People files are gated by the same policy on both paths: a `people/` file tracked in git
+        // is still third-party data, so the working-tree pass reports the skip and this one leaves
+        // the file alone rather than importing it behind the caller's back.
+        if kind.people && !options.include_people {
             continue;
         }
+        // An identity's files are namespaced by its label, exactly as the working-tree pass does:
+        // the same path, block and commit second in two identities is two different memories.
+        let memory_path = legacy_path_of(content, &rel);
         let history = match file_history(path) {
             Ok(history) => history,
             Err(reason) => {
-                report.warnings.push(Warning { path: rel, reason });
+                report.warnings.push(Warning {
+                    path: memory_path,
+                    reason,
+                });
                 continue;
             }
         };
-        if history.is_empty() {
+        if history.oversized > 0 {
+            report.warnings.push(Warning {
+                path: memory_path.clone(),
+                reason: format!(
+                    "{} git revision(s) larger than 4 MiB; skipped",
+                    history.oversized
+                ),
+            });
+        }
+        if history.revisions.is_empty() {
             continue;
         }
         covered.push(path.clone());
         report.files_imported += 1;
         report.files_scanned += 1;
-        // Oldest first, so each revision can be closed by the next one. Revisions that leave a
-        // file byte-identical are dropped: a commit touching other files still appears in the
-        // file's history, and importing its unchanged text would store the same memory again.
-        let mut seen: Vec<&str> = Vec::new();
-        let history: Vec<&Revision> = history
-            .iter()
-            .filter(|revision| {
-                if seen.contains(&revision.text.as_str()) {
-                    return false;
-                }
-                seen.push(&revision.text);
-                true
-            })
-            .collect();
-        for (index, revision) in history.iter().enumerate() {
-            let next = history.get(index + 1);
-            let kind = kind_of(&rel);
-            let parsed = parse_markdown(&revision.text);
+        // Oldest first, so each revision can be closed by the next one. A revision is dropped only
+        // when it repeats the text immediately before it: comparing against the whole file's text
+        // set would also drop a revert (A, B, A leaves B as the current answer).
+        let mut revisions: Vec<Revision> = Vec::new();
+        for revision in history.revisions {
+            if revisions
+                .last()
+                .is_some_and(|last| last.text == revision.text)
+            {
+                continue;
+            }
+            revisions.push(revision);
+        }
+        let uncommitted = revisions
+            .last()
+            .and_then(|last| working_tree_revision(path, last, &memory_path, report));
+        if let Some(current) = uncommitted {
+            revisions.push(current);
+        }
+        let mut written = BTreeSet::new();
+        let mut old_path_reported = false;
+        let transaction = if options.dry_run {
+            None
+        } else {
+            Some(
+                store
+                    .conn
+                    .unchecked_transaction()
+                    .map_err(crate::store::sql_err)?,
+            )
+        };
+        let mut old_projections = if transaction.is_some() {
+            store.worktree_projection_ids(&memory_path, IMPORTER)?
+        } else {
+            BTreeSet::new()
+        };
+        for (index, revision) in revisions.iter().enumerate() {
+            let Some(text) = &revision.text else { continue };
+            let parsed = parse_markdown(text);
+            let closing = closing_instant(
+                revision,
+                revisions.get(index + 1),
+                parsed.frontmatter.as_ref(),
+            );
+            let timestamp = format_instant(revision.committed_at_millis)
+                .unwrap_or_else(|| imported_at.to_owned());
             for (block_index, block) in parsed.blocks.iter().enumerate() {
-                let content_text = block.text.clone();
-                let id = sha256_hex16(&format!(
-                    "{rel}\0{block_index}\0{content_text}\0{}",
-                    revision.committed_at_millis
-                ));
-                if !options.dry_run && store.contains(&id).unwrap_or(false) {
+                let content_text = &block.text;
+                let base = revision_id(&memory_path, block_index, content_text, revision);
+                let id = if revision.sha == WORKTREE_REVISION || !written.insert(base.clone()) {
+                    sha256_hex16(&format!("{base}\0{}", revision.sha))
+                } else {
+                    base
+                };
+                old_projections.remove(&id);
+                if !old_path_reported
+                    && memory_path != rel
+                    && store.contains(&revision_id(&rel, block_index, content_text, revision))?
+                {
+                    report.warnings.push(Warning { path: memory_path.clone(), reason: "an earlier import used a key without the identity label; its rows are preserved. Import into a fresh bank to avoid mixing identities".into() });
+                    old_path_reported = true;
+                }
+                if !options.dry_run && store.contains(&id)? {
                     report.skipped_existing += 1;
-                    continue;
-                }
-                report.revisions_imported += 1;
-                report.blocks_imported += 1;
-                if options.dry_run {
-                    continue;
-                }
-                let metadata = json!({
-                    "legacy_path": rel,
-                    "section": block.section,
-                    "block": block_index,
-                    "frontmatter": parsed.frontmatter,
-                    "importer": IMPORTER,
-                    "revision_of": revision.sha,
-                    "revision_subject": revision.subject,
-                });
-                let timestamp = format_instant(revision.committed_at_millis)
-                    .unwrap_or_else(|| imported_at.to_owned());
-                // A revision is closed only by a successor that is not earlier than it. Git commit
-                // times have one-second precision, so two revisions of a fast-moving file routinely
-                // share a second; refusing to close on equality would leave both texts active at
-                // once, which is worse than a zero-length validity window. What must never happen
-                // is a `valid_until` *before* the row's own `timestamp`.
-                let closing = next
-                    .filter(|n| n.committed_at_millis >= revision.committed_at_millis)
-                    .and_then(|n| format_instant(n.committed_at_millis));
-                // An `expires` in this revision's own frontmatter ends the row sooner than a
-                // successor commit does, and it must win when it is earlier: the file said of
-                // itself that it stopped being true then. Taking the minimum keeps both rules
-                // without either overwriting the other.
-                let expiry = match expiry_of(parsed.frontmatter.as_ref()) {
-                    Expiry::At { millis, .. } => format_instant(millis),
-                    _ => None,
-                };
-                let closing = match (closing, expiry) {
-                    (Some(a), Some(b)) => Some(if b < a { b } else { a }),
-                    (a, b) => a.or(b),
-                };
-                if let Err(error) = store.remember(
-                    &content_text,
-                    &RememberOptions {
-                        source: "import".into(),
-                        importance: kind.importance,
-                        timestamp: Some(timestamp),
-                        scope: "global".into(),
-                        veracity: "imported".into(),
-                        trust_tier: Some("IMPORTED".into()),
-                        memory_type: kind.memory_type.into(),
-                        memory_id: Some(id),
-                        valid_until: closing,
-                        metadata: Some(metadata),
-                        ..Default::default()
-                    },
-                ) {
-                    report.warnings.push(Warning {
-                        path: rel.clone(),
-                        reason: format!("revision {sha} not stored: {error}", sha = revision.sha),
+                    store.close_working_row(&id, closing.as_deref())?;
+                } else {
+                    report.revisions_imported += 1;
+                    report.blocks_imported += 1;
+                    if options.dry_run {
+                        continue;
+                    }
+                    let metadata = json!({
+                        "legacy_path": memory_path,
+                        "section": block.section,
+                        "block": block_index,
+                        "frontmatter": parsed.frontmatter,
+                        "importer": IMPORTER,
+                        "revision_of": revision.sha,
+                        "revision_subject": revision.subject,
                     });
-                    report.revisions_imported -= 1;
-                    report.blocks_imported -= 1;
+                    store.remember(
+                        content_text,
+                        &RememberOptions {
+                            source: "import".into(),
+                            importance: kind.importance,
+                            timestamp: Some(timestamp.clone()),
+                            scope: "global".into(),
+                            veracity: "imported".into(),
+                            trust_tier: Some("IMPORTED".into()),
+                            memory_type: kind.memory_type.into(),
+                            memory_id: Some(id.clone()),
+                            valid_until: closing.clone(),
+                            metadata: Some(metadata),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+                if !options.dry_run
+                    && revisions
+                        .get(index + 1)
+                        .is_some_and(|next| next.sha == WORKTREE_REVISION)
+                {
+                    store.record_worktree_bound(
+                        &id,
+                        closing_instant(revision, None, parsed.frontmatter.as_ref()).as_deref(),
+                        closing.as_deref(),
+                    )?;
                 }
             }
         }
+        if let Some(transaction) = transaction {
+            for stale in old_projections {
+                store.forget(&stale)?;
+            }
+            transaction.commit().map_err(crate::store::sql_err)?;
+        }
     }
-    covered
+    Ok(covered)
+}
+
+/// The row id of one block of one revision. The importing identity is part of it, so two identities
+/// that hold the same text at the same second stay two memories.
+fn revision_id(memory_path: &str, block_index: usize, text: &str, revision: &Revision) -> String {
+    sha256_hex16(&format!(
+        "{memory_path}\0{block_index}\0{text}\0{}",
+        revision.committed_at_millis
+    ))
+}
+
+/// When a revision stops being true: at its successor, or at its own `expires`, whichever is first.
+///
+/// A revision is closed only by a successor that is not earlier than it. Git commit times have one
+/// second of precision, so two revisions of a fast-moving file routinely share a second; refusing to
+/// close on equality would leave both texts active at once, which is worse than a zero-length
+/// window. What must never happen is a `valid_until` *before* the row's own `timestamp`. An
+/// `expires` in this revision's frontmatter ends the row sooner when it is earlier: the file said of
+/// itself that it stopped being true then.
+fn closing_instant(
+    revision: &Revision,
+    next: Option<&Revision>,
+    frontmatter: Option<&Value>,
+) -> Option<String> {
+    let successor = next
+        .filter(|next| next.committed_at_millis >= revision.committed_at_millis)
+        .and_then(|next| format_instant(next.committed_at_millis));
+    let expiry = match expiry_of(frontmatter) {
+        Expiry::At { millis, .. } => format_instant(millis),
+        _ => None,
+    };
+    match (successor, expiry) {
+        (Some(successor), Some(expiry)) => Some(if expiry < successor {
+            expiry
+        } else {
+            successor
+        }),
+        (successor, expiry) => successor.or(expiry),
+    }
+}
+
+/// The uncommitted working-tree text as the newest revision, when it differs from the last commit.
+///
+/// Without this a file with any history is "covered" and its working copy is skipped, so an edit the
+/// user has not committed yet — the state they actually see — never reaches the store. Its instant is
+/// the file's modification time, which is the best evidence of when the text became current and, being
+/// unchanged between runs, keeps a repeated import of a dirty tree idempotent.
+fn working_tree_revision(
+    path: &Path,
+    last: &Revision,
+    rel: &str,
+    report: &mut ImportReport,
+) -> Option<Revision> {
+    let meta = std::fs::metadata(path).ok()?;
+    let text = if meta.len() > MAX_FILE_BYTES {
+        report.warnings.push(Warning {
+            path: rel.to_owned(),
+            reason: "working tree file larger than 4 MiB; uncommitted content not imported".into(),
+        });
+        None
+    } else {
+        match std::fs::read(path) {
+            Ok(bytes) => String::from_utf8(bytes).ok(),
+            Err(error) => {
+                report.warnings.push(Warning {
+                    path: rel.to_owned(),
+                    reason: format!("unreadable working tree file: {error}"),
+                });
+                return None;
+            }
+        }
+    };
+    if text == last.text {
+        return None;
+    }
+    let modified = meta
+        .modified()
+        .ok()
+        .map(|time| chrono::DateTime::<chrono::Utc>::from(time).timestamp_millis())
+        .unwrap_or(last.committed_at_millis);
+    // A modification time can predate the last commit (a checkout restores an old one), and a row
+    // closed before it begins is not a window the store may record.
+    let committed_at_millis = modified.max(last.committed_at_millis);
+    Some(Revision {
+        sha: WORKTREE_REVISION.to_owned(),
+        subject: "uncommitted working tree".into(),
+        committed_at_millis,
+        text,
+    })
 }
 
 /// One historical revision of one file.
@@ -686,7 +845,8 @@ struct Revision {
     sha: String,
     subject: String,
     committed_at_millis: i64,
-    text: String,
+    // A skipped blob still ends the previous revision's validity at this commit.
+    text: Option<String>,
 }
 
 /// Whether the directory is inside a git work tree, and its top level.
@@ -711,17 +871,24 @@ fn git_toplevel(dir: &Path) -> Result<PathBuf, String> {
     ))
 }
 
+/// What one file's git history gave up, and what it refused.
+#[derive(Default)]
+struct FileHistory {
+    revisions: Vec<Revision>,
+    oversized: u64,
+}
+
 /// Revisions of one file from whichever git work tree contains it, oldest first.
 ///
 /// The repo is resolved per file rather than per content root: `--from` may point at an identity
 /// directory or the store root, neither of which is itself a work tree, while the actual repo is
 /// `agents/<id>/repo/` below it. A file outside any work tree has no history and yields nothing.
-fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
+fn file_history(path: &Path) -> Result<FileHistory, String> {
     let Some(dir) = path.parent() else {
-        return Ok(Vec::new());
+        return Ok(FileHistory::default());
     };
     let Ok(top) = git_toplevel(dir) else {
-        return Ok(Vec::new());
+        return Ok(FileHistory::default());
     };
     // `git rev-parse --show-toplevel` reports the work tree's *real* path, so a `/var/...` tempdir
     // comes back as `/private/var/...` on macOS and an 8.3 short name comes back long on Windows.
@@ -730,7 +897,7 @@ fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
     let top = top.canonicalize().unwrap_or(top);
     let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let Ok(rel) = path.strip_prefix(&top) else {
-        return Ok(Vec::new());
+        return Ok(FileHistory::default());
     };
     let rel = rel.to_string_lossy().replace('\\', "/");
     let out = Command::new("git")
@@ -744,29 +911,58 @@ fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
         .output()
         .map_err(|error| format!("git log failed: {error}"))?;
     if !out.status.success() {
-        return Ok(Vec::new());
+        return Ok(FileHistory::default());
     }
-    let mut revisions = Vec::new();
-    for commit in crate::git_log::parse_log(&String::from_utf8_lossy(&out.stdout)) {
+    let commits: Vec<_> = crate::git_log::parse_log(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .filter(|commit| chrono::DateTime::parse_from_rfc3339(&commit.committed_at).is_ok())
+        .collect();
+    let specs: Vec<String> = commits
+        .iter()
+        .map(|commit| format!("{}:{rel}", commit.sha))
+        .collect();
+    // Size before bytes. A file can read as a few hundred bytes today while one of its revisions is
+    // tens of megabytes, and the previous per-revision `git show` had already loaded that revision
+    // into memory before anything could reject it.
+    //
+    // The batch feed is newline-framed, so a path holding a line break would split its own spec and
+    // desynchronize every record after it. Such a path falls back to one process per revision, which
+    // is slow and correct; every ordinary path keeps the batched read.
+    if rel.contains(['\n', '\r']) {
+        return Ok(single_blob_history(&top, &rel, &commits));
+    }
+    let sizes = blob_sizes(&top, &specs)?;
+    let wanted: Vec<String> = specs
+        .iter()
+        .zip(sizes.iter().copied())
+        .filter(|(_, size)| within_limit(*size))
+        .map(|(spec, _)| spec.clone())
+        .collect();
+    let blobs = read_blobs(&top, &wanted)?;
+    let mut history = FileHistory {
+        oversized: sizes
+            .iter()
+            .flatten()
+            .filter(|bytes| **bytes > MAX_FILE_BYTES)
+            .count() as u64,
+        ..Default::default()
+    };
+    let mut blobs = blobs.into_iter();
+    for (commit, size) in commits.iter().zip(&sizes) {
         let Ok(when) = chrono::DateTime::parse_from_rfc3339(&commit.committed_at) else {
             continue;
         };
-        let blob = Command::new("git")
-            .arg("-C")
-            .arg(&top)
-            .arg("show")
-            .arg(format!("{}:{}", commit.sha, &rel))
-            .output()
-            .map_err(|error| format!("git show failed: {error}"))?;
-        if !blob.status.success() {
-            continue;
-        }
-        let Ok(text) = String::from_utf8(blob.stdout) else {
-            continue;
+        let text = if within_limit(*size) {
+            blobs
+                .next()
+                .flatten()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        } else {
+            None
         };
-        revisions.push(Revision {
-            sha: commit.sha,
-            subject: commit.subject,
+        history.revisions.push(Revision {
+            sha: commit.sha.clone(),
+            subject: commit.subject.clone(),
             committed_at_millis: when.timestamp_millis(),
             text,
         });
@@ -774,8 +970,162 @@ fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
     // Commit order is not time order: a rebase or a clock skew can leave a newer commit older in
     // the graph. Closing a revision by its graph successor would then record a `valid_until`
     // earlier than the row's own timestamp, which is impossible in the store's temporal model.
-    revisions.sort_by_key(|revision| revision.committed_at_millis);
-    Ok(revisions)
+    history
+        .revisions
+        .sort_by_key(|revision| revision.committed_at_millis);
+    Ok(history)
+}
+
+/// Whether git reported a blob size the importer is willing to read.
+fn within_limit(size: Option<u64>) -> bool {
+    matches!(size, Some(bytes) if bytes <= MAX_FILE_BYTES)
+}
+
+/// The slow path for a path the newline-framed batch feed cannot carry: one `git show` per revision.
+fn single_blob_history(top: &Path, rel: &str, commits: &[crate::git_log::Commit]) -> FileHistory {
+    let mut history = FileHistory::default();
+    for commit in commits {
+        let Ok(when) = chrono::DateTime::parse_from_rfc3339(&commit.committed_at) else {
+            continue;
+        };
+        let spec = format!("{}:{rel}", commit.sha);
+        history.revisions.push(Revision {
+            sha: commit.sha.clone(),
+            subject: commit.subject.clone(),
+            committed_at_millis: when.timestamp_millis(),
+            text: None,
+        });
+        let Ok(size) = Command::new("git")
+            .arg("-C")
+            .arg(top)
+            .arg("cat-file")
+            .arg("-s")
+            .arg(&spec)
+            .output()
+        else {
+            continue;
+        };
+        let Ok(size) = String::from_utf8_lossy(&size.stdout).trim().parse::<u64>() else {
+            continue;
+        };
+        if size > MAX_FILE_BYTES {
+            history.oversized += 1;
+            continue;
+        }
+        let Ok(blob) = Command::new("git")
+            .arg("-C")
+            .arg(top)
+            .arg("show")
+            .arg(&spec)
+            .output()
+        else {
+            continue;
+        };
+        if !blob.status.success() {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(blob.stdout) else {
+            continue;
+        };
+        if let Some(revision) = history.revisions.last_mut() {
+            revision.text = Some(text);
+        }
+    }
+    history
+        .revisions
+        .sort_by_key(|revision| revision.committed_at_millis);
+    history
+}
+
+/// Sizes of `<commit>:<path>` specs in order; `None` where git has no such object.
+fn blob_sizes(top: &Path, specs: &[String]) -> Result<Vec<Option<u64>>, String> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = git_batch(top, "--batch-check", specs)?;
+    let text = String::from_utf8_lossy(&output);
+    let mut sizes = Vec::with_capacity(specs.len());
+    for line in text.lines() {
+        let mut fields = line.split(' ');
+        let _oid = fields.next();
+        let kind = fields.next().unwrap_or_default();
+        let size = fields
+            .next()
+            .and_then(|size| size.parse::<u64>().ok())
+            .filter(|_| kind == "blob");
+        sizes.push(size);
+    }
+    sizes.resize(specs.len(), None);
+    Ok(sizes)
+}
+
+/// Contents of `<commit>:<path>` specs in order; `None` where git has no such object.
+fn read_blobs(top: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>, String> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = git_batch(top, "--batch", specs)?;
+    let mut blobs = Vec::with_capacity(specs.len());
+    let mut offset = 0usize;
+    for _ in specs {
+        let Some(newline) = output[offset..].iter().position(|byte| *byte == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&output[offset..offset + newline]).into_owned();
+        offset += newline + 1;
+        let size = header
+            .split(' ')
+            .nth(2)
+            .and_then(|size| size.parse::<usize>().ok());
+        let end = size.and_then(|size| offset.checked_add(size));
+        let Some(end) = end.filter(|end| *end <= output.len()) else {
+            blobs.push(None);
+            continue;
+        };
+        blobs.push(Some(output[offset..end].to_vec()));
+        offset = (end + 1).min(output.len());
+    }
+    blobs.resize(specs.len(), None);
+    Ok(blobs)
+}
+
+/// Runs one `git cat-file` batch over `specs`, fed on stdin.
+fn git_batch(top: &Path, mode: &str, specs: &[String]) -> Result<Vec<u8>, String> {
+    let mut input = String::new();
+    for spec in specs {
+        input.push_str(spec);
+        input.push('\n');
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(top)
+        .arg("cat-file")
+        .arg(mode)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("git cat-file failed: {error}"))?;
+    // The reply is far larger than a pipe buffer, so writing every spec before reading would block
+    // on a full stdout pipe while git blocks on a full stdin pipe. The specs go out from their own
+    // thread and the caller drains stdout.
+    let mut stdin = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(pipe) = stdin.as_mut() {
+            let _ = pipe.write_all(input.as_bytes());
+        }
+    });
+    let out = child
+        .wait_with_output()
+        .map_err(|error| format!("git cat-file failed: {error}"))?;
+    let _ = writer.join();
+    if !out.status.success() {
+        return Err(format!(
+            "git cat-file {mode} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout)
 }
 
 fn import_file(
@@ -788,14 +1138,7 @@ fn import_file(
     report: &mut ImportReport,
 ) -> Result<(), String> {
     let rel = relative(&content.path, path);
-    // An identity repo has known content homes; a flat `--from <dir>` keeps the historical
-    // "every Markdown file" behaviour so arbitrary folders still import.
-    let keep = if content.label.is_empty() {
-        !rel.starts_with("runtime/") && !rel.starts_with("transient-runs/")
-    } else {
-        is_content(&rel)
-    };
-    if !keep {
+    if !keeps(content, &rel) {
         return Ok(());
     }
     report.files_scanned += 1;
@@ -804,12 +1147,7 @@ fn import_file(
         report.skipped_people_files += 1;
         return Ok(());
     }
-    let rel = if content.label.is_empty() {
-        rel
-    } else {
-        // Keep identities apart: the same path in two stores is two different memories.
-        format!("{}/{rel}", content.label)
-    };
+    let rel = legacy_path_of(content, &rel);
     if std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) > MAX_FILE_BYTES {
         report.warnings.push(Warning {
             path: rel,
@@ -1944,5 +2282,353 @@ mod tests {
             month_hint("notes/facts/2026-02-extra.md").as_deref(),
             Some("2026-02-01T00:00:00.000Z")
         );
+    }
+
+    fn git(repo: &Path, args: &[&str], date: &str) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_COMMITTER_DATE", date)
+            .env("GIT_AUTHOR_DATE", date)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn git_repo(repo: &Path) {
+        std::fs::create_dir_all(repo).expect("mkdir");
+        git(repo, &["init", "-q"], "2021-01-01T00:00:00Z");
+        git(
+            repo,
+            &["config", "user.email", "t@example.com"],
+            "2021-01-01T00:00:00Z",
+        );
+        git(repo, &["config", "user.name", "T"], "2021-01-01T00:00:00Z");
+    }
+
+    fn commit(repo: &Path, message: &str, date: &str) {
+        git(repo, &["add", "-A"], date);
+        git(repo, &["commit", "-q", "-m", message], date);
+    }
+
+    fn history_options(root: &Path, include_people: bool) -> ImportOptions {
+        ImportOptions {
+            root: root.to_path_buf(),
+            history: true,
+            include_people,
+            dry_run: false,
+        }
+    }
+
+    fn contents(store: &Store) -> Vec<String> {
+        store
+            .export_json()
+            .expect("export")
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("working_memory")
+            .iter()
+            .map(|row| {
+                row.get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn legacy_paths(store: &Store) -> Vec<String> {
+        let mut paths: Vec<String> = store
+            .export_json()
+            .expect("export")
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("working_memory")
+            .iter()
+            .filter_map(|row| {
+                let metadata = row.get("metadata_json")?.as_str()?;
+                let metadata: Value = serde_json::from_str(metadata).ok()?;
+                Some(metadata.get("legacy_path")?.as_str()?.to_owned())
+            })
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn history_never_imports_a_people_file_without_opt_in() {
+        let dir = tempfile::tempdir().expect("dir");
+        let repo = dir.path().join("agents/alpha/repo");
+        git_repo(&repo);
+        write(
+            &repo,
+            "people/kim/card.md",
+            "Kim owns the billing service.\n",
+        );
+        write(&repo, "notes/facts.md", "- Deploys happen on Fridays\n");
+        commit(&repo, "first", "2021-01-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(&store, &history_options(dir.path(), false)).expect("import");
+        assert_eq!(report.skipped_people_files, 1, "{report:?}");
+        assert_eq!(contents(&store), ["- Deploys happen on Fridays"]);
+        assert!(
+            report.warnings.is_empty(),
+            "refusing a people file is not a warning: {:?}",
+            report.warnings
+        );
+
+        let with_people = import(&store, &history_options(dir.path(), true)).expect("people");
+        assert!(
+            with_people.blocks_imported >= 1,
+            "the opt-in imports the tracked people file: {with_people:?}"
+        );
+        assert!(
+            contents(&store)
+                .iter()
+                .any(|content| content.contains("billing service"))
+        );
+    }
+
+    #[test]
+    fn an_incremental_history_import_closes_the_rows_it_already_wrote() {
+        let dir = tempfile::tempdir().expect("dir");
+        let repo = dir.path().join("agents/alpha/repo");
+        git_repo(&repo);
+        write(&repo, "notes/a.md", "The first wording.\n");
+        commit(&repo, "first", "2021-01-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let options = history_options(dir.path(), false);
+        import(&store, &options).expect("first");
+        assert_eq!(store.stats().expect("stats").working_active, 1);
+
+        write(&repo, "notes/a.md", "The second wording.\n");
+        commit(&repo, "second", "2021-02-01T00:00:00Z");
+        let second = import(&store, &options).expect("second");
+        assert!(second.blocks_imported >= 1, "{second:?}");
+
+        let rows = store.recent(10).expect("rows");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the successor closes the earlier row instead of leaving both live: {}",
+            contents(&store).join(" | ")
+        );
+        assert!(rows[0].content.contains("second wording"));
+        let first = sha256_hex16(&format!(
+            "alpha/notes/a.md\u{0}0\u{0}The first wording.\u{0}{}",
+            instant("2021-01-01T00:00:00Z")
+        ));
+        assert_eq!(
+            store.get(&first).expect("get").expect("row").valid_until,
+            Some("2021-02-01T00:00:00.000Z".into()),
+            "the row the first import wrote is closed by the second"
+        );
+    }
+
+    #[test]
+    fn a_reverted_revision_is_the_current_answer_at_the_commit_it_lands() {
+        let dir = tempfile::tempdir().expect("dir");
+        let repo = dir.path().join("agents/alpha/repo");
+        git_repo(&repo);
+        write(&repo, "notes/a.md", "The alpha wording.\n");
+        commit(&repo, "alpha", "2021-01-01T00:00:00Z");
+        write(&repo, "notes/a.md", "The beta wording.\n");
+        commit(&repo, "beta", "2021-02-01T00:00:00Z");
+        write(&repo, "notes/a.md", "The alpha wording.\n");
+        commit(&repo, "alpha again", "2021-03-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        import(&store, &history_options(dir.path(), false)).expect("import");
+
+        let now = store.recent(10).expect("rows");
+        assert_eq!(
+            now.len(),
+            1,
+            "one answer is live now: {}",
+            contents(&store).join(" | ")
+        );
+        assert!(
+            now[0].content.contains("alpha wording"),
+            "the reverted text is the current one: {}",
+            now[0].content
+        );
+        let beta = store
+            .recall(
+                "beta",
+                5,
+                &RecallOptions {
+                    ignore_session_scope: true,
+                    ..Default::default()
+                },
+            )
+            .expect("recall");
+        assert!(
+            beta.is_empty(),
+            "the wording that was reverted is no longer current: {beta:?}"
+        );
+        let before_revert = store
+            .recall(
+                "beta",
+                5,
+                &RecallOptions {
+                    valid_at: Some("2021-02-15".into()),
+                    ignore_session_scope: true,
+                    ..Default::default()
+                },
+            )
+            .expect("historical recall");
+        assert_eq!(before_revert.len(), 1);
+        assert_eq!(before_revert[0].content, "The beta wording.");
+    }
+
+    #[test]
+    fn a_revert_inside_one_commit_second_leaves_the_returned_text_live() {
+        let dir = tempfile::tempdir().expect("dir");
+        let repo = dir.path().join("agents/alpha/repo");
+        git_repo(&repo);
+        let at = "2021-05-05T12:00:00Z";
+        let store = Store::open_in_memory("import").expect("store");
+        let options = history_options(dir.path(), false);
+        write(&repo, "notes/a.md", "The alpha wording.\n");
+        commit(&repo, "alpha", at);
+        import(&store, &options).expect("initial import");
+        write(&repo, "notes/a.md", "The beta wording.\n");
+        commit(&repo, "beta", at);
+        import(&store, &options).expect("incremental import");
+        write(&repo, "notes/a.md", "The alpha wording.\n");
+        commit(&repo, "alpha again", at);
+
+        let report = import(&store, &options).expect("import");
+        assert_eq!(report.warnings.len(), 0, "{:?}", report.warnings);
+        let rows = store.export_json().expect("export");
+        let rows = rows
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("working_memory");
+        assert_eq!(
+            rows.len(),
+            3,
+            "all three revisions retain their separate records: {rows:?}"
+        );
+        let live = store.recent(10).expect("rows");
+        assert_eq!(live.len(), 1);
+        assert!(
+            live[0].content.contains("alpha wording"),
+            "the text the revert returned to is the live one: {}",
+            live[0].content
+        );
+    }
+
+    #[test]
+    fn two_identities_keep_their_history_apart() {
+        let dir = tempfile::tempdir().expect("dir");
+        let alpha = dir.path().join("agents/alpha/repo");
+        let beta = dir.path().join("agents/beta/repo");
+        for repo in [&alpha, &beta] {
+            git_repo(repo);
+            write(repo, "notes/facts.md", "- Deploys happen on Fridays\n");
+            commit(repo, "first", "2021-01-01T00:00:00Z");
+        }
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(&store, &history_options(dir.path(), false)).expect("import");
+        assert_eq!(report.blocks_imported, 2, "{report:?}");
+        assert_eq!(report.skipped_existing, 0, "{report:?}");
+        assert_eq!(
+            legacy_paths(&store),
+            ["alpha/notes/facts.md", "beta/notes/facts.md"],
+            "the same path and commit second in two identities is two memories"
+        );
+    }
+
+    #[test]
+    fn uncommitted_edits_of_a_tracked_file_are_imported_once() {
+        let dir = tempfile::tempdir().expect("dir");
+        let repo = dir.path().join("agents/alpha/repo");
+        git_repo(&repo);
+        write(&repo, "notes/a.md", "The committed wording.\n");
+        commit(&repo, "first", "2021-01-01T00:00:00Z");
+        write(&repo, "notes/a.md", "The uncommitted wording.\n");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let options = history_options(dir.path(), false);
+        let first = import(&store, &options).expect("first");
+        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
+        let live = store.recent(10).expect("rows");
+        assert_eq!(live.len(), 1);
+        assert_eq!(
+            live[0].content, "The uncommitted wording.",
+            "the text the user actually sees is the current one"
+        );
+        assert_eq!(store.stats().expect("stats").working, 2);
+
+        let again = import(&store, &options).expect("again");
+        assert_eq!(again.blocks_imported, 0, "{again:?}");
+        assert_eq!(store.stats().expect("stats").working, 2);
+        assert_eq!(store.stats().expect("stats").working_active, 1);
+        write(&repo, "notes/a.md", "Another uncommitted wording.\n");
+        import(&store, &options).expect("replace projection");
+        let current = store.recent(10).expect("current");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].content, "Another uncommitted wording.");
+        write(&repo, "notes/a.md", "The committed wording.\n");
+        import(&store, &options).expect("discard projection");
+        let current = store.recent(10).expect("current");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].content, "The committed wording.");
+    }
+
+    #[test]
+    fn an_oversized_git_revision_is_skipped_before_it_is_read() {
+        let dir = tempfile::tempdir().expect("dir");
+        let repo = dir.path().join("agents/alpha/repo");
+        git_repo(&repo);
+        write(&repo, "notes/a.md", "The first wording.\n");
+        commit(&repo, "first", "2021-01-01T00:00:00Z");
+        write(
+            &repo,
+            "notes/a.md",
+            &"x".repeat(MAX_FILE_BYTES as usize + 1),
+        );
+        commit(&repo, "huge", "2021-02-01T00:00:00Z");
+        let options = history_options(dir.path(), false);
+        let incremental = Store::open_in_memory("incremental").expect("store");
+        import(&incremental, &options).expect("import with oversized HEAD");
+        assert!(incremental.recent(10).expect("current").is_empty());
+        write(&repo, "notes/a.md", "The last wording.\n");
+        commit(&repo, "last", "2021-03-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(&store, &history_options(dir.path(), false)).expect("import");
+        let revision_warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.reason.contains("git revision(s) larger"))
+            .unwrap_or_else(|| panic!("the oversized revision is reported: {:?}", report.warnings));
+        assert_eq!(revision_warning.path, "alpha/notes/a.md");
+        assert!(
+            revision_warning.reason.contains("1 git revision"),
+            "one revision is over the limit, not two: {}",
+            revision_warning.reason
+        );
+        assert_eq!(contents(&store).len(), 2, "{:?}", contents(&store));
+        assert!(
+            contents(&store).iter().all(|content| content.len() < 1000),
+            "no oversized revision reached the store"
+        );
+        import(&incremental, &options).expect("import successor");
+        for db in [&store, &incremental] {
+            assert_eq!(recall_at(db, "first", "2021-01-31T23:59:59.999Z").len(), 1);
+            assert!(recall_at(db, "first", "2021-02-01T00:00:00Z").is_empty());
+            assert!(recall_at(db, "first", "2021-02-15").is_empty());
+            assert_eq!(recall_at(db, "last", "2021-03-01").len(), 1);
+        }
     }
 }

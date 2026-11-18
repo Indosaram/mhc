@@ -448,6 +448,58 @@ impl Store {
         Ok(false)
     }
 
+    /// Narrows an existing working row's validity, leaving its content and its successor alone.
+    ///
+    /// The bound only moves earlier, so a re-import cannot reopen a row a later revision closed.
+    /// `superseded_by` stays null because a recall for a past instant must still find the row.
+    pub fn close_working_row(&self, id: &str, valid_until: Option<&str>) -> Result<bool> {
+        let Some(valid_until) = valid_until else {
+            return Ok(false);
+        };
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE working_memory
+                 SET valid_until = CASE
+                         WHEN valid_until IS NULL THEN ?1
+                         WHEN valid_until > ?1 THEN ?1
+                         ELSE valid_until
+                     END
+                  WHERE id = ?2 AND (session_id = ?3 OR scope = 'global')",
+                params![valid_until, id, self.session_id],
+            )
+            .map_err(sql_err)?;
+        Ok(changed > 0)
+    }
+
+    pub(crate) fn worktree_projection_ids(
+        &self,
+        path: &str,
+        importer: &str,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        self.conn.execute(
+            "UPDATE working_memory SET valid_until = CASE WHEN valid_until IS json_extract(metadata_json,'$.worktree_bound') THEN json_extract(metadata_json,'$.before_worktree') ELSE valid_until END,
+             metadata_json=json_remove(metadata_json,'$.worktree_bound','$.before_worktree')
+             WHERE source='import' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.importer')=?1 AND json_extract(metadata_json,'$.legacy_path')=?2 AND json_type(metadata_json,'$.worktree_bound') IS NOT NULL",
+            params![importer, path],
+        ).map_err(sql_err)?;
+        let mut stmt = self.conn.prepare("SELECT id FROM working_memory WHERE source='import' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.importer')=?1 AND json_extract(metadata_json,'$.legacy_path')=?2 AND json_extract(metadata_json,'$.revision_of')='worktree'").map_err(sql_err)?;
+        stmt.query_map(params![importer, path], |row| row.get(0))
+            .map_err(sql_err)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(sql_err)
+    }
+
+    pub(crate) fn record_worktree_bound(
+        &self,
+        id: &str,
+        original: Option<&str>,
+        applied: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute("UPDATE working_memory SET metadata_json=json_set(metadata_json,'$.before_worktree',?2,'$.worktree_bound',?3) WHERE id=?1 AND source='import' AND valid_until IS ?3 AND superseded_by IS NULL", params![id,original,applied]).map_err(sql_err)?;
+        Ok(())
+    }
+
     fn count(&self, sql: &str) -> Result<i64> {
         self.conn
             .query_row(sql, [], |row| row.get(0))
@@ -1105,6 +1157,50 @@ mod tests {
         assert!(store.forget(&id).expect("forget"));
         assert!(store.get(&id).expect("get").is_none());
         assert!(!store.forget("missing").expect("forget"));
+    }
+
+    #[test]
+    fn close_working_row_only_moves_the_bound_earlier() {
+        let store = store();
+        let id = store
+            .remember(
+                "a revision",
+                &RememberOptions {
+                    memory_id: Some("rev-1".into()),
+                    timestamp: Some("2026-01-01T00:00:00.000Z".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("id");
+        assert!(!store.close_working_row(&id, None).expect("no bound"));
+        assert!(
+            store
+                .close_working_row(&id, Some("2026-02-01T00:00:00.000Z"))
+                .expect("close")
+        );
+        let row = store.get(&id).expect("get").expect("row");
+        assert_eq!(row.valid_until.as_deref(), Some("2026-02-01T00:00:00.000Z"));
+        assert_eq!(row.superseded_by, None);
+        assert_eq!(row.content, "a revision");
+        assert!(
+            store
+                .close_working_row(&id, Some("2026-03-01T00:00:00.000Z"))
+                .expect("later bound")
+        );
+        assert_eq!(
+            store.get(&id).expect("get").expect("row").valid_until,
+            Some("2026-02-01T00:00:00.000Z".into()),
+            "a later bound never reopens the row"
+        );
+        assert!(
+            store
+                .close_working_row(&id, Some("2026-01-15T00:00:00.000Z"))
+                .expect("earlier bound")
+        );
+        assert_eq!(
+            store.get(&id).expect("get").expect("row").valid_until,
+            Some("2026-01-15T00:00:00.000Z".into())
+        );
     }
 
     #[test]

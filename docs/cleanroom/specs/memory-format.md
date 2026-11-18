@@ -148,6 +148,7 @@ the legacy store is one per user, not per project:
 | New field | Value |
 | --- | --- |
 | `id` | first 16 hex chars of SHA-256 of `<relative path>\0<block index>\0<block text>`; stable, so re-running the import skips rows that already exist |
+| `id` (with `--history`) | the same recipe with the revision's commit time appended as a fourth field, `\0<commit ms>`, so two revisions of one file are two rows |
 | `content` | the block text; for `system/human.md`, blocks are prefixed with `About the user (<description>): ` when a description is present |
 | `source` | `import` |
 | `veracity` | `imported` |
@@ -164,6 +165,10 @@ People profiles: files under `people/` are imported only when the caller opts in
 are counted as skipped. This keeps the privacy default of SD-7: data about third parties is not
 copied into a new place unless the user enabled people memory.
 
+The policy holds for both passes. A `people/` file reached through `--history` follows the same
+rule and is left out; the skip is counted once per file by the working-tree pass, which also sees
+the file and refuses it.
+
 ## Migrator behaviour
 
 - Input: the memory home (explicit `--from`, else `MAHO_MEMORY_HOME`, else `~/.omo/memory`).
@@ -171,29 +176,60 @@ copied into a new place unless the user enabled people memory.
 - Content roots are resolved per the layout rules above; a store with `agents/` imports every
   `agents/<id>/repo/` and never descends into `runtime/`, and a flat store imports its own root.
 - Read-only on the legacy tree. It never writes, moves, commits or deletes legacy files, and it
-  does not run git.
+  does not run git unless `--history` asks it to; even then it only reads (`git log`,
+  `git cat-file`, `git rev-parse`).
 - Idempotent: rows whose id already exists are skipped and counted as `skipped_existing`.
+- A row that already exists is still given the validity bound this run computes, if it is earlier
+  than the one stored. Nothing about its content, timestamp or successor changes. Without this an
+  import that arrives one commit at a time records every revision as still live, because the run
+  that wrote a row had not yet seen the successor that ended it: measured on one real file, 30 live
+  rows from a sequential import against 17 from a single import of the same history.
 - `--dry-run` parses and reports without writing.
 - Report (text and JSON): files scanned, files imported, blocks imported, skipped existing,
   skipped people files, skipped non-Markdown files, warnings (path + reason).
 - Symbolic links are not followed (a link is reported and skipped).
-- Files larger than 4 MiB are skipped with a warning.
+- Files larger than 4 MiB are skipped with a warning. The check is on the size before any bytes are
+  read, and applies to each git revision too: a file that is small today may have a past revision
+  many times the limit, and reading it first would already have spent the memory the limit exists
+  to protect. Skipped revisions are reported as one warning per file for the whole history.
+  The commit instant still ends the previous revision's validity. Until the next readable
+  revision, a historical search returns no blocks from that file, not the older text.
 - `--history` replays each file's git revisions (off by default: it runs git per file). The
   working tree is what a reader sees now; history is what lets the store answer "what did this say
   last month". Each commit that changed a file contributes its blocks with that commit's own
   timestamp, immediately closed by the next revision, so a recall for now returns the current text
   and a recall for a past instant returns the text that was true then. Measured on one real
-  identity repo: 129 current blocks plus 399 recovered revisions. Four rules the importer must
+  identity repo: 129 current blocks plus 399 recovered revisions. These rules the importer must
   keep, each learned from a defect:
   - Commits are ordered by commit time, not graph order: after a rebase the two disagree, and
     closing a revision by its graph successor records a `valid_until` earlier than the row's own
     `timestamp`.
   - A revision is closed by a successor that is not earlier than it. Commit times have one-second
     precision, so consecutive revisions of a fast-moving file routinely share a second.
-  - A revision byte-identical to the one before it is dropped: a commit touching other files still
-    appears in this file's history, and importing unchanged text stores the same memory twice.
-  - With history on, the newest revision *is* the current file, so the working-tree pass covers
-    only files whose history could not be read (untracked files, or a root outside a work tree).
+  - A revision byte-identical to the one *immediately* before it is dropped: a commit touching other
+    files still appears in this file's history, and importing unchanged text stores the same memory
+    twice. The comparison is against the previous revision only, never against every text the file
+    has ever held: with the whole set, A → B → A drops the last A and leaves B as the current answer
+    after the user reverted it.
+  - With history on, the newest revision is the file's committed text, so the working-tree pass
+    covers only files whose history could not be read (untracked files, or a root outside a work
+    tree) — except that a tracked file whose working copy differs from its last commit contributes
+    that working copy as one further revision, stamped with the file's modification time. Skipping
+    it would silently omit the edit the user is looking at, which is the newest memory there is.
+    The modification time is stable between runs, so re-importing an unchanged dirty tree adds nothing.
+    An uncommitted snapshot is temporary: changing or discarding it replaces its rows and their
+    effect on the last commit's validity in the same per-file transaction. Git revisions are kept.
+  - Revisions can share a commit second. The first occurrence keeps the original id; if the same
+    block would receive that id again, its commit SHA distinguishes it. Thus A → B → A in one
+    second retains all three revisions, including when each commit was imported separately.
+  - A `people/` file is gated by the same people policy as the working-tree pass. `--history` must
+    not import third-party data the caller declined to import just because it is tracked in git.
+  - A row's identity is the importing identity's label plus the path, as in the working-tree pass:
+    the same path, block and commit second in two identities is two different memories, and keying
+    by path alone made the second identity's record vanish into the first's.
+    Earlier importers did not record the identity. If a matching old key exists, the importer
+    warns and preserves it rather than guessing its owner. To rebuild a clean history, import
+    into a new bank; keep the original bank if it contains other memories.
 - Reading history back out: `mhc memory search --at <iso> <query>` answers against that instant
   rather than now (`MemoryContext::recall_at`; the same `RecallOptions::valid_at` the library has
   had all along). The argument is parsed and re-rendered in the storage shape before it reaches
@@ -201,7 +237,6 @@ copied into a new place unless the user enabled people memory.
   text lands on the wrong side of a deadline; an unparseable argument is an error rather than a
   silent fallback to now. The listing header names the resolved instant, so
   `2026-06-01T00:30:00+09:00` reports `2026-05-31T15:30:00.000Z`.
-    Importing both stores every block twice under two different timestamps.
 - The repo is resolved per file, not per content root: `--from` may point at an identity directory
   or the store root, neither of which is itself a work tree, while the repo is `agents/<id>/repo/`
   below it.
@@ -216,9 +251,14 @@ not in SQLite. Measured on one real identity repo of 260 Markdown files:
 | working tree only | 1.3 s |
 | with history | 38 s |
 
-The delta is one `git log` and one `git show` per (file, revision): 753 revisions, so roughly 1,000
+The delta was one `git log` and one `git show` per (file, revision): 753 revisions, so roughly 1,000
 subprocess spawns. Resolving the work tree once per root rather than per file was measured and
 saved 0.7 s of 38 s, so it was not kept -- the spawns are the cost, not the repository lookup.
+
+The revision reads are now batched: one `git cat-file --batch-check` for the sizes and one
+`git cat-file --batch` for the accepted blobs, per file, instead of one `git show` per revision. On
+top of the size limit this removes the "read it, then decide" order, because a size arrives before
+the bytes do. The wall times above were measured before that change and have not been re-measured.
 
 Across a whole real store (275 identity repos, 2,212 Markdown files, 6,092 Markdown-touching
 commits) the result is 1,427,740 rows, of which 23,046 are live now; the database reaches about
