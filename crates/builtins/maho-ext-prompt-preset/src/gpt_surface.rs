@@ -23,9 +23,82 @@ pub const GPT_APP_UNVERIFIED_SLOT: &str = "anything left unverified that no othe
 mod tests {
     use super::*;
 
+    use crate::presets::{ModelMetadata, resolve_preset};
+    use crate::settings::PromptPresetName;
+    use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
+
+    fn render(preset: PromptPresetName, surface: PromptSurface) -> String {
+        let options = BuildDynamicSystemPromptOptions {
+            append_system_prompt: None,
+            custom_prompt: None,
+            on_parts: None,
+            cwd: "/work".into(),
+            selected_tools: vec![],
+            tool_snippets: Default::default(),
+            prompt_guidelines: vec![],
+            context_files: vec![],
+            skills: vec![],
+            tuning_section: None,
+            core_prompt: None,
+            workstation_dialect: None,
+            surface,
+        };
+        resolve_preset(
+            ModelMetadata {
+                id: "unmatched",
+                provider: "fixture",
+                name: None,
+                prompt_preset: None,
+            },
+            preset,
+            options,
+        )
+        .expect("preset renders")
+        .prompt
+    }
+
+    /// Each GPT core renders the moments for its own surface, and chat swaps the block out.
     #[test]
-    fn handoff_moments_match_the_strings_the_gpt_cores_embed() {
-        assert!(include_str!("gpt_5_6.rs").contains(GPT_HANDOFF_MOMENTS_TERMINAL));
+    fn the_gpt_cores_render_the_moments_for_their_surface() {
+        for preset in [
+            PromptPresetName::Gpt55,
+            PromptPresetName::Gpt56,
+            PromptPresetName::Gpt6Astra,
+        ] {
+            for surface in [PromptSurface::Terminal, PromptSurface::App] {
+                let prompt = render(preset, surface);
+                assert!(
+                    prompt.contains(gpt_handoff_moments(surface)),
+                    "{} on {surface:?} carries its own moments",
+                    preset.as_str()
+                );
+                let other = if surface == PromptSurface::App {
+                    PromptSurface::Terminal
+                } else {
+                    PromptSurface::App
+                };
+                assert!(
+                    !prompt.contains(gpt_handoff_moments(other)),
+                    "{} on {surface:?} does not carry the {other:?} moments",
+                    preset.as_str()
+                );
+            }
+            let chat = render(preset, PromptSurface::Chat);
+            assert!(
+                !chat.contains("## Handoff"),
+                "{} chat has no block",
+                preset.as_str()
+            );
+            assert!(
+                chat.contains(maho_core::dynamic_prompt::handoff::CHAT_REPLY_RULE),
+                "{} chat renders the reply rule",
+                preset.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn chat_folds_into_the_terminal_wording() {
         assert_eq!(
             gpt_handoff_moments(PromptSurface::Chat),
             GPT_HANDOFF_MOMENTS_TERMINAL

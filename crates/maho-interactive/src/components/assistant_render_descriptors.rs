@@ -1,3 +1,4 @@
+use super::handoff_fold::{AssistantTextSegment, HandoffSegment, split_handoff_blocks};
 use crate::theme::{Theme, ThemeColor};
 use maho_ai::utils::{
     provider_failure_description::{
@@ -17,12 +18,16 @@ pub enum DescriptorKind {
     ProviderNativeSummary,
     ProviderNativeBody,
     ErrorText,
+    HandoffLine,
+    HandoffBody,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssistantRenderDescriptor {
     pub kind: DescriptorKind,
     pub text: String,
     pub thinking_run: Option<usize>,
+    /// Index of the handoff block this fold line/body belongs to; set only for handoff descriptors.
+    pub handoff_block: Option<usize>,
 }
 pub struct AssistantRenderDescriptorOptions<'a> {
     pub expanded: bool,
@@ -30,6 +35,8 @@ pub struct AssistantRenderDescriptorOptions<'a> {
     pub hidden_thinking_label: &'a str,
     pub hide_thinking_block: bool,
     pub thinking_visibility_overrides: &'a BTreeMap<usize, bool>,
+    /// Per-block click overrides of `expanded` for handoff folds, keyed by handoff block index.
+    pub handoff_open_overrides: &'a BTreeMap<usize, bool>,
     pub has_tool_calls: bool,
 }
 fn visible(content: &Value, provider_native: bool) -> bool {
@@ -78,10 +85,78 @@ fn descriptor(
         kind,
         text,
         thinking_run,
+        handoff_block: None,
     }
 }
 fn spacer() -> AssistantRenderDescriptor {
     descriptor(DescriptorKind::Spacer, String::new(), None)
+}
+
+/// A handoff block folds into one muted line naming Now and Next (senpi#3323); its answer (the
+/// For you slot, or the GPT outcome followed by the You need slot) stays as answer text below it,
+/// so the reader sees the answer and nothing is lost. Ctrl+O (expand all) or a click on the line
+/// opens the block as written, dimmed.
+fn push_handoff_descriptors(
+    descriptors: &mut Vec<AssistantRenderDescriptor>,
+    segment: &HandoffSegment,
+    handoff_block: usize,
+    open: bool,
+    theme: &Theme,
+) {
+    fn push(
+        descriptors: &mut Vec<AssistantRenderDescriptor>,
+        kind: DescriptorKind,
+        text: String,
+        handoff_block: usize,
+    ) {
+        descriptors.push(AssistantRenderDescriptor {
+            kind,
+            text,
+            thinking_run: None,
+            handoff_block: Some(handoff_block),
+        });
+    }
+    if open {
+        push(
+            descriptors,
+            DescriptorKind::HandoffLine,
+            theme.fg(ThemeColor::Dim, "\u{25BE} Handoff"),
+            handoff_block,
+        );
+        push(
+            descriptors,
+            DescriptorKind::HandoffBody,
+            theme.fg(ThemeColor::Dim, &segment.block),
+            handoff_block,
+        );
+        return;
+    }
+    let parts = [
+        segment.now.as_ref().map(|now| format!("Now: {now}")),
+        segment.next.as_ref().map(|next| format!("Next: {next}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let line = if parts.is_empty() {
+        "\u{25B8} Handoff".to_string()
+    } else {
+        format!("\u{25B8} Handoff \u{00B7} {}", parts.join(" \u{00B7} "))
+    };
+    push(
+        descriptors,
+        DescriptorKind::HandoffLine,
+        theme.fg(ThemeColor::Dim, &line),
+        handoff_block,
+    );
+    if let Some(answer) = &segment.answer {
+        descriptors.push(spacer());
+        descriptors.push(descriptor(
+            DescriptorKind::TextMarkdown,
+            answer.clone(),
+            None,
+        ));
+    }
 }
 
 pub fn create_assistant_render_descriptors(
@@ -96,12 +171,40 @@ pub fn create_assistant_render_descriptors(
     }
     let mut index = 0;
     let mut thinking_run = 0;
+    let mut handoff_block_index = 0;
     while let Some(part) = content.get(index) {
         match part["type"].as_str() {
             Some("text") => {
                 let text = part["text"].as_str().unwrap_or_default().trim();
                 if !text.is_empty() {
-                    descriptors.push(descriptor(DescriptorKind::TextMarkdown, text.into(), None));
+                    for (at, segment) in split_handoff_blocks(text).into_iter().enumerate() {
+                        if at > 0 {
+                            descriptors.push(spacer());
+                        }
+                        match segment {
+                            AssistantTextSegment::Text(text) => descriptors.push(descriptor(
+                                DescriptorKind::TextMarkdown,
+                                text,
+                                None,
+                            )),
+                            AssistantTextSegment::Handoff(segment) => {
+                                let handoff_block = handoff_block_index;
+                                handoff_block_index += 1;
+                                let open = options
+                                    .handoff_open_overrides
+                                    .get(&handoff_block)
+                                    .copied()
+                                    .unwrap_or(options.expanded);
+                                push_handoff_descriptors(
+                                    &mut descriptors,
+                                    &segment,
+                                    handoff_block,
+                                    open,
+                                    theme,
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Some("thinking") => {

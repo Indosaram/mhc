@@ -1,5 +1,7 @@
 //! Port of senpi `packages/coding-agent/src/core/dynamic-prompt/verification.ts`.
 
+use super::PromptSurface;
+
 /// `TestDisciplineRule`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestDisciplineRule {
@@ -51,8 +53,22 @@ pub fn build_test_discipline_section() -> String {
     lines.join("\n")
 }
 
-/// `buildVerificationSection`.
-pub fn build_verification_section() -> String {
+/// `APP_UNRUN_CHECK_RULE` (senpi#2377): the app surface's claim audit. Every app-surface
+/// verification rule renders it.
+pub const APP_UNRUN_CHECK_RULE: &str = "A check that did not run is covered by the evidence that did run; name it only when no other evidence supports the claim. Replies render in an app, so tool and hook feedback (comment-checker findings, language-server availability, internal notices) is for you to act on: it reaches the user only when it changes what they get, and an unavailable tool or hook never does by itself.";
+
+/// `CLAIM_AUDIT[terminalOrApp(surface)]`: chat takes the app wording.
+fn claim_audit(surface: PromptSurface) -> String {
+    match surface {
+        PromptSurface::Terminal => "report only evidence-backed work, flag the unverified explicitly, and report failing tests with the output.".to_owned(),
+        PromptSurface::App | PromptSurface::Chat => format!(
+            "report only evidence-backed work and report failing tests with the output. {APP_UNRUN_CHECK_RULE}"
+        ),
+    }
+}
+
+/// `buildVerificationSection(options)`: `surface` selects the claim audit.
+pub fn build_verification_section(surface: PromptSurface) -> String {
     format!(
         "## Verification
 
@@ -64,8 +80,9 @@ Tier the scope, never the rigor.
 
 {}
 
-\"Should pass\" is not verification - run the validator. Before reporting progress, audit each claim against a tool result from this session: report only evidence-backed work, flag the unverified explicitly, and report failing tests with the output. Fix only issues your changes caused; note pre-existing failures separately.",
-        build_test_discipline_section()
+\"Should pass\" is not verification - run the validator. Before reporting progress, audit each claim against a tool result from this session: {} Fix only issues your changes caused; note pre-existing failures separately.",
+        build_test_discipline_section(),
+        claim_audit(surface)
     )
 }
 
@@ -100,11 +117,25 @@ mod tests {
 
     #[test]
     fn the_verification_section_embeds_the_discipline_rules_and_the_tiers() {
-        let section = build_verification_section();
+        let section = build_verification_section(PromptSurface::Terminal);
         assert!(section.starts_with("## Verification\n"));
         assert!(section.contains("### Test Discipline"));
         assert!(section.contains("- V1 — single-file non-behavioral edits"));
         assert!(section.contains("- V3 — multi-file or cross-cutting work"));
         assert!(section.ends_with("note pre-existing failures separately."));
+    }
+
+    /// senpi#2377: every app-surface verification rule renders `APP_UNRUN_CHECK_RULE`, and chat takes
+    /// the app wording (`terminalOrApp`).
+    #[test]
+    fn the_app_and_chat_claim_audits_render_the_unrun_check_rule() {
+        for surface in [PromptSurface::App, PromptSurface::Chat] {
+            let section = build_verification_section(surface);
+            assert!(section.contains(APP_UNRUN_CHECK_RULE));
+            assert!(section.contains("report only evidence-backed work and report failing tests"));
+        }
+        let terminal = build_verification_section(PromptSurface::Terminal);
+        assert!(!terminal.contains(APP_UNRUN_CHECK_RULE));
+        assert!(terminal.contains("flag the unverified explicitly"));
     }
 }

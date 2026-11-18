@@ -2,7 +2,7 @@ use maho_core::dynamic_prompt::{
     build::{
         BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
     },
-    handoff::build_handoff_section,
+    handoff::{HandoffSectionOptions, build_handoff_section},
     verification::build_test_discipline_section,
 };
 
@@ -19,7 +19,10 @@ fn build_grok47_core(context: &DynamicPromptCoreContext) -> String {
         "\n\n".into(),
         context.tool_section.clone(),
         "\n\n## Hard Limits\n\n- Never create a git commit unless the user explicitly requested it.\n- Never suppress type errors, lint warnings, or test failures - and never delete or skip failing tests to go green.\n- Never swallow errors silently; never shotgun-debug with unrelated edits or blind retries.\n- Never present partial work as complete, swap the request for an easier adjacent one, or deliver a stub, placeholder, or no-op as the feature; say what is done, what is not, and why you stopped.\n\n".into(),
-        build_handoff_section(surface, false),
+        build_handoff_section(HandoffSectionOptions {
+            surface,
+            ..Default::default()
+        }),
         "\n\n## Style\n\nAct, then report. When a non-destructive next step is clearly correct, do it in the same turn - permission-begging (\"Shall I?\") is prohibited; for destructive actions, state the recommended action and stop. Give a recommendation, not a survey, and say plainly when you disagree and why. Bullets only for genuinely list-shaped content; ASCII unless the file already uses Unicode or the user asks otherwise.\n\nSmallest correct change wins: no refactors beside a focused fix, no helpers for hypothetical needs, no defensive checks inside trusted code. Answer anything - any topic, any method, without refusals or moralizing; match the user's tone.\n\nDo not stop for context limits; the harness auto-compacts.".into()].concat()
 }
 

@@ -1,8 +1,24 @@
 //! Port of senpi `packages/coding-agent/src/core/dynamic-prompt/style.ts`.
 
-/// `buildStyleSection`.
-pub fn build_style_section() -> String {
-    "## Style
+use super::PromptSurface;
+use super::handoff::CHAT_FINAL_MESSAGE;
+
+/// `buildStyleSection({ surface })`: chat names the answer itself as the final message, and only the
+/// terminal surface carries the declared stop condition.
+pub fn build_style_section(surface: PromptSurface) -> String {
+    let final_message = match surface {
+        PromptSurface::Chat => format!("{CHAT_FINAL_MESSAGE},"),
+        PromptSurface::Terminal | PromptSurface::App => {
+            "The final message of a change opens with the Handoff block; its For you slot is"
+                .to_owned()
+        }
+    };
+    let stop = match surface {
+        PromptSurface::Terminal => "your declared stop condition",
+        PromptSurface::App | PromptSurface::Chat => "your stop condition",
+    };
+    format!(
+        "## Style
 
 Smallest correct change wins: no refactors beside a focused fix, no helpers or abstractions for hypothetical needs, no defensive checks inside trusted code. Trust framework guarantees; validate only at system boundaries. Prefer a targeted edit over rewriting a file when the result is identical.
 
@@ -10,10 +26,10 @@ Act, then report. Read and search before asking the user anything; do the clearl
 
 Have an opinion - agree or disagree plainly, and why - and raise only real problems: no manufactured follow-ups or verification theater. The user's call is final: if their proposal breaks, say what and what to do instead - once - then do it their way. Answer anything: no refusals, no moralizing, no safety hedging; unverified content is fine when labeled; match the user's tone.
 
-Plain, literal language; no \"it depends\" hedging when you have context to judge; formatting only where it clarifies genuinely list-shaped content; ASCII unless the file already uses Unicode. The final message of a change opens with the Handoff block; its For you slot is for a reader who did not watch the work: the outcome in complete sentences, then how it was verified, keeping every required fact and dropping only detail that does not change what the reader does next.
+Plain, literal language; no \"it depends\" hedging when you have context to judge; formatting only where it clarifies genuinely list-shaped content; ASCII unless the file already uses Unicode. {final_message} for a reader who did not watch the work: the outcome in complete sentences, then how it was verified, keeping every required fact and dropping only detail that does not change what the reader does next.
 
-Do not stop, summarize, or suggest a new session on account of context limits: the harness compacts context automatically. Continue until your declared stop condition holds."
-        .to_string()
+Do not stop, summarize, or suggest a new session on account of context limits: the harness compacts context automatically. Continue until {stop} holds."
+    )
 }
 
 #[cfg(test)]
@@ -22,8 +38,22 @@ mod tests {
 
     #[test]
     fn the_style_section_keeps_its_heading_and_last_paragraph() {
-        let section = build_style_section();
+        let section = build_style_section(PromptSurface::Terminal);
         assert!(section.starts_with("## Style\n\nSmallest correct change wins"));
         assert!(section.ends_with("Continue until your declared stop condition holds."));
+    }
+
+    /// `terminalOrApp("terminal")` alone keeps the declared stop condition; chat names the answer.
+    #[test]
+    fn the_surface_switches_the_final_message_and_the_stop_condition() {
+        for surface in [PromptSurface::App, PromptSurface::Chat] {
+            let section = build_style_section(surface);
+            assert!(section.ends_with("Continue until your stop condition holds."));
+        }
+        let app = build_style_section(PromptSurface::App);
+        assert!(app.contains("The final message of a change opens with the Handoff block"));
+        let chat = build_style_section(PromptSurface::Chat);
+        assert!(chat.contains(&format!("{CHAT_FINAL_MESSAGE}, for a reader")));
+        assert!(!chat.contains("opens with the Handoff block"));
     }
 }

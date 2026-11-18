@@ -19,6 +19,8 @@ mod components32_extra;
 mod components32_fallback;
 #[path = "components32_foundation.rs"]
 mod components32_foundation;
+#[path = "components32_handoff_fold.rs"]
+mod components32_handoff_fold;
 #[path = "components32_mouse.rs"]
 mod components32_mouse;
 #[path = "components32_overflow.rs"]

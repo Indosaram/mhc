@@ -17,15 +17,28 @@ pub struct HandoffBriefInput<'a> {
 pub const MAX_TEXT_CHARS: usize = 1500;
 pub const MAX_FILES: usize = 20;
 pub const MAX_TODOS: usize = 20;
+/// UTF-16 code units, matching `brief.ts`'s `slice(0, MAX_TODO_CHARS)`.
 pub const MAX_TODO_CHARS: usize = 200;
 const PATH_TOOLS: [&str; 5] = ["read", "edit", "write", "multiedit", "ls"];
 const PATCH_PREFIXES: [&str; 3] = ["*** Update File: ", "*** Add File: ", "*** Delete File: "];
 
+/// `brief.ts` measures `text.length` and `slice(0, max)`, both UTF-16 code units, so a
+/// character outside the BMP counts twice. The cut lands on a char boundary instead of splitting a
+/// surrogate pair, which `String` cannot hold: the head is the longest valid prefix of at most
+/// `max` units.
 fn trim(text: &str, max: usize) -> String {
     let flat = text.trim();
-    if flat.chars().count() > max {
-        let head: String = flat.chars().take(max).collect();
-        format!("{head}...")
+    let mut units = 0usize;
+    let mut cut = flat.len();
+    for (index, character) in flat.char_indices() {
+        units += character.len_utf16();
+        if units > max {
+            cut = index;
+            break;
+        }
+    }
+    if cut < flat.len() {
+        format!("{}...", &flat[..cut])
     } else {
         flat.to_owned()
     }
@@ -270,6 +283,30 @@ mod tests {
         let entries = vec![message("user", json!("x".repeat(2000)))];
         let brief = build_handoff_brief(&input(&entries));
         assert!(brief.contains(&format!("{}...", "x".repeat(MAX_TEXT_CHARS))));
+    }
+
+    #[test]
+    fn truncates_by_utf16_units_like_the_ts_length_and_slice() {
+        // An emoji is one char but two UTF-16 units, so TS text.length halves the kept count; the
+        // cut must land on a char boundary instead of splitting a surrogate pair.
+        let emoji = "\u{1F600}";
+        let kept = MAX_TEXT_CHARS / 2;
+        let entries = vec![message("user", json!(emoji.repeat(kept + 100)))];
+        let brief = build_handoff_brief(&input(&entries));
+        assert!(brief.contains(&format!("{}...", emoji.repeat(kept))));
+        assert!(!brief.contains(&emoji.repeat(kept + 1)));
+    }
+
+    #[test]
+    fn truncation_lands_on_the_utf16_boundary() {
+        // 1499 ASCII units plus one emoji is 1501 units: the head keeps the ASCII and drops the
+        // emoji instead of emitting half a surrogate pair.
+        let mut text = "a".repeat(MAX_TEXT_CHARS - 1);
+        text.push('\u{1F600}');
+        let entries = vec![message("user", json!(text))];
+        let brief = build_handoff_brief(&input(&entries));
+        assert!(brief.contains(&format!("{}...", "a".repeat(MAX_TEXT_CHARS - 1))));
+        assert!(!brief.contains('\u{1F600}'));
     }
 
     #[test]

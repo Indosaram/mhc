@@ -73,6 +73,98 @@ const scenarios = [
   { name: "error", message: { content: [{ type: "text", text: "part" }], stopReason: "error", errorMessage: "boom" }, options: {} },
   { name: "error-server-fallback", message: { content: [{ type: "text", text: "part" }], stopReason: "error", errorMessage: "boom", diagnostics: [{ type: "server_fallback_aborted" }] }, options: {} },
   { name: "error-empty", message: { content: [{ type: "text", text: "part" }], stopReason: "error" }, options: {} },
+  {
+    name: "handoff-folded",
+    message: {
+      content: [
+        {
+          type: "text",
+          text: "Ask: handoff folds - wanted: one muted line. For you: the block folds to one line. Now: wiring the renderer. Next: verify.",
+        },
+      ],
+      stopReason: "stop",
+    },
+    options: {},
+  },
+  {
+    name: "handoff-unshaped-paragraphs",
+    message: {
+      content: [
+        {
+          type: "text",
+          text: "Ask: handoff folds - wanted: one muted line.\n\nFor you: the block folds to one line.\n\nNow: wiring the renderer.\nNext: verify.",
+        },
+      ],
+      stopReason: "stop",
+    },
+    options: {},
+  },
+  {
+    name: "handoff-folded-answer-only",
+    message: {
+      content: [{ type: "text", text: "Ask: q - wanted: a.\n\nFor you: the answer the reader needs.\n\nNow: nothing.\nNext: nothing either." }],
+      stopReason: "stop",
+    },
+    options: {},
+  },
+  {
+    name: "handoff-expanded",
+    message: {
+      content: [{ type: "text", text: "Ask: q - wanted: a. For you: the answer. Now: now text. Next: next text." }],
+      stopReason: "stop",
+    },
+    options: { expanded: true },
+  },
+  {
+    name: "handoff-override-open",
+    message: {
+      content: [{ type: "text", text: "Ask: q - wanted: a. For you: the answer. Now: now text. Next: next text." }],
+      stopReason: "stop",
+    },
+    options: { handoffOpenOverrides: [[0, true]] },
+  },
+  {
+    name: "handoff-prose-around",
+    message: {
+      content: [
+        {
+          type: "text",
+          text: "Prose before the block.\n\nAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\n\nAnd prose after it, with a second block:\n\nAsk: q2 - wanted: a2. For you: answer two. Now: now two. Next: next two.",
+        },
+      ],
+      stopReason: "stop",
+    },
+    options: { handoffOpenOverrides: [[1, true]] },
+  },
+  {
+    name: "handoff-gpt-shape",
+    message: {
+      content: [
+        {
+          type: "text",
+          text: "The suite is green now.\n\nThe suite is green now. You need: nothing. Now: merge. Next: release.",
+        },
+      ],
+      stopReason: "stop",
+    },
+    options: {},
+  },
+  {
+    name: "handoff-in-fence",
+    message: {
+      content: [{ type: "text", text: "\u{60}\u{60}\u{60}\nAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\n\u{60}\u{60}\u{60}" }],
+      stopReason: "stop",
+    },
+    options: {},
+  },
+  {
+    name: "handoff-streaming-incomplete",
+    message: {
+      content: [{ type: "text", text: "Ask: q - wanted: a. For you: the answer. Now: now text." }],
+      stopReason: "stop",
+    },
+    options: {},
+  },
 ];
 
 /**
@@ -86,11 +178,20 @@ const wellFormed = (text) =>
 const cases = scenarios.map(({ name, message, options }) => {
   const merged = { ...base, ...options };
   const thinkingVisibilityOverrides = new Map(merged.thinkingVisibilityOverrides ?? []);
-  const descriptors = createAssistantRenderDescriptors(message, { ...merged, thinkingVisibilityOverrides });
+  const handoffOpenOverrides = new Map(merged.handoffOpenOverrides ?? []);
+  const descriptors = createAssistantRenderDescriptors(message, {
+    ...merged,
+    thinkingVisibilityOverrides,
+    handoffOpenOverrides,
+  });
   return {
     name,
     message,
-    options: { ...merged, thinkingVisibilityOverrides: merged.thinkingVisibilityOverrides ?? [] },
+    options: {
+      ...merged,
+      thinkingVisibilityOverrides: merged.thinkingVisibilityOverrides ?? [],
+      handoffOpenOverrides: merged.handoffOpenOverrides ?? [],
+    },
     descriptors: descriptors.map((descriptor) => ({ ...descriptor, text: wellFormed(descriptor.text) })),
   };
 });

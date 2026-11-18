@@ -105,19 +105,22 @@ pub fn build_dynamic_system_prompt_parts(
         None => vec![
             build_identity_section(),
             String::new(),
-            build_intent_gate(&tools),
+            build_intent_gate(&tools, options.surface),
             String::new(),
             build_working_task_section(),
             String::new(),
-            build_verification_section(),
+            build_verification_section(options.surface),
             String::new(),
             tool_section.clone(),
             String::new(),
             build_policies_section(),
             String::new(),
-            super::handoff::build_handoff_section(options.surface, false),
+            super::handoff::build_handoff_section(super::handoff::HandoffSectionOptions {
+                surface: options.surface,
+                ..Default::default()
+            }),
             String::new(),
-            build_style_section(),
+            build_style_section(options.surface),
         ],
     };
 

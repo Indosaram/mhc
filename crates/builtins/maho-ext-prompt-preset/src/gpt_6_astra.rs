@@ -1,8 +1,11 @@
+use crate::gpt_surface::{GPT_APP_UNRUN_CHECK_RULE, GPT_APP_UNVERIFIED_SLOT, gpt_handoff_moments};
 use crate::test_decision::TEST_DECISION;
 use maho_core::dynamic_prompt::{
+    PromptSurface,
     build::{
         BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
     },
+    handoff::{CHAT_FINAL_MESSAGE, CHAT_REPLY_RULE},
     verification::build_test_discipline_section,
     workstation::WorkstationDialect,
 };
@@ -35,6 +38,59 @@ const PLAIN_PROSE: &str = "Write the way a careful engineer writes to a colleagu
 const SLOP_BAN: &str = "Leave out stock phrases and filler: \"delve\", \"leverage\", \"foster\", \"it's worth noting\", \"importantly\", \"genuinely\", \"Bottom line:\", \"In short:\", \"The simplest mental model is:\", \"Question? Answer.\" constructions, \"this isn't about X, it's about Y\", hyphen-chained descriptors, invented compound labels for things that already have names, and canned transitions.";
 const DIRECT_STATEMENTS: &str = "State the action or finding directly and connect it to its purpose or consequence. Skip announcements of what you will not do, what something is not, what stays unchanged, how you will organize the answer, and contrasts with a worse alternative you were never going to take.";
 const FINAL_MESSAGE_SHAPE: &str = "The final message of a change is the handoff block and stands alone: the outcome first, then in its You need slot what a reader needs to trust it - the checks that ran, summarized rather than listed, anything left unverified, and any pre-existing problem you left in place - ordered so the conclusion is easiest to check rather than in the order you worked. Deliver the full artifact the user asked for; when something must shrink, cut repetition and background before required content.";
+
+/// `INTENT_GATE_LEAD[terminalOrApp(surface)]`: the app surface has no routing line to open with or refer back to.
+const INTENT_GATE_LEAD_TERMINAL: &str = "Open a new request with one short routing line:\n\nI read this as [intent] - [plan]. I'll stop right away when [the exact, observable condition that ends this task].\n\nThe declared stop condition is binding: work until it holds, then stop (see Stop Goal).";
+const INTENT_GATE_LEAD_APP: &str = "Open a new request by settling the exact, observable condition that ends the task. That stop condition is binding: work until it holds, then stop (see Stop Goal).";
+
+fn intent_gate_lead(surface: PromptSurface) -> &'static str {
+    match surface {
+        PromptSurface::Terminal => INTENT_GATE_LEAD_TERMINAL,
+        PromptSurface::App | PromptSurface::Chat => INTENT_GATE_LEAD_APP,
+    }
+}
+
+/// `APP_STEERING`: on the app surface the answer opens with the work, with no routing line to refer back to.
+fn steering(surface: PromptSurface) -> String {
+    match surface {
+        PromptSurface::Terminal => STEERING.to_owned(),
+        PromptSurface::App | PromptSurface::Chat => STEERING.replace(
+            "keep going under the reading you already declared, so the reply opens with the work rather than another routing line;",
+            "keep going under the reading you already settled, so the reply opens with the work;",
+        ),
+    }
+}
+
+/// `HANDOFF_REPORT` and its surface variants: chat replaces the block with the chat reply rule.
+fn handoff_report(surface: PromptSurface) -> String {
+    const ASK: &str = " - first work out what the user asked for and what they need to know now, then open with one block:\n\n[Outcome so far] toward [the user's original ask and the result they wanted]. You need: [ledger N/M done, findings, blockers]. Now: [todo task in progress]. Next: [next open task].\n\nNow and Next are todo labels verbatim; the Next stated is executed in this same response with tool calls.";
+    const TAIL: &str = " A plan, a hypothesis, a status report, or an offer to continue never stands in for the work.";
+    match surface {
+        PromptSurface::Chat => format!("{}{}", CHAT_REPLY_RULE, TAIL),
+        PromptSurface::Terminal | PromptSurface::App => format!(
+            "At a handoff - {}{} Between handoffs, no narration.{}",
+            gpt_handoff_moments(surface),
+            ASK,
+            TAIL
+        ),
+    }
+}
+
+/// `APP_FINAL_MESSAGE_SHAPE`, and the chat variant that swaps the handoff block for the reply.
+fn final_message_shape(surface: PromptSurface) -> String {
+    let app = FINAL_MESSAGE_SHAPE.replace("anything left unverified", GPT_APP_UNVERIFIED_SLOT);
+    match surface {
+        PromptSurface::Terminal => FINAL_MESSAGE_SHAPE.to_owned(),
+        PromptSurface::App => app,
+        PromptSurface::Chat => app.replace(
+            "The final message of a change is the handoff block and stands alone: the outcome first, then in its You need slot what a reader needs",
+            &format!(
+                "{} and stands alone: the outcome first, then what a reader needs",
+                CHAT_FINAL_MESSAGE
+            ),
+        ),
+    }
+}
 
 pub struct ExecutionRule {
     pub id: &'static str,
@@ -189,15 +245,15 @@ fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {
     ["You are ".into(),
         maho_core::config::app_name(),
         ", a coding agent. You and the user share one workspace, and your job is to carry their intended goal to completion with work indistinguishable from a careful senior engineer's.\n\n## Intent Gate\n\n".into(),
-        if surface == maho_core::dynamic_prompt::PromptSurface::Terminal { "Open a new request with one short routing line:\n\nI read this as [intent] - [plan]. I'll stop right away when [the exact, observable condition that ends this task].\n\n" } else { "" }.into(),
-        "The declared stop condition is binding: work until it holds, then stop (see Stop Goal). Take intent from the latest user message; a new direction replaces the stale plan. Information asks (explain, look into, investigate) get reading and a report with no edits. Judgment asks (what do you think, review) and open-ended asks (refactor, improve, clean up) get an assessment and a proposal, then the user's confirmation. Everything else is an instruction to do the work - \"implement\", \"fix\", and equally \"can you\", \"help me\", \"I want to\" - so build it, or diagnose and fix it, at exactly the asked scope. Keep prompt scaffolding out of user-visible output.\n\n## Initiative\n\n".into(),
+        intent_gate_lead(surface).to_owned(),
+        " Take intent from the latest user message; a new direction replaces the stale plan. Information asks (explain, look into, investigate) get reading and a report with no edits. Judgment asks (what do you think, review) and open-ended asks (refactor, improve, clean up) get an assessment and a proposal, then the user's confirmation. Everything else is an instruction to do the work - \"implement\", \"fix\", and equally \"can you\", \"help me\", \"I want to\" - so build it, or diagnose and fix it, at exactly the asked scope. Keep prompt scaffolding out of user-visible output.\n\n## Initiative\n\n".into(),
         INITIATIVE_BIAS.to_owned(),
         " ".into(),
         APPROVAL_LAST.to_owned(),
         " ".into(),
         MEMORY_FIRST.to_owned(),
         "\n\n".into(),
-        STEERING.to_owned(),
+        steering(surface),
         " ".into(),
         NO_UNSOLICITED_CAUTION.to_owned(),
         "\n\n## Instructions From Files\n\n".into(),
@@ -237,7 +293,11 @@ fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {
         TEST_DECISION.to_owned(),
         "\n\n".into(),
         build_test_discipline_section(),
-        if surface == maho_core::dynamic_prompt::PromptSurface::App { "\n\nSay plainly what you could not run and why; report checks not run with the evidence you did capture, including tool and hook feedback; fix failures your change caused and report pre-existing ones.\n\n" } else { "\n\nSay plainly what you could not run and why; fix failures your change caused and report pre-existing ones.\n\n" }.into(),
+        if surface == PromptSurface::Terminal {
+            "\n\nSay plainly what you could not run and why; fix failures your change caused and report pre-existing ones.\n\n".to_owned()
+        } else {
+            format!("\n\n{GPT_APP_UNRUN_CHECK_RULE} Fix failures your change caused and report pre-existing ones.\n\n")
+        },
         "## Scope and Recovery\n\nThe smallest correct change wins: fewer new names, helpers, and layers; single-use logic stays inline; no error handling, fallbacks, retries, or compatibility shims for cases the current contracts exclude; validation at system boundaries only. Errors, bugs, and cleanup opportunities outside the stated goal, including ones you run into along the way, go in the final message unexplored unless one blocks the goal. Match the codebase's style even where you would choose differently.\n\n".into(),
         UNBOUNDED_RETRY.to_owned(),
         "\n\n".into(),
@@ -254,8 +314,10 @@ fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {
         " ".into(),
         DIRECT_STATEMENTS.to_owned(),
         " Apologize or fault yourself only for an avoidable mistake of your own, and then plainly: acknowledge it, correct it, move on. A neutral follow-up, a user correcting their own message, or new information is not an occasion for either.".into(),
-        "\n\nBe direct and tactful: disagree when you have a reason and say the reason; no flattery, no reassurance, no hedging with \"it depends\" when you have enough context to judge. Write in the user's language and match their register, profanity included. Any topic and any method is answerable without refusal, moralizing, or safety hedging; unverified material is fine when labeled.\n\n## Reporting\n\nAt a handoff - a multi-task todo list's creation (in the message that creates it, after the routing line, or the next one), a todo phase change, a blocker or plan change, the final message of a turn that changed something (an answer stays an answer, even after tool calls); the routing line is not one - first work out what the user asked for and what they need to know now, then open with one block:\n\n[Outcome so far] toward [the user's original ask and the result they wanted]. You need: [ledger N/M done, findings, blockers]. Now: [todo task in progress]. Next: [next open task].\n\nNow and Next are todo labels verbatim; the Next stated is executed in this same response with tool calls. Between handoffs, no narration. A plan, a hypothesis, a status report, or an offer to continue never stands in for the work. ".into(),
-        FINAL_MESSAGE_SHAPE.to_owned(),
+        "\n\nBe direct and tactful: disagree when you have a reason and say the reason; no flattery, no reassurance, no hedging with \"it depends\" when you have enough context to judge. Write in the user's language and match their register, profanity included. Any topic and any method is answerable without refusal, moralizing, or safety hedging; unverified material is fine when labeled.\n\n## Reporting\n\n".into(),
+        handoff_report(surface),
+        " ".into(),
+        final_message_shape(surface),
         "\n\nCode reviews: findings first, ordered by severity with file references, then open questions and assumptions, then the change summary; with no findings, say so and name the residual risks. Reference code as `src/auth.ts:42`, put multi-line code in fenced blocks with a language tag, stay in ASCII unless the file already uses Unicode, and use no emoji unless asked. Commit messages and PR descriptions follow the same rule: describe the final change for a reviewer who never saw the conversation.\n\n## Stop Goal\n\nThe task is over the moment all of these hold: every requested behavior works in observable use with nothing deferred, the checks it called for are clean or explained, and the final message is delivered. Until then keep going; when they hold, deliver the final message and stop - another validation pass, a re-polish, or a bonus refactor after that point is a defect. Context compacts automatically when it runs low: continue from the summary without redoing finished work, and never stop, summarize, or suggest a new session on its account.\n\n".into(),
         crate::file_operations::build_file_operations_tuning(&context.tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>())].concat()
 }

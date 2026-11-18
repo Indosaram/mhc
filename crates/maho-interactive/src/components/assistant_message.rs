@@ -26,6 +26,7 @@ const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL: &str = "\x1b]133;C\x07";
 
 pub type ThinkingVisibilityOverrides = Vec<(usize, bool)>;
+pub type HandoffOpenOverrides = Vec<(usize, bool)>;
 
 fn overrides_to_value(overrides: &ThinkingVisibilityOverrides) -> Value {
     Value::Array(
@@ -64,6 +65,51 @@ impl Component for ThinkingToggle {
     }
 }
 
+/// The folded handoff line: always one row, cut to the width instead of wrapping (senpi#3323).
+struct SingleLine {
+    text: String,
+    pad: usize,
+}
+
+impl Component for SingleLine {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let room = width.saturating_sub(self.pad).max(1);
+        vec![format!(
+            "{}{}",
+            " ".repeat(self.pad),
+            maho_tui::utils::truncate_to_width(&self.text, room, "...", false)
+        )]
+    }
+}
+
+struct HandoffToggle {
+    inner: Rc<RefCell<dyn Component>>,
+    block: usize,
+    pending_toggle: Rc<Cell<Option<usize>>>,
+}
+
+impl Component for HandoffToggle {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.inner.borrow_mut().render(width)
+    }
+    fn handle_mouse(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseEventResult> {
+        if event.event_type == TuiMouseEventType::Click && event.button == TuiMouseButton::Left {
+            self.pending_toggle.set(Some(self.block));
+            return Some(TuiMouseEventResult {
+                handled: true,
+                ..Default::default()
+            });
+        }
+        self.inner.borrow_mut().handle_mouse(event)
+    }
+    fn invalidate(&mut self) {
+        self.inner.borrow_mut().invalidate();
+    }
+    fn dispose(&mut self) {
+        self.inner.borrow_mut().dispose();
+    }
+}
+
 struct RenderCache {
     lines: Vec<String>,
     signature: String,
@@ -87,7 +133,9 @@ pub struct AssistantMessageComponent {
     provider_error_owned: bool,
     is_streaming: bool,
     thinking_visibility_overrides: ThinkingVisibilityOverrides,
+    handoff_open_overrides: HandoffOpenOverrides,
     pending_toggle: Rc<Cell<Option<usize>>>,
+    pending_handoff_toggle: Rc<Cell<Option<usize>>>,
     theme: Theme,
 }
 
@@ -118,7 +166,9 @@ impl AssistantMessageComponent {
             provider_error_owned: false,
             is_streaming: false,
             thinking_visibility_overrides: Vec::new(),
+            handoff_open_overrides: Vec::new(),
             pending_toggle: Rc::new(Cell::new(None)),
+            pending_handoff_toggle: Rc::new(Cell::new(None)),
             theme,
         };
         if let Some(message) = message {
@@ -149,6 +199,9 @@ impl AssistantMessageComponent {
             return;
         }
         self.expanded = expanded;
+        self.handoff_open_overrides.clear();
+        self.pending_toggle.take();
+        self.pending_handoff_toggle.take();
         self.refresh_content();
     }
 
@@ -204,6 +257,11 @@ impl AssistantMessageComponent {
                     .iter()
                     .copied()
                     .collect::<BTreeMap<usize, bool>>(),
+                handoff_open_overrides: &self
+                    .handoff_open_overrides
+                    .iter()
+                    .copied()
+                    .collect::<BTreeMap<usize, bool>>(),
                 has_tool_calls: self.has_tool_calls,
             },
             &self.theme,
@@ -212,6 +270,7 @@ impl AssistantMessageComponent {
     }
 
     fn apply_pending_toggle(&mut self) {
+        self.apply_pending_handoff_toggle();
         let Some(run_index) = self.pending_toggle.take() else {
             return;
         };
@@ -230,6 +289,27 @@ impl AssistantMessageComponent {
             None => self
                 .thinking_visibility_overrides
                 .push((run_index, !hidden)),
+        }
+        self.refresh_content();
+    }
+
+    fn apply_pending_handoff_toggle(&mut self) {
+        let Some(block) = self.pending_handoff_toggle.take() else {
+            return;
+        };
+        let open = self
+            .handoff_open_overrides
+            .iter()
+            .find(|(at, _)| *at == block)
+            .map(|(_, open)| *open)
+            .unwrap_or(self.expanded);
+        match self
+            .handoff_open_overrides
+            .iter_mut()
+            .find(|(at, _)| *at == block)
+        {
+            Some(entry) => entry.1 = !open,
+            None => self.handoff_open_overrides.push((block, !open)),
         }
         self.refresh_content();
     }
@@ -350,6 +430,23 @@ impl AssistantMessageComponent {
                 self.markdown_slots.push(None);
                 Rc::new(RefCell::new(Text::with_padding(&descriptor.text, 3, 0)))
             }
+            DescriptorKind::HandoffLine => {
+                self.markdown_slots.push(None);
+                let line = Rc::new(RefCell::new(SingleLine {
+                    text: descriptor.text.clone(),
+                    pad: self.output_pad,
+                }));
+                self.wrap_handoff_toggle(line, descriptor)
+            }
+            DescriptorKind::HandoffBody => {
+                self.markdown_slots.push(None);
+                let body = Rc::new(RefCell::new(Text::with_padding(
+                    &descriptor.text,
+                    self.output_pad,
+                    0,
+                )));
+                self.wrap_handoff_toggle(body, descriptor)
+            }
         }
     }
 
@@ -368,6 +465,21 @@ impl AssistantMessageComponent {
         }
     }
 
+    fn wrap_handoff_toggle<T: Component + 'static>(
+        &self,
+        inner: Rc<RefCell<T>>,
+        descriptor: &AssistantRenderDescriptor,
+    ) -> Rc<RefCell<dyn Component>> {
+        match descriptor.handoff_block {
+            None => inner as Rc<RefCell<dyn Component>>,
+            Some(block) => Rc::new(RefCell::new(HandoffToggle {
+                inner: inner as Rc<RefCell<dyn Component>>,
+                block,
+                pending_toggle: Rc::clone(&self.pending_handoff_toggle),
+            })),
+        }
+    }
+
     fn create_message_signature(&self, message: &Value) -> String {
         // Summarize the content in place and splice it into the summarized object; this equals the
         // bounded signature of the object holding a copy of the content, without the copy.
@@ -377,6 +489,8 @@ impl AssistantMessageComponent {
                 "hiddenThinkingLabel": self.hidden_thinking_label,
                 "hideThinkingBlock": self.hide_thinking_block,
                 "thinkingVisibilityOverrides": overrides_to_value(&self.thinking_visibility_overrides),
+                "handoffOpenOverrides": overrides_to_value(&self.handoff_open_overrides),
+                "expanded": self.expanded,
                 "errorState": [message["diagnostics"].clone(), message["errorMessage"].clone()],
                 "stopReason": message["stopReason"].clone(),
             }),

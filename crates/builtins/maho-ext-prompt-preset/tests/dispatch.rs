@@ -33,7 +33,7 @@ fn surface_is_visible_to_core_prompt_overrides() {
     assert!(!prompt.contains("Current working directory: /tmp/project"));
 }
 #[test]
-fn user_addenda_are_composed_with_app_surface_presets() {
+fn gpt55_terminal_renders_its_gpt_handoff_block() {
     let preset = resolve_preset(
         ModelMetadata {
             id: "unknown",
@@ -45,8 +45,13 @@ fn user_addenda_are_composed_with_app_surface_presets() {
         options(),
     )
     .unwrap();
-    assert!(preset.prompt.contains("## Handoff"));
-    assert!(preset.prompt.contains("Ask: [the user's original request]"));
+    let prompt = &preset.prompt;
+    let handoff = prompt.find("## Handoff").expect("a Handoff section");
+    assert!(handoff > prompt.find("## Hard Limits").expect("Hard Limits"));
+    assert!(handoff < prompt.find("## Style").expect("Style"));
+    assert!(prompt.contains("[Outcome so far] toward"));
+    assert!(prompt.contains("You need:"));
+    assert!(!prompt.contains("Ask: [the user's original request]"));
 }
 #[test]
 fn explicit_prompt_presets_render_chat_without_a_handoff_ledger() {
@@ -64,7 +69,7 @@ fn explicit_prompt_presets_render_chat_without_a_handoff_ledger() {
     )
     .unwrap();
     assert!(preset.prompt.contains("## Replies"));
-    assert!(!preset.prompt.contains("Ask: [the user's original request]"));
+    assert!(!preset.prompt.contains("## Handoff"));
 }
 #[test]
 fn all_explicit_presets_dispatch_to_nonempty_prompts() {

@@ -9,7 +9,7 @@ use maho_core::dynamic_prompt::{
     build::{
         BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
     },
-    handoff::{CHAT_FINAL_MESSAGE, build_handoff_section},
+    handoff::{CHAT_FINAL_MESSAGE, HandoffSectionOptions, build_handoff_section},
     tool_categorization::get_tools_prompt_display,
     verification::build_test_discipline_section,
     workstation::WorkstationDialect,
@@ -104,7 +104,10 @@ fn build_gemini4_argon_core(context: &DynamicPromptCoreContext) -> String {
         String::new(),
         build_policies_section(GEMINI_4_ARGON_ERROR_RULE),
         String::new(),
-        build_handoff_section(surface, false),
+        build_handoff_section(HandoffSectionOptions {
+            surface,
+            ..Default::default()
+        }),
         String::new(),
         build_style_section(surface),
     ].join("\n")

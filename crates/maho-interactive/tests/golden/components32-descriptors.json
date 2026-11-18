@@ -16,7 +16,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -46,7 +47,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": []
   },
@@ -67,7 +69,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -98,7 +101,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": true,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -134,7 +138,8 @@
           0,
           false
         ]
-      ]
+      ],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -177,7 +182,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -233,7 +239,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -271,7 +278,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -309,7 +317,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -347,7 +356,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -385,7 +395,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -425,7 +436,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -463,7 +475,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -501,7 +514,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -539,7 +553,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -577,7 +592,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -611,7 +627,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -650,7 +667,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -689,7 +707,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -728,7 +747,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -759,7 +779,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": true,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": []
   },
@@ -781,7 +802,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -825,7 +847,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -855,7 +878,8 @@
       "hiddenThinkingLabel": "Thinking...",
       "hideThinkingBlock": false,
       "hasToolCalls": false,
-      "thinkingVisibilityOverrides": []
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
     },
     "descriptors": [
       {
@@ -873,6 +897,372 @@
       {
         "kind": "error-text",
         "text": "\u001b[38;5;174mError: Unknown error\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "handoff-folded",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ask: handoff folds - wanted: one muted line. For you: the block folds to one line. Now: wiring the renderer. Next: verify."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "handoff-line",
+        "text": "\u001b[38;5;102m▸ Handoff · Now: wiring the renderer. · Next: verify.\u001b[39m",
+        "handoffBlock": 0
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "the block folds to one line."
+      }
+    ]
+  },
+  {
+    "name": "handoff-unshaped-paragraphs",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ask: handoff folds - wanted: one muted line.\n\nFor you: the block folds to one line.\n\nNow: wiring the renderer.\nNext: verify."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "Ask: handoff folds - wanted: one muted line.\n\nFor you: the block folds to one line.\n\nNow: wiring the renderer.\nNext: verify."
+      }
+    ]
+  },
+  {
+    "name": "handoff-folded-answer-only",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ask: q - wanted: a.\n\nFor you: the answer the reader needs.\n\nNow: nothing.\nNext: nothing either."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "Ask: q - wanted: a.\n\nFor you: the answer the reader needs.\n\nNow: nothing.\nNext: nothing either."
+      }
+    ]
+  },
+  {
+    "name": "handoff-expanded",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ask: q - wanted: a. For you: the answer. Now: now text. Next: next text."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": true,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "handoff-line",
+        "text": "\u001b[38;5;102m▾ Handoff\u001b[39m",
+        "handoffBlock": 0
+      },
+      {
+        "kind": "handoff-body",
+        "text": "\u001b[38;5;102mAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\u001b[39m",
+        "handoffBlock": 0
+      }
+    ]
+  },
+  {
+    "name": "handoff-override-open",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ask: q - wanted: a. For you: the answer. Now: now text. Next: next text."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "handoffOpenOverrides": [
+        [
+          0,
+          true
+        ]
+      ],
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "handoff-line",
+        "text": "\u001b[38;5;102m▾ Handoff\u001b[39m",
+        "handoffBlock": 0
+      },
+      {
+        "kind": "handoff-body",
+        "text": "\u001b[38;5;102mAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\u001b[39m",
+        "handoffBlock": 0
+      }
+    ]
+  },
+  {
+    "name": "handoff-prose-around",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Prose before the block.\n\nAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\n\nAnd prose after it, with a second block:\n\nAsk: q2 - wanted: a2. For you: answer two. Now: now two. Next: next two."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "handoffOpenOverrides": [
+        [
+          1,
+          true
+        ]
+      ],
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "Prose before the block."
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "handoff-line",
+        "text": "\u001b[38;5;102m▸ Handoff · Now: now text. · Next: next text.\u001b[39m",
+        "handoffBlock": 0
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "the answer."
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "And prose after it, with a second block:"
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "handoff-line",
+        "text": "\u001b[38;5;102m▾ Handoff\u001b[39m",
+        "handoffBlock": 1
+      },
+      {
+        "kind": "handoff-body",
+        "text": "\u001b[38;5;102mAsk: q2 - wanted: a2. For you: answer two. Now: now two. Next: next two.\u001b[39m",
+        "handoffBlock": 1
+      }
+    ]
+  },
+  {
+    "name": "handoff-gpt-shape",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "The suite is green now.\n\nThe suite is green now. You need: nothing. Now: merge. Next: release."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "The suite is green now."
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "handoff-line",
+        "text": "\u001b[38;5;102m▸ Handoff · Now: merge. · Next: release.\u001b[39m",
+        "handoffBlock": 0
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "The suite is green now. nothing."
+      }
+    ]
+  },
+  {
+    "name": "handoff-in-fence",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "```\nAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\n```"
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "```\nAsk: q - wanted: a. For you: the answer. Now: now text. Next: next text.\n```"
+      }
+    ]
+  },
+  {
+    "name": "handoff-streaming-incomplete",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ask: q - wanted: a. For you: the answer. Now: now text."
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [],
+      "handoffOpenOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "Ask: q - wanted: a. For you: the answer. Now: now text."
       }
     ]
   }

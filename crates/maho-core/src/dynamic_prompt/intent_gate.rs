@@ -1,7 +1,21 @@
 //! Port of senpi `packages/coding-agent/src/core/dynamic-prompt/intent-gate.ts`.
 
 use super::tool_categorization::get_tools_prompt_display;
-use super::types::AvailableTool;
+use super::types::{AvailableTool, PromptSurface};
+
+/// `DEFAULT_ROUTING_LINE_RULE`: the clause before "only the user's explicit request commits you";
+/// presets replace it.
+pub const DEFAULT_ROUTING_LINE_RULE: &str = "The line keeps your reading transparent";
+
+/// `terminalRouting(routingLineRule)`.
+fn terminal_routing(routing_line_rule: &str) -> String {
+    format!(
+        "Open every turn with one short routing line:\n\nI read this as [intent] - [plan]. I'll stop when [the observable condition that ends this turn].\n\n{routing_line_rule}; only the user's explicit request commits you to implementation. Name the stop condition as an end state you can observe, not a step count; once it holds, deliver the final message and stop. Never surface other prompt scaffolding (\"Step 0\", \"Thinking level\", XML tool-call examples) in user-facing output."
+    )
+}
+
+/// `APP_ROUTING`: no routing line on the app surface, and no "other" in the scaffolding ban.
+const APP_ROUTING: &str = "Only the user's explicit request commits you to implementation. Before acting, decide the stop condition - an end state you can observe, not a step count; once it holds, deliver the final message and stop. Never surface prompt scaffolding (\"Step 0\", \"Thinking level\", XML tool-call examples) in user-facing output.";
 
 /// `buildKeyTriggers`.
 pub fn build_key_triggers(tools: &[AvailableTool]) -> String {
@@ -16,18 +30,14 @@ pub fn build_key_triggers(tools: &[AvailableTool]) -> String {
     )
 }
 
-/// `buildIntentGate`.
-pub fn build_intent_gate(tools: &[AvailableTool]) -> String {
+/// `buildIntentGate({ tools, surface })`; chat takes the app wording.
+pub fn build_intent_gate(tools: &[AvailableTool], surface: PromptSurface) -> String {
+    let open = match surface {
+        PromptSurface::Terminal => terminal_routing(DEFAULT_ROUTING_LINE_RULE),
+        PromptSurface::App | PromptSurface::Chat => APP_ROUTING.to_owned(),
+    };
     format!(
-        "## Intent Gate
-
-Open every turn with one short routing line:
-
-I read this as [intent] - [plan]. I'll stop when [the observable condition that ends this turn].
-
-The line keeps your reading transparent; only the user's explicit request commits you to implementation. Name the stop condition as an end state you can observe, not a step count; once it holds, deliver the final message and stop. Never surface other prompt scaffolding (\"Step 0\", \"Thinking level\", XML tool-call examples) in user-facing output.
-{}
-Route by true intent, not surface form:
+        "## Intent Gate\n\n{open}\n{}\nRoute by true intent, not surface form:
 - Information asks (explain, look into, investigate): read the code, report the answer or findings - no edits, no fixes yet.
 - Judgment asks (what do you think, review) and open-ended changes (refactor, improve, clean up): assess and propose, then wait for confirmation.
 - Change asks (implement, add, fix this error): build, or diagnose and fix minimally, at exactly the asked scope - the smallest path that fully satisfies an open-ended goal; name an ambiguity and resolve it from context when possible.
@@ -47,27 +57,30 @@ mod tests {
     #[test]
     fn search_tools_are_advertised_in_the_routing_line() {
         let tools = categorize_tools(&["grep".to_string(), "glob".to_string()]);
-        let gate = build_intent_gate(&tools);
+        let gate = build_intent_gate(&tools, PromptSurface::Terminal);
         assert!(gate.contains("\nSpecialized search available this turn: `grep`, `glob`. Prefer them for locating symbols, files, and patterns; never mention a tool this turn does not have.\n"));
     }
 
     #[test]
     fn without_search_tools_the_trigger_sentence_is_omitted() {
-        let gate = build_intent_gate(&categorize_tools(&["read".to_string()]));
+        let gate = build_intent_gate(
+            &categorize_tools(&["read".to_string()]),
+            PromptSurface::Terminal,
+        );
         assert!(!gate.contains("Specialized search available this turn"));
         assert!(gate.contains("in user-facing output.\n\nRoute by true intent, not surface form:"));
     }
 
     #[test]
     fn includes_intent_routing_rules() {
-        let result = build_intent_gate(&[]);
+        let result = build_intent_gate(&[], PromptSurface::Terminal);
         assert!(result.contains("## Intent Gate"));
         assert!(result.contains("Route by true intent, not surface form"));
     }
 
     #[test]
     fn covers_the_three_intent_families() {
-        let result = build_intent_gate(&[]);
+        let result = build_intent_gate(&[], PromptSurface::Terminal);
         assert!(result.contains("Information asks"));
         assert!(result.contains("Judgment asks"));
         assert!(result.contains("Change asks"));
@@ -75,12 +88,12 @@ mod tests {
 
     #[test]
     fn includes_scope_fidelity_rule() {
-        assert!(build_intent_gate(&[]).contains("scope asked"));
+        assert!(build_intent_gate(&[], PromptSurface::Terminal).contains("scope asked"));
     }
 
     #[test]
     fn includes_turn_local_intent_derivation() {
-        assert!(build_intent_gate(&[]).contains("latest user turn"));
+        assert!(build_intent_gate(&[], PromptSurface::Terminal).contains("latest user turn"));
     }
 
     #[test]
@@ -89,12 +102,12 @@ mod tests {
             name: "grep".to_string(),
             category: crate::dynamic_prompt::types::ToolCategory::Search,
         }];
-        assert!(build_intent_gate(&tools).contains("grep"));
+        assert!(build_intent_gate(&tools, PromptSurface::Terminal).contains("grep"));
     }
 
     #[test]
     fn forces_intent_verbalization_with_a_binding_stop_condition() {
-        let result = build_intent_gate(&[]);
+        let result = build_intent_gate(&[], PromptSurface::Terminal);
         assert!(result.contains("I read this as"));
         assert!(result.contains("I'll stop when"));
         assert!(!result.contains("Keep the routing decision internal"));
@@ -103,9 +116,23 @@ mod tests {
 
     #[test]
     fn routes_common_surface_forms() {
-        let result = build_intent_gate(&[]);
+        let result = build_intent_gate(&[], PromptSurface::Terminal);
         for word in ["explain", "implement", "error", "refactor"] {
             assert!(result.contains(word), "{word}");
         }
+    }
+
+    /// `terminalOrApp(surface)`: chat takes the app wording, which has no routing line.
+    #[test]
+    fn the_app_and_chat_surfaces_drop_the_routing_line() {
+        for surface in [PromptSurface::App, PromptSurface::Chat] {
+            let gate = build_intent_gate(&[], surface);
+            assert!(!gate.contains("I read this as"));
+            assert!(gate.starts_with("## Intent Gate\n\nOnly the user's explicit request"));
+            assert!(gate.contains("Never surface prompt scaffolding"));
+        }
+        let terminal = build_intent_gate(&[], PromptSurface::Terminal);
+        assert!(terminal.contains("I read this as"));
+        assert!(terminal.contains("Never surface other prompt scaffolding"));
     }
 }
