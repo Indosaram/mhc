@@ -17,7 +17,7 @@ winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"]
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "process", "time", "test-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "process", "signal", "time", "test-util"] }
 
 [[bin]]
 name = "mhc-git-bash"

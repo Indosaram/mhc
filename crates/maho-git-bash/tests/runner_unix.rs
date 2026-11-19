@@ -18,7 +18,8 @@ fn request(command: &str, timeout_ms: u64) -> RunRequest {
 }
 
 async fn run(request: &RunRequest, root: &tempfile::TempDir) -> maho_git_bash::RunOutput {
-    let output = tokio::time::timeout(BOUND, run_command(request, Some(root.path())))
+    let watchdog = Duration::from_millis(request.timeout_ms) + BOUND;
+    let output = tokio::time::timeout(watchdog, run_command(request, Some(root.path())))
         .await
         .expect("finished within bound")
         .expect("ran");
@@ -39,8 +40,25 @@ async fn runner_captures_streams_and_exit_code() {
 
 #[tokio::test]
 async fn runner_kills_on_timeout_and_keeps_partial_output() {
+    use tokio::signal::unix::{SignalKind, signal};
+
     let root = tempfile::tempdir().expect("root");
-    let output = run(&request("echo started; exec sleep 30", 200), &root).await;
+    let mut started = signal(SignalKind::user_defined1()).expect("listen before spawning shell");
+    let request = request(
+        "echo started && kill -USR1 \"$PPID\" && exec sleep 120",
+        60_000,
+    );
+    // Login-shell startup is real time. Expire the runner's clock only after stdout was written.
+    let expire_after_output = async {
+        tokio::time::timeout(BOUND, started.recv())
+            .await
+            .expect("shell reported readiness within bound")
+            .expect("readiness signal");
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(request.timeout_ms)).await;
+        tokio::time::resume();
+    };
+    let (output, ()) = tokio::join!(run(&request, &root), expire_after_output);
     assert!(output.timed_out);
     assert_eq!(output.stdout, "started\n");
     assert_eq!(output.exit_code, None);
