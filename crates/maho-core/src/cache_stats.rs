@@ -10,6 +10,7 @@ pub struct CacheMiss {
     pub missed_cost: f64,
     pub idle_ms: f64,
     pub model_changed: bool,
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -93,6 +94,7 @@ fn detect_miss(
         missed_cost: missed_tokens * (paid_per_token - read_per_token).max(0.0),
         idle_ms: (message.timestamp - previous.timestamp).max(0.0),
         model_changed: format!("{}/{}", message.provider, message.model) != previous.model_key,
+        partial: usage.cache_read > 0.0,
     })
 }
 
@@ -285,6 +287,28 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+    #[test]
+    fn distinguishes_partial_from_total_misses() {
+        let previous = vec![entry(message(0.0, 345_984.0, 27_160.0, "m", 60_000))];
+        let partial = detect_cache_miss(
+            &previous,
+            &message(27_160.0, 345_984.0, 0.0, "m", 120_000),
+            &prices,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(partial.partial);
+        assert_eq!(partial.missed_tokens, 27_160.0);
+
+        let total = detect_cache_miss(
+            &previous,
+            &message(373_144.0, 0.0, 0.0, "m", 120_000),
+            &prices,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!total.partial);
     }
     #[test]
     fn first_turn_is_not_a_miss() {

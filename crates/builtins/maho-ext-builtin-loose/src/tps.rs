@@ -68,12 +68,22 @@ impl Timing {
     pub fn finish_streamed_message(
         &mut self,
         monotonic_ms: f64,
+        stored_request_span_ms: Option<f64>,
         output: f64,
         reasoning: f64,
         has_thinking_block: bool,
         stop_reason: &str,
     ) {
+        let observed_elapsed_ms = self
+            .active_start_ms
+            .map(|start| (monotonic_ms - start).max(0.0))
+            .unwrap_or(0.0);
         self.finish_message(monotonic_ms);
+        if let Some(stored_request_span_ms) =
+            stored_request_span_ms.filter(|elapsed| elapsed.is_finite())
+        {
+            self.elapsed_ms += (stored_request_span_ms.max(0.0) - observed_elapsed_ms).max(0.0);
+        }
         let hidden_reasoning = reasoning > 0.0 || (!self.thinking_streamed && has_thinking_block);
         let start = if hidden_reasoning {
             self.message_start_ms
@@ -158,11 +168,20 @@ impl Timing {
         };
         Some(Notice {
             text: format!(
-                "{rate}Cache hit {:.1}%, {:.1}s",
-                statistics.cache_hit_rate, statistics.elapsed_seconds
+                "{rate}Cache hit {}, {:.1}s request span",
+                format_cache_hit_rate(statistics.cache_hit_rate),
+                statistics.elapsed_seconds
             ),
             statistics,
         })
+    }
+}
+
+fn format_cache_hit_rate(rate: f64) -> String {
+    if rate < 100.0 && rate >= 99.95 {
+        "<100%".into()
+    } else {
+        format!("{rate:.1}%")
     }
 }
 pub struct Tps;
@@ -210,6 +229,9 @@ impl maho_ext_api::Extension for Tps {
                                 message: AgentMessage::Llm(Message::Assistant(message)),
                             } => timing.finish_streamed_message(
                                 now,
+                                message.timing.as_ref().map(|timing| {
+                                    timing.ended_at.saturating_sub(timing.requested_at) as f64
+                                }),
                                 message.usage.output as f64,
                                 message.usage.reasoning.unwrap_or_default() as f64,
                                 message.content.iter().any(|block| {
@@ -270,7 +292,7 @@ mod tests {
         timing.start_message(0.0);
         timing.record_delta(100.0, "text_delta");
         timing.record_delta(800.0, "text_delta");
-        timing.finish_streamed_message(900.0, 70.0, 0.0, false, "stop");
+        timing.finish_streamed_message(900.0, None, 70.0, 0.0, false, "stop");
         let notice = timing
             .finish_turn_notice(
                 1_000.0,
@@ -290,7 +312,7 @@ mod tests {
         timing.start_message(0.0);
         timing.record_delta(100.0, "text_delta");
         timing.record_delta(300.0, "text_delta");
-        timing.finish_streamed_message(400.0, 70.0, 0.0, false, "stop");
+        timing.finish_streamed_message(400.0, None, 70.0, 0.0, false, "stop");
         assert!(
             !timing
                 .finish_turn_notice(
@@ -330,12 +352,32 @@ mod tests {
         timing.start_message(0.0);
         timing.record_delta(200.0, "text_delta");
         timing.record_delta(400.0, "text_delta");
-        timing.finish_streamed_message(500.0, 40.0, 10.0, false, "error");
+        timing.finish_streamed_message(500.0, None, 40.0, 10.0, false, "error");
         assert_eq!(timing.streamed_output, 0.0);
         timing.start_message(1_000.0);
         timing.record_delta(1_500.0, "text_delta");
         timing.record_delta(2_000.0, "text_delta");
-        timing.finish_streamed_message(2_100.0, 50.0, 5.0, false, "stop");
+        timing.finish_streamed_message(2_100.0, None, 50.0, 5.0, false, "stop");
         assert_eq!(timing.generation_ms, 1_000.0);
+    }
+    #[test]
+    fn uses_stored_multi_attempt_request_span_and_does_not_round_partial_hits_to_full() {
+        let mut timing = Timing::default();
+        timing.start_message(24_645.0);
+        timing.finish_streamed_message(24_645.0, Some(67_500.0), 1.0, 0.0, false, "stop");
+        let notice = timing
+            .finish_turn_notice(
+                24_645.0,
+                true,
+                true,
+                TurnUsage {
+                    input: 152.0,
+                    output: 1.0,
+                    cache_read: 372_992.0,
+                    cache_write: 0.0,
+                },
+            )
+            .expect("TUI notice");
+        assert_eq!(notice.text, "Cache hit <100%, 67.5s request span");
     }
 }
