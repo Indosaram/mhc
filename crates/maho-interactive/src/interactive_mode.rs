@@ -4798,37 +4798,15 @@ impl InteractiveMode {
 
     /// senpi `addCacheMissNotice`.
     fn add_cache_miss_notice(&mut self, miss: &maho_core::cache_stats::CacheMiss) {
-        if miss.missed_tokens < 20_000.0 && miss.missed_cost < 0.1 {
+        let Some(notice) = cache_miss_notice_text(miss) else {
             return;
-        }
-        let cost = if miss.missed_cost >= 0.01 {
-            format!(" (~${:.2})", miss.missed_cost)
-        } else {
-            String::new()
-        };
-        let re_billed = format!(
-            "{} tokens re-billed{cost}",
-            crate::components::footer::format_tokens(miss.missed_tokens)
-        );
-        let label = if miss.model_changed {
-            "Cache miss after model switch".to_owned()
-        } else if miss.idle_ms >= maho_core::cache_stats::CACHE_TTL_MS as f64 {
-            format!(
-                "Cache miss after {}m idle",
-                (miss.idle_ms / 60_000.0).round()
-            )
-        } else {
-            "Cache miss".to_owned()
         };
         self.chat.add_component(Rc::new(RefCell::new(
             maho_tui::components::spacer::Spacer::new(1),
         )));
         self.chat.add_component(Rc::new(RefCell::new(
             maho_tui::components::text::Text::with_padding(
-                self.theme.fg(
-                    crate::theme::ThemeColor::Warning,
-                    &format!("{label}: {re_billed}"),
-                ),
+                self.theme.fg(crate::theme::ThemeColor::Warning, &notice),
                 1,
                 0,
             ),
@@ -14900,6 +14878,36 @@ impl InteractiveMode {
     }
 }
 
+fn cache_miss_notice_text(miss: &maho_core::cache_stats::CacheMiss) -> Option<String> {
+    if miss.missed_tokens < 20_000.0 && miss.missed_cost < 0.1 {
+        return None;
+    }
+    let cost = if miss.missed_cost >= 0.01 {
+        format!(" (estimated extra cost ~${:.2})", miss.missed_cost)
+    } else {
+        String::new()
+    };
+    let miss_kind = if miss.partial {
+        "Partial cache miss"
+    } else {
+        "Cache miss"
+    };
+    let label = if miss.model_changed {
+        format!("{miss_kind} after model switch")
+    } else if miss.idle_ms >= maho_core::cache_stats::CACHE_TTL_MS as f64 {
+        format!(
+            "{miss_kind} after {}m idle",
+            (miss.idle_ms / 60_000.0).round()
+        )
+    } else {
+        miss_kind.to_owned()
+    };
+    Some(format!(
+        "{label}: {} tokens not served from cache{cost}",
+        crate::components::footer::format_tokens(miss.missed_tokens)
+    ))
+}
+
 impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn expanded(&self) -> bool {
         self.tools_expanded
@@ -16137,6 +16145,33 @@ mod tests {
             Some(maho_ext_api::ServiceTier::Priority)
         ));
         assert!(service_tier_from_wire("bogus").is_none());
+    }
+
+    #[test]
+    fn cache_miss_notice_distinguishes_partial_misses_and_qualifies_cost() {
+        let partial = cache_miss_notice_text(&maho_core::cache_stats::CacheMiss {
+            missed_tokens: 27_160.0,
+            missed_cost: 0.08,
+            idle_ms: 60_000.0,
+            model_changed: false,
+            partial: true,
+        })
+        .expect("notice");
+        assert_eq!(
+            partial,
+            "Partial cache miss: 27K tokens not served from cache (estimated extra cost ~$0.08)"
+        );
+        assert!(!partial.contains("re-billed"));
+
+        let total = cache_miss_notice_text(&maho_core::cache_stats::CacheMiss {
+            missed_tokens: 373_144.0,
+            missed_cost: 0.0,
+            idle_ms: 60_000.0,
+            model_changed: false,
+            partial: false,
+        })
+        .expect("notice");
+        assert_eq!(total, "Cache miss: 373K tokens not served from cache");
     }
 
     #[test]
