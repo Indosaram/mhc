@@ -178,7 +178,7 @@ impl Timing {
 }
 
 fn format_cache_hit_rate(rate: f64) -> String {
-    if rate < 100.0 && rate >= 99.95 {
+    if (99.95..100.0).contains(&rate) {
         "<100%".into()
     } else {
         format!("{rate:.1}%")
