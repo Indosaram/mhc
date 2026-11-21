@@ -267,6 +267,12 @@ pub fn assembled_factories_with_mcp_registry(
                 }),
             }),
         }
+        // Session-start ast-grep provisioning (port of the upstream plugin hook). omo-only:
+        // it links `omo-utils` and resolves against the omo config directory.
+        assembled.extend(async_factories(vec![factory(
+            "ast-grep-provision",
+            super::ast_grep_provision::AstGrepProvisionExtension,
+        )]));
     }
     // The MIT profile mounts the clean-room config and model-profile extensions instead
     // (`maho-config`, `maho-model-select`; docs/MIT-PROFILE.md).

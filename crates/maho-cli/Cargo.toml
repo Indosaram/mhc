@@ -27,6 +27,7 @@ omo = [
     "dep:senpi-task",
     "dep:delegate-core",
     "dep:omo-utils",
+    "reqwest/blocking",
     "maho-ext-pi-comment-checker/omo-core",
     "maho-ext-hooks/claude-plugins",
 ]

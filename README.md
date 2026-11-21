@@ -19,7 +19,7 @@
 - **原生核心程序。** 核心智能体运行为独立原生可执行文件，无需 Node、Bun 或 npm（代码执行 eval 工具需要 [Bun](https://bun.sh)，扩展包安装 `mhc install` 需要 `npm`）。
 - **与 OmO on senpi 体验一致。** 逐文件移植上游 TypeScript 源码，并用上游生成的 golden fixtures 校验，界面、按键和行为保持一致。
 - **直接沿用现有配置。** 与 OmO 读取同一套 `~/.omo` 配置、模型、认证和智能体设置。
-- **功能开箱即全。** 子智能体、`ultrawork` / `ulw-loop` 工作流、长期记忆、LSP、ast-grep、MCP、网页搜索和内置技能都随发布包提供。
+- **内置丰富功能。** 子智能体、`ultrawork` / `ulw-loop` 工作流、长期记忆、LSP、ast-grep 工具及 MCP 服务、网页搜索和内置技能随发布包提供；外部 `ast-grep` 程序不在包内。
 - **支持各家模型。** Anthropic、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱 ZAI、MiniMax、OpenRouter、Ollama、Bedrock、Azure 等。
 - **内存占用低得多。** 在同一个固定工作流 DAG（3 个并行子智能体 + 汇总）上（历史测量），mhc 的匿名内存峰值为 83-86 MB，OmO 为 1356-1398 MB，约少 16 倍，耗时相同。测量方法、原始数据和复现步骤见 [docs/memory-benchmark.md](docs/memory-benchmark.md)（英文）。
 
@@ -103,6 +103,8 @@ mhc --continue                     # 继续上一次会话
 ## 从源码构建
 
 需要 Rust 1.95（由 `rust-toolchain.toml` 自动选择）、`protoc` 和 [Bun](https://bun.sh)。
+
+使用 ast-grep 工具还需要外部 `ast-grep` 程序。预期行为是在默认 OmO 配置的会话开始时异步自动配置；若未成功，请手动安装：macOS / Linux（有 Homebrew）用 `brew install ast-grep`；Windows 用 `scoop install main/ast-grep`、`winget install ast-grep.ast-grep` 或 `choco install ast-grep`；各平台也可用 `npm install --global @ast-grep/cli` 或 `cargo install ast-grep --locked`。将程序加入 `PATH`，或通过 `OMO_AST_GREP_SG_PATH` 指定可执行文件路径。
 
 ```bash
 git clone https://github.com/Indosaram/mhc.git && cd mhc

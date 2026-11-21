@@ -360,6 +360,49 @@ async fn task_component_registers_session_start_handler_for_non_member() {
     assert!(!host_start_handlers.is_empty());
 }
 
+#[cfg(feature = "omo")]
+#[tokio::test]
+async fn ast_grep_provision_registers_a_session_start_handler() {
+    let mut api = maho_ext_api::ExtensionApi::new(
+        maho_ext_api::LoadedExtension::new(
+            "test",
+            std::path::PathBuf::from("/tmp"),
+            maho_ext_api::SourceInfo::default(),
+        ),
+        maho_ext_api::ExtensionSessionProfile::default(),
+        maho_ext_api::EventBus::default(),
+        maho_ext_api::ExtensionRuntime::default(),
+    );
+    maho_cli::cli::ast_grep_provision::AstGrepProvisionExtension.register(&mut api);
+
+    let handlers = api
+        .registered
+        .handlers
+        .get(&maho_ext_api::EventKind::SessionStart)
+        .expect("session-start handler");
+    assert_eq!(handlers.len(), 1, "exactly one provisioning hook");
+    assert!(
+        !api.registered
+            .handlers
+            .contains_key(&maho_ext_api::EventKind::ToolResult),
+        "provisioning must react to session start only"
+    );
+}
+
+#[cfg(feature = "omo")]
+#[tokio::test]
+async fn ast_grep_provision_runtime_dir_matches_the_resolver_candidate() {
+    let dir = maho_cli::cli::ast_grep_provision::runtime_dir_for_test();
+    let slug = omo_utils::ast_grep::runtime_slug(
+        omo_utils::runtime::node_platform(),
+        omo_utils::runtime::node_arch(),
+    );
+    assert!(
+        dir.ends_with(&format!("/.omo/runtime/ast-grep/{slug}")),
+        "provisioning target must be the resolver's OmoRuntime candidate, got {dir}"
+    );
+}
+
 #[test]
 fn the_resolved_isolation_block_reaches_the_task_tool_config() {
     use maho_cli::cli::default_extensions::task_omo_isolation_config;

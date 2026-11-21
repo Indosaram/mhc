@@ -19,7 +19,7 @@
 - **Native core binary.** Standalone native executable with no Node, Bun or npm required for core agent operation (the code execution eval tool needs [Bun](https://bun.sh), and package installation via `mhc install` uses `npm`).
 - **Same experience as OmO on senpi.** The TypeScript sources are ported file by file and checked against upstream golden fixtures, so the UI, keys and behavior match.
 - **Your existing setup just works.** mhc reads the same `~/.omo` config, models, auth and agents as OmO.
-- **Everything included.** Subagents, `ultrawork` / `ulw-loop` workflows, long-term memory, LSP, ast-grep, MCP, web search and builtin skills ship in the release.
+- **Built-in features.** Subagents, `ultrawork` / `ulw-loop` workflows, long-term memory, LSP, ast-grep tools and MCP server, web search and builtin skills ship in the release; the external `ast-grep` program is not bundled.
 - **Any model.** Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Kimi, ZAI, MiniMax, OpenRouter, Ollama, Bedrock, Azure and more.
 - **A fraction of the memory.** On the same fixed workflow DAG (3 parallel child agents + join), in a historical measurement, mhc peaked at 83-86 MB of anonymous memory and OmO at 1356-1398 MB, about 16x less, in the same wall time. Method, raw numbers and how to rerun it: [docs/memory-benchmark.md](docs/memory-benchmark.md).
 
@@ -103,6 +103,8 @@ More: [CLI reference](docs/cli.md) · [Configuration](docs/configuration.md) · 
 ## Build from source
 
 Needs Rust 1.95 (picked up from `rust-toolchain.toml`), `protoc` and [Bun](https://bun.sh).
+
+The ast-grep tools also require the external `ast-grep` program. The intended behavior is asynchronous automatic provisioning at session start in the default OmO profile; if that does not succeed, install it manually: on macOS / Linux with Homebrew, use `brew install ast-grep`; on Windows, use `scoop install main/ast-grep`, `winget install ast-grep.ast-grep` or `choco install ast-grep`; on any platform, use `npm install --global @ast-grep/cli` or `cargo install ast-grep --locked`. Put the program on `PATH`, or set `OMO_AST_GREP_SG_PATH` to its executable path.
 
 ```bash
 git clone https://github.com/Indosaram/mhc.git && cd mhc

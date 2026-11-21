@@ -11,6 +11,7 @@ live in [AGENTS.md](AGENTS.md) and the per-crate `AGENTS.md` files.
 - `protoc` on `PATH` (the `maho-ai` build script compiles vendored protobuf schemas).
 - [Bun](https://bun.sh) for the scripts under `tools/`.
 - [cargo-nextest](https://nexte.st) for tests.
+- The real `ast-grep` program before running `maho-ast-grep` tests (see [install options](README.en.md#build-from-source)). [crates/maho-ast-grep/tests/real_program.rs](crates/maho-ast-grep/tests/real_program.rs) deliberately fails rather than skips when it is missing. `scripts/verify-local.sh` checks for it up front unless `--fast` is used.
 - For golden fixtures and parity audits: senpi checked out at the pinned commit (`$SENPI_SRC`) and
   oh-my-openagent at its pinned commit (`$OMO_SRC`).
 
