@@ -200,13 +200,22 @@ mod tests {
         writer.finish().unwrap();
         let output = fixture.path().join("output");
         extract_zip_archive(&path, &output).unwrap();
+        // The archive entry is 0755; the umask legitimately clears group/other, so assert the
+        // owner bits the downloader must keep (the extracted program has to stay executable).
+        let mode = std::fs::metadata(output.join("bin/sg"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
-            std::fs::metadata(output.join("bin/sg"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o755
+            mode & 0o700,
+            0o700,
+            "owner rwx comes from the archive entry"
+        );
+        assert_ne!(
+            mode & 0o100,
+            0,
+            "the extracted program must stay executable"
         );
     }
     /// Writes a one-entry zip whose central directory claims MS-DOS (`versionMadeBy >> 8 === 0`)
@@ -252,7 +261,15 @@ mod tests {
         extract_zip_archive(&archive, &output).unwrap();
         let metadata = std::fs::symlink_metadata(output.join("readonly_dir_bits")).unwrap();
         assert!(metadata.is_file());
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o644);
+        // Assert the bits the archive controls, not the umask-derived group/other bits: under a
+        // restrictive umask (the campaign sandbox runs 0077) the same entry extracts 0600.
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode & 0o700,
+            0o600,
+            "owner bits come from the archive entry"
+        );
+        assert_eq!(mode & 0o111, 0, "a DOS entry must not gain execute bits");
     }
     #[test]
     fn extracts_binary_and_removes_archive() {
