@@ -203,6 +203,7 @@ impl SessionRegistry {
                         generation,
                         now: input.now,
                         resume_at: None,
+                        verify_initialization: input.auth_lane == "claude-cli",
                     })
                     .await
                     .map(|entry| (entry, from));
@@ -246,6 +247,7 @@ impl SessionRegistry {
                         let (system_prompt_hash, toolset_hash) =
                             (&fingerprint.system_prompt_hash, &fingerprint.toolset_hash);
                         let now = input.now;
+                        let verify_initialization = input.auth_lane == "claude-cli";
                         async move {
                             SessionEntry::create(CreateEntry {
                                 session_id: session,
@@ -260,6 +262,7 @@ impl SessionRegistry {
                                 generation,
                                 now,
                                 resume_at: Some(at_uuid.as_deref()),
+                                verify_initialization,
                             })
                             .await
                         }

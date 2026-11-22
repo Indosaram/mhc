@@ -1,11 +1,17 @@
-//! Port of senpi `anthropic-subscription/auth-block-recovery.ts` (pin 903b8336).
+//! Port of senpi `anthropic-subscription/auth-block-recovery.ts` (pin 903b8336; the claude CLI re-probe from
+//! v2026.11.19-5, senpi#4436/#5350/#5623).
+//!
+//! deviation: v2026.11.19-5 dropped the grant recovery with the senpi-owned login; mhc still stores token accounts from
+//! that login, so their grant recovery stays and the claude CLI re-probe runs beside it.
 //!
 //! `AccountSlot.auth_recovery_grant` carries the grant (senpi#2926). Recovery rewrites the stored
 //! account inside one store `modify`, so it reads and writes `authRecoveryGrant` on that stored JSON,
 //! which is the same field the slot deserializes.
-use crate::accounts::{AccountSlot, AccountSource};
+use crate::accounts::{AccountSlot, AccountSource, ClaudeCliAuthVerdict, SignInRequiredReason};
+use crate::claude_cli_auth_status::ClaudeCliAuthStatus;
 use maho_ai::auth::types::{Credential, CredentialStore, OAuthCredential};
 use maho_ai::utils::abort::AbortSignal;
+use maho_core::subscription_limits::usage_accounts::AUTH_BLOCK_REPROBE_MS;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -18,6 +24,13 @@ pub type BorrowedFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> 
 /// `SlotRefresher`: redeems a refresh token for fresh material.
 pub type SlotRefresher =
     Arc<dyn Fn(String, AbortSignal) -> RecoveryFuture<OAuthCredential> + Send + Sync>;
+/// What `claude auth status` reports for a `claude-cli` account (senpi#4436).
+pub type ClaudeCliStatusReader<'a> = Box<
+    dyn Fn(&AccountSlot) -> BorrowedFuture<'a, crate::claude_cli_auth_status::ClaudeCliAuthStatus>
+        + Send
+        + Sync
+        + 'a,
+>;
 
 /// `authGrantDigest` (accounts.ts): the first 32 hex characters of the refresh token's SHA-256.
 pub fn auth_grant_digest(refresh: &str) -> String {
@@ -39,6 +52,9 @@ pub struct AuthBlockRecoveryInput<'a> {
     pub now: f64,
     /// The request error for a refresh that failed for a reason other than a rejected grant.
     pub transient_error: Box<dyn Fn(anyhow::Error) -> anyhow::Error + Send + Sync + 'a>,
+    /// Such an account holds no grant to redeem: at its re-probe time `signed_in` clears the block, only `signed_out`
+    /// marks the login expired (senpi#5350), and anything else keeps the timed block.
+    pub claude_cli_status: Option<ClaudeCliStatusReader<'a>>,
 }
 
 fn recoverable_parts(
@@ -183,6 +199,120 @@ fn is_probe_due(slot: &AccountSlot, now: f64) -> bool {
     slot.blocked_until.is_none_or(|until| until <= now)
 }
 
+/// A `login_expired` slot keeps its `auth_error` block as the self-heal cadence, so it is probed like any auth block.
+fn is_claude_cli_probe_due(slot: &AccountSlot, now: f64) -> bool {
+    slot.is_claude_cli()
+        && slot.block_reason.as_deref() == Some("auth_error")
+        && slot
+            .sign_in_required
+            .is_none_or(|reason| reason == SignInRequiredReason::LoginExpired)
+        && is_probe_due(slot, now)
+}
+
+fn probed_slot(stored: &AccountSlot, status: &ClaudeCliAuthStatus, now: f64) -> AccountSlot {
+    let mut next = stored.clone();
+    if matches!(status, ClaudeCliAuthStatus::SignedIn(_)) {
+        next.block_reason = None;
+        next.blocked_until = None;
+        next.blocked_at = None;
+        next.sign_in_required = None;
+        next.auth_verdict = None;
+        return next;
+    }
+    if *status == ClaudeCliAuthStatus::SignedOut {
+        next.sign_in_required = Some(SignInRequiredReason::LoginExpired);
+    }
+    next.block_reason = Some("auth_error".into());
+    next.blocked_until = Some(now + AUTH_BLOCK_REPROBE_MS as f64);
+    next.blocked_at = Some(now);
+    // The verdict names the sign-in it is about, so a block another engine writes is told apart (senpi#5623).
+    next.auth_verdict = Some(ClaudeCliAuthVerdict {
+        dir_id: stored.dir_id.clone().unwrap_or_default(),
+        at: now,
+    });
+    next
+}
+
+fn transition_of(stored: &AccountSlot, status: &ClaudeCliAuthStatus) -> Option<&'static str> {
+    match status {
+        ClaudeCliAuthStatus::SignedOut if stored.sign_in_required.is_none() => {
+            Some("claude_cli_login_expired")
+        }
+        ClaudeCliAuthStatus::SignedIn(_)
+            if stored.sign_in_required == Some(SignInRequiredReason::LoginExpired) =>
+        {
+            Some("claude_cli_login_restored")
+        }
+        _ => None,
+    }
+}
+
+async fn probe_claude_cli_slot(
+    input: &AuthBlockRecoveryInput<'_>,
+    slot: &AccountSlot,
+    status: &ClaudeCliStatusReader<'_>,
+) -> anyhow::Result<()> {
+    let state = status(slot).await?;
+    input
+        .signal
+        .throw_if_aborted()
+        .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+    let name = slot.name.clone();
+    let now = input.now;
+    let transition = Arc::new(std::sync::Mutex::new(None));
+    let recorded = transition.clone();
+    input
+        .store
+        .modify(
+            input.provider_id,
+            Box::new(move |current| {
+                Box::pin(async move {
+                    let Some(Credential::OAuth(mut credential)) = current else {
+                        return Ok(current);
+                    };
+                    let Some(accounts) = credential
+                        .extra
+                        .get_mut("accounts")
+                        .and_then(Value::as_array_mut)
+                    else {
+                        return Ok(Some(Credential::OAuth(credential)));
+                    };
+                    for entry in accounts.iter_mut() {
+                        if entry.get("name").and_then(Value::as_str) != Some(name.as_str()) {
+                            continue;
+                        }
+                        let Ok(stored) = serde_json::from_value::<AccountSlot>(entry.clone())
+                        else {
+                            continue;
+                        };
+                        if !is_claude_cli_probe_due(&stored, now) {
+                            continue;
+                        }
+                        *recorded
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            transition_of(&stored, &state);
+                        *entry = serde_json::to_value(probed_slot(&stored, &state, now))?;
+                    }
+                    Ok(Some(Credential::OAuth(credential)))
+                })
+            }),
+            None,
+        )
+        .await?;
+    // Logged once the write landed: a store that retries the callback must not log the transition twice.
+    let transition = *transition
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(transition) = transition {
+        maho_ext_api::diagnostic(&format!(
+            "{transition} {}",
+            serde_json::json!({ "accountName": slot.name })
+        ));
+    }
+    Ok(())
+}
+
 /// Recovers before anything probes a rejected token: an account whose auth block is due for its
 /// re-probe (senpi#3264) is refreshed first, so the probe sends fresh material; when no account can
 /// serve, every recoverable account is.
@@ -212,7 +342,16 @@ pub async fn recover_auth_blocked_slots(
     } else {
         recoverable
     };
-    if candidates.is_empty() {
+    let probes: Vec<AccountSlot> = match &input.claude_cli_status {
+        Some(_) => input
+            .accounts
+            .iter()
+            .filter(|slot| is_claude_cli_probe_due(slot, input.now))
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    };
+    if candidates.is_empty() && probes.is_empty() {
         return Ok(input.accounts.clone());
     }
     let names: Vec<String> = candidates.iter().map(|slot| slot.name.clone()).collect();
@@ -224,6 +363,17 @@ pub async fn recover_auth_blocked_slots(
                 .throw_if_aborted()
                 .map_err(|reason| anyhow::anyhow!("{reason}"))?;
             transient_failure = Some(error);
+        }
+    }
+    if let Some(status) = &input.claude_cli_status {
+        for probe in &probes {
+            if let Err(error) = probe_claude_cli_slot(&input, probe, status).await {
+                input
+                    .signal
+                    .throw_if_aborted()
+                    .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+                transient_failure = Some(error);
+            }
         }
     }
     let accounts = (input.reload)().await?;
@@ -313,7 +463,88 @@ mod tests {
             is_usable: Box::new(|slot: &AccountSlot| slot.block_reason.is_none()),
             now,
             transient_error: Box::new(|error: anyhow::Error| anyhow::anyhow!("transient: {error}")),
+            claude_cli_status: None,
         }
+    }
+
+    fn cli_blocked(name: &str, until: f64) -> AccountSlot {
+        AccountSlot {
+            name: name.into(),
+            store: Some(crate::accounts::AccountStore::ClaudeCli),
+            dir_id: Some("0123456789abcdef0123456789abcdef".into()),
+            blocked_until: Some(until),
+            block_reason: Some("auth_error".into()),
+            blocked_at: Some(until - 1.0),
+            auth_verdict: Some(ClaudeCliAuthVerdict {
+                dir_id: "0123456789abcdef0123456789abcdef".into(),
+                at: until - 1.0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_due_claude_cli_block_is_probed_signed_out_expires_and_signed_in_clears() {
+        let refresher: SlotRefresher = Arc::new(|_, _| {
+            Box::pin(async { anyhow::bail!("a claude CLI slot is never redeemed") })
+        });
+        let store = InMemoryCredentialStore::new();
+        seed(
+            &store,
+            vec![
+                cli_blocked("gone", 50.0),
+                cli_blocked("back", 50.0),
+                cli_blocked("later", 500.0),
+            ],
+        )
+        .await;
+        let accounts = list_accounts(&stored(&store).await, None).unwrap();
+        let mut recovery = input(&store, accounts, refresher.clone(), 100.0);
+        recovery.claude_cli_status = Some(Box::new(|slot: &AccountSlot| {
+            let state = if slot.name == "gone" {
+                ClaudeCliAuthStatus::SignedOut
+            } else {
+                ClaudeCliAuthStatus::SignedIn(Default::default())
+            };
+            Box::pin(async move { Ok(state) })
+        }));
+        let result = recover_auth_blocked_slots(recovery).await.unwrap();
+        let gone = result.iter().find(|slot| slot.name == "gone").unwrap();
+        assert_eq!(
+            gone.sign_in_required,
+            Some(SignInRequiredReason::LoginExpired)
+        );
+        assert_eq!(
+            gone.blocked_until,
+            Some(100.0 + AUTH_BLOCK_REPROBE_MS as f64)
+        );
+        assert_eq!(
+            gone.auth_verdict.as_ref().map(|verdict| verdict.at),
+            Some(100.0)
+        );
+        let back = result.iter().find(|slot| slot.name == "back").unwrap();
+        assert_eq!(
+            (back.block_reason.as_deref(), back.auth_verdict.as_ref()),
+            (None, None)
+        );
+        let later = result.iter().find(|slot| slot.name == "later").unwrap();
+        assert_eq!(later.blocked_until, Some(500.0));
+        // An expired login stays due for its next probe, and a sign-in found then restores it.
+        let mut recovery = input(
+            &store,
+            result,
+            refresher,
+            100.0 + AUTH_BLOCK_REPROBE_MS as f64,
+        );
+        recovery.claude_cli_status = Some(Box::new(|_: &AccountSlot| {
+            Box::pin(async { Ok(ClaudeCliAuthStatus::SignedIn(Default::default())) })
+        }));
+        let restored = recover_auth_blocked_slots(recovery).await.unwrap();
+        let gone = restored.iter().find(|slot| slot.name == "gone").unwrap();
+        assert_eq!(
+            (gone.sign_in_required, gone.block_reason.as_deref()),
+            (None, None)
+        );
     }
 
     #[test]
