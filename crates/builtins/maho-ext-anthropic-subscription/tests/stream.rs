@@ -123,6 +123,83 @@ async fn turn_after(
     output
 }
 
+/// The agent loop sends the prompt and tools as a leading transcript system message (`build_provider_context`), never
+/// in `Context.tools`. senpi `index.ts` replays it through `toBuiltinProviderContext`, so Claude Code is spawned with
+/// the built-in tools and the custom-tools MCP server.
+#[tokio::test]
+async fn a_transcript_system_message_exposes_its_tools_to_claude_code() {
+    let directory = tempfile::tempdir().expect("directory");
+    let executable = directory.path().join("claude");
+    let script = "#!/usr/bin/python3\nimport json,sys\nf=json.loads(sys.stdin.readline())\nseen={'tools':sys.argv[sys.argv.index('--tools')+1],'sdkMcpServers':f['request'].get('sdkMcpServers')}\nprint(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}}),flush=True)\njson.loads(sys.stdin.readline())\nprint(json.dumps({'type':'result','subtype':'success','result':json.dumps(seen),'usage':{'input_tokens':1,'output_tokens':1},'stop_reason':'end_turn'}),flush=True)\nfor line in sys.stdin: pass\n";
+    std::fs::write(&executable, script).expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("permissions");
+    let model = maho_ai::models_generated::MODELS["anthropic"]
+        .values()
+        .next()
+        .expect("model")
+        .clone();
+    let oauth = Arc::new(AnthropicSubscriptionOAuth {
+        store: Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new()),
+        flow: Arc::new(Flow),
+        settings: Arc::new(|| {
+            maho_ext_anthropic_subscription::settings::load(
+                &serde_json::json!({}),
+                &serde_json::Value::Null,
+                &Default::default(),
+            )
+        }),
+        ambient: maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(
+            Arc::new(|| Box::pin(async { Ok(false) })),
+            Arc::new(|| 1),
+            30_000,
+        ),
+    });
+    let extension = AnthropicSubscriptionExtension::native(
+        oauth,
+        executable,
+        None,
+        directory.path().into(),
+        directory.path().join("agent"),
+        BTreeMap::new(),
+    );
+    let tool = |name: &str| {
+        serde_json::from_value::<maho_ai::types::Tool>(serde_json::json!({"name":name,"description":name,"parameters":{"type":"object","properties":{}}}))
+            .expect("tool")
+    };
+    let context = Context {
+        messages: vec![
+            Message::System(maho_ai::types::SystemMessage {
+                content: UserContent::Text("session prompt".into()),
+                sections: Default::default(),
+                tools_added: vec![tool("read"), tool("bash"), tool("repoSearch")],
+                tools_removed: Vec::new(),
+                timestamp: 0,
+            }),
+            Message::User(UserMessage {
+                content: UserContent::Text("hello".into()),
+                timestamp: 1,
+            }),
+        ],
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        (extension.stream)(&model, &context, None).result(),
+    )
+    .await
+    .expect("bounded native turn")
+    .expect("output");
+    let Some(ContentBlock::Text(text)) = output.content.first() else {
+        panic!("no result text: {:?}", output.error_message);
+    };
+    let seen: serde_json::Value = serde_json::from_str(&text.text).expect("fixture report");
+    assert_eq!(
+        seen,
+        serde_json::json!({"tools":"Read,Bash","sdkMcpServers":["custom-tools"]})
+    );
+}
+
 #[tokio::test]
 async fn native_turn_handshakes_projects_prompt_and_bills_result() {
     let output = turn(serde_json::json!({"type":"result","subtype":"success","result":"native","usage":{"input_tokens":3,"output_tokens":4},"stop_reason":"end_turn"}), false).await;

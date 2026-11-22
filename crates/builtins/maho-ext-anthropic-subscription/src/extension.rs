@@ -67,9 +67,13 @@ impl AnthropicSubscriptionExtension {
                     } else {
                         settings
                     };
+                    // senpi `index.ts`: the stream reads `{ systemPrompt, tools }`, which the transcript carries
+                    // in its system messages.
                     crate::stream::stream_anthropic_subscription(
                         model.clone(),
-                        context.clone(),
+                        maho_ext_builtin_loose::provider_context::to_builtin_provider_context(
+                            context,
+                        ),
                         options,
                         crate::stream::StreamDeps {
                             executable,
