@@ -738,6 +738,18 @@ pub fn find_cut_point(
         cut_index -= 1;
     }
 
+    // The absorption walk can settle on an entry that projects no context message, for example a
+    // bare `custom` entry sitting directly after a compaction. Such a boundary cannot be
+    // reconstructed into retained context downstream, so fall back to the next valid cut point
+    // instead of emitting an unusable `firstKeptEntryId`.
+    if context_messages_for_compaction_entry(&entries[cut_index]).is_empty() {
+        cut_index = cut_points
+            .iter()
+            .copied()
+            .find(|candidate| *candidate >= cut_index)
+            .unwrap_or_else(|| *cut_points.last().expect("cut points are non-empty"));
+    }
+
     let cut_entry = &entries[cut_index];
     let starts_turn = is_turn_start_entry(cut_entry);
     let turn_start_index = if starts_turn {
@@ -2227,6 +2239,30 @@ mod tests {
         assert_eq!(
             find_cut_point(&entries, 0, entries.len(), 100).first_kept_entry_index,
             1
+        );
+    }
+
+    #[test]
+    fn a_cut_point_never_lands_on_an_entry_without_context_messages() {
+        let entries = vec![
+            message_entry("a", None, user("one")),
+            message_entry("b", Some("a"), assistant_text("two")),
+            json!({ "id": "checkpoint", "parentId": "b", "type": "custom",
+                "customType": "compaction.agent-checkpoint", "data": {}, "timestamp": 0 }),
+            json!({ "id": "scan", "parentId": "checkpoint", "type": "custom",
+                "customType": "pi-rules.scan", "data": {}, "timestamp": 0 }),
+            message_entry("c", Some("scan"), assistant_text("three")),
+        ];
+        // The bare `custom` entries project no context message, so they can never be a boundary.
+        assert!(context_messages_for_compaction_entry(&entries[2]).is_empty());
+        assert_eq!(
+            find_valid_cut_points(&entries, 0, entries.len()),
+            vec![0, 1, 4]
+        );
+        let cut = find_cut_point(&entries, 0, entries.len(), 1);
+        assert_eq!(cut.first_kept_entry_index, 4);
+        assert!(
+            !context_messages_for_compaction_entry(&entries[cut.first_kept_entry_index]).is_empty()
         );
     }
 

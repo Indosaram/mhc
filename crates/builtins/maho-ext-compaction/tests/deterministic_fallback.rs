@@ -392,3 +392,60 @@ fn over_budget_prepared_suffix_advances_to_a_later_safe_boundary() {
         "duplicate firstKeptEntryId candidates are skipped"
     );
 }
+
+#[test]
+fn boundary_on_a_message_less_custom_entry_escalates_instead_of_dead_ending() {
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
+    use serde_json::json;
+    // Reproduces the field failure: the prepared boundary is a bare `custom` bookkeeping entry
+    // sitting directly after a compaction, so no earlier candidate exists and the only later
+    // entries are assistant turns (no `latest-user-turn` candidate). The projection of that
+    // boundary is empty, which must escalate to a later safe boundary instead of ending the
+    // search after a single candidate.
+    let entries = [
+        json!({"type":"message","id":"a","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"one","timestamp":0}}),
+        json!({"type":"message","id":"b","parentId":"a","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"two"}],"stopReason":"stop","timestamp":0}}),
+        json!({"type":"compaction","id":"prev","parentId":"b","timestamp":"1970-01-01T00:00:00.000Z","summary":"earlier work","firstKeptEntryId":"b","tokensBefore":7}),
+        json!({"type":"custom","id":"checkpoint","parentId":"prev","timestamp":"1970-01-01T00:00:00.000Z","customType":"compaction.agent-checkpoint","data":{}}),
+        json!({"type":"custom","id":"scan","parentId":"checkpoint","timestamp":"1970-01-01T00:00:00.000Z","customType":"pi-rules.scan","data":{}}),
+        json!({"type":"message","id":"turn","parentId":"scan","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"three"}],"stopReason":"stop","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
+    let mut preparation =
+        prepare_compaction(&entries, &settings, false, false).expect("history is summarizable");
+    // The cut point must never be one of the message-less custom entries.
+    assert_ne!(preparation.first_kept_entry_id, "checkpoint");
+    assert_ne!(preparation.first_kept_entry_id, "scan");
+    assert_eq!(preparation.first_kept_entry_id, "turn");
+
+    // Recreate the pre-fix selection: a boundary pointing at the message-less custom entry.
+    preparation.first_kept_entry_id = "checkpoint".into();
+    let mut diagnostics = DeterministicFallbackDiagnostic::default();
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata::default(),
+        &entries,
+        &mut diagnostics,
+    )
+    .expect("recovery advances to the assistant turn after the dead end");
+    assert_eq!(result.first_kept_entry_id, "turn");
+    assert_eq!(
+        diagnostics.rejection_reason,
+        Some("context-reconstruction-failed")
+    );
+    assert!(
+        diagnostics.candidates_checked > 1,
+        "a message-less boundary must not end the search after one candidate"
+    );
+    assert!(
+        diagnostics
+            .candidate_rejections
+            .iter()
+            .any(|candidate| candidate["rejectionReason"] == "context-reconstruction-failed")
+    );
+}
