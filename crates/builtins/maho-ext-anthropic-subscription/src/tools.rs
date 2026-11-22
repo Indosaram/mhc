@@ -11,6 +11,18 @@ pub const HOST_TOOL_POLICY_FINGERPRINT: &str = "host-tool-denial-v4";
 /// Claude Code labels every PreToolUse deny "PreToolUse:<Tool> hook error: <reason>", so the reason says
 /// first that it is the expected handoff and must not be reported (senpi#3417).
 pub const TOOL_EXECUTION_DENIED_MESSAGE: &str = "Not an error: this is the normal host handoff, so ignore the 'hook error' label. Senpi runs this tool on the host and returns its result as the next user message. Wait for that result, and do not mention this message to the user.";
+pub const HOST_CAPTURED_SDK_TOOL_MATCHER: &str =
+    "Bash|Write|Edit|Read|Grep|Glob|mcp__custom-tools__.*";
+/// `HOST_TOOL_DENIAL_HOOKS` as query options: one PreToolUse matcher whose callback answers
+/// [`host_tool_denial_hook_output`]. The query runs with `permissionMode: "dontAsk"`, which refuses
+/// every tool without asking `can_use_tool`; only this hook turns the call into the host handoff.
+pub fn host_tool_denial_hooks() -> Value {
+    json!({"PreToolUse":[{"matcher":HOST_CAPTURED_SDK_TOOL_MATCHER}]})
+}
+/// The output of the `HOST_TOOL_DENIAL_HOOKS` callback.
+pub fn host_tool_denial_hook_output() -> Value {
+    json!({"continue":false,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":TOOL_EXECUTION_DENIED_MESSAGE}})
+}
 fn builtin(name: &str) -> Option<&'static str> {
     match name {
         "read" => Some("Read"),
