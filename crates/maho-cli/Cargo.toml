@@ -165,6 +165,7 @@ async-trait = "=0.1.92"
 anyhow = "=1.0.104"
 futures.workspace = true
 tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"] }
+rustls = "=0.23.45"
 crossterm = "=0.29.0"
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }

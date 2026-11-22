@@ -41,6 +41,10 @@ fn main() {
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();
     maho_cli::open_file_limit::raise_open_file_limit();
+    // The build links rustls with both `ring` and `aws-lc-rs`, so rustls cannot pick a provider on its
+    // own and panics on the first TLS handshake that relies on the process default (the websocket
+    // transport). An `Err` only means a provider is already installed.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     // Before anything can spawn: no descendant may keep this process's stdio pipes open behind its
     // back (Windows inherits every inheritable handle; see `private_stdio`). A failure only loses
     // that guarantee, so it is reported and startup continues.
