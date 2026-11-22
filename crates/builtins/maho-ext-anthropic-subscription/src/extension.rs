@@ -109,6 +109,18 @@ pub fn models() -> Vec<ProviderModelConfig> {
     models_for(crate::long_context::long_context_available())
 }
 
+/// The registration's catalog half (account ownership, API and models) without the session's stream and login
+/// flow: what a diagnostic runtime needs to list this provider's models the way a session does.
+pub fn catalog_provider_config(long_context: bool) -> ProviderConfig {
+    ProviderConfig {
+        owns_account_selection: true,
+        base_url: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
+        api: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
+        models: Some(models_for(long_context)),
+        ..Default::default()
+    }
+}
+
 pub fn models_for(long_context: bool) -> Vec<ProviderModelConfig> {
     maho_ai::models_generated::MODELS["anthropic"]
         .values()
@@ -160,16 +172,12 @@ impl Extension for AnthropicSubscriptionExtension {
         // Each registration is the whole config: the runtime validates a registration on its own, not merged with
         // the previous one.
         let config = ProviderConfig {
-            owns_account_selection: true,
-            base_url: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
-            api: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
-            models: None,
             stream_simple: Some(self.stream.clone()),
             oauth: Some(self.oauth.clone()),
             fallback_eligible: Some(Arc::new(move || {
                 (settings)().values.get("enabled") != Some(&serde_json::Value::Bool(false))
             })),
-            ..Default::default()
+            ..catalog_provider_config(false)
         };
         let provider_config = move |long_context: bool| ProviderConfig {
             models: Some(models_for(long_context)),
