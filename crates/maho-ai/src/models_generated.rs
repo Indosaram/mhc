@@ -1,7 +1,8 @@
 //! Port of senpi packages/ai/src/models.generated.ts.
 //!
 //! The catalog is generated data: `crates/maho-ai/data/models.json` is written by
-//! `bun tools/golden/gen-models.mjs` from the pinned senpi `MODELS` export and embedded at build time.
+//! `bun tools/golden/gen-models.mjs` from the senpi `MODELS` export at `SENPI_CATALOG_PIN` (`tools/golden/pin.mjs`,
+//! docs/divergences.md CAT-1) and embedded at build time.
 
 use crate::types::Model;
 use indexmap::IndexMap;

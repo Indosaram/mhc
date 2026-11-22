@@ -26,10 +26,7 @@ use maho_ai::{model::Model, types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str, ThinkingLevel)] = &[
     ("claude-opus-5-5", ThinkingLevel::Medium),
-    (
-        recommended_fable_model(FABLE55_RELEASED, FABLE55_PROMOTE_DEFAULTS),
-        ThinkingLevel::Xhigh,
-    ),
+    ("claude-fable-5-2", ThinkingLevel::Xhigh),
     ("kimi-k3.1-pro", ThinkingLevel::Max),
     ("gpt-6-astra", ThinkingLevel::Xhigh),
     ("gpt-6.1-sol", ThinkingLevel::Medium),
@@ -58,7 +55,9 @@ const GLM_PROVIDERS: &[&str] = &["zai-coding-plan", "opencode-go"];
 /// Providers serving a recommended model, best first (empty for an unknown id).
 pub fn ranked_providers(model_id: &str) -> &'static [&'static str] {
     match model_id {
-        "claude-opus-5-5" | "claude-fable-5-1" | "claude-fable-5-5" => CLAUDE_PROVIDERS,
+        "claude-opus-5-5" | "claude-fable-5-2" | "claude-fable-5-1" | "claude-fable-5-5" => {
+            CLAUDE_PROVIDERS
+        }
         "kimi-k3.1-pro" => KIMI_PROVIDERS,
         "gpt-6-astra" | "gpt-6.1-sol" => GPT_PROVIDERS,
         "glm-5.3" => GLM_PROVIDERS,

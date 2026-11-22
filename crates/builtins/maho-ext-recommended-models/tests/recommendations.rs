@@ -119,7 +119,7 @@ fn shipped_list_order_levels_and_no_gateway_providers() {
         RECOMMENDED_DEFAULT_MODELS,
         [
             ("claude-opus-5-5", ThinkingLevel::Medium),
-            ("claude-fable-5-1", ThinkingLevel::Xhigh),
+            ("claude-fable-5-2", ThinkingLevel::Xhigh),
             ("kimi-k3.1-pro", ThinkingLevel::Max),
             ("gpt-6-astra", ThinkingLevel::Xhigh),
             ("gpt-6.1-sol", ThinkingLevel::Medium),

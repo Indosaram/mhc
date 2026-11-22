@@ -240,4 +240,18 @@ mod tests {
             Some(crate::context_window::CLAUDE_CODE_DEFAULT_CONTEXT_WINDOW)
         );
     }
+
+    #[test]
+    fn claude_fable_5_2_is_listed_with_its_catalog_window() {
+        for long_context in [true, false] {
+            let fable = models_for(long_context)
+                .into_iter()
+                .find(|model| model.id == "claude-fable-5-2")
+                .expect("claude-fable-5-2 in the anthropic-subscription catalog");
+            assert_eq!(fable.name, "Claude Fable 5.2");
+            assert_eq!(fable.context_window, 1_000_000);
+            assert_eq!(fable.max_tokens, 128_000);
+            assert!(fable.reasoning);
+        }
+    }
 }
