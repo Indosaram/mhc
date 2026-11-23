@@ -493,13 +493,21 @@ pub fn create_required_compaction_fallback(
     }
     let (mut position, mut saw_unsafe_retained_content, mut later_added) = (0, false, false);
     let mut saw_retained_budget_exceeded = false;
+    let mut saw_context_reconstruction_failed = false;
     let mut checked_entry_ids = std::collections::HashSet::<String>::new();
     loop {
         if position == candidates.len() {
             // A split turn can contain an unsafe or over-budget persisted tool payload after the
             // prepared boundary and no later user message. Advance to the earliest safe suffix rather
             // than retaining that payload forever; every candidate is still checked for pairs, safety and budget.
-            if (saw_unsafe_retained_content || saw_retained_budget_exceeded) && !later_added {
+            // A prepared boundary can also point at an entry that projects no context message (for
+            // example a bare `custom` entry directly after a compaction). That candidate can never
+            // reconstruct a retained suffix, so escalate as well instead of stopping after one try.
+            if (saw_unsafe_retained_content
+                || saw_retained_budget_exceeded
+                || saw_context_reconstruction_failed)
+                && !later_added
+            {
                 later_added = true;
                 candidates.extend(
                     (prepared_index + 1..branch_entries.len())
@@ -604,6 +612,7 @@ pub fn create_required_compaction_fallback(
         if let Some(reason) = reason {
             saw_unsafe_retained_content |= reason == "unsafe-retained-content";
             saw_retained_budget_exceeded |= reason == "retained-token-budget-exceeded";
+            saw_context_reconstruction_failed |= reason == "context-reconstruction-failed";
             if diagnostics.rejection_reason.is_none_or(|current| {
                 rejection_reason_priority(reason) > rejection_reason_priority(current)
             }) {
