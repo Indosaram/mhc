@@ -105,6 +105,28 @@ impl PendingQuestion {
     }
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static WIRE_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+impl QuestionRequest {
+    pub(crate) fn wire_questions(&self) -> Vec<serde_json::Value> {
+        #[cfg(test)]
+        WIRE_PROJECTIONS.set(WIRE_PROJECTIONS.get() + 1);
+        self.questions
+            .iter()
+            .map(|q| {
+                serde_json::json!({
+                    "id": q.id,
+                    "header": q.header,
+                    "question": q.question,
+                    "multiSelect": q.multi_select,
+                    "options": q.options,
+                })
+            })
+            .collect()
+    }
+}
+
 /// senpi's pending-question map plus its ordering and surface bookkeeping.
 #[derive(Default)]
 pub struct QuestionRegistry {
@@ -289,6 +311,15 @@ mod tests {
             on_progress: None,
             replies: vec![reply],
         }
+    }
+
+    #[test]
+    fn wire_question_bytes_preserve_field_order_and_nullable_option_description() {
+        let projected = request("q", false).wire_questions();
+        assert_eq!(
+            serde_json::to_vec(&projected).unwrap(),
+            br#"[{"id":"item","header":"Header q","question":"Choose","multiSelect":false,"options":[{"label":"A","description":null}]}]"#
+        );
     }
 
     #[test]

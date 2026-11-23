@@ -1009,6 +1009,235 @@ async fn abort_effects_and_effect_status_are_served_from_the_sessions_ledger() {
     fixture.endpoint.dispose().await;
 }
 
+#[test]
+fn public_control_surface_preserves_literal_updates_and_disconnected_answers() {
+    use maho_interactive::session_control_surface::{
+        ControlSurfaceAction, InteractiveControlSurface, PublishedSurface,
+    };
+    let (surface, mut actions) = InteractiveControlSurface::new(Box::new(|| false));
+    let first = json!({"item": 1});
+    let second = json!({"item": 2});
+    surface.publish(|p| {
+        *p = PublishedSurface {
+            composer_hold: Some("downstream".to_string()),
+            blocking_question: true,
+            pending_questions: vec![("q".into(), vec![first.clone()]), ("q".into(), vec![])],
+        }
+    });
+    assert_eq!(surface.draft_hold().as_deref(), Some("downstream"));
+    assert!(surface.blocking_question());
+    assert_eq!(surface.pending_question_ids(), ["q", "q"]);
+    assert_eq!(surface.pending_question("q"), Some(vec![first]));
+    let response = QuestionResponse {
+        status: maho_ext_api::QuestionStatus::Answered,
+        answers: Default::default(),
+        comment: None,
+        unanswered: vec![],
+        auto_resolved_after_ms: None,
+        cancel_origin: None,
+        resolved_by: None,
+    };
+    assert!(surface.answer_question("q", response.clone()));
+    let ControlSurfaceAction::AnswerQuestion {
+        request_id,
+        response,
+        reply,
+    } = actions.try_recv().expect("answer action")
+    else {
+        panic!("missing answer")
+    };
+    let _action = ControlSurfaceAction::AnswerQuestion {
+        request_id,
+        response: response.clone(),
+        reply,
+    };
+    surface.publish(|p| {
+        assert!(p.pending_questions.is_empty());
+        assert!(surface.pending_question_ids().is_empty()); // callback may read the committed surface
+        p.pending_questions.push(("q".into(), vec![second.clone()]));
+        p.blocking_question = false;
+    });
+    assert_eq!(surface.pending_question("q"), Some(vec![second]));
+    assert!(!surface.blocking_question());
+    drop(actions);
+    assert!(surface.answer_question("q", response.clone()));
+    assert!(!surface.answer_question("q", response));
+}
+
+async fn live_control() -> (
+    maho_interactive::interactive_mode::InteractiveMode,
+    tempfile::TempDir,
+    SocketClient,
+) {
+    let (mut mode, directory, _) =
+        crate::runtime35_native::native_mode_with_session_and_provider_retaining_session(
+            None,
+            |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+            "faux",
+            "faux-1",
+            false,
+        );
+    mode.bind_extensions().await;
+    let provider = mode.control_endpoint_host_provider();
+    let host = provider().expect("offered host");
+    let registered = host
+        .register(RegisterControlEndpointOptions {
+            inbox_dir: directory
+                .path()
+                .join("inbox")
+                .to_string_lossy()
+                .into_owned(),
+            drain: Arc::new(|_| Box::pin(async { Ok(None) })),
+            is_session_referenced: None,
+        })
+        .await;
+    let SessionControlRegistration::Registered { socket, .. } = registered else {
+        panic!("registration failed");
+    };
+    let client = SocketClient::connect(&socket).await;
+    (mode, directory, client)
+}
+
+#[tokio::test]
+async fn editor_hold_follows_raw_changes_transfers_and_callback_free_input() {
+    use maho_interactive::interactive_extension_ui::UiRequest;
+    struct Plain(String);
+    impl maho_tui::tui::Component for Plain {
+        fn render(&mut self, _: usize) -> Vec<String> {
+            vec![self.0.clone()]
+        }
+        fn invalidate(&mut self) {}
+        fn handle_input(&mut self, data: &str) {
+            self.0 = data.into();
+        }
+    }
+    impl maho_tui::editor_component::EditorComponent for Plain {
+        fn get_text(&self) -> String {
+            self.0.clone()
+        }
+        fn set_text(&mut self, text: &str) {
+            self.0 = text.into();
+        }
+    }
+    let (mut mode, _dir, mut client) = live_control().await;
+    async fn held(client: &mut SocketClient) -> bool {
+        let state = client.request(json!({"type":"get_state"})).await;
+        state["data"]["editor_has_draft"]
+            .as_bool()
+            .expect("editor_has_draft flag")
+    }
+    assert!(!held(&mut client).await);
+    for (text, expected) in [("abc", true), ("\u{2003}", false), ("abc", true)] {
+        mode.handle_ui_request(UiRequest::EditorText(text.into()));
+        mode.drain_events();
+        assert_eq!(held(&mut client).await, expected);
+    }
+    mode.handle_ui_request(UiRequest::EditorFactory(Some(Arc::new(|_, _, _| {
+        Box::new(Plain(String::new()))
+    }))));
+    mode.editor.editor.set_text(""); // Inactive default editor must not overwrite the transfer.
+    mode.drain_events();
+    assert!(held(&mut client).await);
+    mode.handle_input_at("\u{2003}", 1);
+    mode.drain_events();
+    assert!(!held(&mut client).await);
+    mode.handle_ui_request(UiRequest::EditorFactory(None));
+    mode.drain_events();
+    assert!(!held(&mut client).await);
+    mode.handle_input_at(&format!("\x1b[200~{}\x1b[201~", " \n".repeat(40)), 2);
+    assert!(mode.editor.editor.get_expanded_text().trim().is_empty());
+    assert!(!mode.editor.editor.get_text().trim().is_empty());
+    mode.drain_events();
+    assert!(held(&mut client).await);
+    mode.handle_input_at("\x1b[45;5u", 3);
+    mode.drain_events();
+    assert!(!held(&mut client).await);
+    mode.attach_image(maho_ai::types::ImageContent {
+        data: "AA==".into(),
+        mime_type: "image/png".into(),
+    });
+    mode.drain_events();
+    assert!(held(&mut client).await);
+    mode.editor.editor.set_text("");
+    mode.drain_events();
+    assert!(!held(&mut client).await);
+    mode.dispose_session_control().await;
+}
+
+#[tokio::test]
+async fn accepted_remote_answer_survives_unrelated_publish_but_not_request_replacement() {
+    use maho_interactive::interactive_extension_ui::UiRequest;
+    let (mut mode, _dir, mut client) = live_control().await;
+    let attach =
+        |mode: &mut maho_interactive::interactive_mode::InteractiveMode, id: &str, item: &str| {
+            let (reply, received) = tokio::sync::oneshot::channel();
+            mode.handle_ui_request(UiRequest::Question {
+                request: maho_ext_api::QuestionRequest {
+                    request_id: id.into(),
+                    wait_for_answer: false,
+                    timeout_ms: 0,
+                    questions: vec![maho_ext_api::Question {
+                        id: item.into(),
+                        header: "Q".into(),
+                        question: "Pick".into(),
+                        multi_select: false,
+                        options: vec![],
+                    }],
+                },
+                options: Default::default(),
+                reply,
+            });
+            received
+        };
+    let answer = |id: &str, item: &str| {
+        json!({"type":"extension_ui_response", "uiRequestId":id,
+        "answers":{(item):{"selected":["yes"]}}})
+    };
+    let old = attach(&mut mode, "a", "old");
+    assert_eq!(
+        client.request(answer("a", "old")).await["disposition"],
+        "applied"
+    );
+    let mut other = attach(&mut mode, "b", "other");
+    assert_eq!(
+        client.request(answer("a", "old")).await["disposition"],
+        "unknown"
+    );
+    drop(old);
+    let mut fresh = attach(&mut mode, "a", "new");
+    mode.drain_events(); // queued claim for the detached incarnation
+    assert!(matches!(
+        fresh.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    assert_eq!(
+        client.request(answer("a", "new")).await["disposition"],
+        "applied"
+    );
+    assert_eq!(
+        client.request(answer("a", "new")).await["disposition"],
+        "unknown"
+    );
+    mode.drain_events();
+    let delivered = fresh.try_recv().expect("delivered answer");
+    assert_eq!(delivered.answers["new"].selected, ["yes"]);
+    assert!(delivered.unanswered.is_empty()); // parsed against the new wire content
+    assert!(matches!(
+        other.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    assert_eq!(
+        client.request(answer("b", "other")).await["disposition"],
+        "applied"
+    );
+    mode.drain_events();
+    assert_eq!(
+        other.try_recv().expect("second answer").answers["other"].selected,
+        ["yes"]
+    );
+    mode.dispose_session_control().await;
+}
+
 struct SocketClient {
     write: tokio::net::unix::OwnedWriteHalf,
     lines: tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>,

@@ -15,10 +15,14 @@ use maho_ext_api::QuestionResponse;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
+mod publication;
+use publication::Publication;
+
 /// What the endpoint asks the pane to do; the mode runs it on its next frame.
 pub enum ControlSurfaceAction {
     AnswerQuestion {
         request_id: String,
+
         response: QuestionResponse,
         reply: tokio::sync::oneshot::Sender<bool>,
     },
@@ -48,7 +52,8 @@ pub struct PublishedSurface {
 }
 
 pub struct InteractiveControlSurface {
-    published: Mutex<PublishedSurface>,
+    published: Publication,
+    track_delivery: bool,
     actions: tokio::sync::mpsc::UnboundedSender<ControlSurfaceAction>,
     /// senpi `sessionControlHost.submissionInFlight()`, read with the composer hold.
     submission_in_flight: Box<dyn Fn() -> bool + Send + Sync>,
@@ -67,10 +72,30 @@ impl InteractiveControlSurface {
         Arc<Self>,
         tokio::sync::mpsc::UnboundedReceiver<ControlSurfaceAction>,
     ) {
+        Self::with_delivery(submission_in_flight, false)
+    }
+
+    pub(crate) fn new_for_mode(
+        submission_in_flight: Box<dyn Fn() -> bool + Send + Sync>,
+    ) -> (
+        Arc<Self>,
+        tokio::sync::mpsc::UnboundedReceiver<ControlSurfaceAction>,
+    ) {
+        Self::with_delivery(submission_in_flight, true)
+    }
+
+    fn with_delivery(
+        submission_in_flight: Box<dyn Fn() -> bool + Send + Sync>,
+        track_delivery: bool,
+    ) -> (
+        Arc<Self>,
+        tokio::sync::mpsc::UnboundedReceiver<ControlSurfaceAction>,
+    ) {
         let (actions, receiver) = tokio::sync::mpsc::unbounded_channel();
         (
             Arc::new(Self {
-                published: Mutex::default(),
+                published: Publication::default(),
+                track_delivery,
                 actions,
                 submission_in_flight,
             }),
@@ -79,7 +104,63 @@ impl InteractiveControlSurface {
     }
 
     pub fn publish(&self, update: impl FnOnce(&mut PublishedSurface)) {
-        update(&mut lock(&self.published));
+        self.published.publish(update);
+    }
+
+    pub(crate) fn publish_inputs(&self, draft: bool, attachment: bool, blocking: bool) {
+        let mut state = self.published.write();
+        let hold = if attachment {
+            Some("attachment")
+        } else {
+            draft.then_some("draft")
+        };
+        if state.value.composer_hold.as_deref() != hold {
+            state.value.composer_hold = hold.map(str::to_owned);
+        }
+        state.value.blocking_question = blocking;
+    }
+
+    pub(crate) fn attach_question(
+        &self,
+        request: &crate::components::ask_user_question_state::QuestionRequest,
+        order: &[String],
+    ) {
+        let questions = request.wire_questions();
+        let mut state = self.published.write();
+        #[cfg(test)]
+        {
+            state.projections += 1;
+        }
+        let retired = state.claims.remove(&request.request_id);
+        let pending = &mut state.value.pending_questions;
+        if let Some((_, current)) = pending.iter_mut().find(|(id, _)| id == &request.request_id) {
+            *current = questions;
+        } else {
+            // A previously claimed reattach takes its registry position among visible rows.
+            let index = order
+                .iter()
+                .position(|id| id == &request.request_id)
+                .and_then(|i| {
+                    pending
+                        .iter()
+                        .position(|(id, _)| order[i + 1..].contains(id))
+                })
+                .unwrap_or(pending.len());
+            pending.insert(index, (request.request_id.clone(), questions));
+        }
+        drop(state);
+        drop(retired);
+    }
+
+    pub(crate) fn finish_question(&self, request_id: &str) {
+        let mut state = self.published.write();
+        state
+            .value
+            .pending_questions
+            .retain(|(id, _)| id != request_id);
+        let retired = state.claims.remove(request_id);
+        drop(state);
+        drop(retired);
     }
 
     fn request<T: Send + 'static>(
@@ -125,15 +206,17 @@ impl TuiControlSurface for InteractiveControlSurface {
         if (self.submission_in_flight)() {
             return Some("draft".into());
         }
-        lock(&self.published).composer_hold.clone()
+        self.published.read().value.composer_hold.clone()
     }
 
     fn blocking_question(&self) -> bool {
-        lock(&self.published).blocking_question
+        self.published.read().value.blocking_question
     }
 
     fn pending_question_ids(&self) -> Vec<String> {
-        lock(&self.published)
+        self.published
+            .read()
+            .value
             .pending_questions
             .iter()
             .map(|(id, _)| id.clone())
@@ -141,7 +224,9 @@ impl TuiControlSurface for InteractiveControlSurface {
     }
 
     fn pending_question(&self, request_id: &str) -> Option<Vec<Value>> {
-        lock(&self.published)
+        self.published
+            .read()
+            .value
             .pending_questions
             .iter()
             .find(|(id, _)| id == request_id)
@@ -151,23 +236,29 @@ impl TuiControlSurface for InteractiveControlSurface {
     /// The mode settles the question on its next frame; this answers whether it was still pending
     /// when asked, which is what senpi's synchronous `state !== undefined` reports.
     fn answer_question(&self, request_id: &str, response: QuestionResponse) -> bool {
-        let pending = {
-            let mut published = lock(&self.published);
-            let before = published.pending_questions.len();
-            published
-                .pending_questions
-                .retain(|(id, _)| id != request_id);
-            published.pending_questions.len() != before
-        };
-        if pending {
-            let (reply, _settled) = tokio::sync::oneshot::channel();
-            drop(self.actions.send(ControlSurfaceAction::AnswerQuestion {
-                request_id: request_id.to_owned(),
-                response,
-                reply,
-            }));
+        let mut state = self.published.write();
+        let pending = &mut state.value.pending_questions;
+        let before = pending.len();
+        pending.retain(|(id, _)| id != request_id);
+        if pending.len() == before {
+            return false;
         }
-        pending
+        let (reply, settled) = tokio::sync::oneshot::channel();
+        let retired = if self.track_delivery {
+            state.claims.insert(request_id.to_owned(), settled)
+        } else {
+            None
+        };
+        drop(state);
+        drop(retired);
+        // Sending wakes the receiver inline. A failed send owns this action, not
+        // the current incarnation at request_id; never remove a claim by ID here.
+        drop(self.actions.send(ControlSurfaceAction::AnswerQuestion {
+            request_id: request_id.to_owned(),
+            response,
+            reply,
+        }));
+        true
     }
 
     fn notice(&self, line: &str) {
@@ -198,8 +289,7 @@ mod tests {
     fn a_question_is_answerable_once_and_the_answer_reaches_the_mode() {
         let (surface, mut actions) = InteractiveControlSurface::new(Box::new(|| false));
         surface.publish(|published| {
-            published.pending_questions =
-                vec![("r1".into(), vec![serde_json::json!({"id": "q1"})])];
+            published.pending_questions = vec![("r1".into(), vec![serde_json::json!({"id":"q1"})])];
         });
         assert_eq!(surface.pending_question_ids(), vec!["r1".to_owned()]);
         assert!(surface.pending_question("r1").is_some());
@@ -215,10 +305,145 @@ mod tests {
     #[test]
     fn an_open_submission_holds_admission_as_a_draft() {
         let (surface, _actions) = InteractiveControlSurface::new(Box::new(|| true));
+        surface.publish_inputs(false, true, false);
         assert_eq!(surface.draft_hold().as_deref(), Some("draft"));
         let (surface, _actions) = InteractiveControlSurface::new(Box::new(|| false));
         assert_eq!(surface.draft_hold(), None);
-        surface.publish(|published| published.composer_hold = Some("attachment".into()));
+        surface.publish_inputs(true, true, false);
         assert_eq!(surface.draft_hold().as_deref(), Some("attachment"));
+    }
+
+    fn question(
+        id: &str,
+        item: &str,
+    ) -> crate::components::ask_user_question_state::QuestionRequest {
+        serde_json::from_value(serde_json::json!({"requestId": id, "waitForAnswer": false,
+            "timeoutMs": 0, "questions": [{"id":item,"question":"Pick","header":"H","options":[]}]})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn unchanged_input_publications_do_not_project_questions_or_reopen_claims() {
+        use crate::{
+            interactive_extension_ui::UiRequest,
+            interactive_mode::InteractiveMode,
+            question_registry::WIRE_PROJECTIONS,
+            theme::{ColorMode, Theme},
+        };
+        use maho_test_support::{faux::FauxScript, faux_session::FauxSession};
+        struct Host;
+        impl maho_tui::components::editor::EditorTuiHost for Host {
+            fn request_render(&self) {}
+            fn terminal_rows(&self) -> usize {
+                32
+            }
+        }
+        let handle = FauxSession::new(FauxScript {
+            name: "projection-count".into(),
+            prompt: String::new(),
+            responses: vec![],
+        })
+        .run_native_handle()
+        .await
+        .expect("private session");
+        let mut mode = InteractiveMode::new(
+            Arc::new(handle.agent_session().clone()),
+            Theme::builtin("dark", ColorMode::Truecolor).expect("theme"),
+            std::rc::Rc::new(Host),
+        );
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let initial = WIRE_PROJECTIONS.get();
+        mode.handle_ui_request(UiRequest::Question {
+            request: maho_ext_api::QuestionRequest {
+                request_id: "stable".into(),
+                wait_for_answer: false,
+                timeout_ms: 0,
+                questions: vec![maho_ext_api::Question {
+                    id: "q".into(),
+                    header: "Q".into(),
+                    question: "Pick".into(),
+                    multi_select: false,
+                    options: vec![],
+                }],
+            },
+            options: Default::default(),
+            reply,
+        });
+        let mut samples = vec![WIRE_PROJECTIONS.get()];
+        for _ in 0..32 {
+            mode.drain_events();
+            samples.push(WIRE_PROJECTIONS.get());
+        }
+        assert!(samples[0] > initial && samples.iter().all(|c| *c == samples[0]));
+        eprintln!(
+            "RP2_OWNER {}",
+            serde_json::json!({"tag": "mode-drain", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"initial":initial,"samples":samples}})
+        );
+
+        let (surface, _actions) = InteractiveControlSurface::new(Box::new(|| false));
+        surface.attach_question(&question("a", "first"), &[]);
+        surface.attach_question(&question("b", "second"), &[]);
+        assert!(surface.answer_question("a", response()));
+        let mut counts = vec![surface.published.read().projections];
+        for _ in 0..32 {
+            surface.publish_inputs(true, false, false);
+            counts.push(surface.published.read().projections);
+        }
+        eprintln!(
+            "RP2_OWNER {}",
+            serde_json::json!({"tag": "drain", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"counts":counts,"pending":surface.pending_question_ids(),"answeredVisible":surface.pending_question("a").is_some()}})
+        );
+        assert_eq!(surface.published.read().projections, 2);
+        assert_eq!(surface.pending_question_ids(), ["b"]);
+        assert!(surface.pending_question("a").is_none());
+    }
+
+    #[test]
+    fn public_reopen_cancels_only_the_answer_for_that_incarnation() {
+        let (surface, mut actions) = InteractiveControlSurface::new_for_mode(Box::new(|| false));
+        for id in ["a", "b"] {
+            surface.attach_question(&question(id, "old"), &[]);
+            assert!(surface.answer_question(id, response()));
+        }
+        surface.publish(|p| p.pending_questions.push(("a".into(), vec![])));
+        assert!(surface.answer_question("a", response()));
+        for (id, live) in [("a", false), ("b", true), ("a", true)] {
+            let ControlSurfaceAction::AnswerQuestion {
+                request_id, reply, ..
+            } = actions.try_recv().unwrap()
+            else {
+                panic!("missing answer")
+            };
+            assert_eq!(request_id, id);
+            assert_eq!(!reply.is_closed(), live);
+        }
+    }
+
+    #[test]
+    fn replacement_preserves_order_and_rejects_the_previous_incarnations_action() {
+        let (surface, mut actions) = InteractiveControlSurface::new_for_mode(Box::new(|| false));
+        surface.attach_question(&question("a", "old"), &[]);
+        assert!(surface.answer_question("a", response()));
+        surface.attach_question(&question("b", "other"), &[]);
+        assert!(!surface.answer_question("a", response()));
+        surface.attach_question(&question("a", "new"), &["a".into(), "b".into()]);
+        assert_eq!(surface.pending_question_ids(), ["a", "b"]);
+        eprintln!(
+            "RP2_OWNER {}",
+            serde_json::json!({"tag": "new-question", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"ids":surface.pending_question_ids(),"wire":surface.pending_question("a")}})
+        );
+        assert_eq!(surface.pending_question("a").unwrap()[0]["id"], "new");
+        assert!(surface.answer_question("a", response()));
+        assert!(!surface.answer_question("a", response()));
+        for expected in [false, true] {
+            let ControlSurfaceAction::AnswerQuestion { reply, .. } = actions.try_recv().unwrap()
+            else {
+                panic!("answer")
+            };
+            eprintln!(
+                "RP2_OWNER {}",
+                serde_json::json!({"tag": "incarnation", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": (!reply.is_closed())})
+            );
+            assert_eq!(!reply.is_closed(), expected);
+        }
     }
 }

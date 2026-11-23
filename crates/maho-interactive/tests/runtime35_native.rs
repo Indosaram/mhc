@@ -4262,6 +4262,10 @@ async fn mounted_host_publishes_authoritative_remote_history_without_local_fallb
     sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().expect("the mount kept the sender").send((generation, Ok(vec![serde_json::json!({"role":"user","content":[{"type":"text","text":"remote-history"}],"timestamp":0})]))).expect("send history");
     mode.drain_events();
     let rendered = mode.render(80).join("\n");
+    eprintln!(
+        "RP2_OWNER {}",
+        serde_json::json!({"tag": "remote", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"generation":generation,"remote":rendered.matches("remote-history").count(),"local":rendered.matches("local-only").count()}})
+    );
     assert!(
         rendered.contains("remote-history"),
         "the published snapshot rebuilds the transcript: {rendered}"
@@ -5534,8 +5538,15 @@ async fn configured_resume_shortcut_opens_session_selector() {
         r#"{"app.session.resume":"ctrl+k"}"#,
     )
     .expect("configuration");
-    mode.handle_input_at("\x0b", 0);
-    assert!(mode.render(80).join("\n").contains("Resume Session"));
+    let input = "\x0b";
+    let before = mode.render(80).join("\n").matches("Resume Session").count();
+    mode.handle_input_at(input, 0);
+    let paint = mode.render(80).join("\n");
+    eprintln!(
+        "RP2_OWNER {}",
+        serde_json::json!({"tag": "picker", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"input":input.as_bytes(),"before":before,"after":paint.matches("Resume Session").count(),"binding":std::fs::read_to_string(directory.path().join("keybindings.json")).expect("read binding")}})
+    );
+    assert!(paint.contains("Resume Session"));
 }
 
 #[test]

@@ -31,6 +31,42 @@ type CustomUiBuild = std::pin::Pin<
 >;
 type QuestionActions = Rc<RefCell<std::collections::VecDeque<QuestionAction>>>;
 
+type EntryHandle = Rc<RefCell<crate::components::custom_entry::CustomEntryComponent>>;
+
+enum HistoryExpansion {
+    Callback(Box<dyn FnMut(bool)>),
+    Entry(EntryHandle),
+}
+
+#[derive(Default)]
+struct HistoryExpansions {
+    ordered: Vec<HistoryExpansion>,
+}
+
+impl HistoryExpansions {
+    fn push(&mut self, callback: Box<dyn FnMut(bool)>) {
+        self.ordered.push(HistoryExpansion::Callback(callback));
+    }
+
+    fn register_entry(&mut self, previous: Option<&EntryHandle>, card: &EntryHandle) {
+        if let Some(previous) = previous {
+            self.ordered.retain(|registration| {
+                !matches!(registration, HistoryExpansion::Entry(card) if Rc::ptr_eq(card, previous))
+            });
+        }
+        self.ordered.push(HistoryExpansion::Entry(Rc::clone(card)));
+    }
+
+    fn set_expanded(&mut self, expanded: bool) {
+        for registration in &mut self.ordered {
+            match registration {
+                HistoryExpansion::Callback(update) => update(expanded),
+                HistoryExpansion::Entry(card) => card.borrow_mut().set_expanded(expanded),
+            }
+        }
+    }
+}
+
 /// senpi `uploadShareWithLoader`'s in-flight state: the loader replacing the editor and the cancel
 /// handle; dropping it aborts the `gh gist create` upload.
 struct ShareInFlight {
@@ -1085,7 +1121,7 @@ pub struct InteractiveMode {
     keyword_turn_glow: bool,
     editor_host: Rc<dyn maho_tui::components::editor::EditorTuiHost>,
     hidden_thinking_label: String,
-    history_expansion: Vec<Box<dyn FnMut(bool)>>,
+    history_expansion: HistoryExpansions,
     question: Option<crate::components::ask_user_question::AskUserQuestionComponent>,
     async_question_widget: Option<crate::components::ask_user_async_widget::AskUserAsyncWidget>,
     queued_questions: std::collections::VecDeque<crate::interactive_extension_ui::UiRequest>,
@@ -1136,6 +1172,8 @@ pub struct InteractiveMode {
     lifecycle_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>>,
     /// senpi `sessionControlHost`: lets an extension expose this session on a control endpoint.
     session_control_host: crate::session_control_host::TuiSessionControlHost,
+    default_draft: Rc<std::cell::Cell<bool>>,
+    custom_draft: Rc<std::cell::Cell<bool>>,
     /// What the endpoint reads from this pane, and the actions it queues for it.
     session_control_surface: Arc<crate::session_control_surface::InteractiveControlSurface>,
     session_control_actions:
@@ -2881,9 +2919,9 @@ impl InteractiveMode {
             }));
         let in_flight_host = session_control_host.clone();
         let (session_control_surface, session_control_actions) =
-            crate::session_control_surface::InteractiveControlSurface::new(Box::new(move || {
-                in_flight_host.submission_in_flight()
-            }));
+            crate::session_control_surface::InteractiveControlSurface::new_for_mode(Box::new(
+                move || in_flight_host.submission_in_flight(),
+            ));
         drop(control_surface_slot.set(session_control_surface.clone()));
         let submission_tickets: Rc<
             RefCell<std::collections::VecDeque<crate::session_control_host::SubmissionTicket>>,
@@ -2891,9 +2929,14 @@ impl InteractiveMode {
         // senpi `sessionControlHost.attachEditor`: the change and submit edges.
         let change_host = session_control_host.clone();
         let change_images = pending_images.clone();
+        let default_draft = Rc::new(std::cell::Cell::new(
+            !editor.editor.get_text().trim().is_empty(),
+        ));
+        let changed = Rc::clone(&default_draft);
         editor.editor.on_change = Some(Box::new(move |text| {
-            change_host
-                .editor_changed(!change_images.borrow().is_empty() || !text.trim().is_empty());
+            let has_text = !text.trim().is_empty();
+            changed.set(has_text);
+            change_host.editor_changed(!change_images.borrow().is_empty() || has_text);
         }));
         let submit_host = session_control_host.clone();
         let submit_tickets = submission_tickets.clone();
@@ -3015,6 +3058,8 @@ impl InteractiveMode {
             lifecycle_subscription: None,
             lifecycle_rx: None,
             session_control_host,
+            default_draft,
+            custom_draft: Rc::default(),
             session_control_surface,
             session_control_actions,
             submission_tickets,
@@ -3158,7 +3203,7 @@ impl InteractiveMode {
             session_shown_tip_ids: std::collections::HashSet::new(),
             editor_host: host,
             hidden_thinking_label: "Thinking...".into(),
-            history_expansion: Vec::new(),
+            history_expansion: HistoryExpansions::default(),
             question: None,
             async_question_widget: None,
             question_reply: Rc::new(RefCell::new(None)),
@@ -4682,7 +4727,7 @@ impl InteractiveMode {
         self.assistant_cards.clear();
         self.tool_cards.clear();
         self.last_status = None;
-        self.history_expansion.clear();
+        self.history_expansion.ordered.clear();
         self.armin_animations.clear();
         self.daxnuts_animations.clear();
         // senpi: the rebuilt transcript re-derives continuity notices, so suppression state resets.
@@ -4697,12 +4742,11 @@ impl InteractiveMode {
     /// appends the latest summary below instead). Cache-miss notices are re-derived from the full
     /// entry list and compaction/branch-summary cost notices follow their summary.
     fn render_session_entries(&mut self, skip_compaction: bool) {
-        let (all_entries, entries) = self.session.with_session_manager(|manager| {
-            let all = manager.entries();
-            let context =
-                maho_core::session_manager::build_context_entries(&all, manager.leaf_id());
-            (all, context)
-        });
+        // A fork to a pre-compaction leaf can discard the compaction without clearing the
+        // trimmed flag. Keep entries() (the full disk history when trimmed) authoritative.
+        let (all_entries, entries) = self
+            .session
+            .with_session_manager(Self::local_replay_entries);
         self.history_cache_misses = self.collect_history_cache_misses(&all_entries);
         let mut messages = self.session.messages().into_iter();
         for entry in &entries {
@@ -4710,17 +4754,18 @@ impl InteractiveMode {
                 self.add_custom_entry_to_chat(entry);
                 continue;
             }
-            let count = maho_core::session_manager::session_entry_to_context_messages(entry).len();
-            if skip_compaction && entry["type"] == "compaction" {
-                messages.by_ref().take(count).for_each(drop);
+            if !Self::entry_projects_message(entry) {
                 continue;
             }
-            for message in messages.by_ref().take(count) {
+            let message = messages.next();
+            if skip_compaction && entry["type"] == "compaction" {
+                continue;
+            }
+            if let Some(message) = message {
                 self.add_history_message(&message);
             }
-            if count > 0
-                && let (Some(kind @ ("compaction" | "branch_summary")), Some(usage)) =
-                    (entry["type"].as_str(), entry.get("usage"))
+            if let (Some(kind @ ("compaction" | "branch_summary")), Some(usage)) =
+                (entry["type"].as_str(), entry.get("usage"))
             {
                 self.add_compaction_cost_notice(kind == "compaction", usage);
             }
@@ -4729,6 +4774,24 @@ impl InteractiveMode {
             self.add_history_message(&message);
         }
         self.history_cache_misses.clear();
+    }
+
+    fn local_replay_entries(
+        manager: &maho_core::session_manager::SessionManager,
+    ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        let all = manager.entries();
+        let context = maho_core::session_manager::build_context_entries(&all, manager.leaf_id());
+        (all, context)
+    }
+
+    /// Cardinality of `session_entry_to_context_messages` without constructing its sole message.
+    fn entry_projects_message(entry: &serde_json::Value) -> bool {
+        match entry["type"].as_str() {
+            Some("message") => entry.get("message").is_some(),
+            Some("configuration_update" | "custom_message" | "compaction") => true,
+            Some("branch_summary") => entry["summary"].as_str().is_some_and(|s| !s.is_empty()),
+            _ => false,
+        }
     }
 
     /// senpi `collectCacheMisses` (only when `showCacheMissNotices` is on), keyed by the assistant
@@ -4914,10 +4977,11 @@ impl InteractiveMode {
                 .collect();
             replaced_entry_card_index(&cards, insert_index, entry, replaces.as_ref())
         };
-        let expandable = component.clone();
-        self.history_expansion.push(Box::new(move |expanded| {
-            expandable.borrow_mut().set_expanded(expanded)
-        }));
+        let previous = replaced_index.and_then(|index| match &self.chat.children()[index] {
+            TranscriptChild::Entry(card) => Some(card),
+            _ => None,
+        });
+        self.history_expansion.register_entry(previous, &component);
         match (replaced_index, streaming_index) {
             (Some(index), _) => self.chat.children_mut()[index] = TranscriptChild::Entry(component),
             (None, Some(index)) => self
@@ -5202,46 +5266,16 @@ impl InteractiveMode {
 
     /// senpi's surface reads, published for the control endpoint (see `session_control_surface`).
     fn publish_control_surface(&self) {
-        let composer_hold = if !self.pending_images.borrow().is_empty() {
-            Some("attachment".to_owned())
-        } else if self.editor.editor.get_text().trim().is_empty() {
-            None
+        let draft = if self.custom_editor.is_some() {
+            self.custom_draft.get()
         } else {
-            Some("draft".to_owned())
+            self.default_draft.get()
         };
-        let pending_questions = self
-            .questions
-            .order()
-            .iter()
-            .filter_map(|id| {
-                self.questions.get(id).map(|entry| {
-                    let questions = entry
-                        .request
-                        .questions
-                        .iter()
-                        .map(|question| {
-                            serde_json::json!({
-                                "id": question.id,
-                                "header": question.header,
-                                "question": question.question,
-                                "multiSelect": question.multi_select,
-                                "options": question.options.iter().map(|option| serde_json::json!({
-                                    "label": option.label,
-                                    "description": option.description,
-                                })).collect::<Vec<_>>(),
-                            })
-                        })
-                        .collect();
-                    (id.clone(), questions)
-                })
-            })
-            .collect();
-        let blocking_question = self.question.is_some();
-        self.session_control_surface.publish(|published| {
-            published.composer_hold = composer_hold;
-            published.blocking_question = blocking_question;
-            published.pending_questions = pending_questions;
-        });
+        self.session_control_surface.publish_inputs(
+            draft,
+            !self.pending_images.borrow().is_empty(),
+            self.question.is_some(),
+        );
         self.session_control_host.note_buffered_elsewhere(
             !self.compaction_queue.borrow().queued.is_empty()
                 || !self.compaction_queue.borrow().in_flight.is_empty(),
@@ -5258,7 +5292,7 @@ impl InteractiveMode {
                     response,
                     reply,
                 } => {
-                    let pending = self.questions.get(&request_id).is_some();
+                    let pending = !reply.is_closed();
                     if pending {
                         self.finish_question(&request_id, response);
                     }
@@ -6158,7 +6192,10 @@ impl InteractiveMode {
 
     fn set_active_editor_text(&mut self, text: &str) {
         match &mut self.custom_editor {
-            Some(editor) => editor.set_text(text),
+            Some(editor) => {
+                editor.set_text(text);
+                self.custom_draft.set(!editor.get_text().trim().is_empty());
+            }
             None => self.editor.editor.set_text(text),
         }
     }
@@ -6420,10 +6457,7 @@ impl InteractiveMode {
             .as_ref()
             .map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
         if text.trim_start().starts_with('!') {
-            match &mut self.custom_editor {
-                Some(editor) => editor.set_text(""),
-                None => self.editor.editor.set_text(""),
-            }
+            self.set_active_editor_text("");
             return;
         }
         if !text.trim().is_empty() {
@@ -6474,9 +6508,7 @@ impl InteractiveMode {
         for component in &self.assistant_cards {
             component.borrow_mut().set_expanded(expanded);
         }
-        for update in &mut self.history_expansion {
-            update(expanded);
-        }
+        self.history_expansion.set_expanded(expanded);
         self.show_status(format!(
             "Tool output: {}",
             if expanded { "expanded" } else { "collapsed" }
@@ -8254,6 +8286,7 @@ impl InteractiveMode {
                 if text_only {
                     if let Some(editor) = &mut self.custom_editor {
                         editor.insert_text_at_cursor(&text);
+                        self.custom_draft.set(!editor.get_text().trim().is_empty());
                     }
                 } else {
                     self.editor.editor.insert_text_at_cursor(&text);
@@ -13086,6 +13119,13 @@ impl InteractiveMode {
                 if let Some(mut editor) = self.custom_editor.take() {
                     editor.dispose();
                 }
+                if let Some(editor) = &mut replacement {
+                    let draft = Rc::new(std::cell::Cell::new(!editor.get_text().trim().is_empty()));
+                    self.custom_draft = Rc::clone(&draft);
+                    editor.set_on_change(Some(Box::new(move |raw| {
+                        draft.set(!raw.trim().is_empty());
+                    })));
+                }
                 self.custom_editor = replacement;
             }
             UiRequest::SettingChanged(key, value) => match key.as_str() {
@@ -13615,6 +13655,10 @@ impl InteractiveMode {
         {
             self.collapse_shown_question();
         }
+        if reattaching || !self.questions.contains(&request_id) {
+            self.session_control_surface
+                .attach_question(&entry.request, self.questions.order());
+        }
         if let Some(existing) = self.questions.get_mut(&request_id) {
             if reattaching {
                 *existing = entry;
@@ -13783,6 +13827,7 @@ impl InteractiveMode {
     fn finish_question(&mut self, request_id: &str, response: maho_ext_api::QuestionResponse) {
         let was_shown = self.questions.shown_id() == Some(request_id);
         if let Some(mut entry) = self.questions.finish(request_id) {
+            self.session_control_surface.finish_question(request_id);
             for reply in entry.replies.drain(..) {
                 let _ = reply.send(response.clone());
             }
@@ -15791,6 +15836,11 @@ impl InteractiveMode {
             .custom_editor
             .as_ref()
             .map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
+        // A custom editor may implement set_on_change as a no-op. This is the raw
+        // text already acquired for the extension UI at the input boundary.
+        if self.custom_editor.is_some() {
+            self.custom_draft.set(!text.trim().is_empty());
+        }
         *self
             .extension_ui
             .editor_text
@@ -16077,6 +16127,61 @@ impl crate::unknown_command_feedback::UnknownCommandFeedbackTarget for Interacti
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_replay_consumes_the_cardinality_of_the_core_projection() {
+        use maho_core::session_manager::session_entry_to_context_messages;
+        use serde_json::json;
+
+        for entry in [
+            json!(null),
+            json!({"type": null}),
+            json!({"type": "message"}),
+            json!({"type": "message", "message": null}),
+            json!({"type": "message", "message": {"role": "user"}}),
+            json!({"type": "message", "message": {"role": "toolResult", "content": null}}),
+            json!({"type": "message", "message": {"role": "assistant", "content": []}}),
+            json!({"type": "branch_summary"}),
+            json!({"type": "branch_summary", "summary": 2}),
+            json!({"type": "branch_summary", "summary": ""}),
+            json!({"type": "branch_summary", "summary": " "}),
+            json!({"type": "branch_summary", "summary": "digest"}),
+            json!({"type": "configuration_update"}),
+            json!({"type": "custom_message", "display": false}),
+            json!({"type": "compaction", "summary": ""}),
+            json!({"type": "custom"}),
+            json!({"type": "thinking_level_change"}),
+            json!({"type": "unknown"}),
+        ] {
+            let consumed = usize::from(InteractiveMode::entry_projects_message(&entry));
+            eprintln!(
+                "RP2_OWNER {}",
+                serde_json::json!({"tag": "projection", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"entry":entry,"count":consumed,"materialized":session_entry_to_context_messages(&entry)}})
+            );
+            assert_eq!(consumed, session_entry_to_context_messages(&entry).len());
+        }
+    }
+
+    #[test]
+    fn local_replay_matches_full_history_after_forking_a_trimmed_mirror() {
+        use maho_core::session_manager::{SessionManager, build_context_entries};
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().expect("session directory");
+        let cwd = dir.path().to_str().expect("fixture path");
+        let mut manager = SessionManager::create(cwd, Some(cwd), None);
+        manager.append_message(json!({"role": "assistant", "content": []}));
+        let kept = manager.append_message(json!({"role": "user", "content": "kept"}));
+        let id = kept["id"].as_str().expect("kept id");
+        manager.append_compaction("digest", id, 9, None, None, None);
+        assert!(manager.entries_after(0).is_none());
+        assert!(manager.create_branched_session(id).expect("fork").is_some());
+        let expected = build_context_entries(&manager.entries(), manager.leaf_id());
+
+        let (_, replay) = InteractiveMode::local_replay_entries(&manager);
+
+        assert_eq!(replay, expected);
+    }
+
     // The three renderers paint distinct styles: `show_error` (`:11668`) paints
     // `theme.fg(ThemeColor::Error, "Error: {message}")`, `show_warning` (`:11556`)
     // `theme.fg(ThemeColor::Warning, "Warning: {message}")`, and `show_status` (`:8952`)
@@ -16190,6 +16295,84 @@ mod tests {
         assert_eq!(expandable.render(80).join("\n").trim(), "expanded");
         expandable.set_expanded(false);
         assert_eq!(expandable.render(80).join("\n").trim(), "collapsed");
+    }
+
+    #[test]
+    fn replacing_a_painted_card_releases_its_handle_without_reordering_other_updates() {
+        use crate::components::custom_entry::CustomEntryComponent;
+        use crate::components::exploration_transcript_container::{
+            ExplorationTranscriptContainer, TranscriptChild,
+        };
+        use crate::components::progressive_transcript_container::ProgressiveTranscriptOptions;
+        use maho_tui::components::text::Text;
+
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
+        let mut chat = ExplorationTranscriptContainer::new(
+            ProgressiveTranscriptOptions {
+                tail_budget: 60,
+                warm_chunk_size: 100,
+                request_render: Rc::new(|| {}),
+            },
+            theme.clone(),
+        );
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        // Identical data, different allocations: value equality would retire the survivor too.
+        let card = |serial: u16| {
+            let calls = Rc::clone(&calls);
+            Rc::new(RefCell::new(CustomEntryComponent::new(
+                serde_json::json!({"customType":"test", "data":{"goalId":"same"}}),
+                Rc::new(move |_, expanded, _| {
+                    calls.borrow_mut().push((serial, expanded));
+                    let text = Text::with_padding("card", 0, 0);
+                    Ok(Some(Rc::new(RefCell::new(text))))
+                }),
+                theme.clone(),
+            )))
+        };
+        let mut history = HistoryExpansions::default();
+        let survivor = card(0);
+        let old = card(1);
+        let released = Rc::downgrade(&old);
+        history.register_entry(None, &survivor);
+        history.register_entry(None, &old);
+        let other = Rc::clone(&calls);
+        history.push(Box::new(move |expanded| {
+            other.borrow_mut().push((2, expanded));
+        }));
+        chat.add_child(TranscriptChild::Entry(survivor));
+        chat.add_child(TranscriptChild::Entry(old));
+        chat.render(80);
+
+        for serial in 3..=514 {
+            let next = card(serial);
+            let TranscriptChild::Entry(slot) = &mut chat.children_mut()[1] else {
+                panic!("expected occupied entry slot")
+            };
+            history.register_entry(Some(slot), &next);
+            *slot = next;
+        }
+        chat.render(80);
+        calls.borrow_mut().clear();
+        history.set_expanded(true);
+        history.set_expanded(false);
+
+        eprintln!(
+            "RP2_OWNER {}",
+            serde_json::json!({"tag": "weak", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"strong":released.strong_count(),"upgrade":released.upgrade().is_some(),"ordered":history.ordered.len(),"calls":*calls.borrow()}})
+        );
+        assert!(released.upgrade().is_none());
+        assert_eq!(history.ordered.len(), 3);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                (0, true),
+                (2, true),
+                (514, true),
+                (0, false),
+                (2, false),
+                (514, false)
+            ]
+        );
     }
 
     #[test]

@@ -14709,6 +14709,52 @@ async fn compaction_preserves_assistant_waiting_for_message_end_persistence() {
 }
 
 #[tokio::test]
+async fn refused_message_end_is_reported_once_and_removed_on_next_prompt() {
+    use maho_ai::providers::faux::faux_assistant_message;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let session = retry_session(
+        ["durable reply", "refused reply", "next reply"]
+            .map(|text| faux_assistant_message(text, Default::default()))
+            .into(),
+        0,
+    );
+    session.with_session_manager_mut(|manager| {
+        *manager = SessionManager::create(root, Some(root), None);
+    });
+    let bounded = |text| {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            session.prompt(text, Default::default()),
+        )
+    };
+    bounded("durable input").await.unwrap().unwrap();
+    let committed = session.messages();
+    let revision = session.message_revision();
+    let path = PathBuf::from(session.session_file().unwrap());
+    let saved = dir.path().join("saved.jsonl");
+    std::fs::rename(&path, &saved).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let failure = bounded("refused input").await.unwrap().unwrap_err();
+    let before_next = session.messages();
+    assert_eq!(before_next.len(), committed.len() + 2);
+    assert_eq!(session.message_revision(), revision + 2);
+    let refused = &before_next[committed.len()..];
+    {
+        let mut failures = lock(&session.transcript_write_failures);
+        assert_eq!(failures.refusal(&refused[0]).unwrap().error, failure);
+        assert!(failures.refusal(&refused[1]).is_some());
+        assert!(failures.take_report().is_none());
+    }
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&saved, &path).unwrap();
+    bounded("next input").await.unwrap().unwrap();
+    let next = session.messages();
+    assert!(next.starts_with(&committed));
+    assert!(refused.iter().all(|message| !next.contains(message)));
+}
+
+#[tokio::test]
 async fn dropped_message_end_releases_pending_persistence_owner() {
     use std::{future::Future, task::Poll};
     let session = retry_session(Vec::new(), 0);

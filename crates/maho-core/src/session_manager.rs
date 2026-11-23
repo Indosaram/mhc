@@ -2328,6 +2328,29 @@ impl SessionManager {
         input_source: Option<maho_ext_api::InputSource>,
         recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
     ) -> Value {
+        let entry = self.owned_message_entry(message, input_source);
+        self.append_entry_owned_by(entry.clone(), recovery_owner);
+        entry
+    }
+
+    /// MessageEnd needs this entry's identity even when its disk write was refused.
+    pub(crate) fn append_owned_message_id(
+        &mut self,
+        message: Value,
+        input_source: Option<maho_ext_api::InputSource>,
+        recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
+    ) -> Option<String> {
+        let entry = self.owned_message_entry(message, input_source);
+        let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
+        self.append_entry_owned_by(entry, recovery_owner);
+        id
+    }
+
+    fn owned_message_entry(
+        &self,
+        message: Value,
+        input_source: Option<maho_ext_api::InputSource>,
+    ) -> Value {
         let mut entry = self.base_entry("message");
         entry.insert("message".to_owned(), message);
         if let Some(source) = input_source {
@@ -2338,9 +2361,7 @@ impl SessionManager {
             };
             entry.insert("inputSource".to_owned(), Value::from(name));
         }
-        let entry = Value::Object(entry);
-        self.append_entry_owned_by(entry.clone(), recovery_owner);
-        entry
+        Value::Object(entry)
     }
 
     pub fn append_thinking_level_change(
@@ -2738,6 +2759,9 @@ impl SessionManager {
         else {
             return std::borrow::Cow::Borrowed(entry);
         };
+        if !crate::session_resident_store::contains_resident_token(&materialized) {
+            return std::borrow::Cow::Owned(materialized);
+        }
         let missing = std::cell::Cell::new(false);
         let recovered = self.resident_store.materialize_with(
             &materialized,
@@ -4311,6 +4335,66 @@ mod tests {
     }
 
     #[test]
+    fn message_id_identifies_the_written_bytes_with_or_without_a_journal() {
+        use crate::session_transcript_journal::TranscriptTransition;
+        for journaled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let cwd = dir.path().to_str().unwrap();
+            let mut manager = SessionManager::create(cwd, Some(cwd), None);
+            let seed = manager.append_message(json!({"role":"assistant","content":[]}));
+            if journaled {
+                assert!(!manager.begin_transcript_journal().is_empty());
+            }
+            let carrier = crate::session_recovery_identity::RecoveryCarrier {
+                message_id: "message-owner".into(),
+                epoch: "owner-epoch".into(),
+                durable_entry_id: None,
+            };
+            let body = json!({"role":"user","content":"appended","timestamp":9});
+            let id = manager
+                .append_owned_message_id(
+                    body.clone(),
+                    Some(maho_ext_api::InputSource::Rpc),
+                    Some(&carrier),
+                )
+                .unwrap();
+            let disk = std::fs::read_to_string(manager.session_file().unwrap()).unwrap();
+            let line = disk.lines().next_back().unwrap();
+            let entry: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(entry["id"], id);
+            assert_eq!(entry["parentId"], seed["id"]);
+            assert_ne!(entry["id"], entry["parentId"]);
+            assert_eq!(entry["inputSource"], "rpc");
+            assert_eq!(entry["message"], body);
+            let transitions = manager.drain_transcript();
+            eprintln!(
+                "RP2_OWNER {}",
+                serde_json::json!({"tag": "append", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"disk":line,"id":id,"parent":seed["id"],"journaled":journaled,"transitions":transitions}})
+            );
+            if journaled {
+                let [
+                    TranscriptTransition::Append {
+                        id: journal_id,
+                        entry: Some(bytes),
+                        owning_message_id,
+                        recovery_epoch,
+                        ..
+                    },
+                ] = transitions.as_slice()
+                else {
+                    panic!("expected one journaled append");
+                };
+                assert_eq!(journal_id, &id);
+                assert_eq!(bytes, line);
+                assert_eq!(owning_message_id.as_ref(), Some(&carrier.message_id));
+                assert_eq!(recovery_epoch.as_ref(), Some(&carrier.epoch));
+            } else {
+                assert!(transitions.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn the_transcript_journal_records_appends_leaves_and_replacements() {
         use crate::session_transcript_journal::TranscriptTransition;
         let mut manager = SessionManager::in_memory("/tmp", None, None);
@@ -5229,6 +5313,165 @@ mod tests {
             Value::from(large)
         );
         assert_eq!(manager.resident_store_stats().blob_count, 1);
+    }
+
+    #[test]
+    fn write_materialization_borrows_plain_entries() {
+        let manager = SessionManager::in_memory("/tmp", None, None);
+        let entry = json!({"message": {"content": ["plain"]}});
+        assert!(matches!(
+            manager.materialize_for_write(&entry),
+            std::borrow::Cow::Borrowed(value) if std::ptr::eq(value, &entry)
+        ));
+    }
+
+    #[test]
+    fn memory_only_write_retains_unresolvable_tokens_alongside_recovered_text() {
+        use crate::session_resident_store::RESIDENT_STRING_PREFIX;
+
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let literal = format!("{RESIDENT_STRING_PREFIX}not-a-hash");
+        let text = "x".repeat(32 * 1024);
+        let entry = manager.append_message(json!({"role":"user","content":[literal, text]}));
+        let materialized = manager.materialize_for_write(manager.file_entries.last().expect("row"));
+        assert_eq!(materialized.as_ref(), &entry);
+    }
+
+    #[test]
+    fn missing_memory_only_blob_cannot_be_repaired_from_disk() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        manager.append_message(json!({"role":"user","content":"q".repeat(32768)}));
+        let row = manager.file_entries.last().expect("row");
+        let text = row["message"]["content"].as_str().expect("token");
+        assert!(text.starts_with(crate::session_resident_store::RESIDENT_STRING_PREFIX));
+        manager.resident_store.clear_in_memory();
+        assert_eq!(manager.materialize_for_write(row).as_ref(), row);
+    }
+
+    #[test]
+    fn write_materialization_preserves_append_and_load_byte_boundaries() {
+        use crate::session_resident_store::RESIDENT_STRING_PREFIX;
+        for size in [1023, 1024, 32767, 32768, 4 * 1024 * 1024] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let dir = tmp.path().to_str().expect("dir");
+            let mut manager = SessionManager::create(dir, Some(dir), None);
+            manager.persist_header_now().expect("flush");
+            let entry = manager.append_message(json!({"role":"user","content":"x".repeat(size)}));
+            let tokenized = |m: &SessionManager| {
+                m.file_entries.last().expect("row")["message"]["content"]
+                    .as_str()
+                    .expect("text")
+                    .starts_with(RESIDENT_STRING_PREFIX)
+            };
+            assert_eq!(tokenized(&manager), size >= 32768);
+            let file = manager.session_file().expect("file").to_owned();
+            drop(manager);
+            let reopened = SessionManager::open(&file, Some(dir), None, None).expect("reopen");
+            assert_eq!(tokenized(&reopened), size >= 1024);
+            let row = reopened.file_entries.last().expect("row");
+            assert_eq!(reopened.materialize_for_write(row).as_ref(), &entry);
+        }
+    }
+
+    #[test]
+    fn spilled_entry_rewrites_and_journals_the_authoritative_bytes() {
+        use crate::session_recovery_identity::RecoveryCarrier;
+        use crate::session_resident_store::RESIDENT_STRING_PREFIX;
+        use crate::session_transcript_journal::TranscriptTransition;
+
+        enum Backing {
+            Intact,
+            Deleted,
+            Corrupt,
+        }
+        for backing in [Backing::Intact, Backing::Deleted, Backing::Corrupt] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let dir = tmp.path().to_str().expect("dir");
+            let mut manager = SessionManager::create(dir, Some(dir), None);
+            // A normal non-compact manager has no captured base: its snapshot owns row bytes.
+            manager.captures_transcript_base = false;
+            manager.persist_header_now().expect("flush");
+            drop(manager.begin_transcript_journal());
+            let owner = RecoveryCarrier {
+                message_id: "owner".into(),
+                epoch: "epoch".into(),
+                durable_entry_id: None,
+            };
+            let entry = manager.append_owned_message_with_recovery(
+                json!({"role":"user","content":[{"type":"text","text":"a".repeat(32768)},
+                    {"type":"text","text":"b".repeat(32768)}],"timestamp":1}),
+                None,
+                Some(&owner),
+            );
+            let id = entry["id"].as_str().expect("id");
+            let file = manager.session_file().expect("file").to_owned();
+            let original = std::fs::read_to_string(&file).expect("original JSONL");
+            let line = original.lines().next_back().expect("disk row");
+            assert_eq!(line, serialize_entry(&entry));
+            let live = manager.drain_transcript();
+            assert!(matches!(live.as_slice(), [TranscriptTransition::Append {
+                id: row, entry: Some(bytes), owning_message_id: Some(message),
+                recovery_epoch: Some(epoch), ..
+            }] if row == id && bytes == line && message == "owner" && epoch == "epoch"));
+            manager.resident_store.spill_resident();
+            let row = manager.file_entries.last().expect("mirror");
+            let hash = row["message"]["content"][1]["text"]
+                .as_str()
+                .expect("token")
+                .strip_prefix(RESIDENT_STRING_PREFIX)
+                .expect("externalized");
+            let dir_path = manager.blobs_dir().expect("blob dir");
+            let blob = Path::new(&dir_path).join(format!("{hash}.blob"));
+            assert!(blob.is_file());
+            assert_eq!(manager.resident_store_stats().blob_count, 0);
+            match backing {
+                Backing::Intact => {}
+                Backing::Deleted => std::fs::remove_file(&blob).expect("delete fixture blob"),
+                Backing::Corrupt => std::fs::write(&blob, b"{}").expect("damage blob"),
+            }
+
+            // A no-op rewrite would also leave matching bytes. Whitespace on disk is valid
+            // JSONL but can only disappear if the real rewrite replaced its contents.
+            std::fs::write(&file, original.replacen('{', "{ ", 1)).expect("mark disk input");
+            use sha2::{Digest, Sha256};
+            let hash_bytes = |data: &[u8]| hex::encode(Sha256::digest(data));
+            let spilled_hash = hash.to_owned();
+            let marked = std::fs::read(&file).expect("marked file");
+            let spill_bytes = match std::fs::read(&blob) {
+                Ok(data) => Some(data.len()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => panic!("read spill: {e}"),
+            };
+            manager.rewrite_file();
+            assert_eq!(manager.last_persistence_error(), None);
+            assert_eq!(std::fs::read(&file).expect("rewrite"), original.as_bytes());
+            let snapshot = manager.begin_transcript_journal();
+            let mut rows = snapshot.iter().filter_map(|transition| match transition {
+                TranscriptTransition::Append { id: row, entry, .. } if row == id => {
+                    Some(entry.as_deref())
+                }
+                _ => None,
+            });
+            let journal_row = rows.next().flatten().expect("snapshot append");
+            let [
+                TranscriptTransition::Append {
+                    entry: Some(append),
+                    ..
+                },
+            ] = live.as_slice()
+            else {
+                panic!("missing live append")
+            };
+            eprintln!(
+                "RP2_OWNER {}",
+                serde_json::json!({"tag": "spill", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"id":id,"resident":manager.resident_store_stats().blob_count,"blob":spilled_hash,"backingBytes":spill_bytes,"original":hash_bytes(original.as_bytes()),"marked":hash_bytes(&marked),"rewritten":hash_bytes(&std::fs::read(&file).expect("rewrite")),"diskRow":hash_bytes(line.as_bytes()),"append":hash_bytes(append.as_bytes()),"snapshot":hash_bytes(journal_row.as_bytes()),"rowBytes":line.len()}})
+            );
+            assert_eq!(journal_row, line);
+            assert_eq!(rows.next(), None);
+            drop(manager);
+            let reopened = SessionManager::open(&file, Some(dir), None, None).expect("reopen");
+            assert_eq!(reopened.entry(id).as_ref(), Some(&entry));
+        }
     }
 
     #[test]

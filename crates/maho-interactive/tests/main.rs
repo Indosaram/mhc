@@ -47,6 +47,8 @@ mod mermaid_golden;
 mod mermaid_transformer;
 #[path = "presentation.rs"]
 mod presentation;
+#[path = "runtime35_entry_replacement.rs"]
+mod runtime35_entry_replacement;
 #[path = "runtime35_external_editor.rs"]
 mod runtime35_external_editor;
 #[path = "runtime35_favorites.rs"]

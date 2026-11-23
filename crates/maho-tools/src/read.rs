@@ -522,20 +522,20 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     });
                 }
                 let text = String::from_utf8_lossy(&buffer);
-                let lines: Vec<_> = text.split('\n').collect();
+                let total_lines = text.split('\n').count();
                 let start = input.offset.unwrap_or(1).saturating_sub(1);
-                if start >= lines.len() {
+                if start >= total_lines {
                     return Err(ToolError::Message(format!(
-                        "Offset {} is beyond end of file ({} lines total)",
-                        input.offset.unwrap_or(1),
-                        lines.len()
+                        "Offset {} is beyond end of file ({total_lines} lines total)",
+                        input.offset.unwrap_or(1)
                     )));
                 }
-                let end = input.limit.map_or(lines.len(), |limit| {
-                    start.saturating_add(limit).min(lines.len())
-                });
-                let truncation =
-                    truncate_head(&lines[start..end].join("\n"), TruncationOptions::default());
+                let end = input
+                    .limit
+                    .map_or(total_lines, |n| start.saturating_add(n).min(total_lines));
+                let count = (end < total_lines).then_some(end - start);
+                let selected = select_lines(&text, start, count);
+                let truncation = truncate_head(selected, TruncationOptions::default());
                 let summary = if let Some(folder) = &options.folder {
                     folder
                         .summarize(ReadSummaryInput {
@@ -557,7 +557,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     notice = Some(format!(
                         "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
                         start + 1,
-                        format_size(lines[start].len()),
+                        format_size(selected.find('\n').unwrap_or(selected.len())),
                         format_size(DEFAULT_MAX_BYTES),
                         start + 1,
                         input.path,
@@ -570,7 +570,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     notice = Some(format!(
                         "[Showing lines {}-{display_end} of {}{}. Use offset={} to continue.]",
                         start + 1,
-                        lines.len(),
+                        total_lines,
                         if truncation.truncated_by.as_deref() == Some("lines") {
                             String::new()
                         } else {
@@ -581,10 +581,10 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     details = Some(json!({"truncation":truncation}));
                     truncation.content
                 } else {
-                    if input.limit.is_some() && end < lines.len() {
+                    if input.limit.is_some() && end < total_lines {
                         notice = Some(format!(
                             "[{} more lines in file. Use offset={} to continue.]",
-                            lines.len() - end,
+                            total_lines - end,
                             end + 1
                         ));
                     }
