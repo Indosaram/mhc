@@ -67,17 +67,9 @@ jobs:
           - target: linux-x86_64
             runner: ubuntu-24.04
             protoc: linux-x86_64
-          - target: linux-aarch64
-            runner: ubuntu-24.04-arm
-            protoc: linux-aarch_64
-            timeout: 120
           - target: macos-aarch64
             runner: macos-15
             protoc: osx-aarch_64
-          - target: macos-x86_64
-            runner: macos-15-intel
-            protoc: osx-x86_64
-            timeout: 120
           - target: windows-x86_64
             runner: windows-2025
             protoc: win64
