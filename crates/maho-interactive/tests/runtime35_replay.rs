@@ -89,3 +89,51 @@ fn message_without_tools_is_replayed_once_without_segmentation() {
     assert_eq!(host.messages, [message]);
     assert!(host.tools.is_empty());
 }
+
+#[test]
+fn local_replay_leaf_selection_distinguishes_null_empty_and_unknown_ids() {
+    use maho_core::session_manager::{SessionManager, build_context_entries};
+    use serde_json::json;
+
+    let mut manager = SessionManager::in_memory("/unused", None, None);
+    let root = manager.append_message(json!({"role": "user", "content": "root"}));
+    manager.append_message(json!({"role": "user", "content": "sibling"}));
+    manager.set_leaf(root["id"].as_str()).expect("known leaf");
+    let last = manager.append_message(json!({"role": "user", "content": "last"}));
+    manager.reset_leaf();
+    let all = manager.entries();
+    let path = [root, last];
+    for (leaf, expected) in [
+        (manager.leaf_id(), path.as_slice()),
+        (Some(""), &[][..]),
+        (Some("unknown"), path.as_slice()),
+    ] {
+        assert_eq!(build_context_entries(&all, leaf), expected);
+    }
+}
+
+#[test]
+fn local_replay_can_select_disk_ancestry_after_a_mirror_trim() {
+    use maho_core::session_manager::{SessionManager, build_context_entries};
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().expect("session directory");
+    let cwd = dir.path().to_str().expect("fixture path");
+    let mut manager = SessionManager::create(cwd, Some(cwd), None);
+    let old = manager.append_message(json!({"role": "user", "content": "old"}));
+    let assistant = manager.append_message(json!({"role": "assistant", "content": []}));
+    let kept = manager.append_message(json!({"role": "user", "content": "kept"}));
+    let leaf = kept["id"].as_str().expect("kept id");
+    manager.append_compaction("digest", leaf, 42, None, None, None);
+    manager.set_leaf(Some(leaf)).expect("retained entry");
+
+    let context = build_context_entries(&manager.entries(), manager.leaf_id());
+
+    assert!(manager.entries_after(0).is_none(), "trim actually occurred");
+    assert_eq!(manager.count_compactions(), 1);
+    eprintln!(
+        "RP2_OWNER {}",
+        serde_json::json!({"tag": "ancestry", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"leaf":manager.leaf_id(),"trim":manager.entries_after(0).is_none(),"compactions":manager.count_compactions(),"context":context,"expected":[old,assistant,kept]}})
+    );
+    assert_eq!(context, [old, assistant, kept]);
+}

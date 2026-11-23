@@ -235,6 +235,17 @@ async fn delivers_native_only_progress_before_any_following_public_event() {
             .map(|message| message.content.len()),
         Some(0)
     );
+    let terminal = records.iter().find_map(|record| match &record.record {
+        InternalEvent::Event(event) => match &event.value {
+            AgentEvent::MessageEnd { message } => message.as_assistant().map(|_| event),
+            _ => None,
+        },
+        InternalEvent::Progress(_) => None,
+    });
+    let captured = get_assistant_capture(terminal.expect("assistant end"))
+        .and_then(|capture| capture.message.as_ref())
+        .expect("terminal message capture");
+    assert_eq!(captured.content, vec![native(2)]);
     assert!(sequences_are_dense(&records));
 }
 

@@ -101,6 +101,112 @@ async fn uses_the_configured_default_when_a_legacy_caller_omits_stream_fn() {
 }
 
 #[tokio::test]
+async fn preserves_provider_partials_through_terminal_delivery() {
+    for reason in [StopReason::Stop, StopReason::Error] {
+        let partial = |blocks| assistant(blocks, StopReason::Stop);
+        let start = AssistantMessageEvent::Start {
+            partial: partial(Vec::new()),
+        };
+        let text = text_block("answer");
+        let thought = thinking_partial("why").content.remove(0);
+        let call = tool_call("call-1", "fixture", json!({"x": 1}));
+        let blocks = vec![text.clone(), thought.clone(), call];
+        let updates = vec![
+            AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "answer".into(),
+                partial: partial(vec![text.clone()]),
+            },
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 1,
+                partial: partial(vec![
+                    text.clone(),
+                    ContentBlock::Thinking(ThinkingContent::default()),
+                ]),
+            },
+            AssistantMessageEvent::ThinkingDelta {
+                content_index: 1,
+                delta: "why".into(),
+                partial: partial(vec![text, thought]),
+            },
+            AssistantMessageEvent::ToolcallDelta {
+                content_index: 2,
+                delta: "{\"x\":1}".into(),
+                partial: partial(blocks),
+            },
+        ];
+        // End with a separate text payload to distinguish the terminal from the last partial.
+        let terminal = assistant(vec![text_block("final")], reason);
+        let end = if reason == StopReason::Stop {
+            AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: terminal.clone(),
+            }
+        } else {
+            AssistantMessageEvent::Error {
+                reason: maho_ai::types::ErrorReason::Error,
+                error: terminal.clone(),
+            }
+        };
+        let provider = std::iter::once(start)
+            .chain(updates.iter().cloned())
+            .chain(std::iter::once(end))
+            .collect();
+        let stream = agent_loop(
+            vec![user_message("fixture")],
+            context_with(Vec::new()),
+            AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
+            None,
+            Some(stream_fn_of(provider)),
+        );
+        let events = collect_with_timeout(&stream).await;
+        let mut observed = events.iter().filter(|event| match event {
+            AgentEvent::MessageUpdate { .. } => true,
+            AgentEvent::MessageStart { message, .. } | AgentEvent::MessageEnd { message } => {
+                message.as_assistant().is_some()
+            }
+            _ => false,
+        });
+        assert!(
+            matches!(observed.next(), Some(AgentEvent::MessageStart { message, .. })
+            if message.as_assistant().expect("assistant").content.is_empty())
+        );
+        let received: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::MessageUpdate {
+                    assistant_message_event,
+                    ..
+                } => Some(assistant_message_event),
+                _ => None,
+            })
+            .collect();
+        let ended: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::MessageEnd { message } => message.as_assistant(),
+                _ => None,
+            })
+            .collect();
+        eprintln!(
+            "RP2_OWNER {}",
+            serde_json::json!({"tag": "partials", "argv": std::env::args().collect::<Vec<_>>(), "exe": std::env::current_exe().expect("current test executable"), "data": {"provider": updates, "received": received, "terminal": ended}})
+        );
+        for expected in &updates {
+            assert!(
+                matches!(observed.next(), Some(AgentEvent::MessageUpdate { assistant_message_event, .. })
+                if assistant_message_event == expected)
+            );
+        }
+        assert!(
+            matches!(observed.next(), Some(AgentEvent::MessageEnd { message })
+            if message.as_assistant().is_some_and(|end| end.content == terminal.content && end.stop_reason == reason))
+        );
+        assert!(observed.next().is_none());
+    }
+}
+
+#[tokio::test]
 async fn stamps_thinking_timing_on_a_completed_thinking_block() {
     let stream = agent_loop(
         vec![user_message("Hello")],

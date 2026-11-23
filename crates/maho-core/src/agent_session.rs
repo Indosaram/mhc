@@ -5570,22 +5570,21 @@ impl AgentSession {
             } else {
                 None
             };
-            let refused_message = message.clone();
             match serde_json::to_value(message) {
-                Ok(message) => {
-                    let (entry, failure) = self.with_session_manager_mut(|manager| {
-                        let entry = manager.append_owned_message_with_recovery(
-                            message,
+                Ok(serialized) => {
+                    let (id, failure) = self.with_session_manager_mut(|manager| {
+                        let id = manager.append_owned_message_id(
+                            serialized,
                             input_source,
                             recovery.as_ref(),
                         );
-                        (entry, manager.take_write_error())
+                        (id, manager.take_write_error())
                     });
                     if let Some(error) = failure {
-                        lock(&self.transcript_write_failures).record(refused_message, error);
+                        lock(&self.transcript_write_failures).record(message.clone(), error);
                     }
-                    if let Some(id) = entry.get("id").and_then(Value::as_str) {
-                        if entry["message"]["role"] == "assistant" {
+                    if let Some(id) = id.as_deref() {
+                        if message.role() == "assistant" {
                             let mut state = self.state();
                             state.last_persisted_assistant =
                                 Some((id.to_owned(), state.assistant_generation));

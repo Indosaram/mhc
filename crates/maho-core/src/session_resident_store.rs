@@ -175,7 +175,7 @@ impl ResidentStringStore {
 
     /// PERF-DIVERGENCE(senpi session-resident-store.ts): upstream hands back the same object when nothing needs materializing; this borrows instead of deep-cloning in that case, so persisting an entry does not copy it. The value seen by callers is identical.
     pub fn materialize_cow<'a>(&self, value: &'a Value) -> Cow<'a, Value> {
-        if !contains_string(value, &|text| text.starts_with(RESIDENT_STRING_PREFIX)) {
+        if !contains_resident_token(value) {
             return Cow::Borrowed(value);
         }
         Cow::Owned(self.materialize(value))
@@ -186,7 +186,7 @@ impl ResidentStringStore {
         value: &Value,
         on_missing: Option<MissingStringCallback<'_>>,
     ) -> Value {
-        if !contains_string(value, &|text| text.starts_with(RESIDENT_STRING_PREFIX)) {
+        if !contains_resident_token(value) {
             return value.clone();
         }
         transform_json(value, &|text| self.materialize_string(text, on_missing))
@@ -332,6 +332,10 @@ fn content_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+pub(crate) fn contains_resident_token(value: &Value) -> bool {
+    contains_string(value, &|text| text.starts_with(RESIDENT_STRING_PREFIX))
 }
 
 fn contains_string(value: &Value, predicate: &dyn Fn(&str) -> bool) -> bool {
