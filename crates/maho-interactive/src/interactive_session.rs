@@ -77,7 +77,7 @@ pub trait InteractiveSession: Send + Sync {
         &self,
         _message: String,
         _options: maho_core::agent_session::PromptOptions,
-    ) -> SessionFuture<'_, Result<(), String>> {
+    ) -> SessionFuture<'_, Result<maho_core::agent_session::PromptDisposition, String>> {
         Box::pin(async { Err("prompt is not implemented for this session host".to_owned()) })
     }
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> {
@@ -380,8 +380,8 @@ impl InteractiveSession for LocalInteractiveSession {
         &self,
         message: String,
         options: maho_core::agent_session::PromptOptions,
-    ) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { self.session.prompt(&message, options).await.map(|_| ()) })
+    ) -> SessionFuture<'_, Result<maho_core::agent_session::PromptDisposition, String>> {
+        Box::pin(async move { self.session.prompt(&message, options).await })
     }
 
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> {
@@ -658,7 +658,7 @@ impl InteractiveSession for RemoteInteractiveRuntime {
         &self,
         message: String,
         options: maho_core::agent_session::PromptOptions,
-    ) -> SessionFuture<'_, Result<(), String>> {
+    ) -> SessionFuture<'_, Result<maho_core::agent_session::PromptDisposition, String>> {
         Box::pin(async move {
             self.proxy()
                 .prompt(&message, prompt_options_to_wire(&options))

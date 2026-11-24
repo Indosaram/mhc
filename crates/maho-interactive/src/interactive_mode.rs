@@ -435,10 +435,10 @@ impl crate::compaction_queue_transfer::TransferDependencies for CompactionQueueT
         message: &crate::compaction_queue_transfer::CompactionQueuedMessage,
     ) -> Result<(), String> {
         match self.host.clone() {
-            Some(host) => {
-                host.prompt(message.text.clone(), PromptOptions::default())
-                    .await
-            }
+            Some(host) => host
+                .prompt(message.text.clone(), PromptOptions::default())
+                .await
+                .map(|_| ()),
             None => self
                 .session
                 .prompt(&message.text, PromptOptions::default())
@@ -462,7 +462,6 @@ impl crate::compaction_queue_transfer::TransferDependencies for CompactionQueueT
                 },
             )
             .await
-            .map(|_| PromptDisposition::Started)
         } else {
             let session = self.session.clone();
             let text = message.text.clone();
@@ -7210,11 +7209,9 @@ impl InteractiveMode {
         self.paint_turn_feedback(&text);
         self.pending_turn_submission = Some((text.clone(), options.unknown_command_as_text));
         let turn: TurnFuture = match self.session_host.clone() {
-            Some(host) => Box::pin(async move {
-                host.prompt(text, options)
-                    .await
-                    .map(|_| PromptDisposition::Started)
-            }),
+            // The disposition decides whether this submission's optimistic echo survives: only a
+            // turn that actually started keeps it; queued input renders as the pending rows.
+            Some(host) => Box::pin(async move { host.prompt(text, options).await }),
             None => {
                 let session = self.session.clone();
                 Box::pin(async move { session.prompt(&text, options).await })
@@ -8700,7 +8697,7 @@ impl InteractiveMode {
             async move {
                 match host {
                     Some(host) => host.prompt(text, options).await,
-                    None => session.prompt(&text, options).await.map(|_| ()),
+                    None => session.prompt(&text, options).await,
                 }
             },
             move |mode, result| {
@@ -8830,9 +8827,12 @@ impl InteractiveMode {
                     self.clear_provisional_turn_feedback();
                 }
                 // A submission that resolved without starting a turn emits no `AgentIdle`, so the
-                // working row painted for it would spin forever.
-                Ok(PromptDisposition::Handled) => self.clear_provisional_turn_feedback(),
-                Ok(PromptDisposition::Started | PromptDisposition::Queued) => {}
+                // working row painted for it would spin forever; a queued submission owns no turn
+                // here either, so its optimistic echo would never be replaced by a canonical card.
+                Ok(PromptDisposition::Handled | PromptDisposition::Queued) => {
+                    self.clear_provisional_turn_feedback()
+                }
+                Ok(PromptDisposition::Started) => {}
             }
         }
         let bash_result = self.pending_bash.as_mut().and_then(|(_, execution)| {

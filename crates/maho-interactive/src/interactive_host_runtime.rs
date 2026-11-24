@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use maho_rpc::custom_capability::{QUESTION_CAPABILITY, RENDERED_COMPONENTS_CAPABILITY};
 use maho_rpc::host_ensure::{EnsureHostError, EnsureHostOptions, EnsuredHostInfo, ensure_host};
 use maho_rpc::rpc_client::{
-    RpcClient, RpcClientError, RpcClientEventKind, RpcClientOptions, RpcClientUnsubscribe,
-    RpcEventListener, classify_rpc_client_event, default_rpc_socket_path,
+    PromptDisposition, RpcClient, RpcClientError, RpcClientEventKind, RpcClientOptions,
+    RpcClientUnsubscribe, RpcEventListener, classify_rpc_client_event, default_rpc_socket_path,
     is_provider_account_event,
 };
 
@@ -851,10 +851,15 @@ impl RemoteSessionProxy {
         self.read(|state| state.follow_up.clone())
     }
 
-    /// senpi's `prompt`.
-    pub async fn prompt(&self, message: &str, options: Value) -> Result<(), RpcClientError> {
-        let result = self.client.prompt(message, options).await.map(|_| ());
-        self.settle_unit("prompt", result)
+    /// senpi's `prompt`: answers the submission's disposition (started/queued/handled) so the
+    /// caller keeps an optimistic echo only for a turn that actually started.
+    pub async fn prompt(
+        &self,
+        message: &str,
+        options: Value,
+    ) -> Result<PromptDisposition, RpcClientError> {
+        let result = self.client.prompt(message, options).await;
+        self.settle("prompt", result, PromptDisposition::Handled)
     }
 
     /// senpi's `abort`.

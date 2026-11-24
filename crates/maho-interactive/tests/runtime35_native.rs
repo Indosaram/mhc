@@ -4759,14 +4759,15 @@ async fn turn_and_session_mutations_route_to_the_mounted_host() {
             &self,
             _message: String,
             _options: maho_core::agent_session::PromptOptions,
-        ) -> SessionFuture<'_, Result<(), String>> {
+        ) -> SessionFuture<'_, Result<maho_core::agent_session::PromptDisposition, String>>
+        {
             let calls = self.calls.clone();
             Box::pin(async move {
                 calls
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push("prompt".into());
-                Ok(())
+                Ok(maho_core::agent_session::PromptDisposition::Started)
             })
         }
         fn abort(&self) -> SessionFuture<'_, Result<(), String>> {
@@ -5377,6 +5378,175 @@ async fn real_loop_steer_while_provider_held_queues_without_replacing_the_turn()
     );
 }
 
+/// A submission that only queues must paint the pending row and no sent bubble: the optimistic echo
+/// is withdrawn while the message waits, and the canonical card appears only once its turn runs.
+#[tokio::test]
+async fn real_loop_queued_submission_renders_only_as_a_pending_row() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    gated.mode.handle_input("hi");
+    gated.mode.handle_input("\r");
+    pump_until(&mut gated, |gated| {
+        gated.entered.load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .await;
+    assert!(
+        gated.mode.has_pending_turn(),
+        "the first prompt is streaming"
+    );
+    // Submit a second message while the turn is in flight: it must queue, not echo as sent.
+    gated.mode.handle_input("queued-now");
+    gated.mode.handle_input("\r");
+    let waker = turn_waker(&gated);
+    gated.mode.pump_turn_with(&waker).await;
+    gated.mode.poll_after_paint(&waker);
+    let frame = gated.mode.render(80).join("\n");
+    assert!(
+        frame.contains("Steering: queued-now"),
+        "the queued message renders as a pending steering row: {frame}"
+    );
+    let plain = maho_tui::utils::strip_terminal_sequences(&frame);
+    assert!(
+        !plain.lines().any(|line| line.trim() == "queued-now"),
+        "the queued message must not paint a sent user bubble: {plain}"
+    );
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle);
+    let frame = gated.mode.render(80).join("\n");
+    assert!(
+        !frame.contains("Steering: queued-now"),
+        "the delivered message leaves the pending rows: {frame}"
+    );
+    assert!(
+        frame.contains("steered-reply"),
+        "the queued steer produced its own reply: {frame}"
+    );
+    let plain = maho_tui::utils::strip_terminal_sequences(&frame);
+    assert!(
+        plain.lines().any(|line| line.trim() == "queued-now"),
+        "the delivered message now paints its canonical user bubble: {plain}"
+    );
+}
+
+/// A mounted host that is mid-stream owns the turn, so `pending_turn` is empty and the mode starts
+/// a prompt future of its own. The host answers `Queued`: the optimistic echo `start_turn` painted
+/// must be withdrawn, leaving only the pending `Steering:` row until the message actually runs.
+#[tokio::test]
+async fn mounted_streaming_host_queued_submission_renders_only_as_a_pending_row() {
+    use maho_interactive::interactive_host_runtime::{
+        RemoteSessionState, SessionEventListener, SessionSubscription,
+    };
+    use maho_interactive::interactive_session::{
+        ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture,
+    };
+    use maho_tui::tui::Component;
+    use std::sync::Arc;
+
+    struct StreamingQueuedHost;
+    impl InteractiveSession for StreamingQueuedHost {
+        fn session_id(&self) -> Option<String> {
+            None
+        }
+        fn session_file(&self) -> Option<String> {
+            None
+        }
+        fn cwd(&self) -> String {
+            String::new()
+        }
+        fn is_reconnecting(&self) -> bool {
+            false
+        }
+        fn is_fallback(&self) -> bool {
+            false
+        }
+        fn remote_state(&self) -> Option<RemoteSessionState> {
+            Some(RemoteSessionState {
+                is_streaming: true,
+                steering: vec!["queued-now".into()],
+                ..Default::default()
+            })
+        }
+        fn prompt(
+            &self,
+            _message: String,
+            _options: maho_core::agent_session::PromptOptions,
+        ) -> SessionFuture<'_, Result<maho_core::agent_session::PromptDisposition, String>>
+        {
+            Box::pin(async { Ok(maho_core::agent_session::PromptDisposition::Queued) })
+        }
+        fn subscribe_session_events(
+            &self,
+            _listener: SessionEventListener,
+        ) -> Option<SessionSubscription> {
+            None
+        }
+        fn request_remote_history(
+            &self,
+            _generation: u64,
+            _sender: tokio::sync::mpsc::UnboundedSender<(
+                u64,
+                Result<Vec<serde_json::Value>, String>,
+            )>,
+        ) {
+        }
+        fn new_session(
+            &self,
+            _parent_session: Option<String>,
+        ) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+            Box::pin(async { Ok(ReplacementOutcome::Cancelled) })
+        }
+        fn switch_session(
+            &self,
+            _session_path: String,
+        ) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+            Box::pin(async { Ok(ReplacementOutcome::Cancelled) })
+        }
+        fn fork(
+            &self,
+            _entry_id: String,
+            _include_entry: bool,
+        ) -> SessionFuture<'_, Result<ForkOutcome, String>> {
+            Box::pin(async {
+                Ok(ForkOutcome {
+                    outcome: ReplacementOutcome::Cancelled,
+                    editor_text: None,
+                })
+            })
+        }
+        fn dispose(&self) -> SessionFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    let (mut mode, _directory) = native_mode();
+    assert!(
+        !mode.has_pending_turn(),
+        "the mounted host, not the mode, owns the in-flight turn"
+    );
+    mode.set_session_host(Arc::new(StreamingQueuedHost));
+    mode.handle_input("queued-now");
+    mode.handle_input("\r");
+    let waker = std::task::Waker::noop();
+    mode.pump_turn_with(waker).await;
+    mode.poll_after_paint(waker);
+    assert!(
+        !mode.has_pending_turn(),
+        "the queued prompt settled without starting a turn"
+    );
+    let frame = mode.render(80).join("\n");
+    assert!(
+        frame.contains("Steering: queued-now"),
+        "the queued message renders as a pending steering row: {frame}"
+    );
+    let plain = maho_tui::utils::strip_terminal_sequences(&frame);
+    assert!(
+        !plain.lines().any(|line| line.trim() == "queued-now"),
+        "the queued message must not paint a sent user bubble: {plain}"
+    );
+    assert!(mode.agent_idle, "a queued submission leaves the agent idle");
+}
+
 #[tokio::test]
 async fn real_loop_pumps_startup_initial_prompt_without_freezing_the_first_frame() {
     use maho_tui::tui::Component;
@@ -5758,14 +5928,17 @@ impl maho_interactive::interactive_session::InteractiveSession for NeverReadyHos
         &self,
         _message: String,
         _options: maho_core::agent_session::PromptOptions,
-    ) -> maho_interactive::interactive_session::SessionFuture<'_, Result<(), String>> {
+    ) -> maho_interactive::interactive_session::SessionFuture<
+        '_,
+        Result<maho_core::agent_session::PromptDisposition, String>,
+    > {
         let entered = self.entered.clone();
         let polls = self.polls.clone();
         Box::pin(async move {
             entered.store(true, std::sync::atomic::Ordering::SeqCst);
             polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::future::pending::<()>().await;
-            Ok(())
+            Ok(maho_core::agent_session::PromptDisposition::Started)
         })
     }
     fn set_model(
@@ -6885,7 +7058,8 @@ async fn a_queued_unknown_command_is_reported_when_compaction_ends() {
             &self,
             message: String,
             _options: maho_core::agent_session::PromptOptions,
-        ) -> SessionFuture<'_, Result<(), String>> {
+        ) -> SessionFuture<'_, Result<maho_core::agent_session::PromptDisposition, String>>
+        {
             self.prompted
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
