@@ -19,10 +19,35 @@ printf 'exit 70\n' > repo/scripts/release-linux.sh
 printf 'broken\n' > repo/assets/omo-latest/manifest.json
 cat > bin/ssh <<'SH'
 #!/bin/sh
+# The driver sends every Windows command as `powershell ... -EncodedCommand <base64 UTF-16LE>`,
+# because a Windows ssh account may land in cmd.exe. Decode the payload before matching: the
+# assertions below are about the script the host runs, not about the transport that carried it.
+# Decoding is also what keeps the transport honest -- a command sent to the Windows host that is
+# not encoded would reintroduce exactly the login-shell assumption the driver stopped making.
+for last; do :; done
 case "$*" in
-  *'cmd /c '*|*'rmdir /s '*|*'if exist '*|*'cd /d '*) exit 90 ;;
-  *'-File '*'-OutputDir '*) if [ "$EXPECTED_SKIP" = 1 ]; then case "$*" in *'-SkipMit'*) : ;; *) exit 93 ;; esac; fi ;;
-  *'bash scripts/release-macos.sh '*) if [ "$EXPECTED_SKIP" = 1 ]; then case "$*" in *'MHC_RELEASE_SKIP_MIT=1 bash '*) : ;; *) exit 94 ;; esac; fi ;;
+  *win.test*)
+    case "$last" in
+      *'-EncodedCommand '*) ;;
+      *) exit 90 ;;
+    esac ;;
+esac
+case "$last" in
+  *'-EncodedCommand '*)
+    script=$(printf '%s\n' "$last" | sed 's/.*-EncodedCommand //' \
+      | base64 -d | iconv -f UTF-16LE -t UTF-8) || exit 89 ;;
+  *) script=$* ;;
+esac
+case "$script" in
+  *'rmdir /s '*|*'if exist '*|*'cd /d '*|*'cmd /c '*) exit 90 ;;
+  *'bash scripts/release-macos.sh '*)
+    if [ "$EXPECTED_SKIP" = 1 ]; then
+      case "$script" in *'MHC_RELEASE_SKIP_MIT=1 bash '*) : ;; *) exit 94 ;; esac
+    fi ;;
+  *'-OutputDir '*)
+    if [ "$EXPECTED_SKIP" = 1 ]; then
+      case "$script" in *'-SkipMit'*) : ;; *) exit 93 ;; esac
+    fi ;;
   *'rev-parse HEAD'*) printf '%s\n' "$PIN" ;;
 esac
 SH
