@@ -118,20 +118,24 @@ new name. Every build stage therefore asserts `mhc --version` before packaging.
 If the assertion fails, clear the target directory — do not "fix" it by bumping
 the version by hand.
 
-### Windows: the SSH shell is already PowerShell
+### Windows: do not rely on the SSH login shell
 
-The Windows builder's ssh login shell is **PowerShell 7**, not cmd. Wrapping a build
-in `cmd /c "..."` or appending `> log 2>&1` therefore gets parsed by PowerShell,
-which either rewrites the arguments into something else or dies on them. Every
-attempt to launch the script that way hung silently with a truncated log and no
-process visible. Invoke `pwsh -NoProfile -ExecutionPolicy Bypass -File
-scripts/release-windows.ps1 ...` directly over SSH and let the script do its own
-logging.
+A Windows ssh account may land in cmd.exe, in Windows PowerShell 5.1, or in pwsh,
+depending on `DefaultShell` in `sshd_config`. Assuming PowerShell is what broke the
+driver: it sent `'$env:USERPROFILE'` and a `pwsh ... -File` command line, and on a host
+whose login shell is cmd the variable was never expanded and the quoting was mangled.
 
-The same applies to everything else the driver sends to that host: the checkout
-preparation, the `git rev-parse HEAD` check and the cleanup are PowerShell too
-(`Test-Path`, `New-Item -Force`, `git -C`, `Remove-Item -Recurse -Force`). cmd.exe's
-`if exist`, `cd /d` and `rmdir /s /q` fail in that shell before the build script is
+Pass everything as `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand
+<base64>`, where `<base64>` is the script encoded as UTF-16LE (see `win_ps` in
+`scripts/release-all.sh`). The login shell only has to hand one opaque argument to
+`powershell`, so neither the quoting nor the variable syntax depends on what that
+shell is. Wrapping a build in `cmd /c "..."` or appending `> log 2>&1` still gets
+parsed by whatever shell is active and mangles the arguments; let
+`scripts/release-windows.ps1` do its own logging instead.
+
+The checkout preparation, the `git rev-parse HEAD` check and the cleanup travel the
+same way (`Test-Path`, `New-Item -Force`, `git -C`, `Remove-Item -Recurse -Force`).
+cmd.exe's `if exist`, `cd /d` and `rmdir /s /q` fail there before the build script is
 ever reached.
 
 ### Windows: protoc is not on the SSH PATH

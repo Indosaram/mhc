@@ -22,8 +22,8 @@ cd "$repo"
 die() { echo "release-all: $*" >&2; exit 1; }
 step() { echo; echo "=== $* ($(date +%H:%M:%S))"; }
 
-# Quote for a POSIX shell (the mac host) and for PowerShell 7 (the Windows host, whose ssh
-# login shell it is; docs/release.md "Windows: the SSH shell is already PowerShell").
+# Quote for a POSIX shell (the mac host) and for PowerShell (the Windows host). The Windows
+# login shell is not assumed to be PowerShell at all: see win_ps below.
 # %q would be simpler but only bash's own sh mode reads it back the same way.
 sh_quote() {
   local value=$1
@@ -147,23 +147,40 @@ git -C "$linux_src" checkout -q --detach FETCH_HEAD
 bash "$linux_src/scripts/release-linux.sh" "$version" "$unix_dir"
 
 step "windows-x86_64 ($win_host)"
+# The remote login shell is not ours to choose: a Windows ssh account may land in cmd.exe,
+# in Windows PowerShell 5.1, or in pwsh, and `$env:USERPROFILE` only means anything in the
+# last two. Every command below therefore travels as a PowerShell -EncodedCommand, which is
+# base64 UTF-16LE and cannot be reinterpreted by whichever shell the account starts in.
+# `-File` on a bare `pwsh` had the same defect: cmd.exe passes it through, but the argument
+# quoting only holds when the login shell already parses like POSIX sh.
+win_ps() { # win_ps <script-file> -> runs it on the Windows host, returns its stdout
+  local encoded
+  encoded=$(iconv -f UTF-8 -t UTF-16LE <"$1" | base64 -w0) \
+    || die "could not encode $1 for $win_host"
+  ssh -o BatchMode=yes "$win_host" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+}
+win_scratch="$(mktemp -d)"
+trap 'rm -rf "$win_scratch"' EXIT
+
 win_base="${MHC_WIN_BASE:-}"
 if [ -z "$win_base" ]; then
-  win_base=$(ssh -o BatchMode=yes "$win_host" '$env:USERPROFILE' | tr -d '\r') \
+  printf '%s\n' 'Write-Output $env:USERPROFILE' >"$win_scratch/profile.ps1"
+  win_base=$(win_ps "$win_scratch/profile.ps1" | tr -d '\r' | grep -E '^[A-Za-z]:' | head -n 1) \
     || die "could not resolve USERPROFILE on $win_host"
+  [ -n "$win_base" ] || die "could not resolve USERPROFILE on $win_host"
   win_base="$win_base/build"
 fi
 win_base=$(printf '%s' "$win_base" | tr '\\' '/' | sed 's#/*$##')
 win_src="$win_base/$run_name/src"
 win_out="$win_base/$run_name/out"
 
-# The remote login shell is PowerShell 7, so the checkout, the SHA check and the cleanup
-# are PowerShell too. cmd.exe's `if exist`, `cd /d` and `rmdir /s /q` die before the build
-# script is reached. Continue plus explicit $LASTEXITCODE checks: PowerShell treats a
-# native command's stderr output as fatal under Stop (release-windows.ps1 says the same).
-# `clean -qdf` keeps ignored files (build output worth staying warm) and removes untracked
-# ones, which are exactly the stale source a reused checkout could otherwise ship.
-win_prepare=$(printf '%s\n' \
+# Continue plus explicit $LASTEXITCODE checks: PowerShell treats a native command's stderr
+# output as fatal under Stop (release-windows.ps1 says the same). `clean -qdf` keeps ignored
+# files (build output worth staying warm) and removes untracked ones, which are exactly the
+# stale source a reused checkout could otherwise ship.
+win_prepare="$win_scratch/prepare.ps1"
+printf '%s\n' \
   "\$ErrorActionPreference = 'Continue'" \
   "\$src = $(ps_quote "$win_src")" \
   "if (-not (Test-Path (Join-Path \$src '.git'))) {" \
@@ -179,19 +196,27 @@ win_prepare=$(printf '%s\n' \
   "if (\$LASTEXITCODE -ne 0) { exit 1 }" \
   "git -C \$src clean -qdf" \
   "if (\$LASTEXITCODE -ne 0) { exit 1 }" \
-  "exit 0")
-ssh -o BatchMode=yes "$win_host" "$win_prepare" || die "could not prepare $win_src on $win_host"
-ssh -o BatchMode=yes "$win_host" "git -C $(ps_quote "$win_src") rev-parse HEAD" | tr -d '\r' | grep -qx "$release_commit" \
+  "exit 0" >"$win_prepare"
+win_ps "$win_prepare" >/dev/null || die "could not prepare $win_src on $win_host"
+
+printf '%s\n' "git -C $(ps_quote "$win_src") rev-parse HEAD" >"$win_scratch/head.ps1"
+win_ps "$win_scratch/head.ps1" | tr -d '\r' | grep -qx "$release_commit" \
   || die "$win_host is not on $version_commit"
 
-win_build="pwsh -NoProfile -ExecutionPolicy Bypass -File $(ps_quote "$win_src/scripts/release-windows.ps1") -Version $(ps_quote "$version") -OutputDir $(ps_quote "$win_out") -OmowrightCommit $(ps_quote "$omowright_commit")"
-if [ -n "$win_protoc" ]; then
-  win_build="$win_build -ProtocPath $(ps_quote "$win_protoc")"
-fi
-if [ "${MHC_RELEASE_SKIP_MIT:-}" = 1 ]; then
-  win_build="$win_build -SkipMit"
-fi
-ssh -o BatchMode=yes "$win_host" "$win_build" || die "windows build failed"
+# The build runs through the same channel, so its arguments never pass through a foreign
+# shell. The script is launched with `&` in this process so its own
+# `$ErrorActionPreference = "Continue"` applies exactly as it does when run by hand, and the
+# explicit `exit $LASTEXITCODE` carries its status back to ssh. LASTEXITCODE is zeroed first
+# so a script that returns without setting it cannot inherit a stale status.
+protoc_arg=""
+[ -n "$win_protoc" ] && protoc_arg=" -ProtocPath $(ps_quote "$win_protoc")"
+mit_arg=""
+[ "${MHC_RELEASE_SKIP_MIT:-}" = 1 ] && mit_arg=" -SkipMit"
+printf '%s\n' \
+  "\$global:LASTEXITCODE = 0" \
+  "& $(ps_quote "$win_src/scripts/release-windows.ps1") -Version $(ps_quote "$version") -OutputDir $(ps_quote "$win_out") -OmowrightCommit $(ps_quote "$omowright_commit")${protoc_arg}${mit_arg}" \
+  "exit \$LASTEXITCODE" >"$win_scratch/build.ps1"
+win_ps "$win_scratch/build.ps1" || die "windows build failed"
 # scp hands the remote path to that host as given, so it cannot carry quoting or spaces; the
 # base directories are documented as space-free for this reason.
 scp -o BatchMode=yes "$win_host:$win_out/*" "$win_dir/" || die "could not collect windows assets"
@@ -284,11 +309,12 @@ case "$out_run" in
   *) die "refusing to remove $out_run: it is not inside $out_base" ;;
 esac
 if [ -n "$win_base" ]; then
-  win_cleanup=$(printf '%s\n' \
+  win_cleanup="$win_scratch/cleanup.ps1"
+  printf '%s\n' \
     "\$target = $(ps_quote "$win_base/$run_name")" \
     "if (Test-Path \$target) { Remove-Item -Recurse -Force \$target }" \
-    "exit 0")
-  ssh -o BatchMode=yes "$win_host" "$win_cleanup" 2>/dev/null || true
+    "exit 0" >"$win_cleanup"
+  win_ps "$win_cleanup" >/dev/null 2>&1 || true
 fi
 if [ -n "$mac_base" ]; then
   ssh -o BatchMode=yes "$mac_host" "rm -rf $(sh_quote "$mac_base/$run_name")" 2>/dev/null || true
