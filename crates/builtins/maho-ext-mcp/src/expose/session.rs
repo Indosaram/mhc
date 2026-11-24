@@ -237,6 +237,15 @@ pub async fn register_direct_mcp_tools(
         else {
             continue;
         };
+        if entry.cached_catalog.is_none()
+            && entry.connection.state() != ServerConnectionState::Connected
+        {
+            registered_identities.insert(
+                entry.name.clone(),
+                crate::catalog::mcp_registration_identity(&[], None),
+            );
+            continue;
+        }
         let catalog = build_catalog(entry, server, &config.settings).await;
         registered_identities.insert(
             entry.name.clone(),
@@ -247,8 +256,10 @@ pub async fn register_direct_mcp_tools(
             wiring_errors.push(format!("MCP server {} resolved to search exposure but the shared tool_search service is unwired; its {} tool(s) were not registered. Host tool-search wiring must pass the service to register_mcp_lifecycle.", entry.name, policy.registered_entries.len()));
             continue;
         }
-        for warning in &policy.warnings {
-            warn(entry, warning);
+        if !catalog.is_empty() && policy.filtered_entries.is_empty() {
+            for warning in &policy.warnings {
+                warn(entry, warning);
+            }
         }
         if let Some(cached) = &entry.cached_catalog
             && !cached.prompts.is_empty()
