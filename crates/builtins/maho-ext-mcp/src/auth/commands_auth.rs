@@ -44,6 +44,9 @@ pub async fn run_auth_start(
     client: &reqwest::Client,
 ) -> Result<String, OAuthRequestError> {
     let begin = begin_authorization(&mut provider, client).await?;
+    if begin.authorized && begin.authorization_url.is_none() {
+        return Ok(String::new());
+    }
     let url = begin.authorization_url.ok_or_else(|| {
         OAuthRequestError::Flow(Box::new(OAuthFlowError::new(
             OAuthFailureKind::NeedsAuth,
@@ -315,6 +318,14 @@ async fn interactive_flow(deps: &AuthCommandDeps) -> Result<(), OAuthRequestErro
     if let Some(callback_url) = deps.callback_url.as_deref().filter(|url| !url.is_empty()) {
         let mut provider = deps_provider(deps, callback_url)?;
         let begin = begin_authorization(&mut provider, &deps.client).await?;
+        if begin.authorized && begin.authorization_url.is_none() {
+            (deps.on_reconnect)().await;
+            (deps.notify)(
+                &format!("MCP server {name} authorized"),
+                maho_ext_api::NotificationType::Info,
+            );
+            return Ok(());
+        }
         let url = begin.authorization_url.ok_or_else(|| {
             flow_error(
                 OAuthFailureKind::NeedsAuth,
@@ -347,6 +358,14 @@ pub async fn run_auth_start_command(deps: &AuthCommandDeps) -> Result<String, OA
     let name = &deps.server_name;
     let mut provider = deps_provider(deps, deps.callback_url.as_deref().unwrap_or(PASTE_REDIRECT))?;
     let begin = begin_authorization(&mut provider, &deps.client).await?;
+    if begin.authorized && begin.authorization_url.is_none() {
+        (deps.on_reconnect)().await;
+        (deps.notify)(
+            &format!("MCP server {name} is already authorized"),
+            maho_ext_api::NotificationType::Info,
+        );
+        return Ok(String::new());
+    }
     let url = begin.authorization_url.ok_or_else(|| {
         flow_error(
             OAuthFailureKind::NeedsAuth,

@@ -1,9 +1,19 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use maho_ext_api::*;
 use maho_ext_mcp::{
-    commands::*, config_schema::Transport, host_registry::HostMcpRegistry, service::McpService,
+    auth::{
+        commands_auth::{AuthCommandDeps, McpAuthReconnect, run_auth_start_command},
+        token_store::{McpStoredAuth, McpTokenStore},
+    },
+    commands::*,
+    config_schema::{McpServerConfig, Transport},
+    host_registry::HostMcpRegistry,
+    service::McpService,
 };
 
 #[test]
@@ -285,6 +295,136 @@ async fn add_requires_ui_and_reports_a_cancelled_confirmation_as_a_warning() {
         "/missing/docs-server"
     );
     host.service.lock().await.dispose().await.unwrap();
+}
+
+#[tokio::test]
+async fn auth_start_with_valid_token_reports_already_authorized_and_reconnects() {
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
+
+    let key_pair = rcgen::KeyPair::generate().expect("key pair");
+    let params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).expect("params");
+    let cert = params.self_signed(&key_pair).expect("cert");
+    let cert_der = CertificateDer::from(cert.der().to_vec());
+    let key_der = PrivateKeyDer::Pkcs8(key_pair.serialize_der().into());
+    let crypto = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let tls_config = ServerConfig::builder_with_provider(crypto)
+        .with_safe_default_protocol_versions()
+        .expect("versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .expect("single cert");
+    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let issuer = format!("https://{address}");
+    let server_url = format!("{issuer}/mcp");
+    let metadata = serde_json::json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{issuer}/authorize"),
+        "token_endpoint": format!("{issuer}/token"),
+        "code_challenge_methods_supported": ["S256"]
+    });
+    let metadata_body = serde_json::to_vec(&metadata).unwrap();
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut stop_rx => break,
+                accepted = listener.accept() => accepted,
+            };
+            let Ok((stream, _)) = accepted else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            let metadata_body = metadata_body.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut request = vec![0; 4096];
+                let Ok(read) = tls.read(&mut request).await else {
+                    return;
+                };
+                let head = String::from_utf8_lossy(&request[..read]);
+                let response = if head.starts_with("GET /.well-known/oauth-authorization-server") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        metadata_body.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned()
+                };
+                let _ = tls.write_all(response.as_bytes()).await;
+                if head.starts_with("GET /.well-known/oauth-authorization-server") {
+                    let _ = tls.write_all(&metadata_body).await;
+                }
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    McpTokenStore::new(root.path(), "remote", &server_url)
+        .write(McpStoredAuth {
+            access_token: Some("valid-access-token".into()),
+            expires_at: Some((chrono::Utc::now().timestamp_millis() + 60_000) as f64),
+            ..Default::default()
+        })
+        .unwrap();
+    let config = McpServerConfig {
+        transport: Some(Transport::Http),
+        url: Some(server_url),
+        ..Default::default()
+    };
+
+    let reconnects = Arc::new(AtomicUsize::new(0));
+    let reconnect_count = reconnects.clone();
+    let on_reconnect: McpAuthReconnect = Arc::new(move || {
+        let reconnect_count = reconnect_count.clone();
+        Box::pin(async move {
+            reconnect_count.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let recorded_notes = notes.clone();
+    let notify = Arc::new(move |message: &str, kind| {
+        recorded_notes
+            .lock()
+            .unwrap()
+            .push((message.to_owned(), kind));
+    });
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let deps = AuthCommandDeps {
+        server_name: "remote".into(),
+        config,
+        agent_dir: root.path().into(),
+        has_ui: true,
+        notify,
+        callback_url: None,
+        open_browser: None,
+        on_reconnect,
+        pending: Arc::new(Mutex::new(Default::default())),
+        interactive_guard: None,
+        client,
+    };
+
+    let result = run_auth_start_command(&deps).await;
+    let _ = stop_tx.send(());
+    server.await.unwrap();
+    assert_eq!(result.unwrap(), "");
+    assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+    let notes = notes.lock().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].1, NotificationType::Info);
+    assert!(notes[0].0.contains("already authorized"));
 }
 
 // commands.test.ts disable/enable: the connecting notice precedes the result.
