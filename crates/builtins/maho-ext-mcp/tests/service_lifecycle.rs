@@ -52,6 +52,29 @@ impl McpToolRegistrar for RecordingRegistrar {
     }
 }
 
+fn http_declaration(
+    name: &str,
+    cwd: &std::path::Path,
+    url: String,
+    startup_timeout_ms: f64,
+) -> maho_ext_api::RegisteredMcpServerDeclaration {
+    maho_ext_api::RegisteredMcpServerDeclaration {
+        name: name.into(),
+        config: maho_ext_api::McpServerDeclaration {
+            transport: Some(maho_ext_api::McpTransport::Http),
+            url: Some(url),
+            auth: Some(maho_ext_api::McpAuth::Disabled),
+            exposure: Some(maho_ext_api::McpExposure::Direct),
+            lifecycle: Some(maho_ext_api::McpLifecycle::Eager),
+            startup_timeout_ms: Some(startup_timeout_ms),
+            connect_timeout_ms: Some(5000.0),
+            ..Default::default()
+        },
+        extension_path: "fixture".into(),
+        registration_cwd: cwd.into(),
+    }
+}
+
 fn declaration(
     name: &str,
     cwd: &std::path::Path,
@@ -103,6 +126,391 @@ fn seed_cache(
         },
     )
     .expect("write the seeded mcp catalog");
+}
+
+#[tokio::test]
+async fn deferred_registration_completes_before_deferred_registration_wait_returns() {
+    use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+    let release = Arc::new(tokio::sync::Notify::new());
+    let release_gate = release.clone();
+    let app = Router::new().route(
+        "/mcp",
+        post(move |Json(request): Json<serde_json::Value>| {
+            let release = release_gate.clone();
+            async move {
+                if request.get("id").is_none() {
+                    return StatusCode::ACCEPTED.into_response();
+                }
+                let method = request["method"].as_str().unwrap_or_default();
+                match method {
+                    "initialize" => {
+                        release.notified().await;
+                        Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": {
+                                "protocolVersion": "2025-11-25",
+                                "capabilities": { "tools": {} },
+                                "serverInfo": { "name": "delayed", "version": "1" }
+                            }
+                        }))
+                        .into_response()
+                    }
+                    "tools/list" => Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": {
+                            "tools": [{ "name": "tool_1", "inputSchema": { "type": "object" } }]
+                        }
+                    }))
+                    .into_response(),
+                    "resources/list" => Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": { "resources": [] }
+                    }))
+                    .into_response(),
+                    "prompts/list" => Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": { "prompts": [] }
+                    }))
+                    .into_response(),
+                    _ => Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": { "code": -32601, "message": format!("unsupported method {method}") }
+                    }))
+                    .into_response(),
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let registry = Arc::new(HostMcpRegistry::default());
+    let handle = Arc::new(tokio::sync::Mutex::new(McpService::new(
+        registry.clone(),
+        1,
+    )));
+    let recording = Arc::new(RecordingRegistrar::default());
+    let registrar: Arc<dyn McpToolRegistrar> = recording.clone();
+    {
+        let mut service = handle.lock().await;
+        service.bind_self(Arc::downgrade(&handle));
+        service.bind_registration(registrar, None);
+    }
+    handle
+        .lock()
+        .await
+        .attach_session(
+            root.path(),
+            root.path(),
+            &Default::default(),
+            true,
+            &[http_declaration(
+                "delayed",
+                root.path(),
+                format!("http://{address}/mcp"),
+                10.0,
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        handle
+            .lock()
+            .await
+            .deferred_attach()
+            .wait(std::time::Duration::ZERO)
+            .await,
+        McpStartupRaceResult::Timeout
+    );
+    release.notify_one();
+    let (deferred, deferred_reg) = {
+        let service = handle.lock().await;
+        (service.deferred_attach(), service.deferred_registration())
+    };
+    let timeout = std::time::Duration::from_secs(10);
+    assert_eq!(deferred.wait(timeout).await, McpStartupRaceResult::Settled);
+    assert_eq!(
+        deferred_reg.wait(timeout).await,
+        McpStartupRaceResult::Settled
+    );
+    assert!(
+        recording
+            .registered
+            .lock()
+            .unwrap()
+            .contains(&"mcp_delayed_tool_1".to_owned())
+    );
+    assert!(
+        recording
+            .active
+            .lock()
+            .unwrap()
+            .contains(&"mcp_delayed_tool_1".to_owned())
+    );
+    handle.lock().await.dispose().await.unwrap();
+    registry.dispose().await.unwrap();
+    stop.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shared_http_startup_connect_error_logs_warning_and_marks_needs_auth() {
+    use axum::{
+        Router,
+        http::{HeaderValue, StatusCode, header},
+        routing::post,
+    };
+    let app = Router::new().route(
+        "/mcp",
+        post(|| async {
+            (
+                StatusCode::UNAUTHORIZED,
+                [(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static("Bearer realm=\"mcp\""),
+                )],
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let registry = Arc::new(HostMcpRegistry::default());
+    let handle = Arc::new(tokio::sync::Mutex::new(McpService::new(
+        registry.clone(),
+        1,
+    )));
+    let declaration = http_declaration("auth", root.path(), format!("http://{address}/mcp"), 10.0);
+    handle
+        .lock()
+        .await
+        .attach_session(
+            root.path(),
+            root.path(),
+            &Default::default(),
+            true,
+            &[declaration],
+        )
+        .await
+        .unwrap();
+    let deferred = handle.lock().await.deferred_attach();
+    assert_eq!(
+        deferred.wait(std::time::Duration::from_secs(10)).await,
+        McpStartupRaceResult::Settled
+    );
+    let (state, logs) = {
+        let service = handle.lock().await;
+        let entry = service.connections["auth"].entry.clone();
+        let state = entry.lock().await.connection.state();
+        let logs = service.log_lines("auth", 20).await;
+        (state, logs)
+    };
+    assert_eq!(state, ServerConnectionState::NeedsAuth);
+    assert!(
+        logs.iter().any(|line| line.contains("warning")),
+        "expected warning log, got {logs:?}"
+    );
+    handle.lock().await.dispose().await.unwrap();
+    registry.dispose().await.unwrap();
+    stop.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn startup_oauth_token_rotation_resyncs_so_connection_stays_current() {
+    use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+    use maho_ext_mcp::auth::token_store::{McpStoredAuth, McpTokenStore};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let rotated = Arc::new(AtomicBool::new(false));
+    let url_slot: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let root_path = root.path().to_path_buf();
+    let app = Router::new().route(
+        "/mcp",
+        post({
+            let rotated = rotated.clone();
+            let url_slot = url_slot.clone();
+            move |Json(request): Json<serde_json::Value>| {
+                let rotated = rotated.clone();
+                let url_slot = url_slot.clone();
+                let root_path = root_path.clone();
+                async move {
+                    if request.get("id").is_none() {
+                        return StatusCode::ACCEPTED.into_response();
+                    }
+                    let method = request["method"].as_str().unwrap_or_default();
+                    match method {
+                        "initialize" => {
+                            if !rotated.swap(true, Ordering::SeqCst)
+                                && let Some(url) = url_slot.lock().unwrap().clone()
+                            {
+                                // Simulate an OAuth token refresh writing a new access token during startup connect.
+                                McpTokenStore::new(&root_path, "oauth_srv", &url)
+                                    .write(McpStoredAuth {
+                                        access_token: Some("refreshed-access-token".into()),
+                                        expires_at: Some(
+                                            (chrono::Utc::now().timestamp_millis() + 600_000)
+                                                as f64,
+                                        ),
+                                        ..Default::default()
+                                    })
+                                    .unwrap();
+                            }
+                            Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": request["id"],
+                                "result": {
+                                    "protocolVersion": "2025-11-25",
+                                    "capabilities": { "tools": {} },
+                                    "serverInfo": { "name": "oauth_srv", "version": "1" }
+                                }
+                            }))
+                            .into_response()
+                        }
+                        "tools/list" => Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": {
+                                "tools": [{ "name": "issue_get", "inputSchema": { "type": "object" } }]
+                            }
+                        }))
+                        .into_response(),
+                        "resources/list" => Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": { "resources": [] }
+                        }))
+                        .into_response(),
+                        "prompts/list" => Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": { "prompts": [] }
+                        }))
+                        .into_response(),
+                        _ => Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "error": { "code": -32601, "message": format!("unsupported method {method}") }
+                        }))
+                        .into_response(),
+                    }
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_url = format!("http://{address}/mcp");
+    *url_slot.lock().unwrap() = Some(server_url.clone());
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+
+    McpTokenStore::new(root.path(), "oauth_srv", &server_url)
+        .write(McpStoredAuth {
+            access_token: Some("initial-access-token".into()),
+            expires_at: Some((chrono::Utc::now().timestamp_millis() + 600_000) as f64),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let registry = Arc::new(HostMcpRegistry::default());
+    let handle = Arc::new(tokio::sync::Mutex::new(McpService::new(
+        registry.clone(),
+        1,
+    )));
+    let recording = Arc::new(RecordingRegistrar::default());
+    let registrar: Arc<dyn McpToolRegistrar> = recording.clone();
+    {
+        let mut service = handle.lock().await;
+        service.bind_self(Arc::downgrade(&handle));
+        service.bind_registration(registrar, None);
+    }
+    let decl = maho_ext_api::RegisteredMcpServerDeclaration {
+        name: "oauth_srv".into(),
+        config: maho_ext_api::McpServerDeclaration {
+            transport: Some(maho_ext_api::McpTransport::Http),
+            url: Some(server_url),
+            exposure: Some(maho_ext_api::McpExposure::Direct),
+            startup_timeout_ms: Some(10.0),
+            connect_timeout_ms: Some(5000.0),
+            ..Default::default()
+        },
+        extension_path: "fixture".into(),
+        registration_cwd: root.path().into(),
+    };
+    handle
+        .lock()
+        .await
+        .attach_session(root.path(), root.path(), &Default::default(), true, &[decl])
+        .await
+        .unwrap();
+    let (deferred, deferred_reg) = {
+        let service = handle.lock().await;
+        (service.deferred_attach(), service.deferred_registration())
+    };
+    let timeout = std::time::Duration::from_secs(10);
+    assert_eq!(deferred.wait(timeout).await, McpStartupRaceResult::Settled);
+    assert_eq!(
+        deferred_reg.wait(timeout).await,
+        McpStartupRaceResult::Settled
+    );
+    assert!(
+        handle.lock().await.get_connection("oauth_srv").is_some(),
+        "connection must be resynced under the refreshed OAuth credential instead of hidden as stale"
+    );
+    assert!(
+        recording
+            .active
+            .lock()
+            .unwrap()
+            .contains(&"mcp_oauth_srv_issue_get".to_owned()),
+        "active tools: {:?}",
+        recording.active.lock().unwrap()
+    );
+    handle.lock().await.dispose().await.unwrap();
+    registry.dispose().await.unwrap();
+    stop.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

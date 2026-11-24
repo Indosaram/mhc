@@ -87,9 +87,8 @@ pub async fn prepare_mcp_service_registration_entries_with(
                 let config = server_config.clone();
                 Box::pin(async move {
                     if let Some(config) = config {
-                        crate::startup_race::connect_and_refresh_mcp_catalog(
-                            &mut *entry.lock().await,
-                            &config,
+                        crate::startup_race::connect_and_refresh_mcp_catalog_unlocked(
+                            &entry, &config,
                         )
                         .await?;
                     }
