@@ -39,10 +39,13 @@ static OVERFLOW_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
 });
 
 // PERF-DIVERGENCE(senpi packages/ai/src/utils/overflow.ts): same single-pass RegexSet replacement for the non-overflow guard list. The boolean result is identical.
+// SAFETY-DIVERGENCE(packages/model-core/src/context-overflow.ts): upstream's guard only knows the spaced
+// `rate limit` wording. mhc's credential pool reports `rate-limited`, so a provider line that names the
+// pool's rate limit alongside an overflow phrase would stop being retried and be read as context overflow.
 static NON_OVERFLOW_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
     RegexSet::new([
         r"(?i)^(Throttling error|Service unavailable):",
-        r"(?i)rate limit",
+        r"(?i)rate[\s-]limit",
         r"(?i)too many requests",
     ])
     .expect("valid regex set")

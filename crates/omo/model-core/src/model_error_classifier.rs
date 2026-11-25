@@ -80,7 +80,16 @@ const RETRYABLE_MESSAGE_PATTERNS: &[&str] = &[
     "upstream request failed",
 ];
 
-const AUTO_RETRY_GATE_PATTERNS: &[&str] = &["rate limit", "cooling down", "credentials for model"];
+const AUTO_RETRY_GATE_PATTERNS: &[&str] = &[
+    "rate limit",
+    "cooling down",
+    "credentials for model",
+    // SAFETY-DIVERGENCE(packages/model-core/src/model-error-classifier.ts): the same credential-pool
+    // wording `RETRYABLE_MESSAGE_PATTERNS` accepts, so a hyphenated pool line that announces its own
+    // retry takes the same auto-retry path as the spaced upstream wording.
+    "rate-limited",
+    "rate-limit",
+];
 
 fn has_provider_auto_retry_signal(message: &str) -> bool {
     message.contains("retrying in")
