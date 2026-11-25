@@ -25,7 +25,7 @@ serde_path_to_error = "=0.1.20"
 tempfile = "=3.27.0"
 getrandom = "=0.4.2"
 base64 = "=0.22.1"
-url = "=2.5.8"
+url = "=2.5.9"
 globset = "=0.4.20"
 axum = "=0.8.9"
 fancy-regex.workspace = true
