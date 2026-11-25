@@ -6,8 +6,8 @@
 use serde_json::Value;
 
 use super::adapter::DeliverySender;
-use super::constants::GATEWAY_PROVENANCE_SENTENCE;
-use super::types::{DeliveryRow, Provenance};
+use super::constants::{GATEWAY_PEER_REPLY_SENTENCE, GATEWAY_PROVENANCE_SENTENCE};
+use super::types::{DeliveryAuthority, DeliveryRow, Provenance};
 
 /// `headerValue`: whitespace, brackets and `=` never reach the machine header.
 pub fn header_value(value: &str) -> String {
@@ -54,7 +54,7 @@ fn label(value: &str) -> String {
         .collect()
 }
 
-/// `deliveryProvenanceLine`: workspace and project first, then the optional lane and session.
+/// `deliveryProvenanceLine`: workspace and project first, then optional lane, session, device.
 pub fn delivery_provenance_line(provenance: Option<&Provenance>) -> String {
     let Some(provenance) = provenance else {
         return "From (provenance not recorded)".to_owned();
@@ -69,6 +69,9 @@ pub fn delivery_provenance_line(provenance: Option<&Provenance>) -> String {
     }
     if let Some(session) = &provenance.session {
         line.push_str(&format!(" / session {}", quoted_header_value(session)));
+    }
+    if let Some(device) = &provenance.device {
+        line.push_str(&format!(" / device {}", quoted_header_value(device)));
     }
     line
 }
@@ -122,9 +125,35 @@ pub fn delivery_sender(row: &DeliveryRow) -> DeliverySender {
     }
 }
 
-/// `renderDeliveryText`: one header line, the fixed sentence, then the body as JSON.
+fn render_creator_prompt(row: &DeliveryRow) -> String {
+    match row.envelope.origin.session_id() {
+        Some(session) => format!(
+            "{}\n\n(This thread was created by session {}; report to it with tool.thread_send({{ thread: {:?}, message }}) inside an eval cell.)",
+            row.body, session, session
+        ),
+        None => row.body.clone(),
+    }
+}
+
+/// The text a person sees for a delivery: the creator's prompt as written, any other delivery under its provenance line.
+pub fn render_delivery_display_text(row: &DeliveryRow) -> String {
+    if row.envelope.authority == Some(DeliveryAuthority::Creator) {
+        row.body.clone()
+    } else {
+        format!(
+            "{}\n{}",
+            delivery_provenance_line(row.envelope.provenance.as_ref()),
+            row.body
+        )
+    }
+}
+
+/// `renderDeliveryText`: one header line, the fixed sentence, then the body as JSON (or creator prompt).
 pub fn render_delivery_text(row: &DeliveryRow) -> String {
     let envelope = &row.envelope;
+    if envelope.authority == Some(DeliveryAuthority::Creator) {
+        return render_creator_prompt(row);
+    }
     let source = if envelope.origin.session_id().is_some() {
         "peer_agent"
     } else {
@@ -151,6 +180,9 @@ pub fn render_delivery_text(row: &DeliveryRow) -> String {
         if let Some(session) = &provenance.session {
             header.push(format!("session={}", quoted_header_value(session)));
         }
+        if let Some(device) = &provenance.device {
+            header.push(format!("device={}", quoted_header_value(device)));
+        }
     }
     header.push(format!("actor={}", header_value(&envelope.actor)));
     header.extend(author_fields(row));
@@ -169,11 +201,16 @@ pub fn render_delivery_text(row: &DeliveryRow) -> String {
     }
     let body = serde_json::to_string(&Value::String(row.body.clone()))
         .unwrap_or_else(|_| "\"\"".to_owned());
+    let sentence = if source == "peer_agent" {
+        format!("{GATEWAY_PROVENANCE_SENTENCE} {GATEWAY_PEER_REPLY_SENTENCE}")
+    } else {
+        GATEWAY_PROVENANCE_SENTENCE.to_owned()
+    };
     format!(
         "{} [{}]\n{}\n{}",
         delivery_provenance_line(envelope.provenance.as_ref()),
         header.join(" "),
-        GATEWAY_PROVENANCE_SENTENCE,
+        sentence,
         body
     )
 }
@@ -199,6 +236,8 @@ mod tests {
                     project: "example-project".into(),
                     lane: Some("review".into()),
                     session: Some("planner".into()),
+                    device: None,
+                    device_absent: None,
                 }),
                 origin: EnvelopeOrigin::Session {
                     session: "sender".into(),
@@ -208,6 +247,7 @@ mod tests {
                 root_id: "root-1".into(),
                 hop: 1,
                 delivery_id: "delivery-1".into(),
+                authority: None,
             },
             body: "Review this change.".into(),
             bytes: 19,
@@ -220,6 +260,7 @@ mod tests {
             claimed_at: None,
             attempt: 0,
             admission_kind: None,
+            wait_kind: None,
             turn_epoch: None,
             root_id: "root-1".into(),
             hop: 1,
@@ -229,6 +270,10 @@ mod tests {
             binding_id: None,
             binding_revision: None,
             actor_user_id: None,
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: None,
         }
     }
 
@@ -255,6 +300,8 @@ mod tests {
             project: hostile.into(),
             lane: Some(hostile.into()),
             session: Some(hostile.into()),
+            device: None,
+            device_absent: None,
         });
         let text = render_delivery_text(&hostile_row);
         let lines: Vec<&str> = text.split('\n').collect();
@@ -335,6 +382,8 @@ mod tests {
             project: "project".into(),
             lane: None,
             session: None,
+            device: None,
+            device_absent: None,
         });
         let text = render_delivery_text(&row);
         assert!(first_line(&text).starts_with("From Example / project [OMO_GATEWAY v=1 "));

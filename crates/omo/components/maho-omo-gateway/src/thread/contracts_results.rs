@@ -65,6 +65,10 @@ pub struct ThreadSummary {
     pub controls: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 /// A thread as a tool result names it; `link` is `[title](omo-thread://v1/<thread_id>)`.

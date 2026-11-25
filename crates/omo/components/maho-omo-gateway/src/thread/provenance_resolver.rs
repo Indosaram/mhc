@@ -419,6 +419,8 @@ pub fn resolve_provenance(runtime: &ProvenanceRuntime) -> Provenance {
             project,
             lane,
             session: None,
+            device: None,
+            device_absent: None,
         };
     }
     let warn: &dyn Fn(&str) = match &runtime.on_warning {
@@ -446,6 +448,8 @@ pub fn resolve_provenance(runtime: &ProvenanceRuntime) -> Provenance {
             project,
             lane,
             session: None,
+            device: None,
+            device_absent: None,
         };
     }
     let table = match &runtime.workspaces {
@@ -489,6 +493,8 @@ pub fn resolve_provenance(runtime: &ProvenanceRuntime) -> Provenance {
         project,
         lane,
         session: None,
+        device: None,
+        device_absent: None,
     }
 }
 
@@ -549,7 +555,9 @@ mod tests {
                 workspace: "Explicit".into(),
                 project: "explicit-project".into(),
                 lane: Some("review".into()),
-                session: None
+                session: None,
+                device: None,
+                device_absent: None,
             }
         );
     }
@@ -595,7 +603,9 @@ mod tests {
                 workspace: "Owner workspace".into(),
                 project: "remote-project".into(),
                 lane: None,
-                session: None
+                session: None,
+                device: None,
+                device_absent: None,
             }
         );
     }
@@ -619,7 +629,9 @@ mod tests {
                 workspace: "unclassified".into(),
                 project: "example-project".into(),
                 lane: None,
-                session: None
+                session: None,
+                device: None,
+                device_absent: None,
             }
         );
     }

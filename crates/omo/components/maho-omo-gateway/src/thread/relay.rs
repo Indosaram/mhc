@@ -9,6 +9,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::adapter::{BoxFuture, GatewayEndpointPort, GatewayEndpointRef, UiAnswer, UiAnswerReply};
+use super::answer_shape::{AnswerShape, UiRequestKind, answer_shape as shape_ui_answer};
+use super::author::normalize_author;
 use super::engine::{GatewayDeliverRequest, GatewayEngine};
 use super::errors::{ThreadToolFailure, thread_tool_failure};
 use super::store_api::GatewayStoreApi;
@@ -104,15 +106,10 @@ fn text_too_large(text: &str) -> Option<Box<ThreadToolFailure>> {
 
 /// The answer shape a request kind reads, from its text.
 pub fn answer_shape(kind: Option<&str>, answer: &str) -> Result<Value, String> {
-    match kind {
-        Some("confirm") => match answer.trim().to_ascii_lowercase().as_str() {
-            "yes" | "y" | "true" | "ok" => Ok(serde_json::json!({ "confirmed": true })),
-            "no" | "n" | "false" => Ok(serde_json::json!({ "confirmed": false })),
-            other => Err(format!("a confirm answer reads yes or no, not {other}")),
-        },
-        Some("select") => Ok(serde_json::json!({ "selected": answer })),
-        Some("editor") | Some("input") => Ok(serde_json::json!({ "text": answer })),
-        _ => Ok(serde_json::json!({ "answer": answer })),
+    let parsed = kind.and_then(UiRequestKind::parse);
+    match shape_ui_answer(parsed, answer) {
+        AnswerShape::Ok(fields) => Ok(fields),
+        AnswerShape::Refused(reason) => Err(reason),
     }
 }
 
@@ -283,12 +280,21 @@ impl GatewayRelay {
             if let Some(too_large) = text_too_large(&request.answer) {
                 return Err(too_large);
             }
+            let author = match request.author.as_ref() {
+                Some(a) => match normalize_author(a) {
+                    Ok(norm) => Some(norm),
+                    Err(refusal) => {
+                        return Err(failure("invalid_arguments", refusal.message, None, None));
+                    }
+                },
+                None => None,
+            };
             let claim = match relay.options.store.claim_answer(
                 relay.now(),
                 &request.binding_id,
                 &request.reply_token,
                 &request.answer,
-                request.author.as_ref(),
+                author.as_ref(),
             ) {
                 Ok(outcome) => match from_store(outcome) {
                     Ok(claim) => claim,
@@ -521,13 +527,24 @@ impl GatewayRelay {
                     ),
                 };
             }
+            let author = match request.author.as_ref() {
+                Some(a) => match normalize_author(a) {
+                    Ok(norm) => Some(norm),
+                    Err(refusal) => {
+                        return GatewayDeliveryResult::Error {
+                            error: *failure("invalid_arguments", refusal.message, None, None),
+                        };
+                    }
+                },
+                None => None,
+            };
             let origin = super::types::ExternalOrigin {
                 platform: binding.platform.clone(),
                 account_id: binding.account_id.clone(),
                 chat_id: binding.chat_id.clone(),
                 thread_id: binding.thread_id.clone(),
                 message_id: request.event_id.clone(),
-                author: request.author.clone(),
+                author,
             };
             let mut deliver = GatewayDeliverRequest::new(
                 GatewaySender::External {
@@ -582,11 +599,11 @@ mod tests {
         assert!(answer_shape(Some("confirm"), "maybe").is_err());
         assert_eq!(
             answer_shape(Some("question"), "yes").unwrap(),
-            serde_json::json!({ "answer": "yes" })
+            serde_json::json!({ "answers": {}, "comment": "yes" })
         );
         assert_eq!(
             answer_shape(None, "hello").unwrap(),
-            serde_json::json!({ "answer": "hello" })
+            serde_json::json!({ "value": "hello", "answers": {}, "comment": "hello" })
         );
     }
 

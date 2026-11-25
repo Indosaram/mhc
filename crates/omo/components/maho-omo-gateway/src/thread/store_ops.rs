@@ -19,13 +19,16 @@ use rusqlite::Connection;
 use rusqlite::types::Value as SqliteValue;
 use serde_json::Value;
 
+use super::backlog::{BacklogCheck, backlog_refusal};
 use super::constants::{
-    GATEWAY_RECEIPT_RETENTION_MS, MAX_CAUSAL_DELIVERIES, MAX_FANOUT_PER_TURN, MAX_HOPS,
-    PAIR_BUCKET_BURST, PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, ROOT_LIFETIME_MS, TARGET_MAX_BYTES,
-    TARGET_MAX_MESSAGES, is_durable_id,
+    GATEWAY_RECEIPT_RETENTION_MS, OPEN_STATES, PAIR_BUCKET_BURST, PAIR_BUCKET_REFILL_MS,
+    QUEUED_TTL_MS, RETENTION_SWEEP_BATCH, ROOT_LIFETIME_MS, SESSION_CONTROL_DELIVERY_TYPE,
+    is_durable_id,
 };
+use super::errors::pair_loop_guard_message;
 use super::provenance_record::is_provenance;
-use super::schema::{GATEWAY_MIGRATIONS, GATEWAY_NEEDS_FK_OFF, GatewaySchemaVersionError};
+use super::result::result_from_row;
+use super::schema::{GATEWAY_MIGRATIONS, GatewaySchemaVersionError, gateway_table_rebuild_target};
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane,
     EnqueueOutcome, EnqueueRequest, GatewayStoreConfig, GatewayStoreEvent, GatewayStoreStats,
@@ -449,6 +452,7 @@ const DELIVERY_COLUMNS: &[&str] = &[
     "claimed_at",
     "attempt",
     "admission_kind",
+    "wait_kind",
     "turn_epoch",
     "root_id",
     "hop",
@@ -458,9 +462,15 @@ const DELIVERY_COLUMNS: &[&str] = &[
     "binding_id",
     "binding_revision",
     "actor_user_id",
+    "ledger_id",
+    "verbatim_text",
+    "verbatim_display_text",
+    "collapse_key",
 ];
 
-pub const OPEN_STATES: &str = "('queued', 'admitting', 'admitted')";
+pub(crate) fn engine_key(row: &DeliveryRow) -> &str {
+    row.ledger_id.as_deref().unwrap_or(&row.delivery_id)
+}
 
 fn row_from_record(record: &SqlRow) -> DeliveryRow {
     let envelope: StoredDeliveryEnvelope = serde_json::from_str(&row_str(record, "envelope"))
@@ -474,6 +484,7 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
             root_id: String::new(),
             hop: 0,
             delivery_id: String::new(),
+            authority: None,
         });
     DeliveryRow {
         delivery_id: row_str(record, "delivery_id"),
@@ -489,13 +500,8 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
             "mode_requested",
         ))
         .unwrap_or(super::types::GatewayDeliveryMode::Auto),
-        mode_effective: row_opt_str(record, "mode_effective").and_then(|lane| {
-            match lane.as_str() {
-                "steer" => Some(EffectiveLane::Steer),
-                "follow_up" => Some(EffectiveLane::FollowUp),
-                _ => None,
-            }
-        }),
+        mode_effective: row_opt_str(record, "mode_effective")
+            .and_then(|lane| EffectiveLane::parse(&lane)),
         expected_turn_id: row_opt_i64(record, "expected_turn_id"),
         state: DeliveryState::parse(&row_str(record, "state")).unwrap_or(DeliveryState::Queued),
         reason: row_opt_str(record, "reason"),
@@ -504,6 +510,7 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         claimed_at: row_opt_i64(record, "claimed_at"),
         attempt: row_i64(record, "attempt"),
         admission_kind: row_opt_str(record, "admission_kind"),
+        wait_kind: row_opt_str(record, "wait_kind").filter(|w| w == "approval"),
         turn_epoch: row_opt_i64(record, "turn_epoch"),
         root_id: row_str(record, "root_id"),
         hop: row_i64(record, "hop"),
@@ -513,10 +520,14 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         binding_id: row_opt_str(record, "binding_id"),
         binding_revision: row_opt_i64(record, "binding_revision"),
         actor_user_id: row_opt_str(record, "actor_user_id"),
+        ledger_id: row_opt_str(record, "ledger_id"),
+        verbatim_text: row_opt_str(record, "verbatim_text"),
+        verbatim_display_text: row_opt_str(record, "verbatim_display_text"),
+        collapse_key: row_opt_str(record, "collapse_key"),
     }
 }
 
-fn select_rows(
+pub(crate) fn select_rows(
     ctx: &StoreContext,
     where_clause: &str,
     params: &[SqliteValue],
@@ -612,6 +623,7 @@ fn insert_delivery(ctx: &StoreContext, row: &DeliveryRow) -> Result<(), StoreErr
             v_opt_i64(row.claimed_at),
             v_i64(row.attempt),
             v_opt_str(row.admission_kind.clone()),
+            v_opt_str(row.wait_kind.clone()),
             v_opt_i64(row.turn_epoch),
             v_str(&row.root_id),
             v_i64(row.hop),
@@ -621,12 +633,16 @@ fn insert_delivery(ctx: &StoreContext, row: &DeliveryRow) -> Result<(), StoreErr
             v_opt_str(row.binding_id.clone()),
             v_opt_i64(row.binding_revision),
             v_opt_str(row.actor_user_id.clone()),
+            v_opt_str(row.ledger_id.clone()),
+            v_opt_str(row.verbatim_text.clone()),
+            v_opt_str(row.verbatim_display_text.clone()),
+            v_opt_str(row.collapse_key.clone()),
         ],
     )?;
     Ok(())
 }
 
-fn args_hash(value: &Value) -> String {
+pub(crate) fn args_hash(value: &Value) -> String {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     hasher.update(serde_json::to_vec(value).unwrap_or_default());
@@ -678,7 +694,8 @@ pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
         if version >= GATEWAY_MIGRATIONS.len() as i64 {
             return Ok(());
         }
-        let needs_foreign_keys_off = GATEWAY_NEEDS_FK_OFF.contains(&(version as usize));
+        let rebuilt = gateway_table_rebuild_target(version as usize);
+        let needs_foreign_keys_off = rebuilt.is_some();
         if needs_foreign_keys_off {
             ctx.exec("PRAGMA foreign_keys = OFF")?;
         }
@@ -690,14 +707,14 @@ pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
             for statement in GATEWAY_MIGRATIONS[current as usize] {
                 ctx.exec(statement)?;
             }
-            if needs_foreign_keys_off {
+            if let Some(target_table) = rebuilt {
                 let violations = ctx.all("SELECT parent FROM pragma_foreign_key_check", &[])?;
                 if violations
                     .iter()
-                    .any(|row| row_str(row, "parent") == "bindings")
+                    .any(|row| row_str(row, "parent") == target_table)
                 {
                     return Err(StoreError::Message(format!(
-                        "gateway schema {} would leave a foreign-key violation referencing bindings; staying at v{current}",
+                        "gateway schema {} would leave a foreign-key violation referencing {target_table}; staying at v{current}",
                         current + 1
                     )));
                 }
@@ -840,38 +857,43 @@ fn place_causally(
     ctx: &StoreContext,
     request: &EnqueueRequest,
 ) -> Result<Result<CausalPlacement, EnqueueOutcome>, StoreError> {
-    let placement = match &request.cause_delivery_id {
-        Some(cause_id) => {
-            let cause = select_row(ctx, cause_id)?;
-            let valid = cause.as_ref().is_some_and(|cause| {
-                cause.target_durable_id == request.sender_node
-                    && matches!(
-                        cause.state,
-                        DeliveryState::Admitting | DeliveryState::Admitted | DeliveryState::Applied
-                    )
-            });
-            let Some(cause) = cause.filter(|_| valid) else {
-                return Ok(Err(refused(
-                    "invalid_arguments",
-                    "The delivery this send continues is not one the sender received.",
-                    Some(serde_json::json!({ "guard": "unknown_cause" })),
-                )));
-            };
-            let mut via = cause.envelope.via.clone();
-            via.push(request.sender_node.clone());
-            CausalPlacement {
-                root_id: cause.root_id.clone(),
-                hop: cause.hop + 1,
-                via,
-                new_root: false,
-            }
+    let cause = match &request.cause_delivery_id {
+        Some(cause_id) => select_rows(
+            ctx,
+            "delivery_id = ? OR ledger_id = ?",
+            &[v_str(cause_id), v_str(cause_id)],
+            None,
+        )?
+        .into_iter()
+        .next(),
+        None => None,
+    };
+    let mut placement = if let Some(cause) = cause {
+        let valid = cause.target_durable_id == request.sender_node
+            && matches!(
+                cause.state,
+                DeliveryState::Admitting | DeliveryState::Admitted | DeliveryState::Applied
+            );
+        if !valid {
+            return Ok(Err(refused(
+                "invalid_arguments",
+                "The delivery this send continues is not one the sender received.",
+                Some(serde_json::json!({ "guard": "unknown_cause" })),
+            )));
         }
-        None => CausalPlacement {
+        CausalPlacement {
+            root_id: cause.root_id,
+            hop: cause.hop.max(request.inbound_hop.unwrap_or(0)) + 1,
+            via: vec![request.sender_node.clone()],
+            new_root: false,
+        }
+    } else {
+        CausalPlacement {
             root_id: new_id("root"),
-            hop: 1,
+            hop: request.inbound_hop.unwrap_or(0) + 1,
             via: vec![request.sender_node.clone()],
             new_root: true,
-        },
+        }
     };
     if let Some(claimed) = &request.claimed_root_id
         && *claimed != placement.root_id
@@ -880,6 +902,13 @@ fn place_causally(
             "invalid_arguments",
             "The causal root is derived by the gateway and cannot be chosen by the caller.",
             Some(serde_json::json!({ "guard": "forged_root" })),
+        )));
+    }
+    if request.target_durable_id == request.sender_node {
+        return Ok(Err(refused(
+            "loop_detected",
+            "A session cannot deliver to itself through the gateway.",
+            Some(serde_json::json!({ "guard": "self_send" })),
         )));
     }
     if !placement.new_root {
@@ -891,64 +920,9 @@ fn place_causally(
             .as_ref()
             .is_none_or(|root| row_i64(root, "expires_at") <= request.now)
         {
-            return Ok(Err(refused(
-                "loop_detected",
-                "This causal chain is older than its lifetime.",
-                Some(serde_json::json!({ "guard": "root_expired", "root_id": placement.root_id })),
-            )));
+            placement.root_id = new_id("root");
+            placement.new_root = true;
         }
-    }
-    if request.target_durable_id == request.sender_node {
-        return Ok(Err(refused(
-            "loop_detected",
-            "A session cannot deliver to itself through the gateway.",
-            Some(serde_json::json!({ "guard": "self_send" })),
-        )));
-    }
-    if placement.hop > MAX_HOPS {
-        return Ok(Err(refused(
-            "loop_detected",
-            format!(
-                "This delivery would be hop {}; at most {MAX_HOPS} are allowed.",
-                placement.hop
-            ),
-            Some(serde_json::json!({ "guard": "hop_limit", "hop": placement.hop })),
-        )));
-    }
-    let count = ctx
-        .one(
-            "SELECT COUNT(*) AS n FROM deliveries WHERE root_id = ? AND state != 'refused'",
-            &[v_str(&placement.root_id)],
-        )?
-        .as_ref()
-        .map(|row| row_i64(row, "n"))
-        .unwrap_or(0);
-    if count >= MAX_CAUSAL_DELIVERIES {
-        return Ok(Err(refused(
-            "loop_detected",
-            format!("This causal chain already carried {count} deliveries."),
-            Some(serde_json::json!({ "guard": "causal_budget", "root_id": placement.root_id })),
-        )));
-    }
-    let edges: Vec<(String, String)> = ctx
-        .all(
-            "SELECT from_durable_id, to_durable_id FROM causal_edges WHERE root_id = ?",
-            &[v_str(&placement.root_id)],
-        )?
-        .iter()
-        .map(|row| {
-            (
-                row_str(row, "from_durable_id"),
-                row_str(row, "to_durable_id"),
-            )
-        })
-        .collect();
-    if closes_cycle(&edges, &request.sender_node, &request.target_durable_id) {
-        return Ok(Err(refused(
-            "loop_detected",
-            "The target already leads back to the sender in this causal chain.",
-            Some(serde_json::json!({ "guard": "cycle", "root_id": placement.root_id })),
-        )));
     }
     Ok(Ok(placement))
 }
@@ -974,32 +948,6 @@ pub fn closes_cycle(edges: &[(String, String)], from: &str, to: &str) -> bool {
     false
 }
 
-fn check_fanout(
-    ctx: &StoreContext,
-    request: &EnqueueRequest,
-) -> Result<Option<EnqueueOutcome>, StoreError> {
-    let Some(sender_turn) = &request.sender_turn else {
-        return Ok(None);
-    };
-    let targets: Vec<String> = ctx
-        .all(
-            "SELECT DISTINCT target_durable_id AS t FROM deliveries WHERE sender = ? AND sender_turn = ? AND state != 'refused'",
-            &[v_str(&request.sender_principal), v_str(sender_turn)],
-        )?
-        .iter()
-        .map(|row| row_str(row, "t"))
-        .collect();
-    if targets.contains(&request.target_durable_id) || (targets.len() as i64) < MAX_FANOUT_PER_TURN
-    {
-        return Ok(None);
-    }
-    Ok(Some(refused(
-        "overloaded",
-        format!("One turn may reach at most {MAX_FANOUT_PER_TURN} sessions."),
-        Some(serde_json::json!({ "budget": "fanout" })),
-    )))
-}
-
 fn take_pair_token(
     ctx: &StoreContext,
     request: &EnqueueRequest,
@@ -1022,12 +970,22 @@ fn take_pair_token(
         }
     };
     if tokens < 1.0 {
+        let window_ms = (PAIR_BUCKET_BURST * PAIR_BUCKET_REFILL_MS) as i64;
+        let retry_after_ms = ((1.0 - tokens) * PAIR_BUCKET_REFILL_MS).ceil() as i64;
         return Ok(Some(refused(
-            "overloaded",
-            "Too many deliveries to this session; wait before sending again.",
-            Some(
-                serde_json::json!({ "budget": "pair_rate", "retry_after_ms": ((1.0 - tokens) * PAIR_BUCKET_REFILL_MS).ceil() as i64 }),
+            "pair_loop_guard",
+            pair_loop_guard_message(
+                &sender,
+                &request.target_durable_id,
+                PAIR_BUCKET_BURST as i64,
+                window_ms,
             ),
+            Some(serde_json::json!({
+                "guard": "pair_loop",
+                "burst": PAIR_BUCKET_BURST,
+                "window_ms": window_ms,
+                "retry_after_ms": retry_after_ms,
+            })),
         )));
     }
     ctx.run(
@@ -1138,8 +1096,24 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+pub struct IntakeFields<'a> {
+    pub ledger_id: &'a str,
+    pub verbatim_text: &'a str,
+    pub verbatim_display_text: &'a str,
+    pub answer: &'a dyn Fn(&DeliveryRow, i64) -> Value,
+    pub existing: &'a dyn Fn(&DeliveryRow, i64) -> EnqueueOutcome,
+}
+
 /// The sender half of a delivery.
 pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOutcome, StoreError> {
+    enqueue_with_intake(ctx, request, None)
+}
+
+pub fn enqueue_with_intake(
+    ctx: &StoreContext,
+    request: &EnqueueRequest,
+    intake_fields: Option<IntakeFields<'_>>,
+) -> Result<EnqueueOutcome, StoreError> {
     let provenance = serde_json::to_value(&request.provenance).unwrap_or(Value::Null);
     if !is_provenance(&provenance) {
         return Ok(refused(
@@ -1155,6 +1129,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             None,
         ));
     }
+    let dead_claims = expired_dead_claims(ctx, &request.target_durable_id, request.now)?;
     if !begin_immediate(ctx, "enqueue", false)? {
         return Ok(EnqueueOutcome::Busy);
     }
@@ -1182,6 +1157,18 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             committed = true;
             return Ok(outcome);
         }
+        if let Some(intake) = &intake_fields
+            && let Some(held_row) =
+                select_rows(ctx, "ledger_id = ?", &[v_str(intake.ledger_id)], None)?
+                    .into_iter()
+                    .next()
+        {
+            let pos = queue_position(ctx, &held_row)?;
+            let outcome = (intake.existing)(&held_row, pos);
+            ctx.exec(commit_sql)?;
+            committed = true;
+            return Ok(outcome);
+        }
         let binding_expiry = match check_binding(ctx, request)? {
             Ok(expiry) => expiry,
             Err(refusal) => {
@@ -1189,24 +1176,45 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        let backlog = ctx.one(
-            &format!("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM deliveries WHERE target_durable_id = ? AND state IN {OPEN_STATES}"),
-            &[v_str(&request.target_durable_id)],
+        let expired = refuse_expired_queued(
+            ctx,
+            request.now,
+            RETENTION_SWEEP_BATCH,
+            Some(&request.target_durable_id),
         )?;
-        let bytes = request.body.len() as i64;
-        let pending_messages = backlog.as_ref().map(|row| row_i64(row, "n")).unwrap_or(0);
-        let pending_bytes = backlog.as_ref().map(|row| row_i64(row, "b")).unwrap_or(0);
-        if pending_messages >= TARGET_MAX_MESSAGES
-            || pending_bytes + bytes > TARGET_MAX_BYTES as i64
-        {
+        let (absorbing, superseded) = collapse_earlier(ctx, request)?;
+        if let Some(absorbing) = absorbing {
+            insert_receipt(ctx, request, &absorbing.delivery_id, None)?;
+            let pos = queue_position(ctx, &absorbing)?;
+            let outcome = EnqueueOutcome::Collapsed {
+                row: Box::new(absorbing),
+                queue_position: pos,
+            };
+            ctx.exec(commit_sql)?;
+            committed = true;
+            for (gone_id, gone_target) in expired {
+                unlink_marker(ctx, &gone_target, &gone_id);
+            }
+            return Ok(outcome);
+        }
+        let bytes = request.body.len();
+        if let Some(refusal) = backlog_refusal(
+            ctx,
+            &BacklogCheck {
+                target: &request.target_durable_id,
+                mode: request.mode,
+                bytes,
+                now: request.now,
+                dead_claims: &dead_claims,
+                target_running: request.endpoint_kind.is_some(),
+            },
+        )? {
             rollback_quietly(ctx);
-            return Ok(refused(
-                "queue_full",
-                "The target's delivery backlog is full.",
-                Some(
-                    serde_json::json!({ "max_messages": TARGET_MAX_MESSAGES, "max_bytes": TARGET_MAX_BYTES }),
-                ),
-            ));
+            return Ok(EnqueueOutcome::Refused {
+                code: refusal.code,
+                message: refusal.message,
+                details: refusal.details,
+            });
         }
         let placement = match place_causally(ctx, request)? {
             Ok(placement) => placement,
@@ -1215,20 +1223,21 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        if let Some(budget) = check_fanout(ctx, request)?.or(take_pair_token(ctx, request)?) {
+        if let Some(budget) = take_pair_token(ctx, request)? {
             rollback_quietly(ctx);
             return Ok(budget);
         }
         if placement.new_root {
             ctx.run(
                 "INSERT INTO causal_roots (root_id, origin_principal, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                &[v_str(&placement.root_id), v_str(&request.sender_principal), v_i64(request.now), v_i64(request.now + ROOT_LIFETIME_MS)],
+                &[
+                    v_str(&placement.root_id),
+                    v_str(&request.sender_principal),
+                    v_i64(request.now),
+                    v_i64(request.now + ROOT_LIFETIME_MS),
+                ],
             )?;
         }
-        ctx.run(
-            "INSERT OR IGNORE INTO causal_edges (root_id, from_durable_id, to_durable_id, delivery_id, created_at) VALUES (?, ?, ?, ?, ?)",
-            &[v_str(&placement.root_id), v_str(&request.sender_node), v_str(&request.target_durable_id), v_str(&request.delivery_id), v_i64(request.now)],
-        )?;
         let row = DeliveryRow {
             delivery_id: request.delivery_id.clone(),
             target_durable_id: request.target_durable_id.clone(),
@@ -1243,9 +1252,10 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 root_id: placement.root_id.clone(),
                 hop: placement.hop,
                 delivery_id: request.delivery_id.clone(),
+                authority: request.authority,
             },
             body: request.body.clone(),
-            bytes,
+            bytes: bytes as i64,
             mode_requested: request.mode,
             mode_effective: None,
             expected_turn_id: request.expected_turn_id,
@@ -1255,6 +1265,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             claimed_at: None,
             attempt: 0,
             admission_kind: None,
+            wait_kind: None,
             turn_epoch: None,
             root_id: placement.root_id.clone(),
             hop: placement.hop,
@@ -1273,30 +1284,31 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 .external()
                 .and_then(|origin| origin.author.as_ref())
                 .and_then(|author| author.user_id.clone()),
+            ledger_id: intake_fields.as_ref().map(|f| f.ledger_id.to_owned()),
+            verbatim_text: intake_fields.as_ref().map(|f| f.verbatim_text.to_owned()),
+            verbatim_display_text: intake_fields
+                .as_ref()
+                .map(|f| f.verbatim_display_text.to_owned()),
+            collapse_key: request.collapse_key.clone(),
         };
         insert_delivery(ctx, &row)?;
-        ctx.run(
-            "INSERT INTO receipts (principal, operation, idempotency_key, args_hash, status, delivery_id, owner_instance, created_at, updated_at, expires_at) VALUES (?, 'deliver', ?, ?, 'prepared', ?, ?, ?, ?, ?)",
-            &[
-                v_str(&request.sender_principal),
-                v_str(&request.receipt.idempotency_key),
-                v_str(&request.receipt.args_hash),
-                v_str(&row.delivery_id),
-                v_str(&ctx.config.instance_id),
-                v_i64(request.now),
-                v_i64(request.now),
-                v_i64(request.now + GATEWAY_RECEIPT_RETENTION_MS),
-            ],
-        )?;
+        let position = queue_position(ctx, &row)?;
+        let answer = intake_fields.as_ref().map(|f| (f.answer)(&row, position));
+        insert_receipt(ctx, request, &row.delivery_id, answer.as_ref())?;
         marker = Some(create_marker(
             ctx,
             &row.target_durable_id,
             &row.delivery_id,
             false,
         )?);
-        let position = queue_position(ctx, &row)?;
         ctx.exec(commit_sql)?;
         committed = true;
+        for (gone_id, gone_target) in expired {
+            unlink_marker(ctx, &gone_target, &gone_id);
+        }
+        for id in superseded {
+            unlink_marker(ctx, &request.target_durable_id, &id);
+        }
         Ok(EnqueueOutcome::Inserted {
             row: Box::new(row),
             queue_position: position,
@@ -1311,6 +1323,146 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
     outcome
 }
 
+fn collapse_earlier(
+    ctx: &StoreContext,
+    request: &EnqueueRequest,
+) -> Result<(Option<DeliveryRow>, Vec<String>), StoreError> {
+    let Some(collapse_key) = request.collapse_key.as_deref() else {
+        return Ok((None, Vec::new()));
+    };
+    let where_clause = format!(
+        "target_durable_id = ? AND sender = ? AND collapse_key = ? AND state IN {OPEN_STATES}"
+    );
+    let earlier = select_rows(
+        ctx,
+        &where_clause,
+        &[
+            v_str(&request.target_durable_id),
+            v_str(&request.sender_principal),
+            v_str(collapse_key),
+        ],
+        Some("seq"),
+    )?;
+    if let Some(taken) = earlier
+        .iter()
+        .find(|row| row.state != DeliveryState::Queued)
+        .cloned()
+    {
+        return Ok((Some(taken), Vec::new()));
+    }
+    let mut superseded = Vec::with_capacity(earlier.len());
+    for row in &earlier {
+        transition(
+            ctx,
+            row,
+            DeliveryState::Refused,
+            request.now,
+            Some(RefusalReason::Superseded),
+        )?;
+        if let Some(refused_row) = select_row(ctx, &row.delivery_id)? {
+            let res = result_from_row(&refused_row, 0, None, true, false);
+            let res_json = serde_json::to_string(&res).unwrap_or_else(|_| "null".to_owned());
+            ctx.run(
+                "UPDATE receipts SET status = 'completed', result = ?, updated_at = ? WHERE operation = 'deliver' AND delivery_id = ?",
+                &[v_str(res_json), v_i64(request.now), v_str(&row.delivery_id)],
+            )?;
+        }
+        superseded.push(row.delivery_id.clone());
+    }
+    Ok((None, superseded))
+}
+
+fn insert_receipt(
+    ctx: &StoreContext,
+    request: &EnqueueRequest,
+    delivery_id: &str,
+    answer: Option<&Value>,
+) -> Result<(), StoreError> {
+    let (status, result_str) = match answer {
+        Some(ans) => (
+            "completed",
+            Some(serde_json::to_string(ans).unwrap_or_else(|_| "null".to_owned())),
+        ),
+        None => ("prepared", None),
+    };
+    ctx.run(
+        "INSERT INTO receipts (principal, operation, idempotency_key, args_hash, status, delivery_id, owner_instance, result, created_at, updated_at, expires_at) VALUES (?, 'deliver', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            v_str(&request.sender_principal),
+            v_str(&request.receipt.idempotency_key),
+            v_str(&request.receipt.args_hash),
+            v_str(status),
+            v_str(delivery_id),
+            v_str(&ctx.config.instance_id),
+            v_opt_str(result_str),
+            v_i64(request.now),
+            v_i64(request.now),
+            v_i64(request.now + GATEWAY_RECEIPT_RETENTION_MS),
+        ],
+    )?;
+    Ok(())
+}
+
+fn expired_dead_claims(
+    ctx: &StoreContext,
+    target: &str,
+    now: i64,
+) -> Result<std::collections::HashMap<String, String>, StoreError> {
+    let mut found = std::collections::HashMap::new();
+    let mut dead_cache: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    for row in select_rows(
+        ctx,
+        "target_durable_id = ? AND state IN ('admitting', 'admitted') AND admitted_by IS NOT NULL AND expires_at <= ?",
+        &[v_str(target), v_i64(now)],
+        None,
+    )? {
+        let Some(claimant) = &row.admitted_by else {
+            continue;
+        };
+        let key = serde_json::to_string(claimant).unwrap_or_default();
+        let is_dead = *dead_cache
+            .entry(key)
+            .or_insert_with(|| claimant_is_dead(claimant));
+        if is_dead {
+            found.insert(row.delivery_id.clone(), claim_fingerprint(&row));
+        }
+    }
+    Ok(found)
+}
+
+/// Settles queued rows past their TTL as `refused`/`expired`, leaving intake rows (`ledger_id IS NOT NULL`)
+/// for target `reconcile`. Returns `(delivery_id, target_durable_id)` pairs to unlink after commit.
+pub fn refuse_expired_queued(
+    ctx: &StoreContext,
+    now: i64,
+    limit: i64,
+    target: Option<&str>,
+) -> Result<Vec<(String, String)>, StoreError> {
+    let sql = match target {
+        Some(_) => {
+            "SELECT delivery_id, target_durable_id FROM deliveries WHERE state = 'queued' AND ledger_id IS NULL AND expires_at <= ? AND target_durable_id = ? LIMIT ?"
+        }
+        None => {
+            "SELECT delivery_id, target_durable_id FROM deliveries WHERE state = 'queued' AND ledger_id IS NULL AND expires_at <= ? LIMIT ?"
+        }
+    };
+    let rows = match target {
+        Some(t) => ctx.all(sql, &[v_i64(now), v_str(t), v_i64(limit)])?,
+        None => ctx.all(sql, &[v_i64(now), v_i64(limit)])?,
+    };
+    let pairs: Vec<(String, String)> = rows
+        .into_iter()
+        .map(|r| (row_str(&r, "delivery_id"), row_str(&r, "target_durable_id")))
+        .collect();
+    for (id, _) in &pairs {
+        ctx.run(
+            "UPDATE deliveries SET state = 'refused', reason = 'expired', updated_at = ? WHERE delivery_id = ? AND state = 'queued'",
+            &[v_i64(now), v_str(id)],
+        )?;
+    }
+    Ok(pairs)
+}
+
 fn delete_expired_receipt(
     ctx: &StoreContext,
     principal: &str,
@@ -1323,7 +1475,7 @@ fn delete_expired_receipt(
     )
 }
 
-fn claim_fingerprint(row: &DeliveryRow) -> String {
+pub(crate) fn claim_fingerprint(row: &DeliveryRow) -> String {
     let admitted = row
         .admitted_by
         .as_ref()
@@ -1332,7 +1484,7 @@ fn claim_fingerprint(row: &DeliveryRow) -> String {
     format!("{admitted}#{}", row.attempt)
 }
 
-const CLEARED_CLAIM: &str = "admitted_by = NULL, claimed_at = NULL, mode_effective = NULL, admission_kind = NULL, turn_epoch = NULL";
+const CLEARED_CLAIM: &str = "admitted_by = NULL, claimed_at = NULL, mode_effective = NULL, admission_kind = NULL, wait_kind = NULL, turn_epoch = NULL";
 
 fn transition(
     ctx: &StoreContext,
@@ -1362,10 +1514,41 @@ fn transition(
     Ok(())
 }
 
-fn same_process(left: &ProcessIdentity, right: &ProcessIdentity) -> bool {
+pub(crate) fn same_process(left: &ProcessIdentity, right: &ProcessIdentity) -> bool {
     left.instance_id == right.instance_id
         && left.pid == right.pid
         && left.process_start_time == right.process_start_time
+}
+
+fn session_has_token(
+    session_path: Option<&str>,
+    delivery_id: &str,
+    cached_text: &mut Option<String>,
+) -> bool {
+    let Some(path) = session_path else {
+        return false;
+    };
+    let text = cached_text.get_or_insert_with(|| std::fs::read_to_string(path).unwrap_or_default());
+    for line in text.lines() {
+        if !line.contains(delivery_id) {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) == Some("custom_message")
+            && entry.get("customType").and_then(Value::as_str)
+                == Some(SESSION_CONTROL_DELIVERY_TYPE)
+            && entry
+                .get("details")
+                .and_then(|d| d.get("delivery_id"))
+                .and_then(Value::as_str)
+                == Some(delivery_id)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Receiver barrier pass: claim verdicts are read before the lock, then applied under `BEGIN IMMEDIATE`
@@ -1381,6 +1564,7 @@ pub fn reconcile(
         &[v_str(target)],
         None,
     )?;
+    let mut cached_transcript: Option<String> = None;
     let mut verdicts: BTreeMap<String, (String, DeliveryState)> = BTreeMap::new();
     for row in &rows {
         let Some(claimant) = &row.admitted_by else {
@@ -1389,15 +1573,34 @@ pub fn reconcile(
         if same_process(claimant, &request.self_identity) {
             continue;
         }
-        // A claimant of another process is judged by its own transcript ledger, which this store
-        // cannot read: an unproven claim is left alone (dual runtime), never re-queued blindly.
         let dead = claimant_is_dead(claimant);
-        let to = if dead {
-            DeliveryState::Queued
-        } else {
+        let to = if !dead {
             DeliveryState::Uncertain
+        } else if session_has_token(
+            request.session_path.as_deref(),
+            engine_key(row),
+            &mut cached_transcript,
+        ) {
+            DeliveryState::Applied
+        } else {
+            DeliveryState::Queued
         };
         verdicts.insert(row.delivery_id.clone(), (claim_fingerprint(row), to));
+    }
+    let mut already_written: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for row in select_rows(
+        ctx,
+        "target_durable_id = ? AND state = 'queued' AND ledger_id IS NOT NULL",
+        &[v_str(target)],
+        None,
+    )? {
+        if session_has_token(
+            request.session_path.as_deref(),
+            engine_key(&row),
+            &mut cached_transcript,
+        ) {
+            already_written.insert(row.delivery_id);
+        }
     }
     if ctx.config.test_hooks.announce_barrier {
         ctx.emit(GatewayStoreEvent::Barrier {
@@ -1417,7 +1620,16 @@ pub fn reconcile(
         )? {
             let to;
             if row.state == DeliveryState::Queued {
-                if row.expires_at <= request.now {
+                if let Some(ledger_id) = &row.ledger_id
+                    && (already_written.contains(&row.delivery_id) || emitted.contains(&ledger_id))
+                {
+                    transition(ctx, &row, DeliveryState::Applied, request.now, None)?;
+                    transitions.push(DeliveryTransition {
+                        delivery_id: row.delivery_id.clone(),
+                        from: row.state,
+                        to: DeliveryState::Applied,
+                    });
+                } else if row.expires_at <= request.now {
                     transition(
                         ctx,
                         &row,
@@ -1435,9 +1647,10 @@ pub fn reconcile(
             }
             match &row.admitted_by {
                 Some(claimant) if same_process(claimant, &request.self_identity) => {
-                    to = if emitted.contains(&&row.delivery_id) {
+                    let key = engine_key(&row).to_owned();
+                    to = if emitted.contains(&&key) {
                         DeliveryState::Applied
-                    } else if pending.contains(&&row.delivery_id) {
+                    } else if pending.contains(&&key) {
                         DeliveryState::Admitted
                     } else {
                         DeliveryState::Queued
@@ -1493,7 +1706,7 @@ pub fn reconcile(
 }
 
 /// Whether another process's claim can be let go: its pid is gone, or its start time moved.
-fn claimant_is_dead(claimant: &ProcessIdentity) -> bool {
+pub(crate) fn claimant_is_dead(claimant: &ProcessIdentity) -> bool {
     if claimant.pid <= 0 {
         return false;
     }
@@ -1571,14 +1784,22 @@ pub fn record_outcome(
             OutcomeRecord::Admitted {
                 admission_kind,
                 turn_epoch,
+                wait_kind,
             }
             | OutcomeRecord::Applied {
                 admission_kind,
                 turn_epoch,
+                wait_kind,
             } => {
                 ctx.run(
-                    "UPDATE deliveries SET admission_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
-                    &[v_str(admission_kind.clone()), v_i64(*turn_epoch), v_i64(request.now), v_str(&row.delivery_id)],
+                    "UPDATE deliveries SET admission_kind = ?, wait_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
+                    &[
+                        v_str(admission_kind.clone()),
+                        v_opt_str(wait_kind.clone()),
+                        v_i64(*turn_epoch),
+                        v_i64(request.now),
+                        v_str(&row.delivery_id),
+                    ],
                 )?;
                 let to = if matches!(&request.outcome, OutcomeRecord::Applied { .. }) {
                     DeliveryState::Applied
@@ -1608,6 +1829,29 @@ pub fn refuse_queued(
             return Ok(false);
         };
         if row.state != DeliveryState::Queued {
+            return Ok(false);
+        }
+        transition(ctx, &row, DeliveryState::Refused, now, Some(reason))?;
+        unlink_marker(ctx, &row.target_durable_id, &row.delivery_id);
+        Ok(true)
+    })
+}
+
+/// `#14313`: a delivery the engine took in (`admitting`/`admitted`) and handed back unread at graceful close.
+pub fn refuse_returned(
+    ctx: &StoreContext,
+    now: i64,
+    delivery_id: &str,
+    reason: RefusalReason,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "refuse_returned", || {
+        let Some(row) = select_row(ctx, delivery_id)? else {
+            return Ok(false);
+        };
+        if !matches!(
+            row.state,
+            DeliveryState::Admitting | DeliveryState::Admitted
+        ) {
             return Ok(false);
         }
         transition(ctx, &row, DeliveryState::Refused, now, Some(reason))?;
@@ -1710,6 +1954,8 @@ pub fn recover_delivery(
                 project: "recover".into(),
                 lane: None,
                 session: None,
+                device: None,
+                device_absent: None,
             },
             now,
             delivery_id: receipt.delivery_id.clone().unwrap_or_default(),
@@ -1719,6 +1965,8 @@ pub fn recover_delivery(
             sender_node: String::new(),
             sender_turn: None,
             cause_delivery_id: None,
+            inbound_hop: None,
+            authority: None,
             claimed_root_id: None,
             origin: super::types::EnvelopeOrigin::Session {
                 session: String::new(),
@@ -1733,6 +1981,7 @@ pub fn recover_delivery(
                 args_hash: args_hash.to_owned(),
             },
             endpoint_kind: None,
+            collapse_key: None,
         };
         Ok(Some(classify_receipt(ctx, &request, &receipt)?))
     })

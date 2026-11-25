@@ -13,11 +13,161 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::adapter::SessionRuntimePort;
+use super::constants::SESSION_CONTROL_DELIVERY_TYPE;
 use super::drain::{InboxDrain, InboxDrainOptions};
 use super::engine::{GatewayEngine, GatewayEngineOptions, GatewayResolve};
 use super::relay::{GatewayRelay, GatewayRelayOptions};
 use super::store_api::GatewayStoreApi;
+use super::tools::reply_permission::ReplySender;
 use super::tools::{ThreadTool, ThreadToolsOptions, build_extension_tools, create_thread_tools};
+
+pub const COMPLETION_SETTLE_WAIT_MS: u64 = 250;
+
+/// Per-run origin & reply-target tracking (`thread/component.ts` `RunContext`).
+#[derive(Debug, Clone)]
+pub struct RunContext {
+    pub turn: u64,
+    pub cause: Option<String>,
+    pub chain_hop: i64,
+    pub consumed: Vec<String>,
+    pub reply_to: Vec<String>,
+    pub reply_senders: Vec<ReplySender>,
+    pub local: bool,
+    pub answered: bool,
+}
+
+impl Default for RunContext {
+    fn default() -> Self {
+        Self {
+            turn: 0,
+            cause: None,
+            chain_hop: 0,
+            consumed: Vec::new(),
+            reply_to: Vec::new(),
+            reply_senders: Vec::new(),
+            local: false,
+            answered: true,
+        }
+    }
+}
+
+impl RunContext {
+    pub fn start_group(&mut self) {
+        self.cause = None;
+        self.consumed.clear();
+        self.reply_to.clear();
+        self.reply_senders.clear();
+        self.chain_hop = 0;
+        self.local = false;
+        self.answered = false;
+    }
+
+    pub fn note_input(&mut self, message: &Value) {
+        let role = message.get("role").and_then(Value::as_str);
+        if !matches!(role, Some("user" | "custom")) {
+            return;
+        }
+        if role == Some("custom") {
+            let custom_type = message.get("customType").and_then(Value::as_str);
+            if custom_type != Some(SESSION_CONTROL_DELIVERY_TYPE) {
+                if self.answered {
+                    self.consumed.clear();
+                }
+                self.answered = false;
+                return;
+            }
+            let details = message.get("details").and_then(Value::as_object);
+            let id = details
+                .and_then(|d| d.get("delivery_id"))
+                .and_then(Value::as_str);
+            let Some(id) = id else {
+                // Malformed delivery: ends answered group with nobody approved.
+                if self.answered {
+                    self.start_group();
+                }
+                return;
+            };
+            if self.answered {
+                self.start_group();
+            }
+            let sender = details
+                .and_then(|d| d.get("sender"))
+                .and_then(Value::as_object);
+            let sender_kind = sender.and_then(|s| s.get("kind")).and_then(Value::as_str);
+            let sender_platform = sender
+                .and_then(|s| s.get("platform"))
+                .and_then(Value::as_str);
+            if sender_kind == Some("external") && sender_platform == Some("rpc") {
+                self.local = true;
+                return;
+            }
+            let chain_count = details
+                .and_then(|d| d.get("chain_count"))
+                .and_then(Value::as_i64)
+                .filter(|c| *c >= 1)
+                .unwrap_or(0);
+            self.cause = Some(id.to_owned());
+            self.chain_hop = self.chain_hop.max(chain_count);
+            if !self.consumed.iter().any(|c| c == id) {
+                self.consumed.push(id.to_owned());
+            }
+            if sender_kind == Some("agent")
+                && let Some(agent_sender) = sender
+                    .and_then(|s| s.get("session_id"))
+                    .and_then(Value::as_str)
+            {
+                if !self.reply_to.iter().any(|r| r == agent_sender) {
+                    self.reply_to.push(agent_sender.to_owned());
+                }
+                let sender_name = sender
+                    .and_then(|s| s.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let device = delivery_device(id);
+                if !self.reply_senders.iter().any(|rs| {
+                    rs.session_id == agent_sender && rs.device == device && rs.name == sender_name
+                }) {
+                    self.reply_senders.push(ReplySender {
+                        session_id: agent_sender.to_owned(),
+                        name: sender_name,
+                        device,
+                    });
+                }
+            }
+            return;
+        }
+        // role == "user"
+        if self.answered {
+            self.start_group();
+        }
+        self.local = true;
+    }
+
+    pub fn note_assistant_end(&mut self, message: &Value) {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            return;
+        }
+        let calls_tools = message
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|p| p.get("type").and_then(Value::as_str) == Some("toolCall"))
+            });
+        self.answered = !calls_tools;
+    }
+}
+
+pub fn delivery_device(id: &str) -> Option<String> {
+    let rest = id.strip_prefix("device:")?;
+    let part = match rest.find('/') {
+        Some(idx) => &rest[..idx],
+        None => rest,
+    };
+    Some(part.to_owned())
+}
 
 pub struct GatewayThreadComponentOptions {
     pub store: Arc<dyn GatewayStoreApi>,
@@ -73,6 +223,8 @@ pub fn create_gateway_thread_component(
         log: options.log.clone(),
         notify: options.notify.clone(),
         on_admitted: None,
+        admit_intake: None,
+        wake_gated: None,
     }));
     let tools = create_thread_tools(Arc::new(ThreadToolsOptions {
         store: options.store.clone(),
@@ -83,7 +235,11 @@ pub fn create_gateway_thread_component(
         caller_provenance: options.caller_provenance.clone(),
     }));
     if let Some(log) = options.log.clone() {
-        options.store.on_after_commit_error(Arc::new(move |extension, error| log(&format!("thread gateway: extension {extension} committed, but an after-commit effect (its wake hint) failed: {error}"))));
+        options.store.on_after_commit_error(Arc::new(move |extension, error| {
+            log(&format!(
+                "thread gateway: extension {extension} committed, but an after-commit effect (its wake hint) failed: {error}"
+            ))
+        }));
     }
     GatewayThreadComponent {
         registration: Default::default(),
@@ -314,6 +470,8 @@ mod tests {
                 project: "test".into(),
                 lane: None,
                 session: None,
+                device: None,
+                device_absent: None,
             }),
             resolve: Arc::new(|_, _| {
                 Box::pin(async {

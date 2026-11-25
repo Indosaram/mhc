@@ -4,22 +4,32 @@
 //! connection and the worker protocol serializes calls onto it.
 
 pub type BindingPageResult = Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError>;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::backlog::TargetBacklog;
+use super::session_wait_types::{
+    DrainedOutcome, IntakeMark, IntakePair, OpenIntakeSession, QueuedWaitingOn, SessionWaitState,
+    SessionWork, WriteSessionWaitRequest,
+};
 use super::store_extensions::{
     DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult,
 };
 use super::store_ops::{DeliveryReceipt, DeliveryView, StoreError};
 use super::store_relay_ops::{
     AnswerClaim, AnswerClaimRef, AnswerDelivered, BindInput, BindingRecord, BindingsFilter,
-    OutboxPage, PriorAnswer, RelayOutcome, ReportOpRequest, ReportOpResult,
+    OutboxPage, PriorAnswer, RelayOutcome, ReportOpRequest, ReportOpResult, ToolReceiptBegin,
 };
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, ExternalAuthor,
-    GatewayStoreStats, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
-    RefusalReason,
+    GatewayStoreStats, IntakeOutcome, IntakeRequest, ProcessIdentity, ReconcileOutcome,
+    ReconcileRequest, RecordOutcomeRequest, RefusalReason,
+};
+use super::woken_types::{
+    WakeRequestOutcome, WakeRetryOutcome, WakeStartOutcome, WakeTakeOverOutcome, WokenSessionRow,
+    WokenStateUpdate,
 };
 
 pub type ExtensionErrorListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -32,10 +42,17 @@ pub trait GatewayStoreApi: Send + Sync {
     fn now(&self) -> i64;
     fn identity(&self) -> Result<ProcessIdentity, StoreError>;
     fn enqueue(&self, request: &EnqueueRequest) -> Result<EnqueueOutcome, StoreError>;
+    fn intake(&self, request: &IntakeRequest) -> Result<IntakeOutcome, StoreError>;
     fn reconcile(&self, request: &ReconcileRequest) -> Result<ReconcileOutcome, StoreError>;
     fn claim(&self, request: &ClaimRequest) -> Result<ClaimOutcome, StoreError>;
     fn record_outcome(&self, request: &RecordOutcomeRequest) -> Result<ClaimOutcome, StoreError>;
     fn refuse_queued(
+        &self,
+        now: i64,
+        delivery_id: &str,
+        reason: RefusalReason,
+    ) -> Result<bool, StoreError>;
+    fn refuse_returned(
         &self,
         now: i64,
         delivery_id: &str,
@@ -75,8 +92,99 @@ pub trait GatewayStoreApi: Send + Sync {
         root_id: Option<&str>,
     ) -> Result<Vec<DeliveryRow>, StoreError>;
     fn is_referenced(&self, durable_id: &str) -> Result<bool, StoreError>;
+    fn backlogs(&self, targets: &[String]) -> Result<BTreeMap<String, TargetBacklog>, StoreError>;
     fn journal_mode(&self) -> Result<String, StoreError>;
     fn stats(&self) -> GatewayStoreStats;
+    fn tool_receipt_begin(
+        &self,
+        now: i64,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+        args_hash: &str,
+    ) -> Result<ToolReceiptBegin, StoreError>;
+    fn tool_receipt_settle(
+        &self,
+        now: i64,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+        result_or_error: Result<&Value, &str>,
+    ) -> Result<bool, StoreError>;
+    fn tool_receipt_revise(
+        &self,
+        now: i64,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+        result: &Value,
+    ) -> Result<bool, StoreError>;
+    fn tool_receipt_release(
+        &self,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+    ) -> Result<bool, StoreError>;
+
+    fn woken_request(
+        &self,
+        durable_id: &str,
+        session_file: &str,
+    ) -> Result<WakeRequestOutcome, StoreError>;
+    fn woken_start(&self, durable_id: &str) -> Result<WakeStartOutcome, StoreError>;
+    fn woken_renew(
+        &self,
+        durable_id: &str,
+        generation: i64,
+    ) -> Result<Option<WokenSessionRow>, StoreError>;
+    fn woken_take_over(&self, durable_id: &str) -> Result<WakeTakeOverOutcome, StoreError>;
+    fn woken_set_state(
+        &self,
+        update: &WokenStateUpdate,
+    ) -> Result<Option<WokenSessionRow>, StoreError>;
+    fn woken_record_waiting(
+        &self,
+        durable_id: &str,
+        generation: i64,
+    ) -> Result<Option<WokenSessionRow>, StoreError>;
+    fn woken_retry_later(
+        &self,
+        durable_id: &str,
+        generation: i64,
+    ) -> Result<WakeRetryOutcome, StoreError>;
+    fn woken_clear_waiting(&self, durable_id: &str, generation: i64) -> Result<bool, StoreError>;
+    fn woken_end(&self, durable_id: &str, generation: i64) -> Result<bool, StoreError>;
+    fn woken_gated(&self, durable_id: &str) -> Result<bool, StoreError>;
+    fn woken_list(&self) -> Result<Vec<WokenSessionRow>, StoreError>;
+    fn woken_count_wake(
+        &self,
+        durable_id: &str,
+        human_input_revision: Option<i64>,
+    ) -> Result<i64, StoreError>;
+    fn woken_wake_count(&self, durable_id: &str) -> Result<i64, StoreError>;
+    fn woken_reset_count(&self, durable_id: &str) -> Result<(), StoreError>;
+    fn woken_session_work(&self, durable_id: &str) -> Result<SessionWork, StoreError>;
+    fn session_wait_write(&self, request: &WriteSessionWaitRequest) -> Result<(), StoreError>;
+    fn session_wait_read(&self, durable_id: &str) -> Result<Option<SessionWaitState>, StoreError>;
+    fn session_wait_clear(&self, durable_id: &str) -> Result<(), StoreError>;
+    fn session_waiting_on(&self, durable_id: &str) -> Result<Option<QueuedWaitingOn>, StoreError>;
+    fn intake_mark_record(
+        &self,
+        sender_device: &str,
+        session_id: &str,
+        command_id: &str,
+        ledger_id: Option<&str>,
+    ) -> Result<(), StoreError>;
+    fn intake_mark_marked(&self) -> Result<Vec<IntakePair>, StoreError>;
+    fn intake_mark_pending(&self) -> Result<Vec<IntakeMark>, StoreError>;
+    fn intake_mark_drained(&self, pair: &IntakePair) -> Result<DrainedOutcome, StoreError>;
+    fn intake_command_for(&self, ledger_id: &str) -> Result<Option<String>, StoreError>;
+    fn intake_open_for_command(
+        &self,
+        sender_device: &str,
+        command_id: &str,
+    ) -> Result<bool, StoreError>;
+    fn intake_open_sessions(&self) -> Result<Vec<OpenIntakeSession>, StoreError>;
 
     fn bind(&self, now: i64, input: &BindInput) -> Result<RelayOutcome<BindingRecord>, StoreError>;
     fn unbind(

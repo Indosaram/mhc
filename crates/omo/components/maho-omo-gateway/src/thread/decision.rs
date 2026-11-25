@@ -5,7 +5,7 @@
 //! compacting session.
 
 use super::adapter::RuntimePhase;
-use super::types::GatewayDeliveryMode;
+use super::types::{EffectiveLane, GatewayDeliveryMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetState {
@@ -31,6 +31,17 @@ pub enum DeliveryDecision {
         reason: RefusalKind,
     },
     QueuedOffline,
+}
+
+/// The lane an admitted delivery takes: an idle session's followUp admission starts its turn.
+pub fn effective_lane_of(deliver_as: GatewayDeliveryMode, expect: Expect) -> EffectiveLane {
+    if deliver_as == GatewayDeliveryMode::Steer {
+        return EffectiveLane::Steer;
+    }
+    match expect {
+        Expect::Started => EffectiveLane::Start,
+        Expect::Queued | Expect::Steered => EffectiveLane::FollowUp,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +89,16 @@ pub fn decide_delivery(
         return DeliveryDecision::Admit {
             deliver_as: GatewayDeliveryMode::Steer,
             expected_turn_id,
+            expect: Expect::Steered,
+        };
+    }
+    if mode == GatewayDeliveryMode::Auto
+        && state == TargetState::Phase(RuntimePhase::MidTurn)
+        && let Some(epoch) = turn_epoch
+    {
+        return DeliveryDecision::Admit {
+            deliver_as: GatewayDeliveryMode::Steer,
+            expected_turn_id: Some(epoch),
             expect: Expect::Steered,
         };
     }

@@ -11,10 +11,10 @@ use serde_json::{Map, Value};
 use super::adapter::BoxFuture;
 
 /// The commands the host lets an unattached connection send (senpi `session-attachment-gate.ts`:
-/// `ATTACH_GATE_EXEMPT`, plus `close_session`, `set_session_context` and `release_attachment`, which
-/// its gate skips). Every other session command is fenced: deny by default, so a command the client
-/// learns later is never sent unattached.
-const UNFENCED: [&str; 37] = [
+/// `ATTACH_GATE_EXEMPT`, plus `set_session_context` and `release_attachment`, which its gate
+/// skips). `close_session` is fenced too: the gate skips it, but close() refuses a connection
+/// that holds no attachment with `unknown_session`. Every other session command is fenced.
+const UNFENCED: [&str; 36] = [
     "get_protocol_info",
     "list_sessions",
     "subscribe_sessions",
@@ -49,7 +49,6 @@ const UNFENCED: [&str; 37] = [
     "eval_cells.list",
     "eval_cells.peek",
     "check_reload_veto",
-    "close_session",
     "set_session_context",
     "release_attachment",
 ];
@@ -194,6 +193,29 @@ pub async fn fenced_command(
     durable_session_id: Option<&str>,
     send: &(dyn Fn() -> BoxFuture<Result<Value, String>> + Send + Sync),
 ) -> Result<FenceOutcome, String> {
+    fenced_command_with_options(
+        transport,
+        socket,
+        command,
+        capabilities,
+        durable_session_id,
+        false,
+        send,
+    )
+    .await
+}
+
+/// Runs one command with optional `attached: true` forcing attachment even for exempt reads
+/// (the close ladder's "still held" probe).
+pub async fn fenced_command_with_options(
+    transport: &dyn RpcTransport,
+    socket: &str,
+    command: Value,
+    capabilities: &BTreeSet<String>,
+    durable_session_id: Option<&str>,
+    attached: bool,
+    send: &(dyn Fn() -> BoxFuture<Result<Value, String>> + Send + Sync),
+) -> Result<FenceOutcome, String> {
     let Some(object) = command.as_object() else {
         return Ok(FenceOutcome::Ran(send().await?));
     };
@@ -202,7 +224,7 @@ pub async fn fenced_command(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let attach = !UNFENCED.contains(&command_type.as_str())
+    let attach = (attached || !UNFENCED.contains(&command_type.as_str()))
         && object.get("sessionId").is_some()
         && capabilities.contains("attach_session")
         && (command_type != "release_session" || capabilities.contains("release_caller_aware"));
@@ -320,7 +342,7 @@ mod tests {
         for (command_type, fenced) in [
             ("future_mutation", true),
             ("get_state", false),
-            ("close_session", false),
+            ("close_session", true),
             ("set_session_context", false),
             ("release_attachment", false),
             ("eval_cells.peek", false),

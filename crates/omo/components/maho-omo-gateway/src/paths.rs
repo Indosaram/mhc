@@ -18,6 +18,10 @@ pub fn gateway_inbox_directory(agent_dir: &Path, durable_id: &str) -> PathBuf {
         .join(durable_id)
 }
 
+pub fn gateway_wake_marker_path(agent_dir: &Path) -> PathBuf {
+    gateway_root_directory(agent_dir).join("wake.marker")
+}
+
 pub fn gateway_outbox_marker_path(agent_dir: &Path) -> PathBuf {
     gateway_root_directory(agent_dir).join("outbox.marker")
 }

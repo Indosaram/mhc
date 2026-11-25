@@ -255,6 +255,8 @@ pub fn fallback_provenance() -> Provenance {
         project: "extension".to_owned(),
         lane: None,
         session: None,
+        device: None,
+        device_absent: None,
     }
 }
 

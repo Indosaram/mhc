@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "local_thread_tests.rs"]
+mod local_thread_tests;
 #[path = "prompt_tests.rs"]
 mod prompt_tests;
 #[path = "rules_block_tests.rs"]
