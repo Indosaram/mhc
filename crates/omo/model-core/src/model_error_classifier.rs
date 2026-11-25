@@ -26,6 +26,12 @@ const NON_RETRYABLE_ERROR_NAMES: &[&str] = &[
 const RETRYABLE_MESSAGE_PATTERNS: &[&str] = &[
     "rate_limit",
     "rate limit",
+    // SAFETY-DIVERGENCE(packages/model-core/src/model-error-classifier.ts): upstream only knows the
+    // underscored/spaced forms. mhc's credential pool reports the hyphenated `temporarily rate-limited`
+    // wording, which no upstream literal matches, so a retryable pool-wide rate limit was classified as
+    // terminal and the reflection run was abandoned instead of trying its next candidate.
+    "rate-limited",
+    "rate-limit",
     "usage_limit_reached",
     "usage limit has been reached",
     "quota",
@@ -74,7 +80,16 @@ const RETRYABLE_MESSAGE_PATTERNS: &[&str] = &[
     "upstream request failed",
 ];
 
-const AUTO_RETRY_GATE_PATTERNS: &[&str] = &["rate limit", "cooling down", "credentials for model"];
+const AUTO_RETRY_GATE_PATTERNS: &[&str] = &[
+    "rate limit",
+    "cooling down",
+    "credentials for model",
+    // SAFETY-DIVERGENCE(packages/model-core/src/model-error-classifier.ts): the same credential-pool
+    // wording `RETRYABLE_MESSAGE_PATTERNS` accepts, so a hyphenated pool line that announces its own
+    // retry takes the same auto-retry path as the spaced upstream wording.
+    "rate-limited",
+    "rate-limit",
+];
 
 fn has_provider_auto_retry_signal(message: &str) -> bool {
     message.contains("retrying in")

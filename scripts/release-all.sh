@@ -175,6 +175,13 @@ win_base=$(printf '%s' "$win_base" | tr '\\' '/' | sed 's#/*$##')
 win_src="$win_base/$run_name/src"
 win_out="$win_base/$run_name/out"
 
+# One cargo cache for every Windows release, not one per run: `$win_src/target` is fresh on
+# each run because $run_name changes, so a per-run cache means a full cold rebuild (and a
+# full disk) every time. The version check in release-windows.ps1 still fails loudly if this
+# cache ever feeds back a binary built for another version.
+win_target="${MHC_WIN_TARGET_DIR:-$win_base/mhc-release-target}"
+win_target=$(printf '%s' "$win_target" | tr '\\' '/' | sed 's#/*$##')
+
 # Continue plus explicit $LASTEXITCODE checks: PowerShell treats a native command's stderr
 # output as fatal under Stop (release-windows.ps1 says the same). `clean -qdf` keeps ignored
 # files (build output worth staying warm) and removes untracked ones, which are exactly the
@@ -214,6 +221,7 @@ mit_arg=""
 [ "${MHC_RELEASE_SKIP_MIT:-}" = 1 ] && mit_arg=" -SkipMit"
 printf '%s\n' \
   "\$global:LASTEXITCODE = 0" \
+  "\$env:CARGO_TARGET_DIR = $(ps_quote "$win_target")" \
   "& $(ps_quote "$win_src/scripts/release-windows.ps1") -Version $(ps_quote "$version") -OutputDir $(ps_quote "$win_out") -OmowrightCommit $(ps_quote "$omowright_commit")${protoc_arg}${mit_arg}" \
   "exit \$LASTEXITCODE" >"$win_scratch/build.ps1"
 win_ps "$win_scratch/build.ps1" || die "windows build failed"
@@ -232,6 +240,11 @@ if ssh -o BatchMode=yes -o ConnectTimeout=8 "$mac_host" true 2>/dev/null; then
   mac_base=$(printf '%s' "$mac_base" | sed 's#/*$##')
   mac_src="$mac_base/$run_name/src"
   mac_out="$mac_base/$run_name/out"
+  # Same reason as the Windows cache above: the source tree is new on every run, so its own
+  # target/ would be a cold rebuild each time. release-macos.sh already honors this variable
+  # and re-checks the built binary's version, so a stale cache cannot ship silently.
+  mac_target="${MHC_MAC_TARGET_DIR:-$mac_base/mhc-release-target}"
+  mac_target=$(printf '%s' "$mac_target" | sed 's#/*$##')
   mac_prepare=$(printf '%s\n' \
     "src=$(sh_quote "$mac_src")" \
     "if [ -d \"\$src/.git\" ]; then" \
@@ -248,7 +261,7 @@ if ssh -o BatchMode=yes -o ConnectTimeout=8 "$mac_host" true 2>/dev/null; then
   ssh -o BatchMode=yes "$mac_host" "$mac_prepare" || die "could not prepare $mac_src on $mac_host"
   ssh -o BatchMode=yes "$mac_host" "git -C $(sh_quote "$mac_src") rev-parse HEAD" | tr -d '\r' | grep -qx "$release_commit" \
     || die "$mac_host is not on $version_commit"
-  mac_build="cd $(sh_quote "$mac_src") &&"
+  mac_build="export CARGO_TARGET_DIR=$(sh_quote "$mac_target"); cd $(sh_quote "$mac_src") &&"
   if [ "${MHC_RELEASE_SKIP_MIT:-}" = 1 ]; then
     mac_build="$mac_build MHC_RELEASE_SKIP_MIT=1"
   fi

@@ -330,3 +330,20 @@ fn treats_upstream_request_failed_provider_error_as_retryable() {
         "Error from provider (Console Go): Upstream request failed"
     )));
 }
+
+/// Both wordings the credential pool emits when every account for the model is out of budget. The
+/// hyphenated one matched no upstream literal, so a retryable pool failure was read as terminal.
+#[test]
+fn treats_pool_wide_rate_limit_and_daily_exhaustion_as_retryable() {
+    for text in [
+        "every account that can serve model 'gpt-6-luna' is temporarily rate-limited; earliest retry in 43m (retry-after-ms: 2580000)",
+        "all pool accounts are daily-exhausted for model 'gpt-6-luna'; earliest known quota reset in 20h 53m (retry-after-ms: 75205000)",
+    ] {
+        assert!(should_retry_error(&message(text)));
+        assert!(model_core::is_runtime_fallback_retryable_error(
+            Some(&serde_json::json!({"message": text})),
+            &[429, 500, 502, 503, 504],
+            &model_core::RuntimeFallbackRetryOptions::default()
+        ));
+    }
+}

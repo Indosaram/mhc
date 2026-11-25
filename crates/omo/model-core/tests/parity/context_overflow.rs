@@ -52,6 +52,15 @@ fn rejects_non_overflow_failure_429() {
     assert!(!is_context_overflow_message("429: too many requests"));
 }
 
+/// The credential pool spells the same condition with a hyphen, so a pool line that also mentions an
+/// overflow phrase must stay a retryable rate limit rather than become a context overflow.
+#[test]
+fn rejects_hyphenated_rate_limit_as_non_overflow() {
+    assert!(!is_context_overflow_message(
+        "every account that can serve model 'gpt-6-luna' is temporarily rate-limited; prompt is too long 213462 tokens > 200000 maximum"
+    ));
+}
+
 #[test]
 fn rejects_non_overflow_failure_400() {
     assert!(!is_context_overflow_message("400: invalid request"));

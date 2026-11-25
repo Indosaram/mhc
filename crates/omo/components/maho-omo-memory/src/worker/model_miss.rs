@@ -18,8 +18,16 @@ pub enum RetryableModelMiss {
     ProviderUnavailable { detail: String },
 }
 
+// SAFETY-DIVERGENCE(packages/omo-senpi/src/components/memory/worker/model-miss.ts): upstream's child prints
+// its component diagnostics as bare `console.warn` text; mhc routes them through the product logger, which
+// prefixes every line with `maho-omo <level>:`. Without accepting that prefix the first non-advisory line is
+// a diagnostic and the real provider failure line below it is never classified.
+//
+// The `error` level is advisory only when it carries the product prefix: mhc's top-level failure handler
+// prints the provider's answer as a bare `Error: ...` line, and treating that as a diagnostic would discard
+// the very line this filter exists to find.
 static ADVISORY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bunder (?:Bun|Node(?:\.js)?|Deno)\b|^(?:\[[^\]]*\]\s*)?(?:note|notice|info|hint|debug|warn|warning)\s*:").expect("valid regex")
+    Regex::new(r"(?i)\bunder (?:Bun|Node(?:\.js)?|Deno)\b|^(?:\[[^\]]*\]\s*)?(?:(?:maho-omo|maho|mhc|omo|senpi)\s+(?:note|notice|info|hint|debug|warn|warning|error)|(?:note|notice|info|hint|debug|warn|warning))\s*:").expect("valid regex")
 });
 
 static HTTP_STATUS_PATTERN: LazyLock<Regex> =
@@ -281,6 +289,57 @@ mod tests {
             classify_retryable_model_miss(&child),
             Some(RetryableModelMiss::ProviderUnavailable {
                 detail: "The model is temporarily unavailable".into()
+            })
+        );
+    }
+
+    /// The exact prelude a failed reflection child wrote before its fatal line (reflection-run-1452): every
+    /// diagnostic line carries the product logger prefix, so the pool exhaustion line below it is the payload.
+    const LOGGED_DIAGNOSTIC_PRELUDE: &str = concat!(
+        "maho-omo warn: OmO Native: configuration migration: /home/indo/.omo/.migration.lock: Read-only file system (os error 30)\n",
+        "maho-omo warn: omo-senpi ulw-loop status ignored {\"reason\":\"non-zero-exit\",\"code\":1}\n",
+        "maho-omo info: omo-senpi ulw-execute-continuation skipped {\"reason\":\"terminal-outcome\"}\n",
+    );
+    const POOL_EXHAUSTED_LINE: &str = "Server requested 75205s retry delay (max: 60s). all pool accounts are daily-exhausted for model 'gpt-6-luna'; earliest known quota reset in 20h 53m (retry-after-ms: 75205000)";
+
+    #[test]
+    fn product_logger_diagnostics_do_not_shadow_the_pool_exhaustion_line() {
+        let text = format!("{LOGGED_DIAGNOSTIC_PRELUDE}{POOL_EXHAUSTED_LINE}");
+        assert_eq!(
+            classify_retryable_model_miss(&result(&text)),
+            Some(RetryableModelMiss::ProviderUnavailable {
+                detail: POOL_EXHAUSTED_LINE.into()
+            })
+        );
+    }
+
+    #[test]
+    fn product_logger_diagnostics_alone_stay_non_retryable() {
+        assert!(classify_retryable_model_miss(&result(LOGGED_DIAGNOSTIC_PRELUDE)).is_none());
+    }
+
+    /// The product logger also writes `error` lines; they are component diagnostics, not the provider's
+    /// answer, so they must not shadow the failure line printed below them.
+    #[test]
+    fn product_logger_error_lines_do_not_shadow_the_provider_line() {
+        let text =
+            format!("maho-omo error: reflection session update failed\n{POOL_EXHAUSTED_LINE}");
+        assert_eq!(
+            classify_retryable_model_miss(&result(&text)),
+            Some(RetryableModelMiss::ProviderUnavailable {
+                detail: POOL_EXHAUSTED_LINE.into()
+            })
+        );
+    }
+
+    /// A bare `Error:` line is the provider's answer, so it stays the detail even though the same level
+    /// with the product prefix is a diagnostic.
+    #[test]
+    fn bare_error_line_stays_the_provider_detail() {
+        assert_eq!(
+            classify_retryable_model_miss(&result("Error: 429: too many requests")),
+            Some(RetryableModelMiss::ProviderUnavailable {
+                detail: "Error: 429: too many requests".into()
             })
         );
     }
