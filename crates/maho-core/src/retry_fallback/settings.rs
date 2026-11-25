@@ -22,6 +22,7 @@ pub struct ResolvedRetryFallbackSettings {
 pub fn default_fallback_chains() -> FallbackChains {
     let long = ["claude-opus-5-5:max", "claude-opus-5:max"];
     [
+        ("claude-fable-5-2", long.as_slice()),
         ("claude-fable-5-1", long.as_slice()),
         ("claude-fable-5", long.as_slice()),
         ("claude-opus-5-5", &long[1..]),
@@ -108,7 +109,7 @@ mod tests {
     fn unrelated_chain_preserves_defaults() {
         let settings = json!({"fallbackChains":{"a/b":["c/d"]}});
         let resolved = resolve_retry_fallback_settings(Some(&settings));
-        assert_eq!(resolved.chains.len(), 4);
+        assert_eq!(resolved.chains.len(), 5);
         assert_eq!(resolved.chains["a/b"], ["c/d"]);
     }
     #[test]

@@ -519,6 +519,26 @@ pub fn native_rpc_options(
     }
 }
 
+/// Children inherit the parent's effective permission preset only when it is explicitly non-default; a
+/// default parent leaves its children on the default preset.
+pub fn with_inherited_permission_preset(
+    mut options: RpcProcessRunnerOptions,
+    preset: Option<String>,
+) -> RpcProcessRunnerOptions {
+    // Take the native builder only when a preset wraps it: a dropped builder sends children to
+    // whichever `senpi` is on PATH instead of this binary.
+    if let Some(preset) = preset
+        && let Some(build) = options.build_spawn.take()
+    {
+        options.build_spawn = Some(Arc::new(move |spec| {
+            let mut spec = spec.clone();
+            spec.permission_preset.get_or_insert_with(|| preset.clone());
+            build(&spec)
+        }));
+    }
+    options
+}
+
 pub fn authenticated_rpc_options(
     mut options: RpcProcessRunnerOptions,
     parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,

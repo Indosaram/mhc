@@ -3709,6 +3709,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rpassword",
+ "rustls",
  "semver",
  "serde",
  "serde_json",

@@ -194,6 +194,25 @@ pub fn get_agent_dir_with(cwd: &str, home_dir: &str, env: &HashMap<String, Strin
     resolve_agent_dir(cwd, home_dir, env_dir.as_deref())
 }
 
+/// The parent of the claude CLI account dirs (senpi `accountDirFor`: `<agentDir>/anthropic-subscription-claude`).
+pub fn claude_cli_account_root(agent_dir: &Path) -> PathBuf {
+    claude_cli_account_root_with(agent_dir, &current_env())
+}
+
+pub fn claude_cli_account_root_with(agent_dir: &Path, env: &HashMap<String, String>) -> PathBuf {
+    // SAFETY-DIVERGENCE(packages/coding-agent/src/core/extensions/builtin/anthropic-subscription/claude-cli-account-dir.ts): upstream always nests account dirs under the agent dir; mhc lets `<PREFIX>_CLAUDE_ACCOUNT_ROOT` replace that parent, because the claude CLI keys its macOS Keychain login on the exact config-dir path and a separate mhc agent dir must reuse omo's existing logins.
+    match env_value("CLAUDE_ACCOUNT_ROOT", env).filter(|root| !root.is_empty()) {
+        Some(root) => PathBuf::from(normalize_path(
+            &root,
+            &crate::paths::PathInputOptions {
+                home_dir: Some(home_dir()),
+                ..Default::default()
+            },
+        )),
+        None => agent_dir.join("anthropic-subscription-claude"),
+    }
+}
+
 pub fn get_sessions_dir() -> String {
     join(&get_agent_dir(), "sessions")
 }
@@ -300,6 +319,24 @@ pub fn brand() -> BrandProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_cli_account_root_defaults_under_the_agent_dir_and_the_env_override_replaces_it() {
+        let agent = Path::new("/agent");
+        assert_eq!(
+            claude_cli_account_root_with(agent, &HashMap::new()),
+            PathBuf::from("/agent/anthropic-subscription-claude")
+        );
+        let override_env: HashMap<String, String> = [(
+            "MAHO_CLAUDE_ACCOUNT_ROOT".to_owned(),
+            "/shared/claude-accounts".to_owned(),
+        )]
+        .into();
+        assert_eq!(
+            claude_cli_account_root_with(agent, &override_env),
+            PathBuf::from("/shared/claude-accounts")
+        );
+    }
 
     #[test]
     fn empty_override_falls_back_to_the_home_agent_dir() {

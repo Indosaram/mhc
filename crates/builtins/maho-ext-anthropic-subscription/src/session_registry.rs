@@ -40,6 +40,9 @@ pub struct CreateEntry<'a> {
     pub generation: u64,
     pub now: u64,
     pub resume_at: Option<Option<&'a str>>,
+    /// A claude CLI account (senpi `claudeCliInitializationCheck`): the account Claude Code initialized with must be
+    /// the account dir's own first-party sign-in, or the process is closed before any prompt is sent.
+    pub verify_initialization: bool,
 }
 impl SessionEntry {
     pub async fn create(input: CreateEntry<'_>) -> anyhow::Result<Self> {
@@ -62,6 +65,14 @@ impl SessionEntry {
         }
         options["extraArgs"]["replay-user-messages"] = json!("");
         let query = SdkQueryHandle::spawn(input.executable, &options, input.environment).await?;
+        if input.verify_initialization
+            && let Err(leak) = crate::claude_cli_token_source::verify_claude_cli_initialization(
+                &query.initialization,
+            )
+        {
+            query.close().await?;
+            return Err(leak.into());
+        }
         Ok(Self {
             session_id: input.session_id.into(),
             account_name: input.account_name.into(),
@@ -212,6 +223,7 @@ mod tests {
             generation: 1,
             now: 0,
             resume_at: None,
+            verify_initialization: false,
         })
         .await
         .expect("create");

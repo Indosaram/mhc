@@ -7,6 +7,8 @@ pub enum SdkErrorKind {
     RateLimit,
     Overloaded,
     AuthError,
+    /// Claude Code found no login it could read in the account's dir (senpi#5630); says nothing about the account.
+    LoginUnreadable,
     Billing,
     OrgNotAllowed,
     Entitlement,
@@ -141,6 +143,11 @@ pub fn classify_sdk_error(error: &Value) -> SdkErrorClassification {
     ) {
         return result(LongContextUnavailable, true);
     }
+    // Claude Code's own text when it cannot read a login (no login, or a locked macOS keychain): a fact about this
+    // process, not a server verdict on the account, so it never becomes a shared auth block (senpi#5630).
+    if matches(r"(?-u)\bnot logged in\b", &text) {
+        return result(LoginUnreadable, true);
+    }
     if matches(
         r"(?-u)\b(enotfound|eai_again|econnreset|econnrefused|etimedout|enetunreach|ehostunreach|und_err_connect_timeout|und_err_socket)\b|fetch failed|socket hang up|connection reset by peer",
         &text,
@@ -172,6 +179,9 @@ pub fn classify_sdk_error(error: &Value) -> SdkErrorClassification {
     if matches(r"(?-u)\b(?:http\s*)?529\b|overloaded", &text) {
         return result(Overloaded, true);
     }
+    if is_login_expired_text(&text) {
+        return result(AuthError, true);
+    }
     if matches(
         r"(?-u)\binvalid_grant\b|\binvalid_token\b|\b(?:http\s*)?401\b|\bunauthorized\b",
         &text,
@@ -185,6 +195,28 @@ pub fn classify_sdk_error(error: &Value) -> SdkErrorClassification {
         return result(Entitlement, false);
     }
     result(Other, false)
+}
+
+/// Claude Code's own refresh was refused: it reports this as a successful-subtype result with is_error, no HTTP status
+/// and terminal_reason api_error, so only the text identifies it, and `claude auth status` still says signed in. The
+/// login is gone; only a new sign-in brings the account back (senpi#5350).
+fn is_login_expired_text(lowercase: &str) -> bool {
+    matches(
+        r"(?-u)\boauth session expired and could not be refreshed\b",
+        lowercase,
+    )
+}
+
+/// senpi `SdkErrorClassification.signInRequired`: set on an auth failure that proves the login itself is gone.
+///
+/// deviation: upstream carries it on the classification; here it is read from the same error text where a block is
+/// built, so the classification stays a two-field `Copy` value.
+pub fn sign_in_required(error: &Value) -> Option<crate::accounts::SignInRequiredReason> {
+    let text = error
+        .as_str()
+        .or_else(|| error["message"].as_str())
+        .map(str::to_lowercase)?;
+    is_login_expired_text(&text).then_some(crate::accounts::SignInRequiredReason::LoginExpired)
 }
 
 fn underlying_error(error: &Value) -> &Value {

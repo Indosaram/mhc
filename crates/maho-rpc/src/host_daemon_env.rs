@@ -29,7 +29,17 @@ pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
         "SENPI_RPC_HOST_DAEMON_DIR",
         "SENPI_RPC_HOST_EXPECTED_RUNTIME_BUILD_ID",
     ];
-    if TRANSIENT.contains(&name) {
+    // mhc reads every setting under its own `MAHO_` brand prefix as well (`maho_core::brand::env_value`), so the
+    // `MAHO_` alias of a transient name identifies the same session or host and is dropped with it.
+    if TRANSIENT.contains(&name)
+        || name.strip_prefix("MAHO_").is_some_and(|suffix| {
+            TRANSIENT.iter().any(|transient| {
+                transient
+                    .split_once('_')
+                    .is_some_and(|(_, rest)| rest == suffix)
+            })
+        })
+    {
         return false;
     }
     if platform == "win32"
@@ -74,6 +84,9 @@ pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
         || [
             "LC_",
             "XDG_",
+            // The brand's own lane (senpi `^(SENPI|OMO|PI)_`): mhc's brand prefix is `MAHO_`
+            // (`maho_core::brand::LEGACY_ENV_PREFIXES`), so its settings reach the daemon too.
+            "MAHO_",
             "SENPI_",
             "OMO_",
             "PI_",
@@ -202,6 +215,22 @@ mod tests {
             "lower_API_KEY",
             "MOM_X",
             "OPENAIKEY",
+        ] {
+            assert!(!daemon_env_is_allowed(name, "linux"), "{name}");
+        }
+    }
+    /// mhc's brand lane is `MAHO_`: a setting such as `MAHO_CLAUDE_ACCOUNT_ROOT` reaches the daemon, while the
+    /// `MAHO_` alias of a transient session or host variable is still dropped.
+    #[test]
+    fn the_maho_brand_lane_reaches_the_daemon_without_its_transient_aliases() {
+        for name in ["MAHO_CLAUDE_ACCOUNT_ROOT", "MAHO_CODING_AGENT_DIR"] {
+            assert!(daemon_env_is_allowed(name, "linux"), "{name}");
+        }
+        for name in [
+            "MAHO_SESSION_ID",
+            "MAHO_RPC_HOST_WATCH_FD",
+            "MAHO_RPC_HOST_INSTANCE_ID",
+            "MAHO_BROWSER_ENGINE",
         ] {
             assert!(!daemon_env_is_allowed(name, "linux"), "{name}");
         }

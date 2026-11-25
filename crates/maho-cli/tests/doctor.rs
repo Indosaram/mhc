@@ -140,6 +140,43 @@ fn missing_trust_store_does_not_create_agent_directory() {
 }
 
 #[test]
+fn a_stored_anthropic_subscription_login_serves_its_pinned_category() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let home = root.path().to_string_lossy().into_owned();
+    let env = BTreeMap::from([
+        (String::from("HOME"), home.clone()),
+        (String::from("USERPROFILE"), home.clone()),
+    ]);
+    let agent = root.path().join(".omo").join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    std::fs::write(
+        agent.join("auth.json"),
+        r#"{"anthropic-subscription":{"type":"oauth","access":"fixture-access","refresh":"fixture-refresh","expires":4102444800000}}"#,
+    )
+    .expect("auth fixture");
+    std::fs::write(
+        root.path().join(".omo").join("omo.jsonc"),
+        r#"{"categories":{"quick":{"model":"anthropic-subscription/claude-haiku-5-5"}}}"#,
+    )
+    .expect("config fixture");
+
+    let lines = doctor_lines(root.path(), &env, &agent.to_string_lossy());
+
+    let summary = lines
+        .iter()
+        .find(|line| line.contains("task categories:"))
+        .expect("category summary");
+    assert!(
+        summary.starts_with("PASS ") || summary.contains("quick"),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("Category \"quick\"")),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn category_report_is_warning_when_no_models_are_available() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = root.path().to_string_lossy().into_owned();

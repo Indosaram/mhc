@@ -1,5 +1,5 @@
 //! Native Claude stream-json boundary. Owns the child until close or EOF settlement.
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::{collections::BTreeMap, path::Path, process::Stdio};
 use tokio::{
@@ -243,6 +243,27 @@ impl SdkQueryHandle {
             .as_array()
             .and_then(|tools| crate::custom_tools::build_custom_tool_server(tools));
         let server_name = custom_server.as_ref().map(|server| server.name);
+        // The SDK's `initialize`: each hook gets a `hook_<n>` callback id that Claude Code answers through
+        // `hook_callback`. Every hook the options carry is the host tool denial (tools.rs).
+        let mut hook_ids = Vec::new();
+        let hooks: Map<String, Value> = options["hooks"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(event, matchers)| {
+                let matchers = matchers
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|matcher| {
+                        let id = format!("hook_{}", hook_ids.len());
+                        hook_ids.push(id.clone());
+                        json!({"matcher":matcher["matcher"],"hookCallbackIds":[id]})
+                    })
+                    .collect();
+                (event.clone(), Value::Array(matchers))
+            })
+            .collect();
         let task = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             let mut pending = BTreeMap::<String, oneshot::Sender<anyhow::Result<Value>>>::new();
@@ -284,6 +305,10 @@ impl SdkQueryHandle {
                                         Some("mcp_message") => match custom_server.as_ref().filter(|server| request["server_name"] == server.name) {
                                             Some(server) => Ok(json!({"mcp_response":server.rpc(&request["message"])})),
                                             None => Err(format!("SDK MCP server not found: {}",request["server_name"].as_str().unwrap_or(""))),
+                                        },
+                                        Some("hook_callback") => match request["callback_id"].as_str() {
+                                            Some(id) if hook_ids.iter().any(|known| known == id) => Ok(crate::tools::host_tool_denial_hook_output()),
+                                            id => Err(format!("No hook callback found for ID: {}", id.unwrap_or(""))),
                                         },
                                         Some("elicitation") => Ok(json!({"action":"decline"})),
                                         _ => Err(format!("Unsupported control request subtype: {}",request["subtype"].as_str().unwrap_or(""))),
@@ -330,7 +355,7 @@ impl SdkQueryHandle {
             task: Some(task),
             initialization: Value::Null,
         };
-        let mut initialize = json!({"subtype":"initialize","hooks":{},"systemPrompt":[""]});
+        let mut initialize = json!({"subtype":"initialize","hooks":hooks,"systemPrompt":[""]});
         if let Some(name) = server_name {
             initialize["sdkMcpServers"] = json!([name]);
         }
@@ -1726,6 +1751,28 @@ mod tests {
             .expect("frame")
             .expect("result");
         assert_eq!(result["result"], "callbacks checked");
+        query.close().await.expect("close");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn host_tool_denial_hook_registers_at_initialize_and_answers_its_callback() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("dir");
+        let script = directory.path().join("claude");
+        std::fs::write(&script, "#!/usr/bin/python3\nimport sys,json\ndef read(): return json.loads(sys.stdin.readline())\ndef send(f): print(json.dumps(f),flush=True)\nf=read()\nassert f['request']['hooks']=={'PreToolUse':[{'matcher':'Bash|Write|Edit|Read|Grep|Glob|mcp__custom-tools__.*','hookCallbackIds':['hook_0']}]}, f['request']['hooks']\nsend({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}})\nsend({'type':'control_request','request_id':'h1','request':{'subtype':'hook_callback','callback_id':'hook_0','input':{'hook_event_name':'PreToolUse','tool_name':'mcp__custom-tools__task'},'tool_use_id':'t'}})\nr=read()['response']\nassert r['subtype']=='success' and r['request_id']=='h1', r\no=r['response']; h=o['hookSpecificOutput']\nassert o['continue'] is False and h['hookEventName']=='PreToolUse' and h['permissionDecision']=='deny', r\nassert h['permissionDecisionReason'].startswith('Not an error: this is the normal host handoff'), r\nsend({'type':'control_request','request_id':'h2','request':{'subtype':'hook_callback','callback_id':'hook_9','input':{},'tool_use_id':'t'}})\nr=read()['response']\nassert r['subtype']=='error' and r['request_id']=='h2', r\nsend({'type':'result','subtype':'success','result':'hook checked'})\nsys.stdin.read()\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("permissions");
+        let options =
+            json!({"cwd":directory.path(),"hooks":crate::tools::host_tool_denial_hooks()});
+        let mut query = SdkQueryHandle::spawn(&script, &options, &BTreeMap::new())
+            .await
+            .expect("query");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), query.next())
+            .await
+            .expect("bounded hook callback")
+            .expect("frame")
+            .expect("result");
+        assert_eq!(result["result"], "hook checked");
         query.close().await.expect("close");
     }
     #[cfg(unix)]

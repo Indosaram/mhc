@@ -9,6 +9,7 @@ use maho_ai::{
         event_stream::{AssistantMessageEventStream, create_assistant_message_event_stream},
     },
 };
+use maho_ext_builtin_loose::provider_context::to_builtin_provider_context;
 use serde_json::{Value, json};
 pub struct StreamDeps {
     pub cwd: std::path::PathBuf,
@@ -69,16 +70,6 @@ pub fn turn_prompt(messages: &[maho_ai::types::Message]) -> Option<String> {
         Message::User(u) => Some(user_message_text(&u.content)),
         _ => None,
     })
-}
-/// senpi `provider-context.ts` `toBuiltinProviderContext`: replay the transcript into the
-/// `{ systemPrompt, tools, messages }` shape, so mid-conversation system messages are folded into the
-/// current system prompt and never split the trailing user messages of a turn.
-pub fn to_builtin_provider_context(context: &maho_ai::types::Context) -> maho_ai::types::Context {
-    let mut resolved = maho_ai::types::transcript::resolve_provider_context(context, false);
-    if resolved.system_prompt.as_deref().is_some_and(str::is_empty) {
-        resolved.system_prompt = None;
-    }
-    resolved
 }
 pub fn stream_cursor_cli(
     model: Model,
