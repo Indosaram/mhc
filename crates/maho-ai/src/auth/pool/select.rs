@@ -23,10 +23,12 @@ pub struct AllSlotsBlockedError {
 impl AllSlotsBlockedError {
     pub fn new(soonest_unblock_at: Option<f64>) -> Self {
         let message = match soonest_unblock_at {
-            None => "All credential slots are blocked until re-login.".to_string(),
+            None => "All credential slots are blocked until re-login. Sign in again or add a new API key for this provider, or choose another model.".to_string(),
             Some(millis) => {
-                let datetime = js_date_to_iso(millis);
-                format!("All credential slots are blocked until {datetime}.")
+                let datetime = js_date(millis);
+                let iso = datetime.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()).unwrap_or_default();
+                let local = datetime.map(|dt| dt.with_timezone(&chrono::Local).format("%b %-d, %Y, %-I:%M %p %:z").to_string()).unwrap_or_default();
+                format!("All credential slots are blocked until {local} ({iso}). Wait until then, or choose another model.")
             }
         };
         Self {
@@ -36,12 +38,10 @@ impl AllSlotsBlockedError {
     }
 }
 
-fn js_date_to_iso(millis_since_epoch: f64) -> String {
+fn js_date(millis_since_epoch: f64) -> Option<chrono::DateTime<chrono::Utc>> {
     let secs = (millis_since_epoch / 1000.0).floor() as i64;
     let nanos = (((millis_since_epoch % 1000.0) + 1000.0) % 1000.0 * 1_000_000.0) as u32;
     chrono::DateTime::from_timestamp(secs, nanos)
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
-        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,7 +71,8 @@ pub fn rendezvous_order<T: SelectableSlot>(key: &str, slots: &[T], hasher: SlotH
     scored.into_iter().map(|(slot, _)| slot).collect()
 }
 
-fn is_blocked<T: SelectableSlot>(slot: &T, now: f64) -> bool {
+/// Auth blocks persist until re-login; other blocks only persist to their deadline.
+pub fn is_slot_blocked<T: SelectableSlot>(slot: &T, now: f64) -> bool {
     slot.block_reason() == Some("auth_error")
         || slot.blocked_until().is_some_and(|until| until > now)
 }
@@ -100,7 +101,7 @@ fn select_unblocked<T: SelectableSlot>(
 ) -> Option<T> {
     if let Some(pinned_name) = &options.pinned_slot
         && let Some(pinned) = slots.iter().find(|slot| slot.name() == pinned_name)
-        && !is_blocked(pinned, now)
+        && !is_slot_blocked(pinned, now)
     {
         return Some(pinned.clone());
     }
@@ -110,7 +111,7 @@ fn select_unblocked<T: SelectableSlot>(
     );
     rendezvous_order(&key, slots, hasher)
         .into_iter()
-        .find(|slot| !is_blocked(slot, now))
+        .find(|slot| !is_slot_blocked(slot, now))
 }
 
 fn soonest_unblock_at<T: SelectableSlot>(slots: &[T], now: f64) -> Option<f64> {
@@ -286,6 +287,10 @@ mod tests {
         };
         let err = select_slot(&slots, &options, fixed_hasher).unwrap_err();
         assert_eq!(err.soonest_unblock_at, Some(500.0));
+        assert!(
+            err.message
+                .contains("(1970-01-01T00:00:00.500Z). Wait until then, or choose another model.")
+        );
     }
 
     #[test]
@@ -302,7 +307,7 @@ mod tests {
         let err = select_slot(&slots, &options, fixed_hasher).unwrap_err();
         assert_eq!(
             err.message,
-            "All credential slots are blocked until re-login."
+            "All credential slots are blocked until re-login. Sign in again or add a new API key for this provider, or choose another model."
         );
     }
 

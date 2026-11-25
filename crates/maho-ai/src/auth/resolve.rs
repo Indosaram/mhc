@@ -4,7 +4,7 @@ use crate::auth::credential_read::{read_credential, read_slot_credential};
 use crate::auth::oauth_refresh::{
     OAuthRefreshRequest, RefreshError, project_oauth_slot, refresh_oauth_credential,
 };
-use crate::auth::pool::slots::PooledCredential;
+use crate::auth::pool::slots::{PooledCredential, managed_sentinel_materials};
 use crate::auth::types::{
     ApiKeyAuth, ApiKeyCredential, AuthContext, AuthResult, Credential, CredentialStore, OAuthAuth,
     OAuthCredential, ProviderAuth,
@@ -307,6 +307,9 @@ pub async fn resolve_stored_oauth(
     min_oauth_validity_ms: Option<f64>,
     slot_name: Option<&str>,
 ) -> Result<Option<AuthResult>, ModelsError> {
+    if stored.is_signed_out() || (stored.access.is_empty() && stored.refresh.is_empty()) {
+        return Ok(None);
+    }
     let minimum_validity_ms =
         DEFAULT_OAUTH_MINIMUM_VALIDITY_MS.max(min_oauth_validity_ms.unwrap_or(0.0));
     let expires_soon = move |credential: &OAuthCredential| {
@@ -315,6 +318,16 @@ pub async fn resolve_stored_oauth(
     let mut credential = stored;
 
     if expires_soon(&credential) {
+        if credential.refresh == credential.access
+            && managed_sentinel_materials(provider_id).contains(&credential.access)
+        {
+            return Err(ModelsError::new(
+                "auth",
+                format!(
+                    "The stored {provider_id} credential is a managed account-pool placeholder; resolve one of its accounts instead"
+                ),
+            ));
+        }
         let post = refresh_oauth_credential(OAuthRefreshRequest {
             credentials: credentials.clone(),
             provider_id: provider_id.to_owned(),
@@ -826,6 +839,60 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(result.auth.api_key, Some("access".into()));
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn signed_out_and_blank_oauth_do_not_refresh_or_fall_back_to_ambient() {
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let mut provider = oauth_provider(&refresh_calls, 3_600_000.0);
+        provider.api_key = api_key_provider("FAKE_KEY").api_key;
+        let ctx = FauxCtx {
+            env: HashMap::from([("FAKE_KEY".into(), "ambient".into())]),
+        };
+        for oauth in [
+            OAuthCredential::new("ignored-a", "ignored-r", 0.0)
+                .with_extra("signedOut", true.into()),
+            OAuthCredential::new("", "", 0.0),
+        ] {
+            let credentials = seeded(Credential::OAuth(oauth)).await;
+            assert!(
+                resolve_provider_auth("p", &provider, &credentials, &ctx, None, &signal())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn expired_managed_sentinel_requires_resolving_a_real_slot() {
+        use crate::auth::pool::slots::managed_sentinel_material;
+
+        let material = managed_sentinel_material("p");
+        let credentials = seeded(Credential::OAuth(OAuthCredential::new(
+            material.clone(),
+            material,
+            0.0,
+        )))
+        .await;
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
+        let error = resolve_provider_auth(
+            "p",
+            &oauth_provider(&refresh_calls, 3_600_000.0),
+            &credentials,
+            &ctx,
+            None,
+            &signal(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "auth");
+        assert!(error.message.contains("managed account-pool placeholder"));
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
     }
 

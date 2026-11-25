@@ -3472,6 +3472,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-build",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
  "ring",
@@ -3920,6 +3921,8 @@ dependencies = [
  "maho-ext-builtin-loose",
  "maho-ext-host",
  "maho-test-support",
+ "nix 0.28.0",
+ "notify",
  "regex",
  "serde",
  "serde_json",
@@ -3927,6 +3930,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 

@@ -50,10 +50,6 @@ use crate::types::{
 };
 use crate::utils::abort::{AbortController, AbortSignal};
 use crate::utils::abort_signals::combine_abort_signals;
-use crate::utils::claude_code_version::{
-    claude_code_version_too_old_hint, get_claude_code_version,
-    is_claude_code_version_too_old_error, recover_claude_code_version,
-};
 use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::diagnostics::{
     AssistantMessageDiagnostic, append_assistant_message_diagnostic, now_ms,
@@ -92,57 +88,31 @@ use anthropic_web_search_expiry::{
 
 pub use crate::utils::prompt_cache_ttl::get_anthropic_compat as anthropic_compat;
 
-/// Stealth mode: Mimic Claude Code's tool naming exactly.
-const CLAUDE_CODE_VERSION: &str = "2.1.306";
-
-/// Claude Code 2.x tool names (canonical casing).
-const CLAUDE_CODE_TOOLS: [&str; 17] = [
-    "Read",
-    "Write",
-    "Edit",
-    "Bash",
-    "Grep",
-    "Glob",
-    "AskUserQuestion",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "KillShell",
-    "NotebookEdit",
-    "Skill",
-    "Task",
-    "TaskOutput",
-    "TodoWrite",
-    "WebFetch",
-    "WebSearch",
-];
-
-const CC_TOOL_ALIASES: [(&str, &str); 1] = [("ask_user_question", "AskUserQuestion")];
-
-/// Convert a tool name to Claude Code canonical casing when it matches (case-insensitive).
-pub fn to_claude_code_name(name: &str) -> String {
-    if let Some((_, wire)) = CC_TOOL_ALIASES.iter().find(|(alias, _)| *alias == name) {
-        return (*wire).to_owned();
-    }
-    let lower = name.to_lowercase();
-    CLAUDE_CODE_TOOLS
-        .iter()
-        .find(|tool| tool.to_lowercase() == lower)
-        .map_or_else(|| name.to_owned(), |tool| (*tool).to_owned())
+/// A Claude subscription token was passed as a Messages API key (senpi#5131).
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "{provider}/{model_id}: a Claude OAuth token (sk-ant-oat...) is not accepted as an API key; mhc does not send Claude subscription tokens to the Anthropic API directly. For a Claude Pro/Max subscription sign in with /login anthropic-subscription (or set CLAUDE_CODE_OAUTH_TOKEN) and use anthropic-subscription/{model_id}; otherwise use an Anthropic API key."
+)]
+pub struct ClaudeOAuthTokenRefusedError {
+    pub provider: String,
+    pub model_id: String,
 }
 
-pub fn from_claude_code_name(name: &str, tools: Option<&[Tool]>) -> String {
-    if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
-        if let Some((alias, _)) = CC_TOOL_ALIASES.iter().find(|(_, wire)| *wire == name)
-            && tools.iter().any(|tool| tool.name == *alias)
-        {
-            return (*alias).to_owned();
-        }
-        let lower = name.to_lowercase();
-        if let Some(tool) = tools.iter().find(|tool| tool.name.to_lowercase() == lower) {
-            return tool.name.clone();
-        }
+impl ClaudeOAuthTokenRefusedError {
+    pub const CODE: &str = "claude_oauth_token_refused";
+}
+
+fn assert_not_claude_oauth_token(
+    model: &Model,
+    api_key: Option<&str>,
+) -> Result<(), ClaudeOAuthTokenRefusedError> {
+    if api_key.is_some_and(|key| key.contains("sk-ant-oat")) {
+        return Err(ClaudeOAuthTokenRefusedError {
+            provider: model.provider.clone(),
+            model_id: model.id.clone(),
+        });
     }
-    name.to_owned()
+    Ok(())
 }
 
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
@@ -742,7 +712,6 @@ fn collect_provider_native_tool_pairing(
     messages: &[Message],
     model: &Model,
     deferred_tool_names: &HashSet<String>,
-    normalize_tool_name: &dyn Fn(&str) -> String,
     discarded_fallback_tool_call_ids: &HashSet<String>,
 ) -> ProviderNativeToolPairing {
     let mut resolved_use_ids = HashSet::new();
@@ -795,13 +764,11 @@ fn collect_provider_native_tool_pairing(
                 }
                 let mut emits_references = false;
                 for name in result.added_tool_names.iter().flatten() {
-                    let normalized_name = normalize_tool_name(name);
-                    if !deferred_tool_names.contains(&normalized_name)
-                        || loaded_reference_names.contains(&normalized_name)
+                    if !deferred_tool_names.contains(name)
+                        || !loaded_reference_names.insert(name.clone())
                     {
                         continue;
                     }
-                    loaded_reference_names.insert(normalized_name);
                     emits_references = true;
                 }
                 if emits_references {
@@ -967,12 +934,7 @@ fn should_use_fine_grained_tool_streaming_beta(model: &Model, context: &Context)
         && !get_anthropic_compat(model).supports_eager_tool_input_streaming
 }
 
-fn get_beta_features(
-    model: &Model,
-    context: &Context,
-    is_oauth_token: bool,
-    options: &StreamOptions,
-) -> Vec<String> {
+fn get_beta_features(model: &Model, context: &Context, options: &StreamOptions) -> Vec<String> {
     let mut configured: Option<Option<String>> = None;
     if let Some(headers) = &model.headers {
         for (name, value) in headers {
@@ -1012,10 +974,6 @@ fn get_beta_features(
             features.push(feature.to_owned());
         }
     };
-    if is_oauth_token {
-        push("claude-code-20250219");
-        push("oauth-2025-04-20");
-    }
     if should_use_fine_grained_tool_streaming_beta(model, context) {
         push(FINE_GRAINED_TOOL_STREAMING_BETA);
     }
@@ -1204,21 +1162,15 @@ fn final_assistant_turn_starts_with_tool_use(messages: &[Value]) -> bool {
 
 fn convert_tool_result(
     message: &ToolResultMessage,
-    is_oauth_token: bool,
     deferred_tool_names: &HashSet<String>,
     loaded_tool_names: &mut HashSet<String>,
-    normalize_tool_name: &dyn Fn(&str) -> String,
 ) -> (Value, Vec<Value>) {
     let mut references: Vec<Value> = Vec::new();
     for name in message.added_tool_names.iter().flatten() {
-        let normalized_name = normalize_tool_name(name);
-        if !deferred_tool_names.contains(&normalized_name)
-            || loaded_tool_names.contains(&normalized_name)
-        {
+        if !deferred_tool_names.contains(name) || !loaded_tool_names.insert(name.clone()) {
             continue;
         }
-        loaded_tool_names.insert(normalized_name);
-        references.push(json!({ "type": "tool_reference", "tool_name": if is_oauth_token { to_claude_code_name(name) } else { name.clone() } }));
+        references.push(json!({ "type": "tool_reference", "tool_name": name }));
     }
 
     let converted_content = convert_content_blocks(&message.content);
@@ -1252,11 +1204,9 @@ fn convert_tool_result(
 fn convert_messages(
     transformed_messages: &[Message],
     model: &Model,
-    is_oauth_token: bool,
     cache_control: Option<&Value>,
     unsigned_thinking_replay: &str,
     deferred_tool_names: &HashSet<String>,
-    normalize_tool_name: &dyn Fn(&str) -> String,
     managed_provider: Option<&str>,
     native_tool_changes: bool,
     stable_prefix_checkpoint_limit: usize,
@@ -1273,7 +1223,6 @@ fn convert_messages(
         transformed_messages,
         model,
         deferred_tool_names,
-        normalize_tool_name,
         &discarded_fallback_tool_call_ids,
     );
 
@@ -1419,7 +1368,7 @@ fn convert_messages(
                             blocks.push(json!({
                                 "type": "tool_use",
                                 "id": call.id,
-                                "name": if is_oauth_token { to_claude_code_name(&call.name) } else { call.name.clone() },
+                            "name": call.name,
                                 "input": Value::Object(call.arguments.clone()),
                             }));
                         }
@@ -1478,10 +1427,8 @@ fn convert_messages(
                     if !discarded_fallback_tool_call_ids.contains(&result.tool_call_id) {
                         let (tool_result, siblings) = convert_tool_result(
                             result,
-                            is_oauth_token,
                             deferred_tool_names,
                             &mut loaded_tool_names,
-                            normalize_tool_name,
                         );
                         tool_results.push(tool_result);
                         sibling_content.extend(siblings);
@@ -1509,10 +1456,10 @@ fn convert_messages(
                 }
                 if native_tool_changes {
                     for tool in &system.tools_removed {
-                        blocks.push(json!({"type":"tool_removal","tool":{"type":"tool_reference","name":normalize_tool_name(&tool.name)}}));
+                        blocks.push(json!({"type":"tool_removal","tool":{"type":"tool_reference","name":tool.name}}));
                     }
                     for tool in &system.tools_added {
-                        blocks.push(json!({"type":"tool_addition","tool":{"type":"tool_reference","name":normalize_tool_name(&tool.name)}}));
+                        blocks.push(json!({"type":"tool_addition","tool":{"type":"tool_reference","name":tool.name}}));
                     }
                 }
                 if !blocks.is_empty() {
@@ -1596,7 +1543,6 @@ fn is_anthropic_strict_unsupported_keyword(key: &str, value: &Value) -> bool {
 
 fn convert_tools(
     tools: &[Tool],
-    is_oauth_token: bool,
     supports_eager_tool_input_streaming: bool,
     supports_strict_tools: bool,
     cache_control: Option<&Value>,
@@ -1630,14 +1576,7 @@ fn convert_tools(
         };
 
         let mut converted = Map::new();
-        converted.insert(
-            "name".into(),
-            Value::from(if is_oauth_token {
-                to_claude_code_name(&tool.name)
-            } else {
-                tool.name.clone()
-            }),
-        );
+        converted.insert("name".into(), Value::from(tool.name.clone()));
         converted.insert("description".into(), Value::from(tool.description.clone()));
         if supports_eager_tool_input_streaming {
             converted.insert("eager_input_streaming".into(), Value::from(true));
@@ -1838,7 +1777,6 @@ fn sanitize_adaptive_thinking_payload(
 fn build_params(
     model: &Model,
     context: &Context,
-    is_oauth_token: bool,
     options: &StreamOptions,
     unsigned_thinking_replay: &str,
 ) -> Result<Map<String, Value>, String> {
@@ -1887,22 +1825,14 @@ fn build_params(
     let stable_prefix_markers = transformed_messages.iter().filter(|message| {
         matches!(message, Message::Assistant(assistant) if assistant.prompt_cache_breakpoint == Some(true))
     }).count();
-    let system_holds_checkpoint = is_oauth_token
-        || context
-            .system_prompt
-            .as_ref()
-            .is_some_and(|text| !text.is_empty());
+    let system_holds_checkpoint = context
+        .system_prompt
+        .as_ref()
+        .is_some_and(|text| !text.is_empty());
     let stable_prefix_checkpoint_limit = if stable_prefix_markers >= 2 && system_holds_checkpoint {
         2
     } else {
         stable_prefix_markers.min(1)
-    };
-    let normalize_tool_name = |name: &str| {
-        if is_oauth_token {
-            to_claude_code_name(name)
-        } else {
-            name.to_owned()
-        }
     };
     let discarded_fallback_tool_call_ids =
         collect_discarded_fallback_tool_call_ids(&transformed_messages, model);
@@ -1921,7 +1851,7 @@ fn build_params(
             tools: context.tools.clone(),
         },
         compat.supports_tool_references,
-        Some(&normalize_tool_name),
+        None,
     );
     let mut immediate_tools = placement.immediate;
     let mut deferred_tools: Vec<Tool> = placement.deferred.into_values().collect();
@@ -1941,21 +1871,19 @@ fn build_params(
     }
     let deferred_tool_names: HashSet<String> = deferred_tools
         .iter()
-        .map(|tool| normalize_tool_name(&tool.name))
+        .map(|tool| tool.name.clone())
         .collect();
     let active_effort = effort_option(options).unwrap_or_else(|| "high".to_owned());
-    let mut beta_features = get_beta_features(model, context, is_oauth_token, options);
+    let mut beta_features = get_beta_features(model, context, options);
     if native_tool_changes {
         beta_features.push("mid-conversation-tool-changes-2026-07-01".into());
     }
     let (converted_messages, assistant_levels) = convert_messages(
         &transformed_messages,
         model,
-        is_oauth_token,
         cache_control.as_ref(),
         unsigned_thinking_replay,
         &deferred_tool_names,
-        &normalize_tool_name,
         model
             .compat
             .as_ref()
@@ -2014,31 +1942,7 @@ fn build_params(
     }
 
     let initial_system_text = context.system_prompt.as_deref().unwrap_or_default();
-    if is_oauth_token {
-        let mut system: Vec<Value> = Vec::new();
-        let mut identity = Map::new();
-        identity.insert("type".into(), Value::from("text"));
-        identity.insert("text".into(), Value::from(""));
-        if initial_system_text.is_empty()
-            && let Some(cache_control) = cache_control.as_ref()
-        {
-            identity.insert("cache_control".into(), cache_control.clone());
-        }
-        system.push(Value::Object(identity));
-        if !initial_system_text.is_empty() {
-            let mut block = Map::new();
-            block.insert("type".into(), Value::from("text"));
-            block.insert(
-                "text".into(),
-                Value::from(sanitize_surrogates(initial_system_text)),
-            );
-            if let Some(cache_control) = cache_control.as_ref() {
-                block.insert("cache_control".into(), cache_control.clone());
-            }
-            system.push(Value::Object(block));
-        }
-        params.insert("system".into(), Value::Array(system));
-    } else if !initial_system_text.is_empty() {
+    if !initial_system_text.is_empty() {
         let mut block = Map::new();
         block.insert("type".into(), Value::from("text"));
         block.insert(
@@ -2061,7 +1965,6 @@ fn build_params(
     if !immediate_tools.is_empty() || !deferred_tools.is_empty() {
         let mut tools = convert_tools(
             &immediate_tools,
-            is_oauth_token,
             compat.supports_eager_tool_input_streaming,
             compat.supports_strict_tools,
             if compat.supports_cache_control_on_tools && stable_prefix_checkpoint_limit < 2 {
@@ -2076,7 +1979,6 @@ fn build_params(
         }
         tools.extend(convert_tools(
             &deferred_tools,
-            is_oauth_token,
             compat.supports_eager_tool_input_streaming,
             compat.supports_strict_tools,
             None,
@@ -2191,6 +2093,7 @@ pub(crate) enum AnthropicStreamError {
         timeout: bool,
     },
     Message(String),
+    ClaudeOAuthTokenRefused(ClaudeOAuthTokenRefusedError),
     Aborted,
 }
 
@@ -2200,6 +2103,7 @@ impl std::fmt::Display for AnthropicStreamError {
             Self::Http { message, .. } | Self::Network { message, .. } | Self::Message(message) => {
                 formatter.write_str(message)
             }
+            Self::ClaudeOAuthTokenRefused(error) => std::fmt::Display::fmt(error, formatter),
             Self::Aborted => formatter.write_str("Request aborted"),
         }
     }
@@ -2259,6 +2163,15 @@ impl AnthropicStreamError {
                 name: "Error".into(),
                 class_name: None,
                 message: message.clone(),
+                status: None,
+                headers: None,
+                error: None,
+            },
+            Self::ClaudeOAuthTokenRefused(error) => RetryErrorShape {
+                is_error: true,
+                name: "ClaudeOAuthTokenRefusedError".into(),
+                class_name: None,
+                message: error.to_string(),
                 status: None,
                 headers: None,
                 error: None,
@@ -2433,7 +2346,6 @@ fn replay_mode(replay: &Mutex<&'static str>) -> &'static str {
 struct AnthropicClient {
     base_url: String,
     headers: BTreeMap<String, Option<String>>,
-    is_oauth_token: bool,
 }
 
 fn create_client(
@@ -2445,7 +2357,6 @@ fn create_client(
     session_id: Option<&str>,
 ) -> AnthropicClient {
     let compat = get_anthropic_compat(model);
-    let is_oauth_token = api_key.is_some_and(|key| key.contains("sk-ant-oat"));
     let needs_interleaved_beta =
         interleaved_thinking(options) && !supports_adaptive_thinking(model);
     let mut beta_features: Vec<String> = Vec::new();
@@ -2488,28 +2399,6 @@ fn create_client(
             base.insert("anthropic-beta".into(), Some(beta_header.clone()));
         }
         model.base_url.clone()
-    } else if is_oauth_token {
-        base.insert("User-Agent".into(), Some(get_pi_user_agent()));
-        base.insert("accept".into(), Some("application/json".into()));
-        base.insert(
-            "anthropic-dangerous-direct-browser-access".into(),
-            Some("true".into()),
-        );
-        let mut oauth_betas = vec![
-            "claude-code-20250219".to_owned(),
-            "oauth-2025-04-20".to_owned(),
-        ];
-        oauth_betas.extend(beta_features.clone());
-        base.insert("anthropic-beta".into(), Some(oauth_betas.join(",")));
-        base.insert(
-            "user-agent".into(),
-            Some(format!(
-                "claude-cli/{}",
-                get_claude_code_version(CLAUDE_CODE_VERSION, options.request.env.as_ref())
-            )),
-        );
-        base.insert("x-app".into(), Some("cli".into()));
-        model.base_url.clone()
     } else {
         base.insert("User-Agent".into(), Some(get_pi_user_agent()));
         base.insert("accept".into(), Some("application/json".into()));
@@ -2550,11 +2439,7 @@ fn create_client(
         ]
     };
     let headers = sanitize_adaptive_thinking_headers(model, merge_headers(&sources));
-    AnthropicClient {
-        base_url,
-        headers,
-        is_oauth_token,
-    }
+    AnthropicClient { base_url, headers }
 }
 
 /// The SDK's per-request headers: default headers, the `anthropic-version` constant and the auth
@@ -2588,7 +2473,7 @@ fn request_headers(client: &AnthropicClient, model: &Model, api_key: Option<&str
         return map;
     }
     let Some(api_key) = api_key else { return map };
-    let (name, value) = if model.provider == "github-copilot" || client.is_oauth_token {
+    let (name, value) = if model.provider == "github-copilot" {
         (
             HeaderName::from_static("authorization"),
             format!("Bearer {api_key}"),
@@ -2611,19 +2496,12 @@ struct PreparedRequest {
 async fn build_prepared_request(
     model: &Model,
     context: &Context,
-    is_oauth_token: bool,
     options: &StreamOptions,
     unsigned_thinking_replay: &str,
 ) -> Result<PreparedRequest, AnthropicStreamError> {
     let payload = Value::Object(
-        build_params(
-            model,
-            context,
-            is_oauth_token,
-            options,
-            unsigned_thinking_replay,
-        )
-        .map_err(AnthropicStreamError::Message)?,
+        build_params(model, context, options, unsigned_thinking_replay)
+            .map_err(AnthropicStreamError::Message)?,
     );
     let hooked = options
         .request
@@ -2794,7 +2672,6 @@ struct StreamState {
     partial_json_parsed_len: Vec<usize>,
     input_transformations: Option<Vec<Value>>,
     usage_model: Model,
-    is_oauth_token: bool,
     server_fallback_receipt: Option<ServerFallbackReceipt>,
     abort_controller: AbortController,
     abort_server_side_fallback: bool,
@@ -2938,7 +2815,6 @@ fn handle_message_start(state: &mut StreamState, model: &Model, event: &Value, s
 fn handle_content_block_start(
     state: &mut StreamState,
     model: &Model,
-    context: &Context,
     event: &Value,
     sink: &AssistantMessageEventStream,
 ) {
@@ -3017,11 +2893,6 @@ fn handle_content_block_start(
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let name = if state.is_oauth_token {
-                from_claude_code_name(raw_name, context.tools.as_deref())
-            } else {
-                raw_name.to_owned()
-            };
             let arguments = block
                 .get("input")
                 .and_then(Value::as_object)
@@ -3034,7 +2905,7 @@ fn handle_content_block_start(
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
-                    name,
+                    name: raw_name.to_owned(),
                     arguments,
                     incomplete: None,
                     error_message: None,
@@ -3301,16 +3172,13 @@ fn handle_message_delta(
 fn handle_event(
     state: &mut StreamState,
     model: &Model,
-    context: &Context,
     event: &Value,
     sent_model: &str,
     sink: &AssistantMessageEventStream,
 ) -> Result<(), AnthropicStreamError> {
     match event.get("type").and_then(Value::as_str) {
         Some("message_start") => handle_message_start(state, model, event, sent_model),
-        Some("content_block_start") => {
-            handle_content_block_start(state, model, context, event, sink)
-        }
+        Some("content_block_start") => handle_content_block_start(state, model, event, sink),
         Some("content_block_delta") => handle_content_block_delta(state, event, sink),
         Some("content_block_stop") => handle_content_block_stop(state, event, sink),
         Some("message_delta") => handle_message_delta(state, event)?,
@@ -3383,15 +3251,13 @@ async fn attempt_request(
                 .collect()
         })
         .unwrap_or_default();
-    let mut version_retried = false;
-    let mut version_client = None;
     let mut federation_retried = false;
+    let mut federation_client = None;
     loop {
-        let client = version_client.as_ref().unwrap_or(client);
+        let client = federation_client.as_ref().unwrap_or(client);
         let mut prepared = build_prepared_request(
             model,
             context,
-            client.is_oauth_token,
             options,
             replay_mode(unsigned_thinking_replay),
         )
@@ -3471,10 +3337,9 @@ async fn attempt_request(
                     .map_err(AnthropicStreamError::Message)?;
                 let mut headers = client.headers.clone();
                 headers.insert("authorization".into(), Some(format!("Bearer {token}")));
-                version_client = Some(AnthropicClient {
+                federation_client = Some(AnthropicClient {
                     base_url: client.base_url.clone(),
                     headers,
-                    is_oauth_token: false,
                 });
                 continue;
             }
@@ -3495,53 +3360,6 @@ async fn attempt_request(
             continue;
         }
         let message = response.to_string();
-        if client.is_oauth_token
-            && is_claude_code_version_too_old_error(response.status(), &message)
-        {
-            let advertised = client
-                .headers
-                .get("user-agent")
-                .and_then(Option::as_deref)
-                .and_then(|value| value.strip_prefix("claude-cli/"))
-                .unwrap_or(CLAUDE_CODE_VERSION);
-            if !version_retried {
-                version_retried = true;
-                if let Some(next) = recover_claude_code_version(
-                    &message,
-                    CLAUDE_CODE_VERSION,
-                    advertised,
-                    options.request.env.as_ref(),
-                )
-                .await
-                {
-                    let mut headers = client.headers.clone();
-                    headers.insert("user-agent".into(), Some(format!("claude-cli/{next}")));
-                    version_client = Some(AnthropicClient {
-                        base_url: client.base_url.clone(),
-                        headers,
-                        is_oauth_token: true,
-                    });
-                    continue;
-                }
-            }
-            return Err(match response {
-                AnthropicStreamError::Http {
-                    status,
-                    message,
-                    headers,
-                    parsed_body,
-                } => AnthropicStreamError::Http {
-                    status,
-                    message: format!(
-                        "{message}\n{}",
-                        claude_code_version_too_old_hint(advertised)
-                    ),
-                    headers,
-                    parsed_body,
-                },
-                other => other,
-            });
-        }
         if !demote_references
             && replays_references
             && response.status() == Some(400)
@@ -3614,6 +3432,8 @@ async fn drive(
     if federation.is_none() {
         auth.map_err(AnthropicStreamError::Message)?;
     }
+    assert_not_claude_oauth_token(model, api_key.as_deref())
+        .map_err(AnthropicStreamError::ClaudeOAuthTokenRefused)?;
 
     let dynamic_headers = (model.provider == "github-copilot").then(|| {
         let has_images = has_copilot_vision_input(&context.messages);
@@ -3651,7 +3471,6 @@ async fn drive(
             None => "oauth-2025-04-20".into(),
         });
     }
-    state.is_oauth_token = client.is_oauth_token;
 
     let fallback_key = unsigned_thinking_fallback_key(model, options.session_id.as_deref());
     let unsigned_thinking_replay: Mutex<&'static str> = Mutex::new(
@@ -3774,7 +3593,7 @@ async fn drive(
                 } else if is_anthropic_message_stop(&event) {
                     saw_message_end = true;
                 }
-                handle_event(state, model, context, &event, &sent_model, sink)?;
+                handle_event(state, model, &event, &sent_model, sink)?;
                 if state.server_fallback_receipt.is_some()
                     && state.abort_controller.signal().aborted()
                 {
@@ -3794,7 +3613,7 @@ async fn drive(
             } else if is_anthropic_message_stop(&event) {
                 saw_message_end = true;
             }
-            handle_event(state, model, context, &event, &sent_model, sink)?;
+            handle_event(state, model, &event, &sent_model, sink)?;
         }
     }
 
@@ -3912,7 +3731,6 @@ async fn run_stream(
         partial_json_parsed_len: Vec::new(),
         input_transformations: None,
         usage_model: model.clone(),
-        is_oauth_token: false,
         server_fallback_receipt: None,
         abort_controller,
         abort_server_side_fallback: options.request.abort_server_side_fallback == Some(true),
@@ -4038,6 +3856,9 @@ pub fn stream_simple(
     {
         return crate::utils::lazy::error_stream(model, &message);
     }
+    if let Err(error) = assert_not_claude_oauth_token(model, api_key.as_deref()) {
+        return crate::utils::lazy::error_stream(model, &error.to_string());
+    }
 
     let mut stream_options =
         match build_base_options(model, context, Some(&simple), api_key.as_deref()) {
@@ -4104,7 +3925,6 @@ pub fn build_anthropic_warm_prompt_cache_params(
     let params = build_params(
         model,
         context,
-        false,
         &overridden,
         unsigned_thinking_replay_value(Some(&get_anthropic_compat(model).unsigned_thinking_replay)),
     )

@@ -148,6 +148,7 @@ pub fn anthropic_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsEr
         name: Some("Anthropic".into()),
         base_url: Some("https://api.anthropic.com".into()),
         headers: None,
+        // Claude subscription sign-in belongs to the Claude Code CLI lane, not the Messages API.
         auth: Some(ProviderAuth {
             api_key: Some(Arc::new(anthropic_api_key_auth())),
             oauth: None,
@@ -183,6 +184,20 @@ mod tests {
             .iter()
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect())
+    }
+
+    #[test]
+    fn builtin_anthropic_providers_offer_no_oauth_login() {
+        let providers = crate::providers::all::builtin_providers().expect("built-in providers");
+        assert!(!providers.iter().any(|provider| {
+            provider.id().contains("anthropic")
+                && provider.auth().is_some_and(|auth| auth.oauth.is_some())
+        }));
+        let anthropic = providers
+            .iter()
+            .find(|provider| provider.id() == "anthropic")
+            .expect("Anthropic provider");
+        assert!(anthropic.auth().is_some_and(|auth| auth.api_key.is_some()));
     }
 
     #[tokio::test]
@@ -237,5 +252,34 @@ mod tests {
             .expect("resolve")
             .expect("configured");
         assert_eq!(result.auth.api_key.as_deref(), Some("oat"));
+    }
+
+    #[tokio::test]
+    async fn oauth_token_from_env_is_refused_before_a_messages_request() {
+        let token = ["sk-ant", "oat01", "test-only"].join("-");
+        let signal = crate::utils::abort::AbortController::new().signal();
+        let result = anthropic_api_key_auth()
+            .resolve(&env(&[(ANTHROPIC_OAUTH_TOKEN_ENV, &token)]), None, &signal)
+            .await
+            .expect("resolve")
+            .expect("configured");
+        let mut model = crate::providers::all::get_builtin_models("anthropic")
+            .into_iter()
+            .next()
+            .expect("Anthropic model");
+        // No network even if the refusal regresses.
+        model.base_url = "http://127.0.0.1:0".into();
+        let mut options = SimpleStreamOptions::default();
+        options.stream.request.api_key = result.auth.api_key;
+        options.stream.request.max_retries = Some(0);
+        let stream = stream_simple_anthropic(&model, &Context::default(), Some(options));
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+            .await
+            .expect("refusal must settle")
+            .expect("error result");
+        assert_eq!(message.stop_reason, crate::types::StopReason::Error);
+        let detail = message.error_message.expect("refusal detail");
+        assert!(detail.contains("/login anthropic-subscription"), "{detail}");
+        assert!(!detail.contains(&token));
     }
 }

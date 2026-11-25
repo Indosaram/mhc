@@ -85,7 +85,12 @@ pub const KIMI_CODE_K27_MODEL_ID: &str = "kimi-for-coding-highspeed";
 pub const KIMI_CODE_K28_MODEL_ID: &str = "kimi-for-coding";
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek";
 
-pub use maho_ai::utils::fable55_launch::is_fable55_model_id;
+pub fn is_fable55_model_id(model_id: &str) -> bool {
+    matches(
+        model_id,
+        r"(?:^|[/@:._-])(?:fable|mythos)-5[.-]5(?:$|[/@:._-])",
+    )
+}
 
 fn gpt5_version(model_id: &str) -> Option<PromptPresetName> {
     let normalized = normalize_model_id(model_id);

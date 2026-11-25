@@ -19,8 +19,8 @@ fn haiku_55_uses_adaptive_xhigh_without_disabled_thinking() -> anyhow::Result<()
     );
     let mut options = StreamOptions::default();
     options.extra.insert("thinkingEnabled".into(), json!(false));
-    let params = build_params(&model, &Context::default(), false, &options, "text")
-        .map_err(anyhow::Error::msg)?;
+    let params =
+        build_params(&model, &Context::default(), &options, "text").map_err(anyhow::Error::msg)?;
     assert_ne!(
         params.get("thinking").and_then(|value| value.get("type")),
         Some(&json!("disabled"))

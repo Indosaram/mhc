@@ -1,6 +1,7 @@
 //! Port of senpi `anthropic-subscription/failover.ts` (pin 903b8336).
 use crate::{
     accounts::{AccountSlot, AccountSource},
+    affinity::AllAccountsBlockedError,
     errors::{SdkErrorClassification, SdkErrorKind},
     model_blocks::{
         ModelBlocks, merge_model_blocks, model_block_key, prune_model_blocks, with_model_block,
@@ -9,6 +10,7 @@ use crate::{
 use maho_ai::auth::types::{Credential, CredentialStore};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 pub const MAX_RATE_LIMIT_BLOCK_MS: f64 = 48.0 * 60.0 * 60.0 * 1000.0;
 pub const DEFAULT_RATE_LIMIT_BLOCK_MS: f64 = 60000.0;
@@ -29,6 +31,8 @@ pub struct ClassifiedSdkError {
     pub classification: SdkErrorClassification,
     pub original: Value,
     pub suppress_turn_retry: bool,
+    /// The selection refusal is context, not a replacement for the actual failure.
+    pub pool_state: Option<Arc<AllAccountsBlockedError>>,
 }
 impl std::fmt::Display for ClassifiedSdkError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,7 +50,11 @@ impl std::fmt::Display for ClassifiedSdkError {
         }
     }
 }
-impl std::error::Error for ClassifiedSdkError {}
+impl std::error::Error for ClassifiedSdkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.pool_state.as_deref().map(|pool| pool as _)
+    }
+}
 pub struct FailoverEvent {
     pub account: AccountSlot,
     pub next_account: Option<AccountSlot>,
@@ -71,6 +79,10 @@ pub struct FailoverOptions<'a> {
     pub session_key: Option<&'a str>,
     pub signal: Option<&'a maho_ai::utils::abort::AbortSignal>,
     pub sleep: Option<&'a RetrySleep>,
+    /// Connection probes report the outcome without saving or clearing blocks.
+    pub persist_blocks: bool,
+    pub agent_dir: Option<&'a Path>,
+    pub rechecked_accounts: Option<crate::limit_recheck::RecheckedAccounts>,
 }
 pub trait FailoverBoundary {
     fn select(&mut self, accounts: &[AccountSlot]) -> anyhow::Result<AccountSlot>;
@@ -376,16 +388,23 @@ fn block_state(
     Ok(state)
 }
 
-/// Persists a block onto the stored slot. An `auth_error` is a verdict on the token that failed, so it is written
-/// only while the stored slot still holds that token; otherwise nothing is written and the stored slot is returned.
-pub async fn persist_block(
+#[derive(Default)]
+enum BlockWrite {
+    #[default]
+    Unchanged,
+    Saved,
+    Superseded(Box<AccountSlot>),
+}
+
+/// An auth verdict can only be saved against the sign-in that actually failed.
+async fn persist_block(
     store: &dyn CredentialStore,
     provider: &str,
     account: AccountSlot,
     now: f64,
-) -> anyhow::Result<Option<AccountSlot>> {
-    let superseded = Arc::new(Mutex::new(None));
-    let found = superseded.clone();
+) -> anyhow::Result<BlockWrite> {
+    let result = Arc::new(Mutex::new(BlockWrite::Unchanged));
+    let written = result.clone();
     store
         .modify(
             provider,
@@ -401,6 +420,7 @@ pub async fn persist_block(
                             .or_insert_with(|| json!({}));
                         let state = block_state(&account, states.get(&account.name), now)?;
                         states[&account.name] = Value::Object(state);
+                        *written.lock().unwrap_or_else(PoisonError::into_inner) = BlockWrite::Saved;
                         return Ok(Some(Credential::OAuth(credential)));
                     }
                     let stored = credential
@@ -427,8 +447,10 @@ pub async fn persist_block(
                         && let Some(stored) = &stored
                         && superseded_material(stored)
                     {
-                        *found.lock().unwrap_or_else(PoisonError::into_inner) =
-                            serde_json::from_value::<AccountSlot>(stored.clone()).ok();
+                        *written.lock().unwrap_or_else(PoisonError::into_inner) =
+                            BlockWrite::Superseded(Box::new(serde_json::from_value(
+                                stored.clone(),
+                            )?));
                         return Ok(Some(Credential::OAuth(credential)));
                     }
                     if let Some(accounts) = credential
@@ -444,11 +466,18 @@ pub async fn persist_block(
                             let object = existing
                                 .as_object_mut()
                                 .ok_or_else(|| anyhow::anyhow!("account must be object"))?;
-                            for key in ["blockedUntil", "blockReason", "modelBlocks", "authVerdict"]
-                            {
+                            for key in [
+                                "blockedUntil",
+                                "blockReason",
+                                "blockedAt",
+                                "modelBlocks",
+                                "authVerdict",
+                            ] {
                                 object.remove(key);
                             }
                             object.extend(state);
+                            *written.lock().unwrap_or_else(PoisonError::into_inner) =
+                                BlockWrite::Saved;
                         }
                     }
                     Ok(Some(Credential::OAuth(credential)))
@@ -457,11 +486,9 @@ pub async fn persist_block(
             None,
         )
         .await?;
-    let superseded = superseded
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
-    Ok(superseded)
+    Ok(std::mem::take(
+        &mut *result.lock().unwrap_or_else(PoisonError::into_inner),
+    ))
 }
 
 fn clearable(slot: &Value, started_at: f64) -> bool {
@@ -586,6 +613,9 @@ pub struct FailoverTurnOptions<'a> {
     pub account_fallback: Option<bool>,
     pub base_block_ms: f64,
     pub now: f64,
+    pub persist_blocks: bool,
+    pub agent_dir: Option<&'a Path>,
+    pub rechecked_accounts: Option<crate::limit_recheck::RecheckedAccounts>,
 }
 
 /// `runFailover`'s per-turn decisions, shared by [`run_failover`] and the native stream loop: one attempt per
@@ -605,6 +635,10 @@ pub struct FailoverTurn<'a> {
     long_context_retried: bool,
     retried_on_stored_material: HashSet<String>,
     last_error: Option<ClassifiedSdkError>,
+    persist_blocks: bool,
+    agent_dir: Option<&'a Path>,
+    rechecked_accounts: Option<crate::limit_recheck::RecheckedAccounts>,
+    rechecking: bool,
 }
 
 impl<'a> FailoverTurn<'a> {
@@ -631,6 +665,10 @@ impl<'a> FailoverTurn<'a> {
             long_context_retried: false,
             retried_on_stored_material: HashSet::new(),
             last_error: None,
+            persist_blocks: options.persist_blocks,
+            agent_dir: options.agent_dir,
+            rechecked_accounts: options.rechecked_accounts,
+            rechecking: false,
         }
     }
     pub fn attempts_left(&self) -> bool {
@@ -652,6 +690,49 @@ impl<'a> FailoverTurn<'a> {
                 anyhow::anyhow!("Anthropic Subscription failover exhausted without an attempt")
             })
     }
+    pub(crate) fn selection_error(&self, error: anyhow::Error) -> anyhow::Error {
+        match (
+            self.last_error.clone(),
+            error.downcast::<AllAccountsBlockedError>(),
+        ) {
+            (Some(mut original), Ok(pool)) => {
+                original.pool_state = Some(Arc::new(pool));
+                original.into()
+            }
+            (None, Ok(pool)) => pool.into(),
+            (_, Err(error)) => error,
+        }
+    }
+    /// Only a pool refusal opens the half-open selection view. Claim selection and record the
+    /// attempt under one lock, so concurrent requests cannot spend the same allowance twice.
+    pub(crate) fn select(
+        &mut self,
+        now: f64,
+        mut select: impl FnMut(&[AccountSlot]) -> anyhow::Result<AccountSlot>,
+    ) -> anyhow::Result<AccountSlot> {
+        self.rechecking = false;
+        let ordinary = select(&self.accounts);
+        let Some(attempted) = &self.rechecked_accounts else {
+            return ordinary;
+        };
+        let mut attempted = attempted.lock().unwrap_or_else(PoisonError::into_inner);
+        let account = match ordinary {
+            Err(error) if error.is::<AllAccountsBlockedError>() => {
+                let view = crate::limit_recheck::recheck_selection(&self.accounts, &attempted, now);
+                match select(&view) {
+                    Ok(account) => {
+                        self.rechecking = true;
+                        account
+                    }
+                    Err(refusal) if refusal.is::<AllAccountsBlockedError>() => return Err(error),
+                    Err(error) => return Err(error),
+                }
+            }
+            other => other?,
+        };
+        attempted.insert(account.name.clone());
+        Ok(account)
+    }
     fn replace(&mut self, replacement: AccountSlot) {
         for account in &mut self.accounts {
             if account.name == replacement.name {
@@ -672,9 +753,17 @@ impl<'a> FailoverTurn<'a> {
             classification,
             original: failure.clone(),
             suppress_turn_retry: visible,
+            pool_state: None,
         };
         self.last_error = Some(classified.clone());
         if !classification.retryable {
+            return Err(classified.into());
+        }
+        if self.rechecking
+            && (is_transient(classification)
+                || classification.kind == SdkErrorKind::LongContextUnavailable)
+        {
+            // An inconclusive half-open attempt leaves the saved block intact.
             return Err(classified.into());
         }
         // A refused 1M window is the account's entitlement, not a limit: never block or rotate it (senpi#3408).
@@ -733,21 +822,34 @@ impl<'a> FailoverTurn<'a> {
         );
         // With no session to hold it, a block is shared as before.
         let shared = is_shared_verdict(classification, &failure) || self.session_key.is_none();
-        if !shared {
-            remember_session_block(self.session_key, &blocked);
-        }
-        let superseded = if shared {
+        let write = if !self.persist_blocks {
+            BlockWrite::Unchanged
+        } else if shared {
             persist_block(self.store, self.provider, blocked.clone(), now).await?
         } else {
-            None
+            remember_session_block(self.session_key, &blocked);
+            BlockWrite::Saved
         };
-        if let Some(superseded) = superseded
+        if let BlockWrite::Superseded(superseded) = &write
+            && !self.rechecking
             && !visible
-            && usable(&superseded, now, self.model)
+            && usable(superseded, now, self.model)
             && self.retried_on_stored_material.insert(account.name.clone())
         {
-            self.replace(superseded);
+            self.replace(superseded.as_ref().clone());
             return Ok(FailureStep::Reselect);
+        }
+        if matches!(write, BlockWrite::Saved)
+            && let Some(agent_dir) = self.agent_dir
+        {
+            let until = blocked.blocked_until.or_else(|| {
+                crate::model_blocks::active_model_block_until(
+                    blocked.model_blocks.as_ref(),
+                    self.model,
+                    now,
+                )
+            });
+            crate::account_block_log::log_account_blocked(agent_dir, &blocked, until, shared);
         }
         self.replace(blocked.clone());
         self.attempt += 1;
@@ -766,6 +868,9 @@ impl<'a> FailoverTurn<'a> {
     /// A finished turn: the account's session block is dropped and a stale stored limit block cleared. Clearing is
     /// best-effort hygiene, so a store failure is logged and never fails the turn.
     pub async fn on_success(&self, name: &str, started_at: f64) {
+        if !self.persist_blocks {
+            return;
+        }
         forget_session_block(self.session_key, name);
         if let Err(error) =
             clear_block_after_success(self.store, self.provider, name, started_at).await
@@ -816,14 +921,17 @@ pub async fn run_failover(
             account_fallback: options.account_fallback,
             base_block_ms: options.base_block_ms,
             now: (options.now)(),
+            persist_blocks: options.persist_blocks,
+            agent_dir: options.agent_dir,
+            rechecked_accounts: options.rechecked_accounts,
         },
     );
-    let mut retry: Option<String> = None;
+    let mut retry: Option<AccountSlot> = None;
     while turn.attempts_left() {
         // Each attempt gets its own copy, so a concurrent attempt still reports the token it actually sent.
-        let account = match retry.take().and_then(|name| turn.account(&name)) {
+        let account = match retry.take() {
             Some(account) => account,
-            None => boundary.select(&turn.accounts)?,
+            None => turn.select((options.now)(), |accounts| boundary.select(accounts))?,
         };
         let started_at = (options.now)();
         let mut visible = false;
@@ -864,14 +972,14 @@ pub async fn run_failover(
                 {
                     return Err(turn.last_error());
                 }
-                retry = Some(account);
+                retry = turn.account(&account);
             }
             FailureStep::Reselect => {}
             FailureStep::Rotate {
                 blocked,
                 classification,
             } => {
-                let selection = boundary.select(&turn.accounts);
+                let selection = turn.select((options.now)(), |accounts| boundary.select(accounts));
                 boundary
                     .on_failover(FailoverEvent {
                         account: blocked,
@@ -881,7 +989,7 @@ pub async fn run_failover(
                         visible_delta_emitted: false,
                     })
                     .await?;
-                retry = Some(selection?.name);
+                retry = Some(selection.map_err(|error| turn.selection_error(error))?);
             }
             FailureStep::Stop {
                 blocked,
@@ -897,6 +1005,12 @@ pub async fn run_failover(
                         visible_delta_emitted: error.suppress_turn_retry,
                     })
                     .await?;
+                if !error.suppress_turn_retry
+                    && let Err(refusal) = boundary.select(&turn.accounts)
+                    && refusal.is::<AllAccountsBlockedError>()
+                {
+                    return Err(turn.selection_error(refusal));
+                }
                 return Err(error.into());
             }
         }
@@ -1010,6 +1124,9 @@ mod tests {
                     session_key: None,
                     signal: None,
                     sleep: None,
+                    persist_blocks: true,
+                    agent_dir: None,
+                    rechecked_accounts: None,
                 },
                 &mut boundary,
             )
@@ -1191,6 +1308,9 @@ mod tests {
                 account_fallback: None,
                 base_block_ms: DEFAULT_RATE_LIMIT_BLOCK_MS,
                 now: 0.0,
+                persist_blocks: true,
+                agent_dir: None,
+                rechecked_accounts: None,
             },
         )
     }
@@ -1344,6 +1464,9 @@ mod tests {
                 account_fallback: Some(false),
                 base_block_ms: DEFAULT_RATE_LIMIT_BLOCK_MS,
                 now: 0.0,
+                persist_blocks: true,
+                agent_dir: None,
+                rechecked_accounts: None,
             },
         );
         let error = serde_json::json!("rate_limit_error");
@@ -1353,5 +1476,153 @@ mod tests {
                 .expect("stop"),
             FailureStep::Stop { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn connection_probe_neither_writes_nor_clears_blocks() {
+        let primary = slot("probe-primary");
+        let mut spent = slot("probe-spent");
+        spent.blocked_until = Some(100.0);
+        spent.block_reason = Some("rate_limit".into());
+        spent.blocked_at = Some(1.0);
+        let accounts = [primary, spent];
+        let store = seeded(&accounts).await;
+        let directory = tempfile::tempdir().expect("probe log root");
+        let mut probe = FailoverTurn::new(
+            &accounts,
+            FailoverTurnOptions {
+                store: &store,
+                provider: "provider",
+                model: None,
+                session_key: None,
+                account_fallback: Some(false),
+                base_block_ms: DEFAULT_RATE_LIMIT_BLOCK_MS,
+                now: 2.0,
+                persist_blocks: false,
+                agent_dir: Some(directory.path()),
+                rechecked_accounts: None,
+            },
+        );
+        let failure = json!("authentication_failed: token revoked");
+        assert!(matches!(
+            probe
+                .on_failure(
+                    &accounts[0],
+                    failure.clone(),
+                    classify(&failure),
+                    false,
+                    2.0
+                )
+                .await
+                .expect("probe verdict"),
+            FailureStep::Stop { .. }
+        ));
+        probe.on_success(&accounts[1].name, 2.0).await;
+        let stored = stored(&store).await;
+        assert!(stored["accounts"][0].get("blockReason").is_none());
+        assert_eq!(stored["accounts"][1]["blockedUntil"], 100.0);
+        assert!(!directory.path().join("logs/session.log").exists());
+    }
+
+    #[tokio::test]
+    async fn a_half_open_check_is_once_per_account_per_turn_and_keeps_an_inconclusive_block() {
+        let mut account = slot("recheck-sole");
+        account.block_reason = Some("rate_limit".into());
+        account.blocked_until = Some(100.0);
+        account.blocked_at = Some(0.0);
+        let accounts = [account];
+        let store = seeded(&accounts).await;
+        let directory = tempfile::tempdir().expect("recheck root");
+        let make_turn = |timestamp| maho_ai::types::Context {
+            messages: vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
+                content: maho_ai::types::UserContent::Text("check".into()),
+                timestamp,
+            })],
+            ..Default::default()
+        };
+        for (timestamp, attempts) in [(1, 1), (1, 0), (2, 1)] {
+            let mut boundary = Boundary {
+                streams: [vec![Err(json!("overloaded_error: busy"))]].into(),
+                emitted: vec![],
+                attempts: vec![],
+                failovers: vec![],
+            };
+            let rechecked_accounts = crate::limit_recheck::accounts_for_turn(
+                directory.path(),
+                Some("session"),
+                &make_turn(timestamp),
+            );
+            let result = run_failover(
+                FailoverOptions {
+                    accounts: &accounts,
+                    store: &store,
+                    provider: "provider",
+                    now: &|| 0.0,
+                    base_block_ms: DEFAULT_RATE_LIMIT_BLOCK_MS,
+                    account_fallback: None,
+                    model: None,
+                    session_key: None,
+                    signal: None,
+                    sleep: None,
+                    persist_blocks: true,
+                    agent_dir: None,
+                    rechecked_accounts,
+                },
+                &mut boundary,
+            )
+            .await
+            .expect_err("inconclusive or unavailable");
+            assert_eq!(boundary.attempts.len(), attempts);
+            if attempts == 0 {
+                assert!(result.is::<AllAccountsBlockedError>());
+            } else {
+                assert!(result.is::<ClassifiedSdkError>());
+            }
+            assert_eq!(stored(&store).await["accounts"][0]["blockedUntil"], 100.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_pool_is_context_for_the_original_sdk_failure() {
+        let mut spent = slot("spent");
+        spent.block_reason = Some("rate_limit".into());
+        spent.blocked_until = Some(3000.0);
+        let accounts = [slot("a"), spent];
+        let store = seeded(&accounts).await;
+        let mut boundary = Boundary {
+            streams: [vec![Err(json!("authentication_failed: token revoked"))]].into(),
+            attempts: vec![],
+            emitted: vec![],
+            failovers: vec![],
+        };
+        let result = run_failover(
+            FailoverOptions {
+                accounts: &accounts,
+                store: &store,
+                provider: "provider",
+                now: &|| 0.0,
+                base_block_ms: DEFAULT_RATE_LIMIT_BLOCK_MS,
+                account_fallback: None,
+                model: None,
+                session_key: None,
+                signal: None,
+                sleep: None,
+                persist_blocks: true,
+                agent_dir: None,
+                rechecked_accounts: None,
+            },
+            &mut boundary,
+        )
+        .await
+        .expect_err("no usable account");
+        let failure = result
+            .downcast_ref::<ClassifiedSdkError>()
+            .expect("SDK error");
+        assert_eq!(failure.to_string(), "authentication_failed: token revoked");
+        let pool = failure.pool_state.as_deref().expect("blocked pool");
+        assert_eq!(pool.soonest_unblock_at, Some(3000.0));
+        assert_eq!(boundary.attempts, ["a"]);
+        assert_eq!(boundary.failovers.len(), 1);
+        assert!(boundary.failovers[0].next_account.is_none());
     }
 }

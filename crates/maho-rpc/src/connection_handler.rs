@@ -4273,6 +4273,10 @@ mod new_session_tests {
                 pinned: false,
                 blocked_models: Vec::new(),
                 unused: false,
+                route: None,
+                plan_usage_enabled: None,
+                signed_out: false,
+                active: false,
             }
         };
         assert_eq!(

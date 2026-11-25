@@ -172,7 +172,7 @@ pub fn empty_credential() -> OAuthCredential {
     OAuthCredential::new(SENTINEL_TOKEN, SENTINEL_TOKEN, SENTINEL_EXPIRES)
         .with_extra("accounts", serde_json::json!([]))
 }
-fn stored_slots(credential: &OAuthCredential) -> anyhow::Result<Vec<AccountSlot>> {
+pub(crate) fn stored_slots(credential: &OAuthCredential) -> anyhow::Result<Vec<AccountSlot>> {
     match credential.extra.get("accounts") {
         Some(value) => Ok(serde_json::from_value(value.clone())?),
         None => Ok(Vec::new()),

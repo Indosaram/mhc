@@ -1031,20 +1031,93 @@ pub enum ProviderDiagnosticEvidence {
     StructuredStatus,
     StructuredCode,
     StructuredTransport,
+    #[serde(skip)]
+    SiwcStructuredStatus,
+    #[serde(skip)]
+    SiwcStructuredCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderDiagnosticRoute {
+    Siwc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(from = "ProviderDiagnosticWire", into = "ProviderDiagnosticWire")]
 pub struct ProviderDiagnostic {
     pub category: ProviderDiagnosticCategory,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub evidence: ProviderDiagnosticEvidence,
     /// When a `quota` or `rate_limit` failure resets (epoch ms), when the provider named it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderDiagnosticWire {
+    category: ProviderDiagnosticCategory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    evidence: ProviderDiagnosticEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    route: Option<ProviderDiagnosticRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resets_at: Option<i64>,
+}
+
+impl ProviderDiagnostic {
+    pub fn route(&self) -> Option<ProviderDiagnosticRoute> {
+        use ProviderDiagnosticEvidence::{SiwcStructuredCode, SiwcStructuredStatus};
+        matches!(self.evidence, SiwcStructuredCode | SiwcStructuredStatus)
+            .then_some(ProviderDiagnosticRoute::Siwc)
+    }
+
+    pub(crate) fn mark_siwc(&mut self) {
+        use ProviderDiagnosticEvidence as Evidence;
+        self.evidence = match self.evidence {
+            Evidence::StructuredStatus => Evidence::SiwcStructuredStatus,
+            Evidence::StructuredCode => Evidence::SiwcStructuredCode,
+            evidence => evidence,
+        };
+    }
+}
+
+impl From<ProviderDiagnostic> for ProviderDiagnosticWire {
+    fn from(diagnostic: ProviderDiagnostic) -> Self {
+        use ProviderDiagnosticEvidence as Evidence;
+        Self {
+            route: diagnostic.route(),
+            category: diagnostic.category,
+            http_status: diagnostic.http_status,
+            code: diagnostic.code,
+            evidence: match diagnostic.evidence {
+                Evidence::SiwcStructuredStatus => Evidence::StructuredStatus,
+                Evidence::SiwcStructuredCode => Evidence::StructuredCode,
+                evidence => evidence,
+            },
+            resets_at: diagnostic.resets_at,
+        }
+    }
+}
+
+impl From<ProviderDiagnosticWire> for ProviderDiagnostic {
+    fn from(wire: ProviderDiagnosticWire) -> Self {
+        let mut diagnostic = Self {
+            category: wire.category,
+            http_status: wire.http_status,
+            code: wire.code,
+            evidence: wire.evidence,
+            resets_at: wire.resets_at,
+        };
+        if wire.route == Some(ProviderDiagnosticRoute::Siwc) {
+            diagnostic.mark_siwc();
+        }
+        diagnostic
+    }
 }
 
 pub const PROVIDER_DIAGNOSTIC_MAX_BYTES: usize = 512;
@@ -1063,7 +1136,7 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
         return None;
     }
     let valid = match value.evidence {
-        Evidence::StructuredStatus => {
+        Evidence::StructuredStatus | Evidence::SiwcStructuredStatus => {
             let category = match status? {
                 401 => Category::Auth,
                 400 => Category::InvalidRequest,
@@ -1094,7 +1167,7 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
                     )
                 )
         }
-        Evidence::StructuredCode => {
+        Evidence::StructuredCode | Evidence::SiwcStructuredCode => {
             let code = value.code.as_deref()?;
             if crate::utils::provider_diagnostic_vocabulary::is_opaque_provider_code(code) {
                 return if value.category == Category::Unknown && status.is_none() {
@@ -1104,6 +1177,14 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
                 };
             }
             let (category, compatible) = match code {
+                code if let Some((category, expected_status, _)) =
+                    crate::utils::siwc_errors::siwc_error_for_code(code) =>
+                {
+                    (
+                        category,
+                        status.is_none_or(|status| status == expected_status),
+                    )
+                }
                 "authentication_error" | "invalid_api_key" => {
                     (Category::Auth, status.is_none_or(|s| s == 401))
                 }

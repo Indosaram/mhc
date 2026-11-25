@@ -309,6 +309,23 @@ fn models_error(error: maho_ai::auth::resolve::ModelsError) -> ModelsError {
     ModelsError::new(code, error.message)
 }
 
+/// The OAuth method a logout revokes through, chosen like `compose_provider_auth`: an extension registration's,
+/// then the provider's own, then the builtin flow; `None` when that method cannot revoke.
+fn revoking_oauth(
+    extensions: &RwLock<IndexMap<String, ProviderConfigInput>>,
+    provider_id: &str,
+    base: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
+) -> Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
+    extensions
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(provider_id)
+        .and_then(|extension| extension.oauth.clone())
+        .or(base)
+        .or_else(|| builtin_oauth(provider_id))
+        .filter(|oauth| oauth.has_revoke())
+}
+
 /// senpi composes provider auth once in `composeProvider` (`composeApiKeyAuth` /
 /// `composeOAuthAuth`); the models.json / extension overlays live in this runtime, so the
 /// composition happens at resolution (and login) time against the provider's own `auth()`.
@@ -426,6 +443,40 @@ impl RuntimeAuth {
 }
 
 impl ModelsAuth for RuntimeAuth {
+    /// senpi v2026.11.19-5 `Models.logout` for a revoking OAuth provider: `revokeStoredOAuth` clears the selected
+    /// local tokens under the same store the refresh uses, then revokes remotely. Non-revoking providers are signed
+    /// out by `ModelRuntime::logout`.
+    fn logout_with_options<'a>(
+        &'a self,
+        provider_id: &'a str,
+        oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
+        options: maho_ai::auth::types::LogoutOptions,
+    ) -> BoxFuture<'a, Result<Option<maho_ai::auth::types::OAuthRevocationResult>, ModelsError>>
+    {
+        Box::pin(async move {
+            let Some(oauth) = revoking_oauth(&self.extensions, provider_id, oauth) else {
+                return Err(ModelsError::new(
+                    ModelsErrorCode::Auth,
+                    format!("Logout is not supported for {provider_id}"),
+                ));
+            };
+            maho_ai::auth::credential_store::revoke_stored_oauth(
+                &*self.store,
+                provider_id,
+                &*oauth,
+                Some(options),
+            )
+            .await
+            .map_err(|error| {
+                ModelsError::with_cause(
+                    ModelsErrorCode::Auth,
+                    format!("Credential store delete failed for {provider_id}"),
+                    &error.to_string(),
+                )
+            })
+        })
+    }
+
     fn resolve<'a>(
         &'a self,
         provider: &'a dyn Provider,
@@ -591,7 +642,6 @@ impl ModelsAuth for RuntimeAuth {
 fn builtin_oauth(id: &str) -> Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
     use maho_ai::auth::oauth;
     match id {
-        "anthropic" | "anthropic-subscription" => Some(oauth::anthropic::anthropic_oauth()),
         "chatgpt-subscription" => Some(oauth::chatgpt_subscription::chatgpt_subscription_oauth()),
         "github-copilot" => Some(oauth::github_copilot::github_copilot_oauth()),
         "openrouter" => Some(oauth::openrouter::open_router_oauth()),
@@ -1518,6 +1568,53 @@ impl ModelRuntime {
             .await?;
             self.synchronize_credential_state(&id, "logout", &signal)
                 .await
+        })
+        .await
+    }
+
+    /// senpi v2026.11.19-5 `logoutProvider` for an OAuth provider with remote revocation (ChatGPT): under the
+    /// provider's credential queue, `Models::logout_with_options` clears the selected local tokens through the shared
+    /// credential store, then revokes; the answer says whether the remote revocation was confirmed.
+    pub async fn logout_with_revocation(
+        &self,
+        provider_id: &str,
+        options: maho_ai::auth::types::LogoutOptions,
+    ) -> Result<Option<maho_ai::auth::types::OAuthRevocationResult>, ModelsError> {
+        let id = normalize_provider_id(provider_id);
+        let signal = maho_ai::utils::abort::operation_signal(options.signal.clone());
+        let revoking = revoking_oauth(
+            &self.extensions,
+            &id,
+            self.models
+                .get_provider(&id)
+                .and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone())),
+        )
+        .is_some();
+        self.enqueue_credential_operation(&id, &signal, async {
+            let result = if revoking {
+                self.models
+                    .logout_with_options(
+                        &id,
+                        Some(maho_ai::auth::types::LogoutOptions {
+                            signal: Some(signal.clone()),
+                            ..options
+                        }),
+                    )
+                    .await?
+            } else {
+                self.logout_unsynchronized(
+                    &id,
+                    options.slot_id.as_deref(),
+                    maho_ai::auth::types::AuthOperationOptions {
+                        signal: Some(signal.clone()),
+                    },
+                )
+                .await?;
+                None
+            };
+            self.synchronize_credential_state(&id, "logout", &signal)
+                .await?;
+            Ok(result)
         })
         .await
     }

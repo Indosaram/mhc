@@ -70,6 +70,17 @@ pub fn lazy_stream_typed(
     > + Send
     + 'static,
 ) -> LazyStream {
+    lazy_stream_typed_with_guard(model, setup, ())
+}
+
+pub(crate) fn lazy_stream_typed_with_guard(
+    model: &Model,
+    setup: impl Future<
+        Output = Result<AssistantMessageEventStream, crate::utils::event_stream::StreamError>,
+    > + Send
+    + 'static,
+    guard: impl Send + 'static,
+) -> LazyStream {
     let outer = create_assistant_message_event_stream();
     let (source_tx, source_rx) =
         tokio::sync::oneshot::channel::<Option<AssistantMessageEventStream>>();
@@ -86,6 +97,7 @@ pub fn lazy_stream_typed(
     let forwarding = outer.clone();
     let error_model = model.clone();
     let task = tokio::spawn(async move {
+        let _guard = guard;
         let setup_result = {
             tokio::pin!(setup);
             tokio::select! {

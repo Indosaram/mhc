@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/src/auth/oauth/chatgpt-subscription.ts.
 
-use crate::auth::oauth::authorization_input::parse_authorization_input;
+use crate::auth::oauth::chatgpt_authorization_input::parse_authorization_input;
 use crate::auth::oauth::device_code::{
     OAuthDeviceCodePollOptions, OAuthDeviceCodePollResult, poll_oauth_device_code_flow,
 };
@@ -14,7 +14,9 @@ use crate::auth::types::{
 #[cfg(test)]
 use crate::utils::abort::AbortController;
 use crate::utils::abort::AbortSignal;
-use crate::utils::chatgpt_subscription_auth::extract_chatgpt_subscription_account_id;
+use crate::utils::chatgpt_subscription_auth::{
+    extract_chatgpt_subscription_account_id, extract_chatgpt_subscription_identity,
+};
 use crate::wire_identity::get_wire_identity;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -487,13 +489,14 @@ impl ChatGptSubscriptionOAuth {
     async fn login_chatgpt_subscription(
         &self,
         interaction: &ProviderAuthInteraction,
+        ports: Option<&[u16]>,
     ) -> anyhow::Result<OAuthCredential> {
         let (verifier, state, url) = create_authorization_flow(&get_wire_identity())?;
         let server = super::chatgpt_subscription_callback::start_chat_gpt_callback(
             &callback_host(),
             &state,
             &interaction.signal,
-            None,
+            ports,
         )
         .await?;
         let redirect_uri = server
@@ -558,6 +561,10 @@ impl OAuthAuth for ChatGptSubscriptionOAuth {
         true
     }
 
+    fn account_identity(&self, access: &str) -> Option<String> {
+        extract_chatgpt_subscription_identity(access)
+    }
+
     async fn login(
         &self,
         interaction: &ProviderAuthInteraction,
@@ -592,7 +599,7 @@ impl OAuthAuth for ChatGptSubscriptionOAuth {
             anyhow::bail!("Unknown ChatGPT Subscription login method: {method}");
         }
 
-        self.login_chatgpt_subscription(interaction).await
+        self.login_chatgpt_subscription(interaction, None).await
     }
 
     async fn refresh(
@@ -763,6 +770,281 @@ mod tests {
             .iter()
             .filter(|request| request.url == DEVICE_TOKEN_URL)
             .count()
+    }
+
+    struct BrowserLogin {
+        auth_url: tokio::sync::mpsc::UnboundedSender<(Url, String)>,
+        paste: bool,
+        authorization: std::sync::OnceLock<Url>,
+    }
+
+    #[async_trait]
+    impl AuthInteraction for BrowserLogin {
+        fn signal(&self) -> Option<AbortSignal> {
+            None
+        }
+
+        async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {
+            let AuthPromptKind::ManualCode { .. } = prompt.kind else {
+                anyhow::bail!("expected manual callback prompt");
+            };
+            if self.paste {
+                Ok(browser_redirect(self.authorization.get().unwrap()).into())
+            } else {
+                std::future::pending().await
+            }
+        }
+
+        fn notify(&self, event: AuthEvent) {
+            if let AuthEvent::AuthUrl { url, instructions } = event {
+                let url = Url::parse(&url).unwrap();
+                self.authorization.set(url.clone()).unwrap();
+                self.auth_url.send((url, instructions.unwrap())).unwrap();
+            }
+        }
+    }
+
+    fn browser_interaction(
+        signal: AbortSignal,
+        paste: bool,
+    ) -> (
+        ProviderAuthInteraction,
+        tokio::sync::mpsc::UnboundedReceiver<(Url, String)>,
+    ) {
+        let (auth_url, events) = tokio::sync::mpsc::unbounded_channel();
+        (
+            ProviderAuthInteraction::new(
+                signal,
+                Arc::new(BrowserLogin {
+                    auth_url,
+                    paste,
+                    authorization: std::sync::OnceLock::new(),
+                }),
+            ),
+            events,
+        )
+    }
+
+    fn redirect_uri(authorization: &Url) -> String {
+        authorization
+            .query_pairs()
+            .find(|(key, _)| key == "redirect_uri")
+            .unwrap()
+            .1
+            .into_owned()
+    }
+
+    fn browser_redirect(authorization: &Url) -> Url {
+        let mut target = Url::parse(&redirect_uri(authorization)).unwrap();
+        let state = authorization
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1;
+        target
+            .query_pairs_mut()
+            .append_pair("code", "the-code")
+            .append_pair("state", &state);
+        target
+    }
+
+    async fn issue_browser_redirect(authorization: &Url) {
+        let mut target = browser_redirect(authorization);
+        target.set_host(Some("127.0.0.1")).unwrap();
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(target)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    async fn browser_retry_scenario(abandon: bool) {
+        let transport = Arc::new(ScriptedTransport::new(vec![(
+            Some("oauth/token"),
+            token_exchange_response("acct"),
+        )]));
+        let oauth = Arc::new(ChatGptSubscriptionOAuth::new(transport.clone()));
+        let first_controller = AbortController::new();
+        let (first_interaction, mut first_events) =
+            browser_interaction(first_controller.signal(), false);
+        let first_flow = oauth.clone();
+        let mut first = Some(tokio::spawn(async move {
+            first_flow
+                .login_chatgpt_subscription(&first_interaction, Some(&[0]))
+                .await
+        }));
+        let (first_url, _) = first_events.recv().await.unwrap();
+        let port = Url::parse(&redirect_uri(&first_url))
+            .unwrap()
+            .port()
+            .unwrap();
+        if !abandon {
+            first_controller.abort(None);
+            assert!(first.take().unwrap().await.unwrap().is_err());
+        }
+        let (interaction, mut events) = browser_interaction(AbortController::new().signal(), false);
+        let ports = [port];
+        let (result, ()) = tokio::join!(
+            oauth.login_chatgpt_subscription(&interaction, Some(&ports)),
+            async {
+                let (url, _) = events.recv().await.unwrap();
+                assert_eq!(redirect_uri(&url), redirect_uri(&first_url));
+                assert_ne!(url, first_url);
+                issue_browser_redirect(&url).await;
+            }
+        );
+        assert_eq!(result.unwrap().get_extra_str("accountId"), Some("acct"));
+        assert_eq!(transport.requests().len(), 1);
+        if let Some(first) = first {
+            first_controller.abort(None);
+            assert!(first.await.unwrap().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_browser_login_frees_the_port_for_retry() {
+        tokio::time::timeout(Duration::from_secs(5), browser_retry_scenario(false))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_login_takes_over_an_abandoned_attempt() {
+        tokio::time::timeout(Duration::from_secs(5), browser_retry_scenario(true))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "fixture run explicitly by browser_login_takes_over_a_listener_in_another_process"]
+    async fn callback_holder_fixture() {
+        use std::io::Write as _;
+        let signal = AbortController::new().signal();
+        let server = super::super::chatgpt_subscription_callback::start_chat_gpt_callback(
+            "127.0.0.1",
+            "child-state",
+            &signal,
+            Some(&[0]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let port = Url::parse(&server.redirect_uri).unwrap().port().unwrap();
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "CALLBACK_HOLDER_READY {port}").unwrap();
+        stdout.flush().unwrap();
+        drop(stdout);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), server.wait())
+                .await
+                .unwrap()
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_login_takes_over_a_listener_in_another_process() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Child, Command, Stdio};
+
+        struct Holder(Child);
+        impl Drop for Holder {
+            fn drop(&mut self) {
+                if matches!(self.0.try_wait(), Ok(None))
+                    && let Err(error) = self.0.kill()
+                {
+                    eprintln!("Could not stop callback fixture: {error}");
+                }
+                if let Err(error) = self.0.wait() {
+                    eprintln!("Could not reap callback fixture: {error}");
+                }
+            }
+        }
+
+        let module = module_path!().split_once("::").unwrap().1;
+        let mut holder = Holder(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("{module}::callback_holder_fixture"),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = holder.0.stdout.take().unwrap();
+        let (ready, port) = tokio::sync::oneshot::channel();
+        let reader = std::thread::spawn(move || {
+            let mut lines = BufReader::new(stdout).lines().map_while(Result::ok);
+            let port = lines.find_map(|line| {
+                line.strip_prefix("CALLBACK_HOLDER_READY ")?
+                    .parse::<u16>()
+                    .ok()
+            });
+            if ready.send(port).is_err() {
+                return;
+            }
+            // Drain libtest's final report, also keeping the pipe open until the child exits.
+            for _ in lines {}
+        });
+        let scenario = async {
+            let port = port
+                .await
+                .unwrap()
+                .expect("fixture reported a callback port");
+            let transport = Arc::new(ScriptedTransport::new(vec![(
+                Some("oauth/token"),
+                token_exchange_response("acct"),
+            )]));
+            let flow = ChatGptSubscriptionOAuth::new(transport);
+            let (interaction, mut events) =
+                browser_interaction(AbortController::new().signal(), false);
+            let ports = [port];
+            let (result, ()) = tokio::join!(
+                flow.login_chatgpt_subscription(&interaction, Some(&ports)),
+                async {
+                    let (url, _) = events.recv().await.unwrap();
+                    assert_eq!(Url::parse(&redirect_uri(&url)).unwrap().port(), Some(port));
+                    issue_browser_redirect(&url).await;
+                }
+            );
+            assert_eq!(result.unwrap().get_extra_str("accountId"), Some("acct"));
+        };
+        tokio::time::timeout(Duration::from_secs(5), scenario)
+            .await
+            .unwrap();
+        assert!(holder.0.wait().unwrap().success());
+        reader.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_pasted_redirect_and_explains_busy_callback_ports() {
+        let transport = Arc::new(ScriptedTransport::new(vec![(
+            Some("oauth/token"),
+            token_exchange_response("acct"),
+        )]));
+        let flow = ChatGptSubscriptionOAuth::new(transport.clone());
+        let (interaction, mut events) = browser_interaction(AbortController::new().signal(), true);
+        let credential = flow
+            .login_chatgpt_subscription(&interaction, Some(&[]))
+            .await
+            .unwrap();
+        let (url, instructions) = events.recv().await.unwrap();
+        assert!(instructions.contains("Another sign-in"));
+        assert_eq!(redirect_uri(&url), REDIRECT_URI);
+        assert_eq!(credential.get_extra_str("accountId"), Some("acct"));
+        let requests = transport.requests();
+        let fields: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(requests[0].body.as_ref().unwrap().as_bytes()).collect();
+        assert_eq!(fields["code"], "the-code");
+        assert_eq!(fields["redirect_uri"], REDIRECT_URI);
     }
 
     #[tokio::test(start_paused = true)]

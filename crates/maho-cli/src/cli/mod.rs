@@ -26,6 +26,7 @@ pub mod doctor;
 #[path = "doctor_mit.rs"]
 pub mod doctor;
 pub mod experimental;
+pub mod extension_providers;
 pub mod extension_registry;
 #[cfg(feature = "omo")]
 pub mod facts_child;

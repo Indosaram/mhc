@@ -956,12 +956,32 @@ impl maho_ai::auth::types::OAuthAuth for ComposedOAuthAuth {
     ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
         self.oauth.login(interaction).await
     }
+    async fn login_with_options(
+        &self,
+        interaction: &maho_ai::auth::types::ProviderAuthInteraction,
+        options: Option<maho_ai::auth::types::LoginOptions>,
+    ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        self.oauth.login_with_options(interaction, options).await
+    }
+    fn account_identity(&self, access: &str) -> Option<String> {
+        self.oauth.account_identity(access)
+    }
     async fn refresh(
         &self,
         credential: &maho_ai::auth::types::OAuthCredential,
         signal: &maho_ai::utils::abort::AbortSignal,
     ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
         self.oauth.refresh(credential, signal).await
+    }
+    fn has_revoke(&self) -> bool {
+        self.oauth.has_revoke()
+    }
+    async fn revoke(
+        &self,
+        credential: &maho_ai::auth::types::OAuthCredential,
+        options: Option<maho_ai::auth::types::LogoutOptions>,
+    ) -> anyhow::Result<maho_ai::auth::types::OAuthRevocationResult> {
+        self.oauth.revoke(credential, options).await
     }
     async fn check(
         &self,

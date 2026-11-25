@@ -31,6 +31,15 @@ impl AnthropicSubscriptionExtension {
         agent_dir: std::path::PathBuf,
         environment: std::collections::BTreeMap<String, String>,
     ) -> Self {
+        let oauth = Arc::new(crate::oauth_login::AnthropicSubscriptionOAuth {
+            cli: crate::oauth_login::ClaudeCliLoginContext {
+                agent_dir: agent_dir.clone(),
+                cwd: cwd.clone(),
+                environment: environment.clone(),
+                resolve: resolve.clone(),
+            },
+            ..oauth.as_ref().clone()
+        });
         let registry = Arc::new(tokio::sync::Mutex::new(
             crate::session_stream::SessionRegistry::default(),
         ));
@@ -83,7 +92,7 @@ impl AnthropicSubscriptionExtension {
                             environment: environment.clone(),
                             settings,
                             store: oauth.store.clone(),
-                            refresh: oauth.flow.clone(),
+                            refresh: oauth.clone(),
                             registry: registry.clone(),
                             watch: watch.clone(),
                             now: Arc::new(maho_ai::utils::diagnostics::now_ms),
@@ -166,7 +175,7 @@ impl Extension for AnthropicSubscriptionExtension {
         crate::account_command::register(
             api,
             self.oauth.clone(),
-            Arc::new(std::env::vars().collect()),
+            Arc::new(self.oauth.cli.environment.clone()),
         );
         let settings = self.settings.clone();
         // Each registration is the whole config: the runtime validates a registration on its own, not merged with

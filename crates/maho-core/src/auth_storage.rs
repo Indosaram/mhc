@@ -144,7 +144,8 @@ pub fn credential_env(credential: &Value) -> Option<HashMap<String, String>> {
     Some(out)
 }
 
-/// senpi validates every entry on load: an unknown type or a malformed credential is an error.
+/// senpi `validateReadOnlyAuthData`: the read-only store refuses an unknown type or a malformed credential.
+/// The mutable store reads with `parse_auth_document` instead (auth_store_load_error.rs).
 fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), String> {
     let Some(object) = credential.as_object() else {
         return Err(format!(
@@ -673,7 +674,7 @@ pub fn read_stored_credential(provider_id: &str, auth_path: &str) -> Option<Valu
         &crate::paths::PathInputOptions::default(),
     ))
     .ok()?;
-    let data = parse_auth_json(&content).ok()?;
+    let data = crate::auth_store_load_error::parse_auth_document(&content).ok()?;
     read_by_provider_id(&data, provider_id)
 }
 
@@ -1124,17 +1125,36 @@ impl AuthStorage {
         let Some(content) = content else {
             return Ok((AuthStorageData::new(), false, false));
         };
-        let parsed = parse_auth_json(content)?;
+        // senpi `parseStorageContent` reads with `parseAuthDocument`: only the read-only store validates entries.
+        let parsed = crate::auth_store_load_error::parse_auth_document(content)
+            .map_err(|error| error.message())?;
         let (repaired, repaired_flag) = repair_poisoned_pool_slots(&parsed);
         let (migrated, migrated_flag) = migrate_legacy_provider_keys(&repaired);
         Ok((migrated, repaired_flag, migrated_flag))
     }
 
+    /// The load seam of senpi `parseStorageContent`: after repair and the key migration, Claude logins of the
+    /// retired sign-in are signed out (`signOutLegacyClaudeLogins`); mutation paths read without that step.
+    fn parse_storage_load(
+        content: Option<&str>,
+    ) -> Result<(AuthStorageData, bool, bool, Option<String>), String> {
+        let (data, repaired, migrated) = Self::parse_storage_content(content)?;
+        let moved = crate::anthropic_legacy_sign_out::sign_out_legacy_claude_logins(&data);
+        Ok((
+            moved.data,
+            repaired,
+            migrated || moved.migrated,
+            moved.skipped,
+        ))
+    }
+
     /// Reload credentials from storage; a written repair or migration invalidates the revision.
     pub fn reload(&mut self) {
+        let mut skipped = None;
         let result: Result<(AuthStorageData, bool, bool), String> = match &self.storage {
             AuthStorageBackend::File(backend) => backend.with_lock(|current| {
-                let (data, repaired, migrated) = Self::parse_storage_content(current)?;
+                let (data, repaired, migrated, moved_skip) = Self::parse_storage_load(current)?;
+                skipped = moved_skip;
                 if migrated {
                     backup_auth_file(self.auth_path.as_deref(), current);
                 }
@@ -1148,10 +1168,23 @@ impl AuthStorage {
                 }
             }),
             AuthStorageBackend::InMemory(backend) => backend.with_lock(|current| {
-                let (data, repaired, migrated) = Self::parse_storage_content(current)?;
+                let (data, repaired, migrated, moved_skip) = Self::parse_storage_load(current)?;
+                skipped = moved_skip;
                 Ok(((data, repaired, migrated), None))
             }),
         };
+        if let Some(reason) = skipped {
+            let message = format!(
+                "A Claude login in auth.json was left unchanged because {reason}. Claude logins from the old sign-in are no longer used; sign in again with Claude: run /login anthropic-subscription."
+            );
+            let mut errors = self
+                .errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !errors.contains(&message) {
+                errors.push(message);
+            }
+        }
         match result {
             Ok((data, _, _)) => {
                 *Self::lock_set(&self.notices) = unused_login_notices(&data);
@@ -2213,18 +2246,34 @@ mod tests {
     fn a_malformed_store_is_reported_and_the_snapshot_stays_empty() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        std::fs::write(&path, "{\"anthropic\":{\"type\":\"bogus\"}}").expect("write");
+        std::fs::write(&path, "{\"anthropic\":{\"type\":\"api_key\",\"key\":").expect("write");
         let storage = AuthStorage::create(&path);
         assert!(storage.get("anthropic").is_none());
         assert_eq!(storage.errors().len(), 1);
-        assert!(storage.errors()[0].contains("Invalid auth.json credential for provider"));
+        assert!(storage.errors()[0].contains("it is not valid JSON"));
+    }
+
+    // senpi `parseStorageContent` reads with `parseAuthDocument`: an entry the read-only validator would refuse
+    // does not fail the mutable store or hide its other credentials.
+    #[test]
+    fn an_entry_of_unknown_shape_does_not_fail_the_store() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        std::fs::write(
+            &path,
+            "{\"x\":{\"type\":\"bogus\"},\"openai\":{\"type\":\"api_key\",\"key\":\"k\"}}",
+        )
+        .expect("write");
+        let storage = AuthStorage::create(&path);
+        assert!(storage.errors().is_empty());
+        assert!(storage.get("openai").is_some());
     }
 
     #[test]
     fn drain_errors_returns_recorded_errors_once() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        std::fs::write(&path, "{\"anthropic\":{\"type\":\"bogus\"}}").expect("write");
+        std::fs::write(&path, "[]").expect("write");
         let storage = AuthStorage::create(&path);
         assert_eq!(storage.drain_errors().len(), 1);
         assert!(storage.drain_errors().is_empty());

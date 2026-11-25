@@ -59,6 +59,7 @@ pub mod openai_responses;
 pub use crate::openai_responses_compat::allowed_tools as openai_responses_allowed_tools;
 pub mod openai_responses_lazy;
 pub mod openai_responses_shared;
+mod openai_responses_siwc;
 pub use openai_responses_shared::openai_responses_prompt_cache;
 pub mod openrouter_images;
 pub mod openrouter_images_lazy;

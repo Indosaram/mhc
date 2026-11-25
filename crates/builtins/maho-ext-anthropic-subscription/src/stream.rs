@@ -204,6 +204,14 @@ pub fn stream_anthropic_subscription(
                 .or(options.stream.session_id.as_deref())
         });
         let account_fallback = crate::settings::account_fallback(&deps.settings);
+        let rechecked_accounts = options
+            .as_ref()
+            .filter(|options| {
+                options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main)
+            })
+            .and_then(|_| {
+                crate::limit_recheck::accounts_for_turn(&deps.agent_dir, session, &context)
+            });
         // senpi `residentAuthLaneMessages`: the account this session's SDK transcript lives under is preferred while
         // it can serve (senpi#2891). Only the resident lane passes it; a one-shot turn has no transcript to follow.
         let resident_lane = options.as_ref().is_some_and(|options| {
@@ -259,6 +267,9 @@ pub fn stream_anthropic_subscription(
                     account_fallback: Some(account_fallback),
                     base_block_ms: crate::failover::DEFAULT_RATE_LIMIT_BLOCK_MS,
                     now: (deps.now)() as f64,
+                    persist_blocks: true,
+                    agent_dir: Some(&deps.agent_dir),
+                    rechecked_accounts,
                 },
             )
         });
@@ -277,6 +288,31 @@ pub fn stream_anthropic_subscription(
         // account-context.ts: the account of the attempt that produced the turn's error, never another attempt's.
         let mut attempt_account: Option<crate::account_context::AccountContext>;
         let outcome = loop {
+            let cli_pin = crate::account_command::session_pin(session);
+            let affinity = pool.as_ref().map(|pool| crate::affinity::AffinityOptions {
+                session_id: session,
+                pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()),
+                pin_source: if cli_pin.is_some() {
+                    Some(crate::affinity::PinSource::Cli)
+                } else {
+                    pool.pin_source
+                },
+                account_fallback: Some(account_fallback),
+                preferred_account: preferred_account.as_deref(),
+                account_order: pool.account_order.as_deref(),
+                model: Some(&model.id),
+                ..Default::default()
+            });
+            let select = |accounts: &[crate::accounts::AccountSlot]| {
+                let affinity = affinity
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("no managed pool"))?;
+                Ok(crate::affinity::select_account(
+                    accounts,
+                    affinity,
+                    (deps.now)() as f64,
+                )?)
+            };
             let mut query = None;
             let mut selected = None;
             let mut visible = false;
@@ -288,22 +324,22 @@ pub fn stream_anthropic_subscription(
             started_at = (deps.now)() as f64;
             let (lane, environment, account, credential_digest) = match pool.as_ref() {
                 Some(pool) => {
-                    let accounts = &failover.as_ref().expect("managed failover").accounts;
-                    let cli_pin = crate::account_command::session_pin(session);
+                    let failover = failover.as_mut().expect("managed failover");
                     let rotation_consented = maho_core::provider_consent::rotation_consented_in_agent_dir(
                         &deps.agent_dir.to_string_lossy(),
                         crate::auth_lane::PROVIDER_ID,
                     );
-                    let mut slot = if let Some(name) = retry_account.take() {
-                        accounts.iter().find(|slot| slot.name == name).cloned().ok_or_else(|| anyhow::anyhow!("retry account disappeared"))?
-                    } else if accounts.len() > 1 && !rotation_consented {
+                    let mut slot = if let Some(slot) = retry_account.take() {
+                        slot
+                    } else if failover.accounts.len() > 1 && !rotation_consented {
+                        let accounts = &failover.accounts;
                         let pin = cli_pin.as_deref().or(pool.pinned_account.as_deref());
                         pin.and_then(|name| accounts.iter().find(|s| s.name == name))
                             .or_else(|| accounts.first())
                             .cloned()
                             .ok_or_else(|| anyhow::anyhow!("no accounts available"))?
                     } else {
-                        crate::affinity::select_account(accounts, &crate::affinity::AffinityOptions { session_id: session, pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()), pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source }, account_fallback: Some(account_fallback), preferred_account: preferred_account.as_deref(), account_order: pool.account_order.as_deref(), model: Some(&model.id), ..Default::default() }, (deps.now)() as f64)?
+                        failover.select((deps.now)() as f64, select)?
                     };
                     selected = Some(slot.clone());
                     pool.refresh_for_attempt(deps.store.as_ref(), &mut slot, (deps.now)() as f64, signal.clone().unwrap_or_else(|| maho_ai::utils::abort::AbortController::new().signal()), deps.refresh.clone()).await?;
@@ -311,7 +347,7 @@ pub fn stream_anthropic_subscription(
                     selected = Some(slot.clone());
                     let prepared = crate::auth_lane::prepared_environment(&pool.environment, pool.lane, &slot, &deps.agent_dir, (deps.now)() as u64)?;
                     // auth-lane.ts: `pinSource: input.pinnedAccount !== undefined ? "cli" : pool.pinSource`.
-                    let attempt = crate::account_context::AttemptAccount { account_name: &slot.name, accounts, auth_lane: prepared.lane, pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source } };
+                    let attempt = crate::account_context::AttemptAccount { account_name: &slot.name, accounts: &failover.accounts, auth_lane: prepared.lane, pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source } };
                     attempt_account = Some(crate::account_context::attempt_account_context(&attempt));
                     crate::account_context::log_attempt_account(&attempt, options.as_ref().and_then(|options| options.stream.session_id.as_deref()), &deps.agent_dir);
                     (prepared.lane, prepared.env, slot.name, Some(prepared.credential_digest))
@@ -483,9 +519,7 @@ pub fn stream_anthropic_subscription(
                 &original,
                 asked_legacy_long_context,
             );
-            let (Some(pool), Some(failover), Some(slot)) =
-                (pool.as_mut(), failover.as_mut(), selected)
-            else {
+            let (Some(failover), Some(slot)) = (failover.as_mut(), selected) else {
                 // Ambient turns have no failover to absorb a refused 1M window: record it and retry once at the
                 // standard window.
                 if classification.kind == crate::errors::SdkErrorKind::LongContextUnavailable
@@ -501,6 +535,7 @@ pub fn stream_anthropic_subscription(
                         classification,
                         original,
                         suppress_turn_retry: visible,
+                        pool_state: None,
                     }
                     .into());
                 }
@@ -519,7 +554,6 @@ pub fn stream_anthropic_subscription(
                 Ok(step) => step,
                 Err(error) => break Err(error),
             };
-            pool.accounts.clone_from(&failover.accounts);
             let (blocked, classification, stop) = match step {
                 crate::failover::FailureStep::RetrySame {
                     account,
@@ -534,11 +568,11 @@ pub fn stream_anthropic_subscription(
                     {
                         break Err(failover.last_error());
                     }
-                    retry_account = Some(account);
+                    retry_account = failover.account(&account);
                     continue;
                 }
                 crate::failover::FailureStep::Reselect => {
-                    retry_account = Some(slot.name.clone());
+                    retry_account = failover.account(&slot.name);
                     continue;
                 }
                 crate::failover::FailureStep::Rotate {
@@ -552,14 +586,21 @@ pub fn stream_anthropic_subscription(
                 } => (blocked, classification, Some(error)),
             };
             crate::account_events::emit_provider_accounts_changed(crate::auth_lane::PROVIDER_ID);
-            if let Some(error) = stop {
-                break Err(error.into());
-            }
             // SAFETY-DIVERGENCE(packages/claude-sdk-oauth/src/stream.ts): upstream rotates across accounts on rate limits without consent; mhc gates automatic rotation behind providerRiskConsent.<provider>:rotation.
             let rotation_consented = maho_core::provider_consent::rotation_consented_in_agent_dir(
                 &deps.agent_dir.to_string_lossy(),
                 crate::auth_lane::PROVIDER_ID,
             );
+            if let Some(error) = stop {
+                if (failover.accounts.len() <= 1 || rotation_consented)
+                    && !error.suppress_turn_retry
+                    && let Err(refusal) = select(&failover.accounts)
+                    && refusal.is::<crate::affinity::AllAccountsBlockedError>()
+                {
+                    break Err(failover.selection_error(refusal));
+                }
+                break Err(error.into());
+            }
             if failover.accounts.len() > 1 && !rotation_consented {
                 if classification.kind == crate::errors::SdkErrorKind::RateLimit {
                     let notice = maho_core::provider_consent::append_rotation_notice(
@@ -571,35 +612,17 @@ pub fn stream_anthropic_subscription(
                 }
                 break Err(error);
             }
-            let cli_pin = crate::account_command::session_pin(session);
-            let next = match crate::affinity::select_account(
-                &failover.accounts,
-                &crate::affinity::AffinityOptions {
-                    session_id: session,
-                    pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()),
-                    pin_source: if cli_pin.is_some() {
-                        Some(crate::affinity::PinSource::Cli)
-                    } else {
-                        pool.pin_source
-                    },
-                    account_fallback: Some(account_fallback),
-                    preferred_account: preferred_account.as_deref(),
-                    account_order: pool.account_order.as_deref(),
-                    model: Some(&model.id),
-                    ..Default::default()
-                },
-                (deps.now)() as f64,
-            ) {
+            let next = match failover.select((deps.now)() as f64, select) {
                 Ok(next) => next,
-                Err(error) => break Err(error.into()),
+                Err(error) => break Err(failover.selection_error(error)),
             };
-            retry_account = Some(next.name.clone());
             crate::account_events::emit_provider_account_failover(
                 crate::auth_lane::PROVIDER_ID,
                 &blocked.name,
                 &next.name,
                 classification.kind,
             );
+            retry_account = Some(next);
         };
         match outcome {
             Ok(()) => events.push(Event::Done {
@@ -632,6 +655,26 @@ pub fn stream_anthropic_subscription(
                     &error,
                     attempt_account.as_ref(),
                 );
+                if let Some(pool_state) = error
+                    .downcast_ref::<crate::failover::ClassifiedSdkError>()
+                    .and_then(|error| error.pool_state.as_deref())
+                {
+                    mapper.output.diagnostics.get_or_insert_with(Vec::new).push(
+                        maho_ai::utils::diagnostics::AssistantMessageDiagnostic {
+                            kind: "claude_sdk_oauth_pool_state".into(),
+                            timestamp: (deps.now)(),
+                            error: None,
+                            details: Some(serde_json::Map::from_iter([
+                                ("blockReason".into(), json!(pool_state.block_reason)),
+                                (
+                                    "soonestUnblockAt".into(),
+                                    json!(pool_state.soonest_unblock_at),
+                                ),
+                                ("limitedModel".into(), json!(pool_state.limited_model)),
+                            ])),
+                        },
+                    );
+                }
                 if error
                     .downcast_ref::<crate::affinity::AllAccountsBlockedError>()
                     .is_none()

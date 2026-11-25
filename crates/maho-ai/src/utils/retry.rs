@@ -364,6 +364,16 @@ where
 }
 
 pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
+    use super::siwc_errors::{SiwcRecovery, siwc_recovery_from_diagnostic};
+    if message.stop_reason == StopReason::Error
+        && !matches!(
+            message.stop_details,
+            Some(AssistantStopDetails::Refusal { .. } | AssistantStopDetails::Sensitive)
+        )
+        && let Some(recovery) = siwc_recovery_from_diagnostic(message.provider_diagnostic.as_ref())
+    {
+        return recovery == SiwcRecovery::Transient;
+    }
     // A route that does not serve the model answers the same on every attempt, whatever status wraps it.
     if matches!(
         message.error_cause,
