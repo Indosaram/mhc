@@ -92,6 +92,9 @@ pub trait CloudPoolBackend: Send + Sync {
         patch_out: &Path,
         cleanup: bool,
     ) -> Result<SyncOutResult, String>;
+    fn ensure_socket(&self, _machine: &str) -> Result<String, String> {
+        Err("socket re-open not supported by this backend".into())
+    }
     fn release(&self, machine: &str, lease_id: &str, delete: bool) -> Result<(), String>;
 }
 
@@ -296,6 +299,31 @@ impl CloudPoolBackend for FerryxCliCloudBackend {
         }
         let value = self.run_json_command(&args)?;
         serde_json::from_value(value).map_err(|error| format!("bad sync-out payload: {error}"))
+    }
+
+    fn ensure_socket(&self, machine: &str) -> Result<String, String> {
+        let bin = self
+            .resolve_binary()
+            .ok_or_else(|| "ferryx-cli binary not found on PATH or FERRYX_CLI_PATH".to_string())?;
+        let output = Command::new(&bin)
+            .args(["cloud", "socket", machine])
+            .output()
+            .map_err(|error| format!("failed to run {}: {error}", bin.display()))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            return Err(format!(
+                "ferryx-cli cloud socket {machine} exited {:?}: {}",
+                output.status.code(),
+                stderr.trim()
+            ));
+        }
+        stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string())
+            .ok_or_else(|| "ferryx-cli cloud socket printed no socket path".to_string())
     }
 
     fn release(&self, machine: &str, lease_id: &str, delete: bool) -> Result<(), String> {
@@ -931,7 +959,12 @@ impl ManagedRunner for CloudManagedRunner {
             ("/tmp".to_string(), None)
         };
 
-        let client = match RemoteSocketRpcClient::connect(Path::new(&acquired.socket_path)) {
+        let connect_result = RemoteSocketRpcClient::connect(Path::new(&acquired.socket_path))
+            .or_else(|first_err| match self.backend.ensure_socket(&acquired.machine) {
+                Ok(reopened_path) => RemoteSocketRpcClient::connect(Path::new(&reopened_path)),
+                Err(_) => Err(first_err),
+            });
+        let client = match connect_result {
             Ok(client) => client,
             Err(error) => {
                 let _ = self.backend.release(
