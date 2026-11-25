@@ -36,6 +36,8 @@ local directory, so the real values cannot be committed.
 | `MHC_MAC_HOST` | **required**; ssh destination of the Apple Silicon builder |
 | `MHC_WIN_BASE` | base directory on the Windows builder; default `%USERPROFILE%/build` |
 | `MHC_MAC_BASE` | base directory on the mac; default `$HOME/build` |
+| `MHC_WIN_TARGET_DIR` | cargo cache on the Windows builder; default `%USERPROFILE%/build/mhc-release-target` |
+| `MHC_MAC_TARGET_DIR` | cargo cache on the mac; default `$HOME/build/mhc-release-target` |
 | `MHC_WIN_PROTOC` | `protoc.exe` on the Windows builder; forwarded as `-ProtocPath` |
 | `MHC_RELEASE_OUT` | parent of this run's asset directory; default `~/.cache/mhc-release` |
 | `MHC_RELEASE_TARGET_DIR` | shared cargo cache; default `<MHC_RELEASE_CACHE>/target` |
@@ -117,6 +119,12 @@ re-runs, so packaging happily archives the *previous* release's binary under the
 new name. Every build stage therefore asserts `mhc --version` before packaging.
 If the assertion fails, clear the target directory — do not "fix" it by bumping
 the version by hand.
+
+Each remote builder keeps one such directory across releases (`MHC_WIN_TARGET_DIR`,
+`MHC_MAC_TARGET_DIR`) instead of a fresh `target/` inside every run's source copy.
+A per-run directory is cold by construction: the run name changes each time, so
+cargo recompiled the whole tree and, on the mac, filled the disk. The version
+assertion above is what makes sharing the cache safe.
 
 ### Windows: do not rely on the SSH login shell
 
