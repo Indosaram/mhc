@@ -75,6 +75,37 @@ fn publishes_one_root_object_schema_with_action_enum() {
 
 // 4 it.each for accepts action
 #[test]
+fn every_array_schema_node_declares_items() {
+    // Gemini's GenerateContentRequest rejects `type: "array"` without `items`
+    // with a request-wide 400 ("...items: missing field"), which killed every
+    // tool call for the whole request. Walk the published schema so a future
+    // array property cannot reintroduce it.
+    fn walk(node: &serde_json::Value, path: &str) {
+        let Some(map) = node.as_object() else { return };
+        if map.get("type").and_then(|v| v.as_str()) == Some("array") {
+            assert!(
+                map.contains_key("items"),
+                "array schema node without items at {path}"
+            );
+        }
+        if let Some(props) = map.get("properties").and_then(|v| v.as_object()) {
+            for (name, child) in props {
+                walk(child, &format!("{path}.properties.{name}"));
+            }
+        }
+        if let Some(items) = map.get("items") {
+            walk(items, &format!("{path}.items"));
+        }
+    }
+    let def = dummy_tool();
+    walk(&def.parameters, "parameters");
+    assert!(def.parameters.get("anyOf").is_none());
+    let chain = &def.parameters["properties"]["chain"];
+    assert_eq!(chain["items"]["properties"]["args"]["type"], "array");
+    assert!(chain["items"]["properties"]["args"].get("items").is_some());
+}
+
+#[test]
 fn accepts_call_action() {
     let params = json!({ "action": "call", "chain": [{ "method": "screenshot" }] });
     assert!(parse_computer_params(&params).is_ok());

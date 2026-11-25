@@ -54,6 +54,7 @@ pub fn computer_params_schema() -> Value {
                         },
                         "args": {
                             "type": "array",
+                            "items": {},
                             "description": "positional helper arguments"
                         }
                     },
