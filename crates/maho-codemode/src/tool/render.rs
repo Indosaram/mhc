@@ -4,14 +4,16 @@ use super::{
     display_code::display_code,
     eval_request::normalize_eval_summary,
     tool_widgets::{
-        WidgetOptions, code_point_prefix, format_duration, native_theme,
-        render_all_visual_lines as visual, render_tool_call_widget, style,
+        NestedToolRendererLookup, WidgetOptions, code_point_prefix, format_duration, native_theme,
+        render_all_visual_lines as visual, render_tool_call_widget_with_renderers, style,
     },
     types::{EvalLanguage, EvalToolRequest},
 };
 use maho_ext_api::{AgentToolResult, ContentBlock, Theme};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub struct EvalRenderContext {
@@ -481,6 +483,11 @@ struct EvalCard {
     theme: Option<Theme>,
     cwd: PathBuf,
     ticker: std::rc::Rc<LiveTicker>,
+    tool_call_id: String,
+    live: bool,
+    renderer_lookup: Option<NestedToolRendererLookup>,
+    live_floors: Arc<Mutex<HashMap<String, (usize, String)>>>,
+    local_floor: (usize, String),
 }
 
 // Divergence from senpi (1s): the host never passes an eval row a spinner frame, so the live
@@ -596,11 +603,21 @@ impl maho_tui::tui::Component for EvalCard {
             cwd: self.cwd.clone(),
         };
         let request = super::eval_request::parse_eval_request(&self.args);
-        match (&self.result, request) {
-            (Some(result), Ok(request)) => render_eval_result(result, &request, &context, width),
-            (Some(result), Err(_)) => {
-                render_eval_result(result, &EvalToolRequest::List, &context, width)
-            }
+        let mut lines = match (&self.result, request) {
+            (Some(result), Ok(request)) => render_eval_result_with_renderers(
+                result,
+                &request,
+                &context,
+                width,
+                self.renderer_lookup.as_ref(),
+            ),
+            (Some(result), Err(_)) => render_eval_result_with_renderers(
+                result,
+                &EvalToolRequest::List,
+                &context,
+                width,
+                self.renderer_lookup.as_ref(),
+            ),
             (None, Ok(request)) => render_eval_call(&request, &context, width),
             // Streaming arguments are incomplete until the model finishes the call.
             (None, Err(_)) => {
@@ -610,7 +627,53 @@ impl maho_tui::tui::Component for EvalCard {
                     visual(&style(context.theme.as_ref(), "toolTitle", "eval"), width)
                 }
             }
+        };
+        self.hold_live_height(&mut lines, width);
+        lines
+    }
+}
+
+impl EvalCard {
+    fn hold_live_height(&mut self, lines: &mut Vec<String>, width: usize) {
+        if !self.live {
+            self.local_floor = (0, String::new());
+            if !self.tool_call_id.is_empty() {
+                self.live_floors
+                    .lock()
+                    .expect("live height floor lock")
+                    .remove(&self.tool_call_id);
+            }
+            return;
         }
+        let key = format!(
+            "{width}|{}",
+            if self.expanded {
+                "expanded"
+            } else {
+                "collapsed"
+            }
+        );
+        if self.tool_call_id.is_empty() {
+            if self.local_floor.1 != key {
+                self.local_floor = (0, key);
+            }
+            while lines.len() < self.local_floor.0 {
+                lines.push(String::new());
+            }
+            self.local_floor.0 = lines.len();
+            return;
+        }
+        let mut floors = self.live_floors.lock().expect("live height floor lock");
+        let entry = floors
+            .entry(self.tool_call_id.clone())
+            .or_insert_with(|| (0, key.clone()));
+        if entry.1 != key {
+            *entry = (0, key);
+        }
+        while lines.len() < entry.0 {
+            lines.push(String::new());
+        }
+        entry.0 = lines.len();
     }
 }
 
@@ -619,16 +682,21 @@ fn eval_card(
     result: Option<&AgentToolResult>,
     theme: &Theme,
     context: &maho_ext_api::ToolRenderContext<(), Value>,
+    renderer_lookup: Option<NestedToolRendererLookup>,
+    live_floors: Arc<Mutex<HashMap<String, (usize, String)>>>,
 ) -> Box<dyn maho_tui::tui::Component> {
     // A host theme that exports no colors (print/json modes) renders like senpi's `theme === undefined`.
     let theme = (!theme.colors.is_empty()).then(|| theme.clone());
-    let live = result.is_some_and(|result| {
-        result
-            .details
-            .get("action")
-            .is_none_or(|action| action.is_null())
-            && has_live_cell(&result.details)
-    });
+    let live = match result {
+        None => theme.is_some(),
+        Some(result) => {
+            result
+                .details
+                .get("action")
+                .is_none_or(|action| action.is_null())
+                && has_live_cell(&result.details)
+        }
+    };
     let ticker = LiveTicker::new(live, context.invalidate.clone());
     Box::new(EvalCard {
         ticker,
@@ -645,22 +713,52 @@ fn eval_card(
         spinner_frame: context.spinner_frame,
         theme,
         cwd: context.cwd.clone(),
+        tool_call_id: context.tool_call_id.clone(),
+        live,
+        renderer_lookup,
+        live_floors,
+        local_floor: (0, String::new()),
     })
 }
 
 /// senpi registers the eval tool with its renderCall/renderResult pair; without it the host draws
 /// the generic JSON-argument fallback card.
 pub fn eval_tool_renderers() -> maho_ext_api::ToolRenderers<(), Value> {
+    eval_tool_renderers_with(None)
+}
+
+pub fn eval_tool_renderers_with(
+    renderer_lookup: Option<NestedToolRendererLookup>,
+) -> maho_ext_api::ToolRenderers<(), Value> {
+    let live_floors = Arc::new(Mutex::new(HashMap::new()));
+    let call_floors = Arc::clone(&live_floors);
+    let call_lookup = renderer_lookup.clone();
     maho_ext_api::ToolRenderers {
-        render_call: Some(std::sync::Arc::new(|args, theme, context| {
-            eval_card(args, None, theme, context)
+        render_call: Some(std::sync::Arc::new(move |args, theme, context| {
+            eval_card(
+                args,
+                None,
+                theme,
+                context,
+                call_lookup.clone(),
+                Arc::clone(&call_floors),
+            )
         })),
-        render_result: Some(std::sync::Arc::new(|result, options, theme, context| {
-            context.expanded = options.expanded;
-            context.is_partial = options.is_partial;
-            let args = context.args.clone();
-            eval_card(&args, Some(result), theme, context)
-        })),
+        render_result: Some(std::sync::Arc::new(
+            move |result, options, theme, context| {
+                context.expanded = options.expanded;
+                context.is_partial = options.is_partial;
+                let args = context.args.clone();
+                eval_card(
+                    &args,
+                    Some(result),
+                    theme,
+                    context,
+                    renderer_lookup.clone(),
+                    Arc::clone(&live_floors),
+                )
+            },
+        )),
     }
 }
 // Port of the pinned render split (render-cell.ts, render-live.ts, render-tail.ts and
@@ -1491,7 +1589,12 @@ fn legacy_tool_call_row(call: &Value, context: &EvalRenderContext, width: usize)
 
 /// senpi `nestedToolCallBlock` over the legacy `toolCallRows`: with a theme and at least one call
 /// carrying captured args, calls with args draw the nested widget; the rest keep the legacy row.
-fn tool_call_lines(calls: &[Value], context: &EvalRenderContext, width: usize) -> Vec<String> {
+fn tool_call_lines(
+    calls: &[Value],
+    context: &EvalRenderContext,
+    width: usize,
+    renderers: Option<&NestedToolRendererLookup>,
+) -> Vec<String> {
     let theme = context.theme.as_ref();
     let skipped = if context.expanded {
         0
@@ -1516,7 +1619,7 @@ fn tool_call_lines(calls: &[Value], context: &EvalRenderContext, width: usize) -
     let nested = theme.is_some() && calls.iter().any(|call| call.get("args").is_some());
     for call in &calls[skipped..] {
         if nested && call.get("args").is_some() {
-            lines.extend(render_tool_call_widget(
+            lines.extend(render_tool_call_widget_with_renderers(
                 call,
                 &WidgetOptions {
                     cwd: &context.cwd,
@@ -1524,6 +1627,7 @@ fn tool_call_lines(calls: &[Value], context: &EvalRenderContext, width: usize) -
                     expanded: context.expanded,
                     width,
                 },
+                renderers,
             ));
         } else {
             lines.extend(legacy_tool_call_row(call, context, width));
@@ -1537,6 +1641,16 @@ pub fn render_eval_result(
     args: &EvalToolRequest,
     context: &EvalRenderContext,
     width: usize,
+) -> Vec<String> {
+    render_eval_result_with_renderers(result, args, context, width, None)
+}
+
+pub fn render_eval_result_with_renderers(
+    result: &AgentToolResult,
+    args: &EvalToolRequest,
+    context: &EvalRenderContext,
+    width: usize,
+    renderers: Option<&NestedToolRendererLookup>,
 ) -> Vec<String> {
     let theme = context.theme.as_ref();
     let details = &result.details;
@@ -1708,7 +1822,7 @@ pub fn render_eval_result(
         .filter(|calls| !calls.is_empty())
     {
         lines.push(String::new());
-        lines.extend(tool_call_lines(calls, context, width));
+        lines.extend(tool_call_lines(calls, context, width, renderers));
     }
     lines
 }

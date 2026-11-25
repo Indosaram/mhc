@@ -63,6 +63,9 @@ pub fn resolve_server_auth_with(deps: ServerAuthDeps<'_>) -> ServerAuthPlan {
             .unwrap_or("http://127.0.0.1:0/callback")
             .into(),
     );
+    // Only a caller that names its redirect sends an authorize request; background connects and refresh keep
+    // the stored registration so an existing sign-in keeps refreshing (senpi#6327).
+    provider.require_registered_redirect = deps.redirect_url.is_some();
     if let Some(oauth) = &deps.config.oauth {
         provider.scopes = oauth.scopes.clone();
         provider.client_id = oauth.client_id.clone();

@@ -280,7 +280,7 @@ impl BashOperations for EnvCapture {
         options: BashExecOptions,
     ) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
-            *self.0.lock().expect("test") = Some(options.env);
+            *self.0.lock().expect("test") = Some(options.env.unwrap_or_default());
             Ok(BashExit { exit_code: Some(0) })
         })
     }

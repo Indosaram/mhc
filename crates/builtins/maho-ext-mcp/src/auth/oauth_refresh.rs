@@ -3,9 +3,12 @@ use super::{
         OAuthRequestError, OAuthServerInfo, add_resource_param, normalize_resource_url,
         request_tokens,
     },
-    oauth_provider::{
-        McpOAuthProvider, OAuthTokens, merge_tokens_into_stored_auth, stored_auth_to_tokens,
+    oauth_grant::{
+        merge_tokens_into_stored_auth, stored_auth_to_tokens, valid_grant_proof,
+        with_grant_authorization,
     },
+    oauth_issuer::canonical_authorization_server_issuer,
+    oauth_provider::{McpOAuthProvider, OAuthTokens},
 };
 use super::{
     oauth_errors::{OAuthFailureKind, OAuthFlowError},
@@ -169,12 +172,36 @@ impl McpRefreshManager {
                     return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,message))));
                 }
                 let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} is not registered",store.server_name)))))?;
-                let resource=current.as_ref().and_then(|record|record.resource.clone()).unwrap_or_else(||normalize_resource_url(&store.server_url));
+                let current_record=current.clone().unwrap_or_default();
+                let resource=current_record.resource.clone().unwrap_or_else(||normalize_resource_url(&store.server_url));
+                let grant_context=provider.grant_context();
+                let proof=valid_grant_proof(&current_record,&grant_context).cloned();
                 let mut form=vec![("grant_type".into(),"refresh_token".into()),("refresh_token".into(),refresh.clone())];
                 add_resource_param(&mut form,&resource);
                 for attempt in 0..=max_retries {
                     match request_tokens(&client,&info,&information,form.clone()).await {
-                        Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64,Some(authorization_server.as_str()))))?;return Ok(tokens);}
+                        Ok(mut tokens)=>{
+                            if let Some(returned_issuer)=&tokens.issuer
+                                && canonical_authorization_server_issuer(returned_issuer)!=canonical_authorization_server_issuer(&authorization_server)
+                            {
+                                store.write_unlocked(None)?;
+                                return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,"MCP refresh response names a different issuer."))));
+                            }
+                            let now=chrono::Utc::now().timestamp_millis() as f64;
+                            let mut base=current_record.clone();
+                            base.issuer=Some(authorization_server.clone());
+                            base.resource=Some(resource.clone());
+                            base.refresh_scope=proof.as_ref().and_then(|p|p.refresh_scope.clone());
+                            tokens.issuer=Some(authorization_server.clone());
+                            if tokens.scope.is_none() {
+                                tokens.scope=proof.as_ref().and_then(|p|p.refresh_scope.clone());
+                            }
+                            let next=merge_tokens_into_stored_auth(base,&tokens,now);
+                            let committed=with_grant_authorization(next,&grant_context,Some(&current_record));
+                            store.write_unlocked(Some(&committed))?;
+                            let result=stored_auth_to_tokens(Some(&committed),now).ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,"MCP refresh returned no access token."))))?;
+                            return Ok(result);
+                        }
                         Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::InvalidGrant=>{store.write_unlocked(None)?;return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::InvalidGrant,format!("MCP server {} refresh rejected (invalid_grant); credentials cleared, re-authentication required.",store.server_name)))));}
                         Err(error) if attempt<max_retries && match &error {
                             OAuthRequestError::Flow(flow)=>super::oauth_errors::is_transient_token_error(&serde_json::json!({"errorCode":flow.error.message,"message":flow.error.message})),

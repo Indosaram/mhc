@@ -88,31 +88,58 @@ pub trait ToolContext: Send + Sync {
 }
 
 /// Cloneable abort subscription; receivers observe cancellation even when registered afterwards.
-#[derive(Clone, Debug)]
-pub struct AbortSignal(tokio::sync::watch::Sender<Option<Option<String>>>);
-impl Default for AbortSignal {
-    fn default() -> Self {
-        Self(tokio::sync::watch::channel(None).0)
+#[derive(Clone, Debug, Default)]
+pub struct AbortSignal(maho_machine_ops::AbortSignal);
+
+impl From<maho_machine_ops::AbortSignal> for AbortSignal {
+    fn from(inner: maho_machine_ops::AbortSignal) -> Self {
+        Self(inner)
     }
 }
+
+impl From<AbortSignal> for maho_machine_ops::AbortSignal {
+    fn from(signal: AbortSignal) -> Self {
+        signal.0
+    }
+}
+
 impl AbortSignal {
+    pub fn to_machine_signal(&self) -> maho_machine_ops::AbortSignal {
+        self.0.clone()
+    }
+
+    pub fn from_machine_signal(signal: maho_machine_ops::AbortSignal) -> Self {
+        Self(signal)
+    }
+
+    pub fn any(signals: &[AbortSignal]) -> Self {
+        let combined = Self::default();
+        for sig in signals {
+            if sig.is_aborted() {
+                combined.abort_with_reason(sig.reason());
+                return combined;
+            }
+            let src = sig.clone();
+            let dst = combined.clone();
+            tokio::spawn(async move {
+                src.cancelled().await;
+                dst.abort_with_reason(src.reason());
+            });
+        }
+        combined
+    }
+
     pub fn abort(&self) {
-        self.abort_with_reason(None);
+        self.0.abort();
     }
     pub fn abort_with_reason(&self, reason: Option<String>) {
-        self.0.send_if_modified(|state| {
-            if state.is_some() {
-                return false;
-            }
-            *state = Some(reason);
-            true
-        });
+        self.0.abort_with_reason(reason);
     }
     pub fn reason(&self) -> Option<String> {
-        self.0.borrow().as_ref().cloned().flatten()
+        self.0.reason()
     }
     pub fn is_aborted(&self) -> bool {
-        self.0.borrow().is_some()
+        self.0.is_aborted()
     }
     pub fn check(&self) -> Result<(), ToolError> {
         if self.is_aborted() {
@@ -122,15 +149,7 @@ impl AbortSignal {
         }
     }
     pub async fn cancelled(&self) {
-        let mut receiver = self.0.subscribe();
-        loop {
-            if receiver.borrow_and_update().is_some() {
-                return;
-            }
-            if receiver.changed().await.is_err() {
-                return;
-            }
-        }
+        self.0.cancelled().await;
     }
 }
 

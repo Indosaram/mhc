@@ -1,11 +1,29 @@
-use super::fetcher::WebfetchFormat;
+use super::browser_skill::{
+    BrowserMode, BrowserSkillOptions, ConnectedBrowser, PageRenderOptions, PageRenderer,
+    RenderError, RenderedPage, WebfetchBrowserSkip, WebfetchBrowserSkipReason,
+    create_browser_skill_renderer,
+};
+use super::content::js_whitespace;
+use super::fetcher::{FetchResult, WebfetchFormat};
+use super::signed_in_hosts::{
+    SIGNED_IN_HOSTS_SETTING, SignedInBrowserSettings, is_signed_in_host,
+    read_signed_in_browser_settings,
+};
+use std::sync::Arc;
+
+const BROWSER_ENV: &str = "PI_WEBFETCH_BROWSER";
+// Share of the call's timeout the signed-in read may spend, so a skip still leaves time for the anonymous fetch.
+const SIGNED_IN_BUDGET_SHARE: f64 = 0.6;
+// A rendered read gets at least this long; with less of the call's timeout left it is skipped.
+const MIN_RENDER_BUDGET_MS: u64 = 3_000;
+
 pub fn requires_html_conversion(content_type: &str, format: WebfetchFormat) -> bool {
     let content_type = content_type.to_lowercase();
     format != WebfetchFormat::Html
         && (content_type.contains("text/html") || content_type.contains("application/xhtml+xml"))
 }
 pub fn parameters() -> serde_json::Value {
-    serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"},"format":{"type":"string","enum":["markdown","text","html"],"description":"The format to return the content in. Defaults to markdown."},"timeout":{"type":"number","description":"Optional timeout in seconds. Maximum 120."}},"required":["url"]})
+    serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"},"format":{"type":"string","enum":["markdown","text","html"],"description":"The format to return the content in. Defaults to markdown."},"timeout":{"type":"number","description":"Optional timeout in seconds. Defaults to 30; a missing, zero or negative value means 30. Maximum 120."}},"required":["url"]})
 }
 pub const DEFAULT_OUTPUT_MAX_BYTES: usize = 50 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,15 +102,280 @@ pub fn cap_webfetch_output(text: &str) -> WebfetchOutputCap {
         total_bytes,
     }
 }
+#[derive(Clone, Default)]
+pub struct WebfetchToolOptions {
+    /// Reads app-shell pages rendered; defaults to the user's BrowserSkill-connected browser.
+    pub renderer: Option<Arc<dyn PageRenderer>>,
+    /// The user's signed-in hosts; defaults to `webfetch.signedInBrowser` in the global settings file.
+    pub signed_in_settings: Option<Arc<dyn Fn() -> SignedInBrowserSettings + Send + Sync>>,
+    /// Overrides `PI_WEBFETCH_BROWSER` in tests without mutating process environment variables.
+    pub browser_enabled: Option<bool>,
+}
+
+pub fn parse_browser_enabled(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    !matches!(
+        value.trim_matches(js_whitespace).to_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+fn is_browser_enabled(override_enabled: Option<bool>) -> bool {
+    override_enabled
+        .unwrap_or_else(|| parse_browser_enabled(std::env::var(BROWSER_ENV).ok().as_deref()))
+}
+
+enum RenderOutcome {
+    Rendered {
+        text: String,
+        url: String,
+        browser: ConnectedBrowser,
+        truncated: bool,
+    },
+    Skipped(WebfetchBrowserSkip),
+}
+
+async fn convert_html(format: WebfetchFormat, html: &str, url: &str) -> String {
+    match format {
+        WebfetchFormat::Markdown => super::content_lazy::html_to_markdown(html, url).await,
+        WebfetchFormat::Text => super::content_lazy::html_to_text(html, url).await,
+        WebfetchFormat::Html => html.to_owned(),
+    }
+}
+
+/// Renders an unlisted app shell in an incognito window; any failure keeps the static text and says why.
+async fn read_rendered(
+    renderer: &dyn PageRenderer,
+    url: &str,
+    budget_ms: u64,
+    format: WebfetchFormat,
+    static_text: &str,
+    signal: &maho_tools::definition::AbortSignal,
+) -> Result<RenderOutcome, maho_tools::definition::ToolError> {
+    if budget_ms < MIN_RENDER_BUDGET_MS {
+        return Ok(RenderOutcome::Skipped(WebfetchBrowserSkip {
+            reason: WebfetchBrowserSkipReason::NoTimeLeft,
+            cause: None,
+            message: "no time was left in the request timeout to render it".into(),
+            detail: None,
+        }));
+    }
+    match renderer
+        .render(
+            url,
+            PageRenderOptions {
+                mode: BrowserMode::Incognito,
+                timeout_ms: budget_ms,
+                signal: Some(signal.clone()),
+                browser: None,
+            },
+        )
+        .await
+    {
+        Ok(outcome) => {
+            let stripped =
+                super::content_lazy::strip_scripts(&outcome.page.html, &outcome.page.url).await;
+            let text = convert_html(format, &stripped, &outcome.page.url).await;
+            if text.trim_matches(js_whitespace).encode_utf16().count()
+                <= static_text
+                    .trim_matches(js_whitespace)
+                    .encode_utf16()
+                    .count()
+            {
+                return Ok(RenderOutcome::Skipped(WebfetchBrowserSkip {
+                    reason: WebfetchBrowserSkipReason::NoMoreText,
+                    cause: None,
+                    message: "the rendered page had no more text".into(),
+                    detail: None,
+                }));
+            }
+            Ok(RenderOutcome::Rendered {
+                text,
+                url: outcome.page.url,
+                browser: outcome.browser,
+                truncated: outcome.page.truncated,
+            })
+        }
+        Err(RenderError::Aborted) => Err(maho_tools::definition::ToolError::Aborted),
+        Err(error) => {
+            if signal.is_aborted() {
+                return Err(maho_tools::definition::ToolError::Aborted);
+            }
+            Ok(RenderOutcome::Skipped(match error {
+                RenderError::Skip(skip) => skip,
+                RenderError::Other(message) => WebfetchBrowserSkip {
+                    reason: WebfetchBrowserSkipReason::RenderFailed,
+                    cause: None,
+                    message: "the browser read failed".into(),
+                    detail: Some(message),
+                },
+                RenderError::Aborted => unreachable!("handled above"),
+            }))
+        }
+    }
+}
+
+fn render_notice(
+    rendered: bool,
+    renderer_name: &str,
+    skipped: Option<&WebfetchBrowserSkip>,
+) -> Option<String> {
+    if rendered {
+        return Some(format!(
+            "[The static HTML was an empty app shell, so this page was read in {renderer_name}, in an incognito window without your cookies.]"
+        ));
+    }
+    let skipped = skipped?;
+    let detail = skipped
+        .detail
+        .as_deref()
+        .map_or_else(String::new, |detail| format!(" ({detail})"));
+    let reason = serde_json::to_value(skipped.reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "render_failed".into());
+    Some(format!(
+        "[The static HTML looks like an empty app shell that needs JavaScript; {reason}: {}{detail}.]",
+        skipped.message
+    ))
+}
+
+enum SignedInOutcome {
+    Read {
+        page: RenderedPage,
+        browser: ConnectedBrowser,
+    },
+    Skipped(WebfetchBrowserSkip),
+}
+
+/// Reads a listed host in a normal session of the user's browser; any failure falls back to the anonymous read.
+async fn read_signed_in(
+    renderer: &dyn PageRenderer,
+    url: &str,
+    settings: &SignedInBrowserSettings,
+    timeout_ms: u64,
+    signal: &maho_tools::definition::AbortSignal,
+) -> Result<SignedInOutcome, maho_tools::definition::ToolError> {
+    match renderer
+        .render(
+            url,
+            PageRenderOptions {
+                mode: BrowserMode::SignedIn,
+                timeout_ms,
+                signal: Some(signal.clone()),
+                browser: settings.browser.clone(),
+            },
+        )
+        .await
+    {
+        Ok(outcome) => {
+            if is_signed_in_host(&outcome.page.url, &settings.hosts) {
+                return Ok(SignedInOutcome::Read {
+                    page: outcome.page,
+                    browser: outcome.browser,
+                });
+            }
+            let host = url::Url::parse(&outcome.page.url)
+                .ok()
+                .and_then(|parsed| {
+                    parsed.host_str().map(|host| match parsed.port() {
+                        Some(port) => format!("{host}:{port}"),
+                        None => host.to_owned(),
+                    })
+                })
+                .unwrap_or_else(|| outcome.page.url.clone());
+            Ok(SignedInOutcome::Skipped(WebfetchBrowserSkip {
+                reason: WebfetchBrowserSkipReason::HostNotAllowed,
+                cause: None,
+                message: "the signed-in read ended on a host outside the list, so it was discarded"
+                    .into(),
+                detail: Some(format!("{host} is not in {SIGNED_IN_HOSTS_SETTING}")),
+            }))
+        }
+        Err(RenderError::Aborted) => Err(maho_tools::definition::ToolError::Aborted),
+        Err(error) => {
+            if signal.is_aborted() {
+                return Err(maho_tools::definition::ToolError::Aborted);
+            }
+            Ok(SignedInOutcome::Skipped(match error {
+                RenderError::Skip(skip) => skip,
+                RenderError::Other(message) => WebfetchBrowserSkip {
+                    reason: WebfetchBrowserSkipReason::RenderFailed,
+                    cause: None,
+                    message: "the browser read failed".into(),
+                    detail: Some(message),
+                },
+                RenderError::Aborted => unreachable!("handled above"),
+            }))
+        }
+    }
+}
+
+fn page_as_fetch_result(page: &RenderedPage, html: String) -> FetchResult {
+    let body = html.into_bytes();
+    let bytes = body.len();
+    FetchResult {
+        url: page.url.clone(),
+        status: 200,
+        status_text: "OK".into(),
+        content_type: "text/html".into(),
+        bytes,
+        body,
+        truncated: page.truncated,
+    }
+}
+
+fn signed_in_notice(
+    read: bool,
+    renderer_name: &str,
+    skipped: Option<&WebfetchBrowserSkip>,
+) -> Option<String> {
+    if read {
+        return Some(format!(
+            "[Read through {renderer_name} with your signed-in session, because you listed this host.]"
+        ));
+    }
+    let skipped = skipped?;
+    let detail = skipped
+        .detail
+        .as_deref()
+        .map_or_else(String::new, |detail| format!(" ({detail})"));
+    let reason = serde_json::to_value(skipped.reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "render_failed".into());
+    Some(format!(
+        "[This host is listed for signed-in reads, but it was read anonymously; {reason}: {}{detail}.]",
+        skipped.message
+    ))
+}
+
 pub fn create_webfetch_tool() -> maho_tools::definition::ToolDefinition {
+    create_webfetch_tool_with(WebfetchToolOptions::default())
+}
+
+pub fn create_webfetch_tool_with(
+    options: WebfetchToolOptions,
+) -> maho_tools::definition::ToolDefinition {
     use maho_tools::definition::{ToolContent, ToolDefinition, ToolError, ToolResult};
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
+    let renderer = options
+        .renderer
+        .unwrap_or_else(|| create_browser_skill_renderer(BrowserSkillOptions::default()));
+    let signed_in_settings = options
+        .signed_in_settings
+        .unwrap_or_else(|| Arc::new(|| read_signed_in_browser_settings(None)));
+    let browser_enabled = options.browser_enabled;
     let mut tool = ToolDefinition::new(
         "webfetch",
-        "Fetches content from a URL and returns it as markdown, plain text, or HTML. Network use is bounded by timeout and response size limits.",
+        "Fetches content from a URL and returns it as markdown, plain text, or HTML. A response over 5MB fails with an error instead of returning partial content, and the text handed back is capped at 50KB with a truncation notice.",
         parameters(),
-        Arc::new(|call| {
+        Arc::new(move |call| {
+            let renderer = Arc::clone(&renderer);
+            let signed_in_settings = Arc::clone(&signed_in_settings);
             Box::pin(async move {
                 let url = call.params["url"]
                     .as_str()
@@ -104,6 +387,7 @@ pub fn create_webfetch_tool() -> maho_tools::definition::ToolDefinition {
                     WebfetchFormat::Html => "html",
                 };
                 let timeout = super::fetcher::clamp_timeout(call.params["timeout"].as_f64());
+                let started_instant = std::time::Instant::now();
                 let started = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|error| ToolError::Message(error.to_string()))?
@@ -130,23 +414,71 @@ pub fn create_webfetch_tool() -> maho_tools::definition::ToolDefinition {
                     Ok::<_, ToolError>(())
                 };
                 emit("fetching", None, None)?;
+
+                let settings = signed_in_settings();
+                let mut signed_in_skipped: Option<WebfetchBrowserSkip> = None;
+                let mut signed_in_page: Option<RenderedPage> = None;
+                let mut signed_in_browser: Option<ConnectedBrowser> = None;
+                if is_signed_in_host(url, &settings.hosts) {
+                    if is_browser_enabled(browser_enabled) {
+                        emit("rendering", None, None)?;
+                        let browser_budget_ms = ((timeout as f64) * 1000.0 * SIGNED_IN_BUDGET_SHARE)
+                            .floor()
+                            .max(1.0) as u64;
+                        match read_signed_in(
+                            renderer.as_ref(),
+                            url,
+                            &settings,
+                            browser_budget_ms,
+                            &call.signal,
+                        )
+                        .await?
+                        {
+                            SignedInOutcome::Read { page, browser } => {
+                                signed_in_page = Some(page);
+                                signed_in_browser = Some(browser);
+                            }
+                            SignedInOutcome::Skipped(skip) => {
+                                signed_in_skipped = Some(skip);
+                            }
+                        }
+                    } else {
+                        signed_in_skipped = Some(WebfetchBrowserSkip {
+                            reason: WebfetchBrowserSkipReason::Disabled,
+                            cause: None,
+                            message: format!("{BROWSER_ENV}=0 turns browser reads off"),
+                            detail: None,
+                        });
+                    }
+                }
+
+                let elapsed_ms = started_instant.elapsed().as_millis() as u64;
+                let total_budget_ms = timeout * 1000;
+                let left_ms = total_budget_ms.saturating_sub(elapsed_ms);
+                let left_seconds = ((left_ms as f64) / 1000.0).ceil().max(1.0) as u64;
+
                 let downloaded = Mutex::new(None);
-                let on_progress = |bytes, total| {
-                    *downloaded
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = total;
-                    emit("downloading", Some(bytes), total)
-                        .map_err(|error| super::errors::WebfetchError::Abort(error.to_string()))
+                let fetched = if let Some(page) = &signed_in_page {
+                    let stripped = super::content_lazy::strip_scripts(&page.html, &page.url).await;
+                    page_as_fetch_result(page, stripped)
+                } else {
+                    let on_progress = |bytes, total| {
+                        *downloaded
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = total;
+                        emit("downloading", Some(bytes), total)
+                            .map_err(|error| super::errors::WebfetchError::Abort(error.to_string()))
+                    };
+                    super::fetcher::fetch_url(super::fetcher::FetchOptions {
+                        url,
+                        format,
+                        timeout_seconds: Some(left_seconds as f64),
+                        signal: Some(&call.signal),
+                        on_progress: Some(&on_progress),
+                    })
+                    .await
+                    .map_err(|error| ToolError::Message(error.to_string()))?
                 };
-                let fetched = super::fetcher::fetch_url(super::fetcher::FetchOptions {
-                    url,
-                    format,
-                    timeout_seconds: Some(timeout as f64),
-                    signal: Some(&call.signal),
-                    on_progress: Some(&on_progress),
-                })
-                .await
-                .map_err(|error| ToolError::Message(error.to_string()))?;
                 emit(
                     "converting",
                     Some(fetched.bytes),
@@ -154,32 +486,117 @@ pub fn create_webfetch_tool() -> maho_tools::definition::ToolDefinition {
                         .into_inner()
                         .unwrap_or_else(std::sync::PoisonError::into_inner),
                 )?;
-                let raw = String::from_utf8_lossy(&fetched.body);
-                let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+                let raw_cow = String::from_utf8_lossy(&fetched.body);
+                let raw = raw_cow.strip_prefix('\u{feff}').unwrap_or(&raw_cow);
                 let converted = requires_html_conversion(&fetched.content_type, format);
-                let text = if converted {
-                    match format {
-                        WebfetchFormat::Markdown => {
-                            super::content_lazy::html_to_markdown(raw, &fetched.url).await
-                        }
-                        WebfetchFormat::Text => {
-                            super::content_lazy::html_to_text(raw, &fetched.url).await
-                        }
-                        WebfetchFormat::Html => {
-                            unreachable!("raw HTML does not require conversion")
-                        }
-                    }
+                let mut text = if converted {
+                    convert_html(format, raw, &fetched.url).await
                 } else {
                     raw.to_owned()
                 };
+                let mut rendered = signed_in_page.is_some();
+                let mut render_skipped: Option<WebfetchBrowserSkip> = None;
+                let mut browser: Option<ConnectedBrowser> = signed_in_browser;
+                let mut render_truncated = false;
+                let mut rendered_url: Option<String> = None;
+
+                if converted
+                    && signed_in_page.is_none()
+                    && super::content_lazy::looks_like_app_shell(raw, &fetched.url).await
+                {
+                    let budget_ms = total_budget_ms
+                        .saturating_sub(started_instant.elapsed().as_millis() as u64);
+                    let outcome = if is_browser_enabled(browser_enabled) {
+                        emit("rendering", None, None)?;
+                        read_rendered(
+                            renderer.as_ref(),
+                            &fetched.url,
+                            budget_ms,
+                            format,
+                            &text,
+                            &call.signal,
+                        )
+                        .await?
+                    } else {
+                        RenderOutcome::Skipped(WebfetchBrowserSkip {
+                            reason: WebfetchBrowserSkipReason::Disabled,
+                            cause: None,
+                            message: format!("{BROWSER_ENV}=0 turns browser reads off"),
+                            detail: None,
+                        })
+                    };
+                    match outcome {
+                        RenderOutcome::Rendered {
+                            text: rendered_text,
+                            url: next_url,
+                            browser: next_browser,
+                            truncated: next_truncated,
+                        } => {
+                            text = rendered_text;
+                            rendered = true;
+                            browser = Some(next_browser);
+                            render_truncated = next_truncated;
+                            rendered_url = Some(next_url);
+                        }
+                        RenderOutcome::Skipped(skip) => {
+                            render_skipped = Some(skip);
+                        }
+                    }
+                }
+
                 let capped = cap_webfetch_output(&text);
-                let details = json!({"url":url,"finalUrl":fetched.url,"format":format_name,"status":fetched.status,"statusText":fetched.status_text,"contentType":fetched.content_type,"bytes":fetched.bytes,"timeoutSeconds":timeout,"converted":converted,"truncated":fetched.truncated,"outputTruncated":capped.truncated,"outputBytes":capped.output_bytes,"outputTotalBytes":capped.total_bytes});
-                let mut content = vec![ToolContent::text(if capped.notice.is_some() {
-                    format!("{}\n", capped.text)
-                } else {
-                    capped.text
-                })];
+                let final_url = rendered_url.unwrap_or(fetched.url);
+                let mut details = json!({
+                    "url": url,
+                    "finalUrl": final_url,
+                    "format": format_name,
+                    "status": fetched.status,
+                    "statusText": fetched.status_text,
+                    "contentType": fetched.content_type,
+                    "bytes": fetched.bytes,
+                    "timeoutSeconds": timeout,
+                    "converted": converted,
+                    "truncated": fetched.truncated || render_truncated,
+                    "outputTruncated": capped.truncated,
+                    "outputBytes": capped.output_bytes,
+                    "outputTotalBytes": capped.total_bytes,
+                    "rendered": rendered,
+                    "route": if signed_in_page.is_some() { "signed-in-browser" } else { "http" },
+                });
+                if let Some(skip) = &render_skipped {
+                    details["renderSkipped"] = serde_json::to_value(skip)?;
+                }
+                if let Some(browser) = &browser {
+                    details["browser"] = serde_json::to_value(browser)?;
+                }
+                if let Some(skip) = &signed_in_skipped {
+                    details["signedInSkipped"] = serde_json::to_value(skip)?;
+                }
+
+                let mut notices = Vec::new();
                 if let Some(notice) = capped.notice {
+                    notices.push(notice);
+                }
+                if signed_in_page.is_none()
+                    && let Some(notice) =
+                        render_notice(rendered, renderer.name(), render_skipped.as_ref())
+                {
+                    notices.push(notice);
+                }
+                if let Some(notice) = signed_in_notice(
+                    signed_in_page.is_some(),
+                    renderer.name(),
+                    signed_in_skipped.as_ref(),
+                ) {
+                    notices.push(notice);
+                }
+
+                let mut content = vec![ToolContent::text(if notices.is_empty() {
+                    capped.text
+                } else {
+                    format!("{}\n", capped.text)
+                })];
+                for notice in notices {
                     content.push(ToolContent::Text {
                         text: notice,
                         audience: Some("model".into()),

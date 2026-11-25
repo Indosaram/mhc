@@ -105,14 +105,20 @@ async fn serve_bridge_request(
     let parsed = bridge_url(url);
     let route = parsed.as_ref().map_or("", url::Url::path);
     // Reject method and authorization before reading a potentially unbounded body.
-    let early = if parts.method != "POST" || !matches!(route, "/call" | "/emit" | "/completion") {
+    let known_route = matches!(
+        route,
+        "/call" | "/emit" | "/completion" | "/permission_check" | "/kill_guard_check"
+    );
+    let requires_bearer = !matches!(route, "/permission_check" | "/kill_guard_check");
+    let early = if parts.method != "POST" || !known_route {
         Some((
             404,
             Some(transport_error("not_found", "Bridge route was not found")),
         ))
-    } else if authorization
-        .and_then(|header| header.strip_prefix("Bearer "))
-        .is_none_or(|auth| auth.is_empty() || verify_bridge_token(&token, auth).is_err())
+    } else if requires_bearer
+        && authorization
+            .and_then(|header| header.strip_prefix("Bearer "))
+            .is_none_or(|auth| auth.is_empty() || verify_bridge_token(&token, auth).is_err())
     {
         Some((
             401,
@@ -174,17 +180,22 @@ async fn serve_bridge_request(
             .await
         }
     };
-    let mut response = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from(
-        reply
-            .as_ref()
-            .map_or_else(Vec::new, |reply| reply.to_string().into_bytes()),
-    )));
+    let encoded = reply
+        .as_ref()
+        .map_or_else(Vec::new, |reply| reply.to_string().into_bytes());
+    let len = encoded.len();
+    let mut response = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from(encoded)));
     *response.status_mut() = hyper::StatusCode::from_u16(status).expect("fixed bridge status code");
     if reply.is_some() {
         response.headers_mut().insert(
             hyper::header::CONTENT_TYPE,
             hyper::header::HeaderValue::from_static("application/json; charset=utf-8"),
         );
+        if let Ok(len_header) = hyper::header::HeaderValue::from_str(&len.to_string()) {
+            response
+                .headers_mut()
+                .insert(hyper::header::CONTENT_LENGTH, len_header);
+        }
     }
     // Normal completion must not abort the handler's signal.
     guard.0.take();
@@ -195,6 +206,7 @@ pub struct BridgeHttpCallRequest {
     pub call_id: String,
     pub tool_name: String,
     pub args: Value,
+    pub cell_token: Option<String>,
     pub signal: AbortSignal,
 }
 
@@ -212,6 +224,7 @@ pub type BridgeCallHandler =
 pub type BridgeCompletionHandler =
     Arc<dyn Fn(BridgeHttpCompletionRequest) -> BridgeHttpFuture<Value> + Send + Sync>;
 pub type BridgeEmitHandler = Arc<dyn Fn(Value, AbortSignal) -> BridgeHttpFuture<()> + Send + Sync>;
+pub type BridgeKillGuardCheckHandler = Arc<dyn Fn(Value) -> BridgeHttpFuture<Value> + Send + Sync>;
 
 pub struct BridgeServerOptions {
     pub token: Option<String>,
@@ -219,6 +232,9 @@ pub struct BridgeServerOptions {
     pub on_call: BridgeCallHandler,
     pub on_emit: BridgeEmitHandler,
     pub on_completion: BridgeCompletionHandler,
+    /// Decides a kernel's kill-guard check (`senpi#5349`); needs no permission token, so it works
+    /// in full-access mode.
+    pub on_kill_guard_check: Option<BridgeKillGuardCheckHandler>,
 }
 
 fn transport_error(code: &str, message: &str) -> Value {
@@ -244,15 +260,21 @@ pub async fn dispatch_bridge_http_request(
 ) -> (u16, Option<Value>) {
     let parsed = bridge_url(url);
     let route = parsed.as_ref().map_or("", url::Url::path);
-    if method != "POST" || !matches!(route, "/call" | "/emit" | "/completion") {
+    let known_route = matches!(
+        route,
+        "/call" | "/emit" | "/completion" | "/permission_check" | "/kill_guard_check"
+    );
+    let requires_bearer = !matches!(route, "/permission_check" | "/kill_guard_check");
+    if method != "POST" || !known_route {
         return (
             404,
             Some(transport_error("not_found", "Bridge route was not found")),
         );
     }
-    if authorization
-        .and_then(|header| header.strip_prefix("Bearer "))
-        .is_none_or(|auth| auth.is_empty() || verify_bridge_token(token, auth).is_err())
+    if requires_bearer
+        && authorization
+            .and_then(|header| header.strip_prefix("Bearer "))
+            .is_none_or(|auth| auth.is_empty() || verify_bridge_token(token, auth).is_err())
     {
         return (
             401,
@@ -281,6 +303,35 @@ pub async fn dispatch_bridge_http_request(
             )),
         );
     };
+    if route == "/permission_check" {
+        return (
+            200,
+            Some(
+                match super::permission_check::permission_check(&body).await {
+                    Ok(value) => json!({"ok":true,"value":value}),
+                    Err(message) => json!({"ok":false,"error":{"name":"Error","message":message}}),
+                },
+            ),
+        );
+    }
+    if route == "/kill_guard_check" {
+        let Some(handler) = &options.on_kill_guard_check else {
+            return (
+                404,
+                Some(transport_error(
+                    "not_found",
+                    "The kill guard is off for this bridge",
+                )),
+            );
+        };
+        return (
+            200,
+            Some(match handler(body).await {
+                Ok(value) => json!({"ok":true,"value":value}),
+                Err(error) => json!({"ok":false,"error":error}),
+            }),
+        );
+    }
     if route == "/emit" {
         let valid = match body["kind"].as_str() {
             Some("text") => {
@@ -333,6 +384,10 @@ pub async fn dispatch_bridge_http_request(
             call_id: call_id.into(),
             tool_name: tool_name.into(),
             args: args.clone(),
+            cell_token: body
+                .get("cellToken")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             signal,
         })
         .await

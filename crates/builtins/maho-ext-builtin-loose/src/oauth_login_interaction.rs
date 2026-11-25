@@ -22,6 +22,33 @@ impl std::fmt::Display for LoginCancelled {
 
 impl std::error::Error for LoginCancelled {}
 
+/// Keep retained ID tokens out of terminal output and notification transcripts (`oauth-url.ts`).
+/// Browser launchers still receive the original URL.
+pub fn redact_oauth_url(value: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return value.to_owned();
+    };
+    if !url.query_pairs().any(|(key, _)| key == "id_token_hint") {
+        return value.to_owned();
+    }
+    let filtered: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "id_token_hint")
+        .map(|(key, val)| (key.into_owned(), val.into_owned()))
+        .collect();
+    {
+        let mut serializer = url.query_pairs_mut();
+        serializer.clear();
+        for (key, val) in &filtered {
+            serializer.append_pair(key, val);
+        }
+    }
+    if filtered.is_empty() {
+        url.set_query(None);
+    }
+    url.to_string()
+}
+
 pub fn platform_open_browser() -> Arc<dyn Fn(&str) + Send + Sync> {
     Arc::new(|url: &str| {
         use std::process::{Command, Stdio};
@@ -151,16 +178,22 @@ impl AuthInteraction for ExtensionLoginInteraction {
                     message,
                     placeholder,
                 }
-                | AuthPromptKind::Secret {
-                    message,
-                    placeholder,
-                }
                 | AuthPromptKind::ManualCode {
                     message,
                     placeholder,
                 } => {
                     self.ui
                         .input(&message, placeholder.as_deref(), options)
+                        .await
+                }
+                AuthPromptKind::Secret {
+                    message,
+                    placeholder,
+                } => {
+                    let mut secret_options = options;
+                    secret_options.secret = self.ui.capabilities().secret_input;
+                    self.ui
+                        .input(&message, placeholder.as_deref(), secret_options)
                         .await
                 }
             };
@@ -193,7 +226,7 @@ impl AuthInteraction for ExtensionLoginInteraction {
                 }
                 let mut lines = vec![
                     format!("Open this URL to authorize {}:", self.provider_label),
-                    url,
+                    redact_oauth_url(&url),
                 ];
                 if let Some(instructions) = instructions.filter(|value| !value.is_empty()) {
                     lines.push(instructions);

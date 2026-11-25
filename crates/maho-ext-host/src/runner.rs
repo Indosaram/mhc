@@ -843,6 +843,17 @@ impl ExtensionContextActions for ContextSessionManager {
             .map(ExtensionRunner::get_registered_mcp_servers)
             .or_else(|| self.actions.get_registered_mcp_servers())
     }
+    fn extension_connects_mcp_servers(&self) -> bool {
+        self.active();
+        self.provider_runner.as_ref().map_or_else(
+            || self.actions.extension_connects_mcp_servers(),
+            ExtensionRunner::extension_connects_mcp_servers,
+        )
+    }
+    fn is_loop_remote(&self) -> bool {
+        self.active();
+        self.actions.is_loop_remote()
+    }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> {
         self.active();
         if crate::kernel_tools_context::current_kernel_tools().is_some()
@@ -962,6 +973,12 @@ pub struct ExtensionRunner {
     handler_turn_scope: Option<handler_budget::HandlerTurnScope>,
     reported_invalid_handler_budget: Arc<std::sync::atomic::AtomicBool>,
     held_handler_waits: Arc<handler_budget::HeldHandlerWaits>,
+    /// Shared non-cyclic state for Weak callbacks invoked through `ExtensionRuntime` (`#4438`, `#4604`).
+    shared_error_sinks: Arc<std::sync::Mutex<(Vec<ErrorListener>, Option<ErrorListener>)>>,
+    shared_base_context: Arc<std::sync::Mutex<ExtensionContext>>,
+    shared_context_actions: Arc<std::sync::Mutex<Option<Arc<dyn ExtensionContextActions>>>>,
+    login_start_guard: Arc<std::sync::Mutex<Option<ProviderLoginStartHook>>>,
+    mcp_change_guard: Arc<std::sync::Mutex<Option<crate::mcp_server_registry::McpChangeListener>>>,
 }
 /// senpi `QUEUED_LIFECYCLE_EVENTS` plus the boundary events `emitBoundary` walks under the same budget.
 const fn is_budgeted_event(kind: EventKind) -> bool {
@@ -1013,13 +1030,42 @@ impl ExtensionRunner {
             crate::extension_handle_ledger::RunnerHandleLedgers::register_runner_extensions(
                 &extensions,
             );
+        let registrars = extensions
+            .iter()
+            .map(|extension| crate::mcp_server_registry::McpRegistrar {
+                path: extension.identity.path.clone(),
+                declarations: runtime
+                    .live_mcp_servers(&extension.identity.path)
+                    .unwrap_or_else(|| extension.mcp_servers.clone()),
+            })
+            .collect();
+        runtime.mcp_registry().bind(registrars);
+        let extensions = Arc::new(extensions);
+        let reload: ReloadState = Arc::new(std::sync::Mutex::new(None));
+        let live_bindings: Arc<std::sync::Mutex<LiveBindings>> = Arc::default();
+        let shared_error_sinks = Arc::new(std::sync::Mutex::new((Vec::new(), None)));
+        let shared_base_context = Arc::new(std::sync::Mutex::new(context.clone()));
+        let shared_context_actions: Arc<
+            std::sync::Mutex<Option<Arc<dyn ExtensionContextActions>>>,
+        > = Arc::new(std::sync::Mutex::new(None));
+        let login_hook = build_provider_login_start_hook(
+            Arc::clone(&extensions),
+            events.clone(),
+            Arc::clone(&live_bindings),
+            Arc::clone(&shared_base_context),
+            Arc::clone(&shared_context_actions),
+            Arc::clone(&reload),
+            handle_ledgers.clone(),
+            Arc::clone(&shared_error_sinks),
+        );
+        runtime.set_provider_login_start(Some(Arc::downgrade(&login_hook)));
         Self {
             handle_ledgers,
             session_start_turns: Arc::new(
                 crate::session_start_turn_gate::SessionStartTurnGate::new(Arc::new(|_| {})),
             ),
             reported_child_module_replacements: Arc::default(),
-            extensions: Arc::new(extensions),
+            extensions,
             runtime,
             events,
             factory_context: context.clone(),
@@ -1035,19 +1081,24 @@ impl ExtensionRunner {
             warning_listener: None,
             next_hook_index: 0,
             context_actions: None,
-            reload: Arc::new(std::sync::Mutex::new(None)),
+            reload,
             shutdown_budget: None,
             shutdown_quit_budget: None,
             process_exit_requested_at: Arc::new(std::sync::Mutex::new(None)),
             runtime_factory: None,
             context_session_manager: Arc::new(std::sync::Mutex::new(None)),
-            live_bindings: Arc::default(),
+            live_bindings,
             session_error_listener: None,
             event_handler_budget: None,
             handler_stall_listener: None,
             handler_turn_scope: None,
             reported_invalid_handler_budget: Arc::default(),
             held_handler_waits: Arc::default(),
+            shared_error_sinks,
+            shared_base_context,
+            shared_context_actions,
+            login_start_guard: Arc::new(std::sync::Mutex::new(Some(login_hook))),
+            mcp_change_guard: Arc::new(std::sync::Mutex::new(None)),
         }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
@@ -1161,6 +1212,13 @@ impl ExtensionRunner {
         runner.runtime_factory = self.runtime_factory.clone();
         runner.error_listeners = self.error_listeners.clone();
         runner.session_error_listener = self.session_error_listener.clone();
+        *runner
+            .shared_error_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (
+            runner.error_listeners.clone(),
+            runner.session_error_listener.clone(),
+        );
         runner.warning_listener = self.warning_listener.clone();
         runner.hook_observer = self.hook_observer.clone();
         runner.shutdown_budget = self.shutdown_budget.clone();
@@ -1184,11 +1242,31 @@ impl ExtensionRunner {
             inner: actions,
             gate: Arc::clone(&self.session_start_turns),
         }));
+        *self
+            .shared_base_context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = context.clone();
         self.context = context;
         *self
             .context_session_manager
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let mcp_hook = build_mcp_change_hook(
+            Arc::clone(&self.extensions),
+            Arc::clone(&self.live_bindings),
+            Arc::clone(&self.shared_base_context),
+            Arc::clone(&self.shared_context_actions),
+            Arc::clone(&self.reload),
+            self.handle_ledgers.clone(),
+            Arc::clone(&self.shared_error_sinks),
+        );
+        self.runtime
+            .mcp_registry()
+            .set_change_listener(Some(Arc::downgrade(&mcp_hook)));
+        *self
+            .mcp_change_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mcp_hook);
     }
     pub fn bind_context_actions(
         &mut self,
@@ -1201,6 +1279,10 @@ impl ExtensionRunner {
         self.context.get_system_prompt_options_fn =
             Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
+        *self
+            .shared_context_actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&actions));
         self.context.session_manager = Arc::new(ContextSessionManager {
             session: Arc::clone(&self.context.session_manager),
             actions,
@@ -1600,6 +1682,14 @@ impl ExtensionRunner {
     pub fn invalidate(&self, message: &str) {
         self.runtime.invalidate(message);
         self.events.clear();
+        *self
+            .login_start_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .mcp_change_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
     pub async fn emit_removed_extensions(
         &mut self,
@@ -1614,11 +1704,20 @@ impl ExtensionRunner {
         }
     }
     pub fn on_error(&mut self, listener: ErrorListener) {
-        self.error_listeners.push(listener);
+        self.error_listeners.push(listener.clone());
+        self.shared_error_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .push(listener);
     }
     /// Replace the single session-bound error listener (pinned unsubscribe-then-`onError`).
     pub fn set_session_error_listener(&mut self, listener: Option<ErrorListener>) {
-        self.session_error_listener = listener;
+        self.session_error_listener = listener.clone();
+        self.shared_error_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1 = listener;
     }
     pub fn has_session_error_listener(&self) -> bool {
         self.session_error_listener.is_some()
@@ -1777,6 +1876,15 @@ impl ExtensionRunner {
                 || self.runtime.has_live_handlers(&e.identity.path, kind)
         })
     }
+    /// Whether a loaded extension handles `mcp_servers_change`, making it the owner that connects
+    /// registered MCP servers (`senpi#4604`).
+    pub fn extension_connects_mcp_servers(&self) -> bool {
+        self.has_handlers(EventKind::McpServersChange)
+    }
+    /// Whether this runner serves a remote hand whose agent loop runs elsewhere (S29 stub).
+    pub fn is_loop_remote(&self) -> bool {
+        false
+    }
     pub fn set_lifecycle_attention_observer(&self, observer: Arc<dyn Fn() + Send + Sync>) {
         *self
             .lifecycle_attention
@@ -1893,38 +2001,57 @@ impl ExtensionRunner {
         }
     }
     fn raw_handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
-        let mut out = Vec::new();
+        if kind != EventKind::BeforeAgentStart {
+            return raw_handlers_for_extensions(&self.extensions, &self.runtime, kind);
+        }
+        // `beforeAgentStartDispatchOrder` (senpi runner.ts): ordinary handlers, then third-party
+        // `runLast` handlers, then builtin `runLast` handlers.
+        let mut ordinary = Vec::new();
+        let mut third_party_last = Vec::new();
+        let mut builtin_last = Vec::new();
         for e in self.extensions.iter() {
-            // Load-registered handlers stay authoritative; a late runtime registration (e.g. the
-            // OMO task component at SessionStart) adds to them instead of hiding them. Dedup by
-            // handler identity: `ExtensionApi::on` re-publishes the full registered list, which can
-            // already include the load-registered handlers, so a plain extend would double-dispatch.
-            // Extensions with no handler for `kind` are skipped without allocating.
             let loaded = e.handlers.get(&kind).map_or(&[][..], Vec::as_slice);
-            let live = self
+            let loaded_opts = e.handler_options.get(&kind).map_or(&[][..], Vec::as_slice);
+            let (live, live_opts) = self
                 .runtime
-                .live_handlers(&e.identity.path, kind)
+                .live_handlers_with_options(&e.identity.path, kind)
                 .unwrap_or_default();
             if loaded.is_empty() && live.is_empty() {
                 continue;
             }
-            let start = out.len();
-            for handler in loaded {
-                out.push((e.identity.path.clone(), handler.clone()));
+            let is_builtin = e.identity.path.starts_with("<builtin:");
+            let mut seen_ptrs = Vec::new();
+            for (index, handler) in loaded.iter().enumerate() {
+                seen_ptrs.push(Arc::as_ptr(handler) as *const ());
+                let run_last = loaded_opts.get(index).is_some_and(|opts| opts.run_last);
+                let target = if !run_last {
+                    &mut ordinary
+                } else if is_builtin {
+                    &mut builtin_last
+                } else {
+                    &mut third_party_last
+                };
+                target.push((e.identity.path.clone(), handler.clone()));
             }
-            for handler in live {
+            for (index, handler) in live.into_iter().enumerate() {
                 let ptr = Arc::as_ptr(&handler) as *const ();
-                if !out[start..]
-                    .iter()
-                    .any(|(_, seen): &(String, ExtensionHandler)| {
-                        Arc::as_ptr(seen) as *const () == ptr
-                    })
-                {
-                    out.push((e.identity.path.clone(), handler));
+                if seen_ptrs.contains(&ptr) {
+                    continue;
                 }
+                let run_last = live_opts.get(index).is_some_and(|opts| opts.run_last);
+                let target = if !run_last {
+                    &mut ordinary
+                } else if is_builtin {
+                    &mut builtin_last
+                } else {
+                    &mut third_party_last
+                };
+                target.push((e.identity.path.clone(), handler));
             }
         }
-        out
+        ordinary.extend(third_party_last);
+        ordinary.extend(builtin_last);
+        ordinary
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         // PERF-DIVERGENCE(senpi runner.ts): upstream merges tools with linear name scans per tool; this port indexes the first position per name in a HashMap and moves tools instead of cloning them. Precedence and output order are identical.
@@ -2191,19 +2318,7 @@ impl ExtensionRunner {
         flags
     }
     pub fn get_registered_mcp_servers(&self) -> Vec<RegisteredMcpServerDeclaration> {
-        let mut servers: Vec<RegisteredMcpServerDeclaration> = Vec::new();
-        for ext in self.extensions.iter() {
-            for server in self
-                .runtime
-                .live_mcp_servers(&ext.identity.path)
-                .unwrap_or_else(|| ext.mcp_servers.clone())
-            {
-                if !servers.iter().any(|s| s.name == server.name) {
-                    servers.push(server);
-                }
-            }
-        }
-        servers
+        self.runtime.mcp_registry().declarations()
     }
     pub fn get_mcp_server_diagnostics(&self) -> Vec<String> {
         let mut owners: BTreeMap<String, &str> = BTreeMap::new();
@@ -3138,6 +3253,23 @@ impl ExtensionRunner {
             observer(&event);
         }
     }
+    /// Awaits every `provider_login_start` handler in order; a failing handler is reported and the
+    /// login goes on (`senpi#4438`).
+    pub async fn emit_provider_login_start(&mut self, event: ProviderLoginStartEvent) {
+        let mut event = ExtensionEvent::ProviderLoginStart(event);
+        for (path, handler) in self.handlers(EventKind::ProviderLoginStart) {
+            let context = match self.create_context_for_extension(Some(&path)) {
+                Ok(context) => context,
+                Err(error) => {
+                    self.report(&path, EventKind::ProviderLoginStart, error);
+                    continue;
+                }
+            };
+            if let Err(error) = handler(&mut event, &context).await {
+                self.report(&path, EventKind::ProviderLoginStart, error);
+            }
+        }
+    }
     pub async fn emit_tool_call(
         &mut self,
         event: &mut ToolCallEvent,
@@ -3154,24 +3286,45 @@ impl ExtensionRunner {
                 ToolHookName::PreToolUse,
                 &mut context,
             );
-            let result = handler(&mut current, &context).await;
-            let (status, error) = match &result {
-                Err(e) => (ToolHookStatus::Failed, Some(e.message.clone())),
-                Ok(EventResult::ToolCall(r)) if r.block == Some(true) => {
-                    (ToolHookStatus::Blocked, None)
+            let signal = context.signal.clone();
+            let waited = crate::tool_hook_wait::wait_for_tool_hook(
+                handler(&mut current, &context),
+                signal.as_ref(),
+                0,
+            )
+            .await;
+            match waited {
+                crate::tool_hook_wait::ToolHookWaitOutcome::Aborted => {
+                    self.end_hook(hook, ToolHookStatus::Blocked, None);
+                    return Ok(Some(ToolCallEventResult {
+                        block: Some(true),
+                        reason: Some("Operation aborted".into()),
+                        terminate: None,
+                    }));
                 }
-                Ok(_) => (ToolHookStatus::Completed, None),
-            };
-            self.end_hook(hook, status, error);
-            self.runtime.assert_active()?;
-            if let ExtensionEvent::ToolCall(updated) = &current {
-                *event = updated.clone();
-            }
-            if let EventResult::ToolCall(next) = result? {
-                let blocked = next.block == Some(true);
-                combined = Some(next);
-                if blocked {
-                    return Ok(combined);
+                crate::tool_hook_wait::ToolHookWaitOutcome::TimedOut { .. } => {
+                    unreachable!("tool_call hook wait uses timeout_ms = 0")
+                }
+                crate::tool_hook_wait::ToolHookWaitOutcome::Settled(result) => {
+                    let (status, error) = match &result {
+                        Err(e) => (ToolHookStatus::Failed, Some(e.message.clone())),
+                        Ok(EventResult::ToolCall(r)) if r.block == Some(true) => {
+                            (ToolHookStatus::Blocked, None)
+                        }
+                        Ok(_) => (ToolHookStatus::Completed, None),
+                    };
+                    self.end_hook(hook, status, error);
+                    self.runtime.assert_active()?;
+                    if let ExtensionEvent::ToolCall(updated) = &current {
+                        *event = updated.clone();
+                    }
+                    if let EventResult::ToolCall(next) = result? {
+                        let blocked = next.block == Some(true);
+                        combined = Some(next);
+                        if blocked {
+                            return Ok(combined);
+                        }
+                    }
                 }
             }
         }
@@ -3195,7 +3348,42 @@ impl ExtensionRunner {
                 ToolHookName::PostToolUse,
                 &mut context,
             );
-            let result = handler(&mut current, &context).await;
+            // A turn that was already aborted still runs its tool_result handlers (they record the
+            // aborted result); only an abort that arrives during the wait ends it (senpi#7069).
+            let signal = context
+                .signal
+                .as_ref()
+                .filter(|signal| !signal.is_aborted())
+                .cloned();
+            let timeout_ms = crate::tool_hook_wait::tool_result_handler_timeout_ms(&path);
+            let waited = crate::tool_hook_wait::wait_for_tool_hook(
+                handler(&mut current, &context),
+                signal.as_ref(),
+                timeout_ms,
+            )
+            .await;
+            let result = match waited {
+                crate::tool_hook_wait::ToolHookWaitOutcome::Aborted => {
+                    self.end_hook(hook, ToolHookStatus::Failed, Some("interrupted".into()));
+                    self.runtime.assert_active()?;
+                    continue;
+                }
+                crate::tool_hook_wait::ToolHookWaitOutcome::TimedOut { elapsed_ms } => {
+                    let message = format!(
+                        "handler timed out after {elapsed_ms}ms; the tool result continues without it"
+                    );
+                    self.end_hook(hook, ToolHookStatus::Failed, Some(message.clone()));
+                    self.emit_error(ExtensionError {
+                        extension_path: path.clone(),
+                        event: EventKind::ToolResult.as_str().into(),
+                        error: message,
+                        stack: None,
+                    });
+                    self.runtime.assert_active()?;
+                    continue;
+                }
+                crate::tool_hook_wait::ToolHookWaitOutcome::Settled(result) => result,
+            };
             self.end_hook(
                 hook,
                 if result.is_err() {
@@ -3243,6 +3431,254 @@ impl ExtensionRunner {
             "tool_result handler replaced event kind",
         ))
     }
+}
+
+fn raw_handlers_for_extensions(
+    extensions: &[LoadedExtension],
+    runtime: &ExtensionRuntime,
+    kind: EventKind,
+) -> Vec<(String, ExtensionHandler)> {
+    let mut out = Vec::new();
+    for e in extensions {
+        let loaded = e.handlers.get(&kind).map_or(&[][..], Vec::as_slice);
+        let live = runtime
+            .live_handlers(&e.identity.path, kind)
+            .unwrap_or_default();
+        if loaded.is_empty() && live.is_empty() {
+            continue;
+        }
+        let start = out.len();
+        for handler in loaded {
+            out.push((e.identity.path.clone(), handler.clone()));
+        }
+        for handler in live {
+            let ptr = Arc::as_ptr(&handler) as *const ();
+            if !out[start..]
+                .iter()
+                .any(|(_, seen): &(String, ExtensionHandler)| Arc::as_ptr(seen) as *const () == ptr)
+            {
+                out.push((e.identity.path.clone(), handler));
+            }
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_detached_context(
+    extensions: &[LoadedExtension],
+    runtime: &ExtensionRuntime,
+    live_bindings: &Arc<std::sync::Mutex<LiveBindings>>,
+    base_context: &Arc<std::sync::Mutex<ExtensionContext>>,
+    context_actions: &Arc<std::sync::Mutex<Option<Arc<dyn ExtensionContextActions>>>>,
+    reload: &ReloadState,
+    error_sinks: &Arc<std::sync::Mutex<(Vec<ErrorListener>, Option<ErrorListener>)>>,
+) -> Result<ExtensionContext, ExtensionFailure> {
+    runtime.assert_active()?;
+    let mut context = base_context
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    {
+        let live = live_bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(ui) = &live.ui {
+            context.ui = Arc::clone(ui);
+        }
+        if let Some((mode, has_ui)) = live.mode {
+            context.mode = mode;
+            context.has_ui = has_ui;
+        }
+    }
+    let actions = context_actions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(actions) = actions {
+        let (listeners, session) = {
+            let sinks = error_sinks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (sinks.0.clone(), sinks.1.clone())
+        };
+        let sink: ErrorListener = Arc::new(move |error: &ExtensionError| {
+            for listener in listeners.iter().chain(&session) {
+                listener(error);
+            }
+        });
+        context.session_manager = Arc::new(ContextSessionManager {
+            session: Arc::clone(&context.session_manager),
+            actions: Arc::clone(&actions),
+            runtime: runtime.clone(),
+            reload: Arc::clone(reload),
+            provider_runner: None,
+            errors: sink,
+        });
+        context.compaction_signal = Arc::new(std::sync::Mutex::new(None));
+    }
+    if let Some(actions) = context.session_manager.extension_context_actions() {
+        actions.assert_active()?;
+        context.model = actions.get_model();
+        context.service_tier = actions.get_service_tier();
+        context.effective_service_tier = actions.get_effective_service_tier();
+        context.scoped_models = actions.get_scoped_models();
+        context.agent_dir = actions.get_agent_dir();
+        context.signal = actions.get_signal();
+        context.steering_signal = actions.get_steering_signal();
+        context.thinking_level = actions.get_thinking_level();
+    }
+    context.loaded_extension_paths = extensions
+        .iter()
+        .map(|e| e.identity.resolved_path.clone())
+        .collect();
+    context.registered_mcp_servers = runtime.mcp_registry().declarations();
+    Ok(context)
+}
+
+fn report_detached_error(
+    error_sinks: &Arc<std::sync::Mutex<(Vec<ErrorListener>, Option<ErrorListener>)>>,
+    path: &str,
+    kind: EventKind,
+    error: ExtensionFailure,
+) {
+    let err = ExtensionError {
+        extension_path: path.into(),
+        event: kind.as_str().into(),
+        error: error.message,
+        stack: error.stack,
+    };
+    let (listeners, session) = {
+        let sinks = error_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (sinks.0.clone(), sinks.1.clone())
+    };
+    for listener in listeners.iter().chain(&session) {
+        listener(&err);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_provider_login_start_hook(
+    extensions: Arc<Vec<LoadedExtension>>,
+    _events: EventBus,
+    live_bindings: Arc<std::sync::Mutex<LiveBindings>>,
+    base_context: Arc<std::sync::Mutex<ExtensionContext>>,
+    context_actions: Arc<std::sync::Mutex<Option<Arc<dyn ExtensionContextActions>>>>,
+    reload: ReloadState,
+    handle_ledgers: crate::extension_handle_ledger::RunnerHandleLedgers,
+    error_sinks: Arc<std::sync::Mutex<(Vec<ErrorListener>, Option<ErrorListener>)>>,
+) -> ProviderLoginStartHook {
+    Arc::new(move |runtime, event| {
+        let extensions = Arc::clone(&extensions);
+        let live_bindings = Arc::clone(&live_bindings);
+        let base_context = Arc::clone(&base_context);
+        let context_actions = Arc::clone(&context_actions);
+        let reload = Arc::clone(&reload);
+        let handle_ledgers = handle_ledgers.clone();
+        let error_sinks = Arc::clone(&error_sinks);
+        Box::pin(async move {
+            let mut ext_event = ExtensionEvent::ProviderLoginStart(event);
+            for (path, handler) in
+                raw_handlers_for_extensions(&extensions, &runtime, EventKind::ProviderLoginStart)
+            {
+                let handler = crate::extension_handle_ledger::owned_by(
+                    handle_ledgers.ledger_for(&path),
+                    handler,
+                );
+                let handler = with_provider_exclude_path(path.clone(), handler);
+                let context = match build_detached_context(
+                    &extensions,
+                    &runtime,
+                    &live_bindings,
+                    &base_context,
+                    &context_actions,
+                    &reload,
+                    &error_sinks,
+                ) {
+                    Ok(context) => context,
+                    Err(error) => {
+                        report_detached_error(
+                            &error_sinks,
+                            &path,
+                            EventKind::ProviderLoginStart,
+                            error,
+                        );
+                        continue;
+                    }
+                };
+                if let Err(error) = handler(&mut ext_event, &context).await {
+                    report_detached_error(
+                        &error_sinks,
+                        &path,
+                        EventKind::ProviderLoginStart,
+                        error,
+                    );
+                }
+            }
+            Ok(())
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_mcp_change_hook(
+    extensions: Arc<Vec<LoadedExtension>>,
+    live_bindings: Arc<std::sync::Mutex<LiveBindings>>,
+    base_context: Arc<std::sync::Mutex<ExtensionContext>>,
+    context_actions: Arc<std::sync::Mutex<Option<Arc<dyn ExtensionContextActions>>>>,
+    reload: ReloadState,
+    handle_ledgers: crate::extension_handle_ledger::RunnerHandleLedgers,
+    error_sinks: Arc<std::sync::Mutex<(Vec<ErrorListener>, Option<ErrorListener>)>>,
+) -> crate::mcp_server_registry::McpChangeListener {
+    Arc::new(move |runtime, servers| {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let extensions = Arc::clone(&extensions);
+        let live_bindings = Arc::clone(&live_bindings);
+        let base_context = Arc::clone(&base_context);
+        let context_actions = Arc::clone(&context_actions);
+        let reload = Arc::clone(&reload);
+        let handle_ledgers = handle_ledgers.clone();
+        let error_sinks = Arc::clone(&error_sinks);
+        handle.spawn(async move {
+            let mut ext_event = ExtensionEvent::McpServersChange(McpServersChangeEvent { servers });
+            for (path, handler) in
+                raw_handlers_for_extensions(&extensions, &runtime, EventKind::McpServersChange)
+            {
+                let handler = crate::extension_handle_ledger::owned_by(
+                    handle_ledgers.ledger_for(&path),
+                    handler,
+                );
+                let handler = with_provider_exclude_path(path.clone(), handler);
+                let context = match build_detached_context(
+                    &extensions,
+                    &runtime,
+                    &live_bindings,
+                    &base_context,
+                    &context_actions,
+                    &reload,
+                    &error_sinks,
+                ) {
+                    Ok(context) => context,
+                    Err(error) => {
+                        report_detached_error(
+                            &error_sinks,
+                            &path,
+                            EventKind::McpServersChange,
+                            error,
+                        );
+                        continue;
+                    }
+                };
+                if let Err(error) = handler(&mut ext_event, &context).await {
+                    report_detached_error(&error_sinks, &path, EventKind::McpServersChange, error);
+                }
+            }
+        });
+    })
 }
 
 pub fn format_extension_error_headline(error: &ExtensionError) -> String {

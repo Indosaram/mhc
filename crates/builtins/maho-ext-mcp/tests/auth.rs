@@ -180,6 +180,7 @@ fn provider_persists_url_bound_tokens_without_sdk_fields() {
                 refresh_token: Some("fixture-refresh".into()),
                 token_type: "Bearer".into(),
                 expires_in: Some(60.0),
+                ..Default::default()
             },
             1000.0,
         )
@@ -205,6 +206,7 @@ fn token_save_without_expiry_clears_stale_expiry() {
         refresh_token: Some("fixture-refresh".into()),
         token_type: "Bearer".into(),
         expires_in: Some(60.0),
+        ..Default::default()
     };
     provider.save_tokens(&tokens, 1000.0).unwrap();
     tokens.expires_in = None;
@@ -247,6 +249,7 @@ fn saved_oauth_tokens_log_only_the_fingerprint() {
                 refresh_token: None,
                 token_type: "Bearer".into(),
                 expires_in: None,
+                ..Default::default()
             },
             0.0,
         )

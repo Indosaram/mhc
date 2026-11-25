@@ -30,6 +30,13 @@ pub trait EvalKernelManager: Send + Sync {
     ) -> Option<Box<dyn FnOnce() + Send>> {
         None
     }
+    fn bind_cell_tool_updates(
+        &self,
+        _token: &str,
+        _sink: Arc<dyn super::nested_tool_output::CellToolUpdateSink>,
+    ) -> Option<Box<dyn FnOnce() + Send + Sync>> {
+        None
+    }
     fn execution_tracker(
         &self,
     ) -> Option<&crate::extension::session_manager_proxy::SessionManagerProxy> {
@@ -63,6 +70,7 @@ pub struct CreateEvalToolOptions {
     pub eval_handle_host: Option<Arc<dyn EvalHandleHost>>,
     pub owner_session_id: Option<String>,
     pub completion_handles: Arc<crate::bridges::handles::CompletionHandleRegistry>,
+    pub renderer_lookup: Option<super::tool_widgets::NestedToolRendererLookup>,
 }
 
 impl CreateEvalToolOptions {
@@ -89,6 +97,7 @@ impl CreateEvalToolOptions {
             eval_handle_host: None,
             owner_session_id: None,
             completion_handles: Arc::new(Default::default()),
+            renderer_lookup: None,
         }
     }
 }

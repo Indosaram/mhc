@@ -127,6 +127,7 @@ fn request(max_results: f64) -> SearchRequest {
         max_results,
         allowed_domains: None,
         blocked_domains: None,
+        ..Default::default()
     }
 }
 

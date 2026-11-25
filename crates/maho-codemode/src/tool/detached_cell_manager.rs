@@ -314,7 +314,29 @@ impl EvalDetachedCellManager {
         }
         self.terminal_snapshots
             .get(cell_id)
-            .ok_or_else(|| format!("Unknown detached eval cell \"{cell_id}\""))
+            .ok_or_else(|| self.cell_not_found_message(cell_id))
+    }
+
+    fn cell_not_found_message(&self, cell_id: &str) -> String {
+        let mut known: Vec<String> = self
+            .cells
+            .iter()
+            .map(|(id, _)| id.clone())
+            .chain(
+                self.terminal_snapshots
+                    .list()
+                    .into_iter()
+                    .map(|entry| entry.cell_id.clone()),
+            )
+            .collect();
+        known.sort();
+        known.dedup();
+        match closest_cell_id(cell_id, &known) {
+            Some(suggestion) => {
+                format!("Unknown detached eval cell \"{cell_id}\"; did you mean \"{suggestion}\"?")
+            }
+            None => format!("Unknown detached eval cell \"{cell_id}\""),
+        }
     }
 
     pub async fn stop(
@@ -544,4 +566,49 @@ impl EvalDetachedCellManager {
             callback(wake);
         }
     }
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b_chars.len()).collect();
+    for (i, a_ch) in a_chars.iter().enumerate() {
+        let mut current = Vec::with_capacity(b_chars.len() + 1);
+        current.push(i + 1);
+        for (j, b_ch) in b_chars.iter().enumerate() {
+            let substitution = previous[j] + usize::from(a_ch != b_ch);
+            current.push(
+                previous[j + 1]
+                    .min(current[j])
+                    .saturating_add(1)
+                    .min(substitution),
+            );
+        }
+        previous = current;
+    }
+    previous[b_chars.len()]
+}
+
+/// The one known id within a quarter of the mistyped id's length (at least 1 edit), or `None`
+/// when none is that close or two or more tie for closest, so a suggestion never picks between
+/// candidates.
+fn closest_cell_id<'a>(cell_id: &str, known: &'a [String]) -> Option<&'a str> {
+    let limit = (cell_id.chars().count() / 4).max(1);
+    let mut best: Option<&'a str> = None;
+    let mut best_distance = usize::MAX;
+    let mut tied = false;
+    for candidate in known {
+        let distance = edit_distance(cell_id, candidate);
+        if distance > limit {
+            continue;
+        }
+        if distance < best_distance {
+            best = Some(candidate.as_str());
+            best_distance = distance;
+            tied = false;
+        } else if distance == best_distance {
+            tied = true;
+        }
+    }
+    if tied { None } else { best }
 }

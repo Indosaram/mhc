@@ -42,10 +42,31 @@ pub fn require_codemode_runtime_asset(
     })
 }
 
-/// Kernel scripts and the bun-1-4 skill tree compiled into the binary, keyed by package-relative path. A distributed
+/// Kernel scripts and the bun skill tree compiled into the binary, keyed by package-relative path. A distributed
 /// binary runs away from the build tree, so these are extracted on demand. Their upstream senpi provenance is
 /// recorded in `assets/UPSTREAM.json`; `scripts/codemode-upstream-diff.py` reports upstream drift.
 const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
+    (
+        "kernels/shared/path-identity.mjs",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/shared/path-identity.mjs"
+        )),
+    ),
+    (
+        "kernels/shared/path-identity.d.mts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/shared/path-identity.d.mts"
+        )),
+    ),
+    (
+        "kernels/js/cell-ownership.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/cell-ownership.js"
+        )),
+    ),
     (
         "kernels/js/cell-run-context.js",
         include_str!(concat!(
@@ -278,80 +299,273 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
         )),
     ),
     (
-        "skill/bun-1-4/SKILL.md",
+        "kernels/js/group-signal-notice.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/SKILL.md"
+            "/assets/kernels/js/group-signal-notice.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/breaking-changes.md",
+        "kernels/js/interpose.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/breaking-changes.md"
+            "/assets/kernels/js/interpose.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/build.md",
+        "kernels/js/interpose-bun.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/build.md"
+            "/assets/kernels/js/interpose-bun.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/dev-tooling.md",
+        "kernels/js/interpose-capabilities.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/dev-tooling.md"
+            "/assets/kernels/js/interpose-capabilities.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/http-networking.md",
+        "kernels/js/interpose-code.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/http-networking.md"
+            "/assets/kernels/js/interpose-code.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/install.md",
+        "kernels/js/interpose-fs.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/install.md"
+            "/assets/kernels/js/interpose-fs.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/node-compat-platforms.md",
+        "kernels/js/interpose-modules.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/node-compat-platforms.md"
+            "/assets/kernels/js/interpose-modules.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/performance.md",
+        "kernels/js/interpose-paths.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/performance.md"
+            "/assets/kernels/js/interpose-paths.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/runtime-apis.md",
+        "kernels/js/interpose-process.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/runtime-apis.md"
+            "/assets/kernels/js/interpose-process.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/security.md",
+        "kernels/js/interpose-resources.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/security.md"
+            "/assets/kernels/js/interpose-resources.js"
         )),
     ),
     (
-        "skill/bun-1-4/references/test.md",
+        "kernels/js/interpose-sqlite.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/references/test.md"
+            "/assets/kernels/js/interpose-sqlite.js"
+        )),
+    ),
+    (
+        "kernels/js/permission-authority.mjs",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-authority.mjs"
+        )),
+    ),
+    (
+        "kernels/js/permission-authority.d.mts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-authority.d.mts"
+        )),
+    ),
+    (
+        "kernels/js/permission-core.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-core.md"
+        )),
+    ),
+    (
+        "kernels/js/permission-runtime.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-runtime.js"
+        )),
+    ),
+    (
+        "kernels/js/permission-slots.mjs",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-slots.mjs"
+        )),
+    ),
+    (
+        "kernels/js/permission-slots.d.mts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-slots.d.mts"
+        )),
+    ),
+    (
+        "kernels/js/permission-worker-entry.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/permission-worker-entry.js"
+        )),
+    ),
+    (
+        "kernels/js/power-throttling.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/power-throttling.js"
+        )),
+    ),
+    (
+        "kernels/js/power-throttling.d.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/power-throttling.d.ts"
+        )),
+    ),
+    (
+        "kernels/js/power-throttling-startup.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/power-throttling-startup.js"
+        )),
+    ),
+    (
+        "kernels/js/rejection-reports.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/rejection-reports.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-cwd.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-cwd.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-file-helpers.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-file-helpers.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-kill-guard.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-kill-guard.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-package-resolve.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-package-resolve.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-require.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-require.js"
+        )),
+    ),
+    (
+        "skill/bun/SKILL.md",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun/SKILL.md")),
+    ),
+    (
+        "skill/bun/references/breaking-changes.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/breaking-changes.md"
+        )),
+    ),
+    (
+        "skill/bun/references/build.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/build.md"
+        )),
+    ),
+    (
+        "skill/bun/references/dev-tooling.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/dev-tooling.md"
+        )),
+    ),
+    (
+        "skill/bun/references/http-networking.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/http-networking.md"
+        )),
+    ),
+    (
+        "skill/bun/references/install.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/install.md"
+        )),
+    ),
+    (
+        "skill/bun/references/node-compat-platforms.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/node-compat-platforms.md"
+        )),
+    ),
+    (
+        "skill/bun/references/performance.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/performance.md"
+        )),
+    ),
+    (
+        "skill/bun/references/runtime-apis.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/runtime-apis.md"
+        )),
+    ),
+    (
+        "skill/bun/references/security.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/security.md"
+        )),
+    ),
+    (
+        "skill/bun/references/session-recipes.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/session-recipes.md"
+        )),
+    ),
+    (
+        "skill/bun/references/test.md",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/bun/references/test.md"
         )),
     ),
 ];

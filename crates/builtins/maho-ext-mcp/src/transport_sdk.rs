@@ -57,6 +57,8 @@ pub struct McpClient {
     pub protocol: crate::modern::request::ModernProtocolState,
     /// Upstream `legacyOperations`: private legacy form ownership per physical client.
     pub legacy_operations: Mutex<Vec<crate::request_origin::LegacyMcpOperation>>,
+    /// Tool calls of a binding serving several execution scopes (brain/hand S16c).
+    pub scoped_calls: Mutex<Vec<crate::request_origin::ScopedMcpCall>>,
     modern: Arc<std::sync::OnceLock<ModernRoute>>,
     probe: Arc<Mutex<ProbeSlot>>,
     local_initialize: Mutex<Option<Value>>,
@@ -532,6 +534,7 @@ impl McpClient {
                 resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
                 protocol,
                 legacy_operations: Mutex::default(),
+                scoped_calls: Mutex::default(),
                 modern,
                 probe,
                 local_initialize: Mutex::new(None),
@@ -596,6 +599,7 @@ impl McpClient {
             resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
             protocol: Default::default(),
             legacy_operations: Mutex::default(),
+            scoped_calls: Mutex::default(),
             modern: Arc::default(),
             probe: Arc::default(),
             local_initialize: Mutex::new(None),

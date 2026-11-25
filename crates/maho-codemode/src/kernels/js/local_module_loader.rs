@@ -1,4 +1,4 @@
-use super::rewrite_imports::rewrite_imports;
+use super::rewrite_imports::{has_dynamic_code_capability, rewrite_imports};
 use crate::bridge::{protocol::BridgeConnectionConfig, reserved::*};
 use crate::kernels::shared::kernel_prelude_plan::{KernelPreludePlan, KernelPreludeTracker};
 use maho_tools::definition::KernelPrelude;
@@ -190,7 +190,11 @@ impl LocalModuleLoader {
             ),
             None => full_prelude,
         };
-        let mut prepared = json!({"prelude":full_prelude,"code":rewrite_imports(code)});
+        let mut prepared = json!({
+            "prelude": full_prelude,
+            "code": rewrite_imports(code),
+            "dynamicCodeCapability": has_dynamic_code_capability(code),
+        });
         if let Some(file) = source_file {
             prepared["sourceFile"] = json!(file);
         }

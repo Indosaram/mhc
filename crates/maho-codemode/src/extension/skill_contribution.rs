@@ -24,20 +24,20 @@ pub fn bun_version_supports_skill(version: Option<&str>) -> bool {
 }
 
 pub fn bundled_bun_skill_path(base_dir: &Path) -> Option<PathBuf> {
-    let local = base_dir.join("../skill/bun-1-4/SKILL.md");
+    let local = base_dir.join("../skill/bun/SKILL.md");
     if local.exists() {
         return Some(local);
     }
     // A distributed binary runs away from the build tree; the skill tree is embedded beside the
     // kernel scripts, as `require_codemode_runtime_asset` does for kernels.
-    if let Some(embedded) = materialize_embedded_runtime_asset(Path::new("skill/bun-1-4/SKILL.md"))
+    if let Some(embedded) = materialize_embedded_runtime_asset(Path::new("skill/bun/SKILL.md"))
         && embedded.exists()
     {
         return Some(embedded);
     }
     if !LOGGED_MISSING_BUN_SKILL.swap(true, Ordering::Relaxed) {
         diagnostic(&format!(
-            "[senpi-codemode] bundled bun-1-4 skill not found at {} and the embedded copy could not be extracted; skipping contribution",
+            "[senpi-codemode] bundled bun skill not found at {} and the embedded copy could not be extracted; skipping contribution",
             local.display()
         ));
     }

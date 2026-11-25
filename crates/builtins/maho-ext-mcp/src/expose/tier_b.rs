@@ -232,6 +232,7 @@ pub fn register_mcp_tier_b_tools(
             .collect(),
     );
     let mut gateway_names: Vec<String> = Vec::new();
+    let mut server_gateway_names: Vec<String> = Vec::new();
     for (server, entries) in &input.proxy_gateways {
         let tool = create_mcp_proxy_tool(
             server,
@@ -242,7 +243,8 @@ pub fn register_mcp_tier_b_tools(
         );
         let renderers = mcp_proxy_renderers(&tool.name);
         registrar.register_tool_with_renderers(tool.clone(), renderers)?;
-        gateway_names.push(tool.name);
+        gateway_names.push(tool.name.clone());
+        server_gateway_names.push(tool.name);
     }
     for tool in &input.utility_tools {
         registrar.register_tool(tool.clone())?;
@@ -267,7 +269,17 @@ pub fn register_mcp_tier_b_tools(
             .map(|definition| definition.name.clone())
             .collect(),
     );
-    let catalog_names: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(BTreeSet::new()));
+    let catalog_names: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new({
+        // Per-server MCP names sort by name like shared-catalog members: in direct mode they are not
+        // in the search catalog, and keeping their reference order made the tool list follow
+        // which server finished connecting first (#5289). The fixed utility tools keep their
+        // reference place ahead of them; their position never depended on connect order.
+        full_defs
+            .iter()
+            .map(|definition| definition.name.clone())
+            .chain(server_gateway_names)
+            .collect()
+    }));
     let stubbed: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(BTreeSet::new()));
     let promoted: Arc<Mutex<BTreeSet<String>>> = registry
         .promoted_names

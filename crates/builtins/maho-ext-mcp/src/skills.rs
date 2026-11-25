@@ -234,6 +234,7 @@ fn read_skill_servers(skill: &SkillLike) -> SkillServers {
         .insert(skill.file_path.clone(), (key, servers.clone()));
     servers
 }
+#[derive(Clone)]
 pub struct SkillServerDecl {
     pub skill_name: String,
     pub scope: Option<String>,
@@ -244,7 +245,7 @@ pub struct SkillServerDecl {
     pub source_path: PathBuf,
     pub include_tools_by_skill: BTreeMap<String, Vec<String>>,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SkillMcpDeclarations {
     pub servers: BTreeMap<String, SkillServerDecl>,
     pub warnings: Vec<String>,

@@ -612,7 +612,7 @@ async fn list_changed_reregisters_and_records_the_delta() {
     let entry = handle.lock().await.connections["fx"].entry.clone();
     {
         let entry = entry.lock().await;
-        assert_eq!(entry.list_changed_tasks.len(), 1);
+        assert_eq!(entry.list_changed_tasks.len(), 2);
         assert!(entry.list_changed_coalescer.is_some());
     }
     assert_eq!(

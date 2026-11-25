@@ -341,6 +341,7 @@ async fn returns_task_output_from_a_real_javascript_cell() {
         runtimes: HashMap::new(),
         mode: "print".into(),
         active_kernel_preludes: None,
+        renderer_lookup: None,
     }))
     .expect("eval tool");
     let result = tokio::time::timeout(

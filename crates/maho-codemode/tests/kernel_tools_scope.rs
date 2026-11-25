@@ -92,6 +92,7 @@ fn invocation(id: &str, code: &str) -> EvalCellInvocation {
             on_timeout: Some(TimeoutBehavior::Error),
             reset: None,
             isolate: None,
+            language_inferred: None,
         },
         signal: maho_ai::utils::abort::AbortController::new().signal(),
         on_update: None,
@@ -146,6 +147,7 @@ async fn real_eval_consumer_retains_live_capability_and_nested_scope_restores_ou
         runtimes: HashMap::new(),
         mode: "print".into(),
         active_kernel_preludes: None,
+        renderer_lookup: None,
     });
     let proof=tokio::time::timeout(Duration::from_secs(10),async {
         let result=run_eval_cell(options,invocation("consume","tool(function increment(value) { return value+1; }); display(await tool.consume({}));")).await.unwrap();

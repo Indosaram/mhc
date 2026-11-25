@@ -6,13 +6,10 @@ use axum::{
     response::Html,
     routing::any,
 };
+use maho_ai::auth::oauth::oauth_page::{oauth_error_html, oauth_success_html};
 use std::{sync::Arc, time::Duration};
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 
-const SUCCESS_HTML: &str =
-    "<!doctype html><title>senpi</title><p>Authorization complete. You can close this tab.</p>";
-const FAILURE_HTML: &str =
-    "<!doctype html><title>senpi</title><p>Authorization failed. Return to senpi and retry.</p>";
 pub type StateValidator = Arc<dyn Fn(Option<&str>) -> bool + Send + Sync>;
 #[derive(Clone)]
 pub struct CallbackServerOptions {
@@ -174,9 +171,9 @@ pub async fn open_callback_channel(
         server_name: options.server_name,
     })
 }
-async fn handle(State(state): State<HandlerState>, uri: Uri) -> (StatusCode, Html<&'static str>) {
+async fn handle(State(state): State<HandlerState>, uri: Uri) -> (StatusCode, Html<String>) {
     if uri.path() != state.path {
-        return (StatusCode::NOT_FOUND, Html(""));
+        return (StatusCode::NOT_FOUND, Html(String::new()));
     }
     let query = url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes());
     let mut code = None;
@@ -218,8 +215,19 @@ async fn handle(State(state): State<HandlerState>, uri: Uri) -> (StatusCode, Htm
         }
     });
     if valid {
-        (StatusCode::OK, Html(SUCCESS_HTML))
+        (
+            StatusCode::OK,
+            Html(oauth_success_html(
+                "MCP server authorization complete. You can close this tab.",
+            )),
+        )
     } else {
-        (StatusCode::BAD_REQUEST, Html(FAILURE_HTML))
+        (
+            StatusCode::BAD_REQUEST,
+            Html(oauth_error_html(
+                "MCP server authorization failed. Return to the app and start the sign-in again.",
+                None,
+            )),
+        )
     }
 }

@@ -1,5 +1,5 @@
 use super::providers::{
-    DomainFilters, build_context, build_search_request, normalize_search_response,
+    DomainFilters, build_search_request, normalize_search_response,
     shared::{BuiltSearchRequest, FetchedPage, SearchResultItem, filter_result_domains},
 };
 pub use super::route_attempts::provider_entry_label;
@@ -26,8 +26,10 @@ pub fn is_keyless_provider(provider: SearchProvider) -> bool {
             | SearchProvider::GoogleHtml
             | SearchProvider::ExaMcp
             | SearchProvider::Searxng
-            | SearchProvider::Public
             | SearchProvider::Keenable
+            | SearchProvider::Parallel
+            | SearchProvider::Firecrawl
+            | SearchProvider::Public
     )
 }
 fn engine_name(provider: SearchProvider) -> &'static str {
@@ -283,21 +285,28 @@ pub fn select_order(
         }
     }
 }
-fn error_detail(payload: &Value, body: &str) -> String {
-    let detail=payload.get("error").and_then(Value::as_str).filter(|s|!s.is_empty()).or_else(||payload.get("error").and_then(|error|error.get("message")).and_then(Value::as_str).filter(|s|!s.is_empty())).or_else(||payload.get("message").and_then(Value::as_str).filter(|s|!s.is_empty())).unwrap_or_else(||body.trim_matches(|character|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')));
-    if detail.encode_utf16().count() <= 500 {
+const MAX_RESULT_SNIPPET_LENGTH: usize = 500;
+
+fn truncate_utf16(detail: &str, max: usize) -> String {
+    if detail.encode_utf16().count() <= max {
         return detail.into();
     }
     let mut units = 0;
     let mut end = 0;
+    let limit = max.saturating_sub(1);
     for (index, c) in detail.char_indices() {
-        if units + c.len_utf16() > 499 {
+        if units + c.len_utf16() > limit {
             break;
         }
         units += c.len_utf16();
         end = index + c.len_utf8();
     }
     format!("{}…", &detail[..end])
+}
+
+fn error_detail(payload: &Value, body: &str) -> String {
+    let detail=payload.get("error").and_then(Value::as_str).filter(|s|!s.is_empty()).or_else(||payload.get("error").and_then(|error|error.get("message")).and_then(Value::as_str).filter(|s|!s.is_empty())).or_else(||payload.get("message").and_then(Value::as_str).filter(|s|!s.is_empty())).unwrap_or_else(||body.trim_matches(|character|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')));
+    truncate_utf16(detail, 500)
 }
 /// The challenge a keyless engine served instead of results (`detectSearchChallenge`).
 fn detect_search_challenge(
@@ -433,6 +442,14 @@ fn interpret_page(
             retry_after_seconds: retry_after_seconds(&headers, now_ms()),
         });
     }
+    if let Some(service_error) = super::providers::search_response_error(config.provider, &payload)
+    {
+        return Err(PageFailure {
+            message: service_error,
+            blocked: None,
+            retry_after_seconds: None,
+        });
+    }
     let results = normalize_search_response(config.provider, &payload);
     Ok(PageOutcome { payload, results })
 }
@@ -474,27 +491,16 @@ async fn provider_search(
         ..Default::default()
     };
     let limit = (request.max_results >= 0.).then(|| request.max_results.trunc() as usize);
-    let page_size = config.config.max_results.unwrap_or(request.max_results);
-    let paged = config.config.provider == SearchProvider::Tinyfish;
+    let paged = super::providers::search_paginates(config.config.provider);
     let mut collected = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut overflowed = false;
     let mut returned = 0usize;
+    let mut current_built = build_search_request(&config.config, request)
+        .map_err(|error| ToolError::Message(error.to_string()))?;
     let mut page_index = 0usize;
     let error_suffix = loop {
-        let built = if page_index == 0 {
-            build_search_request(&config.config, request)
-                .map_err(|error| ToolError::Message(error.to_string()))?
-        } else {
-            let ctx = build_context(&config.config, request, &filters);
-            let mut page = super::providers::tinyfish::page_request(&ctx, page_index);
-            super::providers::shared::with_auth_headers(
-                config.config.headers.as_ref(),
-                &mut page.headers,
-            );
-            page
-        };
-        let fetched = match fetch_page(&built, deadline, &signal).await {
+        let fetched = match fetch_page(&current_built, deadline, &signal).await {
             Ok(fetched) => fetched,
             Err(FetchFailure::Aborted) => return Err(ToolError::Aborted),
             Err(FetchFailure::Timeout) => {
@@ -543,11 +549,18 @@ async fn provider_search(
             }
             collected.push(item);
         }
-        let more_pages = paged
-            && super::providers::tinyfish::has_next_page(&outcome.payload, page_size, page_index);
-        if !more_pages || overflowed || limit.is_some_and(|limit| collected.len() >= limit) {
+        if overflowed || limit.is_some_and(|limit| collected.len() >= limit) {
             break payload_error(&outcome.payload);
         }
+        let Some(next) = super::providers::next_search_page_request(
+            &config.config,
+            request,
+            &outcome.payload,
+            page_index,
+        ) else {
+            break payload_error(&outcome.payload);
+        };
+        current_built = next;
         page_index += 1;
     };
     let domain_restricted = [&filters.allowed, &filters.blocked]
@@ -604,13 +617,14 @@ fn public_engine_config(
     config: &SearchProviderConfig,
     engine: SearchProvider,
     timeout_ms: u64,
+    max_results: f64,
 ) -> SearchProviderConfig {
     let mut engine_config = SearchProviderConfig::new(engine);
     engine_config.base_url = config
         .base_url
         .as_ref()
         .map(|base| format!("{}/{}", base.trim_end_matches('/'), engine.as_str()));
-    engine_config.max_results = config.max_results;
+    engine_config.max_results = Some(max_results);
     engine_config.allowed_domains = config.allowed_domains.clone();
     engine_config.blocked_domains = config.blocked_domains.clone();
     engine_config.timeout_ms = Some(timeout_ms as f64);
@@ -638,25 +652,28 @@ async fn public_search(
         .clamp(1., super::providers::public::PUBLIC_HARD_DEADLINE_MS as f64)
         as u64;
     let hard_deadline = started + Duration::from_millis(hard_ms);
+    let max_results = super::providers::max_results_for(&config.config, request);
+    let mut engine_request = request.clone();
+    engine_request.max_results = max_results;
     let engines = super::providers::public::PUBLIC_ENGINES;
     let mut tasks = tokio::task::JoinSet::new();
     for (index, engine) in engines.iter().copied().enumerate() {
         let entry = SearchProviderEntry {
-            config: public_engine_config(&config.config, engine, hard_ms),
+            config: public_engine_config(&config.config, engine, hard_ms, max_results),
             priority: None,
             weight: None,
             fallback_model: None,
         };
-        let request = request.clone();
+        let engine_request = engine_request.clone();
         let signal = signal.clone();
         tasks.spawn(async move {
             (
                 index,
-                provider_search(&entry, &request, Some(&signal), Some(hard_deadline)).await,
+                provider_search(&entry, &engine_request, Some(&signal), Some(hard_deadline)).await,
             )
         });
     }
-    finish_public_search(config, request, &signal, started, hard_ms, tasks).await
+    finish_public_search(config, &engine_request, &signal, started, hard_ms, tasks).await
 }
 
 async fn finish_public_search(
@@ -974,7 +991,10 @@ pub fn format_search_text(details: &SearchDetails) -> String {
         lines.push(format!("{}. {}", index + 1, item.title));
         lines.push(format!("   {}", item.url));
         if let Some(snippet) = item.snippet.as_ref().filter(|snippet| !snippet.is_empty()) {
-            lines.push(format!("   {snippet}"));
+            lines.push(format!(
+                "   {}",
+                truncate_utf16(snippet, MAX_RESULT_SNIPPET_LENGTH)
+            ));
         }
     }
     lines.push(String::new());
@@ -1058,6 +1078,7 @@ mod tests {
             max_results: 1.,
             allowed_domains: None,
             blocked_domains: None,
+            ..Default::default()
         };
         assert!(matches!(
             perform_provider_search(&config, &request, Some(&signal)).await,
@@ -1087,6 +1108,7 @@ mod tests {
             max_results: 1.,
             allowed_domains: None,
             blocked_domains: None,
+            ..Default::default()
         };
         let mut state = create_search_routing_state(2);
         let server = async {
@@ -1154,6 +1176,7 @@ mod tests {
             max_results: 1.,
             allowed_domains: None,
             blocked_domains: None,
+            ..Default::default()
         };
         let mut state = create_search_routing_state(2);
         let client = async {
@@ -1221,6 +1244,7 @@ mod public_deadline_tests {
                 max_results: 10.,
                 allowed_domains: None,
                 blocked_domains: None,
+                ..Default::default()
             };
             let start = Instant::now();
             let details = finish_public_search(

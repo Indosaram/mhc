@@ -10,6 +10,8 @@ pub struct EvalSchemaToolInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<ToolExposure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_prelude: Option<KernelPrelude>,
 }
 
@@ -24,6 +26,7 @@ impl EvalSchemaToolInfo {
             description,
             parameters,
             exposure: None,
+            eval_only: None,
             kernel_prelude: None,
         }
     }
@@ -36,6 +39,7 @@ impl From<maho_ext_api::ToolInfo> for EvalSchemaToolInfo {
             description: Some(tool.description),
             parameters: Some(tool.parameters),
             exposure: Some(tool.exposure),
+            eval_only: None,
             kernel_prelude: tool.kernel_prelude,
         }
     }

@@ -41,12 +41,14 @@ pub fn load_extensions(
             events.registration_scope(),
             runtime.registration_scope(),
         );
+        api.runtime.mcp_registry().track(&factory.path, Vec::new());
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             factory.extension.register(&mut api)
         })) {
             Ok(()) => match api.runtime.commit_registration() {
                 Ok(()) => extensions.push(api.registered),
                 Err(error) => {
+                    api.runtime.mcp_registry().untrack(&factory.path);
                     api.runtime
                         .invalidate_registration("Extension factory failed to load");
                     api.events.invalidate_registration();
@@ -59,6 +61,7 @@ pub fn load_extensions(
                 }
             },
             Err(payload) => {
+                api.runtime.mcp_registry().untrack(&factory.path);
                 api.runtime
                     .invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();
@@ -168,6 +171,7 @@ pub async fn load_extensions_async(
             events.registration_scope(),
             runtime.registration_scope(),
         );
+        api.runtime.mcp_registry().track(&factory.path, Vec::new());
         let mut scope = FactoryScopeGuard {
             runtime: api.runtime.clone(),
             events: api.events.clone(),
@@ -206,6 +210,7 @@ pub async fn load_extensions_async(
                 extensions.push(api.registered);
             }
             Err(error) => {
+                api.runtime.mcp_registry().untrack(&factory.path);
                 api.runtime
                     .invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();

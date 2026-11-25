@@ -1,7 +1,8 @@
 //! Port of senpi mcp/auth/catalog-identity.ts: which credential a cached catalog belongs to.
 use super::{
     context::{ServerAuthMode, resolve_auth_mode},
-    token_store::McpTokenStore,
+    oauth_grant::{McpGrantContext, oauth_grant_identity},
+    token_store::{McpStoredAuth, McpTokenStore},
 };
 use crate::config_schema::McpServerDeclaredConfig;
 use serde_json::{Value, json};
@@ -16,11 +17,13 @@ pub fn mcp_credential_identity(
     env: Option<&BTreeMap<String, String>>,
 ) -> Option<String> {
     let material = credential_material(config, server_name, agent_dir, env)?;
-    Some(if material == "none" {
-        material
-    } else {
-        crate::config_identity_key::keyed_identity(agent_dir, &material)
-    })
+    Some(
+        if material == "none" || resolve_auth_mode(config) == ServerAuthMode::OAuth {
+            material
+        } else {
+            crate::config_identity_key::keyed_identity(agent_dir, &material)
+        },
+    )
 }
 
 /// The unkeyed identity earlier builds persisted; read only to adopt a cache entry for the same credential.
@@ -30,12 +33,68 @@ pub fn legacy_mcp_credential_identity(
     agent_dir: Option<&Path>,
     env: Option<&BTreeMap<String, String>>,
 ) -> Option<String> {
+    if resolve_auth_mode(config) == ServerAuthMode::OAuth {
+        return None;
+    }
     let material = credential_material(config, server_name, agent_dir, env)?;
     Some(if material == "none" {
         material
     } else {
         format!("{:x}", Sha256::digest(material))
     })
+}
+
+fn is_valid_stored_grant_shape(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return false;
+    }
+    for key in [
+        "refreshToken",
+        "issuer",
+        "resource",
+        "scope",
+        "refreshScope",
+    ] {
+        if let Some(field) = object.get(key)
+            && !field.is_string()
+        {
+            return false;
+        }
+    }
+    if let Some(client_info) = object.get("clientInfo") {
+        let Some(client_obj) = client_info.as_object() else {
+            return false;
+        };
+        if !client_obj.get("client_id").is_some_and(Value::is_string) {
+            return false;
+        }
+        for key in ["client_secret", "token_endpoint_auth_method", "issuer"] {
+            if let Some(field) = client_obj.get(key)
+                && !field.is_string()
+            {
+                return false;
+            }
+        }
+    }
+    if let Some(discovery_state) = object.get("discoveryState") {
+        let Some(state_obj) = discovery_state.as_object() else {
+            return false;
+        };
+        if !state_obj
+            .get("authorizationServerUrl")
+            .is_some_and(Value::is_string)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn credential_material(
@@ -62,17 +121,24 @@ fn credential_material(
                 McpTokenStore::new(&directory, server_name, config.url.as_deref().unwrap_or(""));
             let value: Value =
                 serde_json::from_str(&std::fs::read_to_string(store.tokens_path()).ok()?).ok()?;
-            let access = value
-                .get("accessToken")?
-                .as_str()
-                .filter(|token| !token.is_empty())?;
-            let refresh = match value.get("refreshToken") {
-                None => Value::Null,
-                Some(Value::String(token)) => Value::String(token.clone()),
-                Some(_) => return None,
+            if !is_valid_stored_grant_shape(&value) {
+                return None;
+            }
+            let record: McpStoredAuth = serde_json::from_value(value).ok()?;
+            let context = McpGrantContext {
+                server_name,
+                server_url: &store.server_url,
+                agent_dir: store.agent_dir(),
+                client_id: config
+                    .oauth
+                    .as_ref()
+                    .and_then(|oauth| oauth.client_id.as_deref()),
+                client_metadata_url: config
+                    .oauth
+                    .as_ref()
+                    .and_then(|oauth| oauth.client_metadata_url.as_deref()),
             };
-            // JSON.stringify drops an undefined array slot to `null`, matching the absent refresh token.
-            Some(json!(["mcp-catalog-oauth", access, refresh]).to_string())
+            Some(oauth_grant_identity(&record, &context))
         }
     }
 }
@@ -128,19 +194,18 @@ mod tests {
         let store = McpTokenStore::new(dir.path(), "s", "https://example.test/mcp");
         std::fs::create_dir_all(store.dir())?;
         std::fs::write(store.tokens_path(), r#"{"accessToken":"a"}"#)?;
+        // #2861: token-only legacy OAuth cache adoption is refused.
         assert_eq!(
             legacy_mcp_credential_identity(&oauth, "s", Some(dir.path()), None),
-            Some(format!(
-                "{:x}",
-                Sha256::digest(r#"["mcp-catalog-oauth","a",null]"#)
-            ))
+            None
         );
+        assert!(mcp_credential_identity(&oauth, "s", Some(dir.path()), None).is_some());
         std::fs::write(
             store.tokens_path(),
             r#"{"accessToken":"a","refreshToken":7}"#,
         )?;
         assert_eq!(
-            legacy_mcp_credential_identity(&oauth, "s", Some(dir.path()), None),
+            mcp_credential_identity(&oauth, "s", Some(dir.path()), None),
             None
         );
         Ok(())

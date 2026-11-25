@@ -122,3 +122,12 @@ fn replaces_an_inherited_browser_engine_with_the_sessions_own_and_clears_it_for_
         env(&[("PATH", "/usr/bin"), ("BSK_HOME", "/opt/bsk")])
     );
 }
+
+#[test]
+fn inherited_environment_delta_computes_added_and_removed_keys() {
+    let current = env(&[("A", "1"), ("C", "3")]);
+    let target = env(&[("B", "2"), ("C", "3")]);
+    let (removed, set) = inherited_environment_delta(&current, &target);
+    assert_eq!(removed, vec!["A".to_owned()]);
+    assert_eq!(set, env(&[("B", "2")]));
+}

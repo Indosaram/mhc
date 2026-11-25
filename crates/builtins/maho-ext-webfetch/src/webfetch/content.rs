@@ -2188,6 +2188,45 @@ pub fn extract_readable_article(
         has_heading,
     })
 }
+/// Below this much visible body text, a page that runs scripts is treated as an unrendered app shell.
+const APP_SHELL_MAX_TEXT_LENGTH: usize = 200;
+
+/// Removes every script element from rendered HTML. A page read through the user's browser has already
+/// run its scripts, and inline bootstrap state (`window.__INITIAL_STATE__`) is where session tokens and
+/// CSRF secrets sit; this drops that carrier before any format, including raw html, leaves the tool.
+pub fn strip_scripts(html: &str, url: &str) -> String {
+    let web = super::parse_web_document::parse_web_document(html, url);
+    web.document.select("script").remove();
+    format!(
+        "<!doctype html>\n{}",
+        web.document.select_single("html").html()
+    )
+}
+
+/// Whether static HTML is a client-rendered app shell: it runs scripts and shows almost no text
+/// before they run (an empty mount point, a noscript notice). Such a page needs a rendered read.
+pub fn looks_like_app_shell(html: &str, url: &str) -> bool {
+    let web = super::parse_web_document::parse_web_document(html, url);
+    let runs_scripts = web.document.select("script").nodes().iter().any(|script| {
+        let script_type = script
+            .attr("type")
+            .map(|value| value.trim_matches(js_whitespace).to_lowercase())
+            .unwrap_or_default();
+        matches!(
+            script_type.as_str(),
+            "" | "module" | "text/javascript" | "application/javascript"
+        )
+    });
+    if !runs_scripts {
+        return false;
+    }
+    let cloned = web.document.clone();
+    let body = cloned.select_single("body");
+    body.select("script, style, noscript, template, svg")
+        .remove();
+    normalize_plain_text(&body.text()).encode_utf16().count() < APP_SHELL_MAX_TEXT_LENGTH
+}
+
 pub fn html_to_markdown(html: &str, url: &str) -> String {
     let web = super::parse_web_document::parse_web_document(html, url);
     let article = extract_readable_article(&web);
@@ -2361,7 +2400,7 @@ pub fn normalize_markdown(markdown: &str) -> String {
         .trim_matches(js_whitespace)
         .into()
 }
-fn js_whitespace(c: char) -> bool {
+pub(crate) fn js_whitespace(c: char) -> bool {
     matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')
 }
 #[cfg(test)]

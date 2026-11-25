@@ -61,6 +61,7 @@ async fn list_preview_preserves_javascript_whitespace_boundaries() {
                 on_timeout: None,
                 reset: None,
                 isolate: None,
+                language_inferred: None,
             },
         )
         .unwrap();

@@ -89,6 +89,23 @@ pub struct McpRegistrationInputs {
     pub tool_search:
         Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
 }
+/// `startup_settled` marks the one announcement that closes a session's startup window (senpi#4828).
+pub type McpWireStatusListener =
+    Arc<dyn Fn(Option<&str>, &crate::service_types::McpWireStatusSnapshot, bool) + Send + Sync>;
+
+pub struct McpAttachOptions<'a> {
+    pub cwd: &'a Path,
+    pub agent_dir: &'a Path,
+    pub env: &'a BTreeMap<String, String>,
+    pub project_trusted: bool,
+    pub declarations: &'a [maho_ext_api::RegisteredMcpServerDeclaration],
+    pub mode: Option<maho_ext_api::ExtensionMode>,
+    pub session_id: Option<&'a str>,
+    pub ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    pub has_ui: bool,
+    pub extension_connects_mcp_servers: bool,
+}
+
 pub struct McpService {
     pub registry: Arc<HostMcpRegistry>,
     pub config: Option<ResolvedMcpConfig>,
@@ -98,6 +115,7 @@ pub struct McpService {
     session_cwd: Option<PathBuf>,
     session_env: BTreeMap<String, String>,
     project_trusted: bool,
+    session_mode: Option<maho_ext_api::ExtensionMode>,
     /// Skill server warnings already reported (upstream `#skillServerWarnings`): each is shown once.
     skill_server_warnings: std::collections::BTreeSet<String>,
     deferred: Arc<crate::startup_race::McpDeferredAttach>,
@@ -122,9 +140,13 @@ pub struct McpService {
     binding: Arc<McpSessionBinding>,
     /// Upstream `#registrationListeners`: bumped after every completed catalog registration.
     registration_events: tokio::sync::watch::Sender<u64>,
+    wire_status_listeners: Arc<std::sync::Mutex<Vec<(u64, McpWireStatusListener)>>>,
+    next_wire_status_listener_id: Arc<std::sync::atomic::AtomicU64>,
+    wire_status_by_session: BTreeMap<String, crate::service_types::McpWireStatusSnapshot>,
+    latest_wire_status: crate::service_types::McpWireStatusSnapshot,
+    startup_windows: Arc<crate::startup_window::McpStartupWindows>,
 }
 /// Upstream `McpSessionBinding`: lifetime, presentation and declared sources of one session's binding.
-#[derive(Default)]
 pub struct McpSessionBinding {
     /// Aborted when the binding is replaced or released, ending every request origin it issued.
     lifetime: std::sync::Mutex<maho_ext_api::AbortSignal>,
@@ -140,6 +162,24 @@ pub struct McpSessionBinding {
     /// The id of the session this binding serves (upstream `binding.context.sessionManager`), once a
     /// session context bound it.
     session_id: std::sync::Mutex<Option<String>>,
+    /// Further execution scopes of one runtime this binding also serves (brain/hand S16c).
+    scopes: std::sync::Mutex<BTreeMap<String, crate::service_scopes::McpBindingScope>>,
+    /// Its own context's elicitation UI lookup (returns `None` when `has_ui` is false).
+    context_ui: std::sync::Mutex<crate::request_origin::McpElicitationUiLookup>,
+}
+impl Default for McpSessionBinding {
+    fn default() -> Self {
+        Self {
+            lifetime: Default::default(),
+            presentation: Default::default(),
+            sources: Default::default(),
+            leases: Default::default(),
+            declared: Default::default(),
+            session_id: Default::default(),
+            scopes: Default::default(),
+            context_ui: std::sync::Mutex::new(Arc::new(|| None)),
+        }
+    }
 }
 /// One declared server as of the binding's last sync.
 struct McpDeclaredServer {
@@ -161,13 +201,47 @@ impl McpSessionBinding {
             .clone()
     }
     pub fn bind_presentation(&self, ui: &Arc<dyn maho_ext_api::ExtensionUi>) {
+        self.bind_presentation_for(ui, None);
+    }
+    pub fn bind_presentation_for(
+        &self,
+        ui: &Arc<dyn maho_ext_api::ExtensionUi>,
+        session_id: Option<&str>,
+    ) {
         if let Some(presentation) = maho_core::mcp_mrtr_presentations::get_mcp_mrtr_presentation(ui)
         {
-            *self
-                .presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(presentation);
+            crate::service_scopes::bind_scope_presentation(
+                &self.presentation,
+                &self.scopes,
+                presentation,
+                session_id,
+            );
         }
+    }
+    pub fn bind_context_ui(&self, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>, has_ui: bool) {
+        *self
+            .context_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            crate::service_scopes::elicitation_ui_of(ui, has_ui);
+    }
+    pub fn join_scope(
+        &self,
+        session_id: &str,
+        ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+        has_ui: bool,
+    ) -> bool {
+        let own = self.session_id();
+        crate::service_scopes::join_binding_scope(
+            own.as_deref(),
+            &self.scopes,
+            session_id,
+            ui,
+            has_ui,
+        )
+    }
+    pub fn serves_scope(&self, session_id: Option<&str>) -> bool {
+        crate::service_scopes::binding_serves_scope(&self.scopes, session_id)
     }
     fn lifetime(&self) -> maho_ext_api::AbortSignal {
         self.lifetime
@@ -188,6 +262,10 @@ impl McpSessionBinding {
             .presentation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
     fn release(&self) {
         self.lifetime().abort();
@@ -255,11 +333,38 @@ impl McpSessionBinding {
         name: &str,
         connection: &Arc<crate::connection::ServerConnection>,
     ) -> Arc<crate::request_origin::McpRequestOrigin> {
-        let presentation = self
-            .presentation
+        self.request_origin_for(name, connection, None)
+    }
+    pub fn request_origin_for(
+        self: &Arc<Self>,
+        name: &str,
+        connection: &Arc<crate::connection::ServerConnection>,
+        caller_session_id: Option<&str>,
+    ) -> Arc<crate::request_origin::McpRequestOrigin> {
+        let binding_session_id = self.session_id();
+        let binding_ui = self
+            .context_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let caller_scope = crate::service_scopes::caller_scope(
+            binding_session_id.as_deref(),
+            &self.presentation,
+            &binding_ui,
+            &self.scopes,
+            caller_session_id,
+        );
+        let (presentation, scope_id, scope_ui) = match caller_scope {
+            Some(scope) => (scope.presentation, Some(scope.session_id), Some(scope.ui)),
+            None => (
+                self.presentation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                None,
+                None,
+            ),
+        };
         let private_forms = presentation
             .as_ref()
             .and_then(|presentation| presentation.private_forms.clone());
@@ -353,7 +458,8 @@ impl McpSessionBinding {
                         })
                     },
                 ),
-            ),
+            )
+            .with_scope(scope_id, scope_ui),
         )
     }
 }
@@ -368,6 +474,7 @@ impl McpService {
             session_cwd: None,
             session_env: BTreeMap::new(),
             project_trusted: false,
+            session_mode: None,
             skill_server_warnings: Default::default(),
             deferred: Default::default(),
             deferred_registration: Default::default(),
@@ -386,12 +493,24 @@ impl McpService {
             reference_errors: BTreeMap::new(),
             binding: Arc::default(),
             registration_events: tokio::sync::watch::Sender::new(0),
+            wire_status_listeners: Arc::default(),
+            next_wire_status_listener_id: Arc::default(),
+            wire_status_by_session: BTreeMap::new(),
+            latest_wire_status: Default::default(),
+            startup_windows: Arc::default(),
         }
     }
     /// Upstream `bindMcpMrtrPresentation`: keeps the binding's presentation current (a missing one keeps
     /// the last grant, as upstream does).
     pub fn bind_mcp_mrtr_presentation(&self, ui: &Arc<dyn maho_ext_api::ExtensionUi>) {
         self.binding.bind_presentation(ui);
+    }
+    pub fn bind_mcp_mrtr_presentation_for(
+        &self,
+        ui: &Arc<dyn maho_ext_api::ExtensionUi>,
+        session_id: Option<&str>,
+    ) {
+        self.binding.bind_presentation_for(ui, session_id);
     }
     /// The binding handle, for hooks that rebind presentation without taking the service lock.
     pub fn session_binding(&self) -> Arc<McpSessionBinding> {
@@ -413,10 +532,149 @@ impl McpService {
     /// Upstream `elicitationEnabled` from the declaring session's mode: print and json sessions withhold the
     /// elicitation capability entirely.
     pub fn set_session_mode(&mut self, mode: maho_ext_api::ExtensionMode) {
+        self.session_mode = Some(mode);
         self.elicitation_enabled = !matches!(
             mode,
             maho_ext_api::ExtensionMode::Print | maho_ext_api::ExtensionMode::Json
         );
+    }
+    /// Subscribe to live MCP inventory transitions for session-scoped hosts.
+    pub fn on_wire_status_changed(
+        &mut self,
+        listener: McpWireStatusListener,
+    ) -> Box<dyn FnOnce() + Send> {
+        let id = self
+            .next_wire_status_listener_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.wire_status_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, listener));
+        let listeners = self.wire_status_listeners.clone();
+        Box::new(move || {
+            listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(entry_id, _)| *entry_id != id);
+        })
+    }
+    /// Return the attach-time inventory captured for one session.
+    pub fn get_wire_status_snapshot(
+        &self,
+        session_id: Option<&str>,
+    ) -> crate::service_types::McpWireStatusSnapshot {
+        if session_id.is_none()
+            && !self
+                .binding
+                .scopes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        {
+            return Default::default();
+        }
+        match session_id {
+            None => self.latest_wire_status.clone(),
+            Some(id) => self
+                .wire_status_by_session
+                .get(id)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+    /// Refresh and return the current session-owned MCP wire inventory.
+    pub async fn refresh_wire_status_snapshot(
+        &mut self,
+        session_id: Option<&str>,
+    ) -> crate::service_types::McpWireStatusSnapshot {
+        if session_id.is_none()
+            && !self
+                .binding
+                .scopes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        {
+            return Default::default();
+        }
+        self.capture_wire_status(session_id, None).await
+    }
+    /// Close a startup window release on the service.
+    pub async fn release_startup_window(
+        &mut self,
+        session_id: &str,
+        release: crate::startup_window::StartupWindowRelease,
+    ) {
+        let _ = self
+            .capture_wire_status(Some(session_id), Some(release))
+            .await;
+    }
+    async fn capture_wire_status(
+        &mut self,
+        session_id: Option<&str>,
+        release: Option<crate::startup_window::StartupWindowRelease>,
+    ) -> crate::service_types::McpWireStatusSnapshot {
+        let snapshot = self.wire_status_snapshot().await;
+        let previous = self.get_wire_status_snapshot(session_id);
+        self.latest_wire_status = snapshot.clone();
+        if let Some(session_id) = session_id {
+            self.wire_status_by_session
+                .insert(session_id.to_owned(), snapshot.clone());
+        }
+        if release.is_none() && previous == snapshot {
+            return snapshot;
+        }
+        if release.is_none() && self.startup_windows.hold(session_id) {
+            return snapshot;
+        }
+        let startup_settled =
+            release == Some(crate::startup_window::StartupWindowRelease::StartupSettled);
+        let listeners: Vec<McpWireStatusListener> = self
+            .wire_status_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(_, listener)| listener.clone())
+            .collect();
+        for listener in listeners {
+            listener(session_id, &snapshot, startup_settled);
+        }
+        snapshot
+    }
+    pub fn tier_b_searchable(&self) -> Vec<crate::skills::RegisteredSkillTool> {
+        self.registration
+            .as_ref()
+            .map(|reg| {
+                reg.registration
+                    .searchable
+                    .iter()
+                    .map(|tool| crate::skills::RegisteredSkillTool {
+                        name: tool.name.clone(),
+                        tool_name: tool.tool_name.clone(),
+                        server: tool.server.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    pub fn activate_skill_mcp_tools(&self, targets: &[String]) {
+        if let Some(reg) = &self.registration {
+            let _ = (reg.registration.activate)(targets);
+        }
+    }
+    /// A further execution scope of the runtime joins its binding (brain/hand S16c) without a rebind,
+    /// a config re-sync or an abort; only its own wire status is published.
+    pub async fn attach_scope(
+        &mut self,
+        session_id: &str,
+        ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+        has_ui: bool,
+    ) {
+        if self.binding.join_scope(session_id, ui, has_ui)
+            && self.session_mode == Some(maho_ext_api::ExtensionMode::Rpc)
+        {
+            let _ = self.refresh_wire_status_snapshot(Some(session_id)).await;
+        }
     }
     /// Bind the service's own handle so a deferred startup-race connect can
     /// re-register tools after the attach deadline without holding the session lock.
@@ -445,31 +703,117 @@ impl McpService {
         project_trusted: bool,
         declarations: &[maho_ext_api::RegisteredMcpServerDeclaration],
     ) -> Result<(), McpServiceError> {
-        // A new attach replaces the binding: origins the previous one issued end here.
-        self.binding.renew();
-        self.project_trusted = project_trusted;
-        let mut config = load_mcp_config(LoadMcpConfigOptions {
+        let session_id = self.binding.session_id();
+        self.attach_session_with_options(McpAttachOptions {
             cwd,
             agent_dir,
             env,
             project_trusted,
-            home_dir: None,
-            claude_config_dir: None,
-        })?;
-        crate::config::merge_extension_mcp_servers_in(&mut config, declarations, Some(agent_dir))?;
-        if let Some(previous) = &self.config {
-            for (name, server) in &previous.servers {
-                if server.source == crate::config_schema::McpServerSource::Skill
-                    && !config.servers.contains_key(name)
-                {
-                    config.servers.insert(name.clone(), server.clone());
+            declarations,
+            mode: self.session_mode,
+            session_id: session_id.as_deref(),
+            ui: self.elicitation_ui.clone(),
+            has_ui: self.elicitation_ui.is_some(),
+            extension_connects_mcp_servers: false,
+        })
+        .await
+    }
+    pub async fn attach_session_with_options(
+        &mut self,
+        options: McpAttachOptions<'_>,
+    ) -> Result<(), McpServiceError> {
+        let mode = options.mode.or(self.session_mode);
+        let session_id = options.session_id.map(str::to_owned);
+        let window = if mode == Some(maho_ext_api::ExtensionMode::Rpc) {
+            session_id
+                .as_deref()
+                .map(|id| (id.to_owned(), self.startup_windows.open(id)))
+        } else {
+            None
+        };
+        let mut startup_connects: Vec<futures::future::BoxFuture<'static, ()>> = Vec::new();
+        let result = async {
+            // A new attach replaces the binding: origins the previous one issued end here.
+            self.binding.renew();
+            if let Some(id) = &session_id {
+                self.binding.bind_session(id);
+            }
+            self.binding
+                .bind_context_ui(options.ui.clone(), options.has_ui);
+            self.project_trusted = options.project_trusted;
+            let mut config = load_mcp_config(LoadMcpConfigOptions {
+                cwd: options.cwd,
+                agent_dir: options.agent_dir,
+                env: options.env,
+                project_trusted: options.project_trusted,
+                home_dir: None,
+                claude_config_dir: None,
+            })?;
+            // An extension handling mcp_servers_change connects the registered servers; connecting them here too
+            // would open a second connection per server (senpi#4597).
+            if !options.extension_connects_mcp_servers {
+                crate::config::merge_extension_mcp_servers_in(
+                    &mut config,
+                    options.declarations,
+                    Some(options.agent_dir),
+                )?;
+            }
+            if let Some(previous) = &self.config {
+                for (name, server) in &previous.servers {
+                    if server.source == crate::config_schema::McpServerSource::Skill
+                        && !config.servers.contains_key(name)
+                    {
+                        config.servers.insert(name.clone(), server.clone());
+                    }
+                }
+            }
+            self.sync_from_config_with(
+                config,
+                options.cwd,
+                options.agent_dir,
+                options.env,
+                Some(&mut startup_connects),
+            )
+            .await?;
+            // Upstream `attachSession` registers tools once per attach when a `pi` is
+            // supplied; the host binds that seam with `bind_registration`.
+            self.register_bound_session_tools().await?;
+            if mode == Some(maho_ext_api::ExtensionMode::Rpc) {
+                let _ = self.capture_wire_status(session_id.as_deref(), None).await;
+            }
+            Ok::<_, McpServiceError>(())
+        }
+        .await;
+        if let Some((window_session_id, startup_window)) = window {
+            if let Some(weak) = self.self_weak.clone() {
+                tokio::spawn(async move {
+                    startup_window
+                        .close(startup_connects, move |release| async move {
+                            if let Some(service) = weak.upgrade() {
+                                service
+                                    .lock()
+                                    .await
+                                    .release_startup_window(&window_session_id, release)
+                                    .await;
+                            }
+                        })
+                        .await;
+                });
+            } else if startup_connects.is_empty() {
+                let mut kind = None;
+                startup_window
+                    .close(Vec::new(), |release| {
+                        kind = Some(release);
+                        async {}
+                    })
+                    .await;
+                if let Some(release) = kind {
+                    self.release_startup_window(&window_session_id, release)
+                        .await;
                 }
             }
         }
-        self.sync_from_config(config, cwd, agent_dir, env).await?;
-        // Upstream `attachSession` registers tools once per attach when a `pi` is
-        // supplied; the host binds that seam with `bind_registration`.
-        self.register_bound_session_tools().await
+        result
     }
     /// Re-runs the last sync, so a server whose references changed reconnects under its new identity.
     pub fn resync_current_config(
@@ -495,6 +839,17 @@ impl McpService {
         cwd: &Path,
         agent_dir: &Path,
         env: &BTreeMap<String, String>,
+    ) -> Result<(), McpServiceError> {
+        self.sync_from_config_with(config, cwd, agent_dir, env, None)
+            .await
+    }
+    async fn sync_from_config_with(
+        &mut self,
+        config: ResolvedMcpConfig,
+        cwd: &Path,
+        agent_dir: &Path,
+        env: &BTreeMap<String, String>,
+        mut startup_connects: Option<&mut Vec<futures::future::BoxFuture<'static, ()>>>,
     ) -> Result<(), McpServiceError> {
         // Every wanted server's references resolve into this sync's connection generation; a failing server
         // is reported and stays unconnected without aborting its siblings (config-generation.ts).
@@ -757,6 +1112,7 @@ impl McpService {
                         .map(String::as_str),
                 );
                 let (sender, settled) = tokio::sync::watch::channel(false);
+                let (reg_sender, mut reg_settled) = tokio::sync::watch::channel(false);
                 self.deferred.track(async move {
                     if let Some(shared) = shared {
                         match shared.catalog().await {
@@ -794,53 +1150,52 @@ impl McpService {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .log("warning", &error.to_string(), None, None);
                     }
-                    // A cold/lazy server whose connect outran the attach deadline lands
-                    // its catalog here; re-register so its tools reach the next turn,
-                    // matching upstream `raceMcpStartupConnect` registering through the
-                    // captured `pi`. The connect task holds no other lock when the
-                    // registration task takes the session lock, so `settled` is not gated.
+                    // Fast connects are covered by the attach's own registration. Publish late
+                    // catalogs (or resync stale credentials) outside the attach's service lock.
                     let credentials_stale = !(credentials_current)();
                     let settled_after_race =
                         race_window_closed.load(std::sync::atomic::Ordering::SeqCst);
-                    sender.send_replace(true);
-                    if (credentials_stale || settled_after_race)
+                    if (credentials_stale || (settled_after_race && registration_inputs.is_some()))
                         && let Some(service) = self_weak.as_ref().and_then(std::sync::Weak::upgrade)
                     {
-                        if credentials_stale {
-                            deferred_registration.track(async move {
-                                let mut service = service.lock().await;
-                                if !(credentials_current)()
-                                    && let Err(error) = service.resync_current_config().await
+                        deferred_registration.track(async move {
+                            let mut service = service.lock().await;
+                            if !(credentials_current)() {
+                                if let Err(error) = service.resync_current_config().await {
+                                    service.report_registration_error(&error.to_string());
+                                }
+                            } else if settled_after_race && let Some(inputs) = registration_inputs {
+                                let mut tool_search = match &inputs.tool_search {
+                                    Some(tool_search) => Some(tool_search.lock().await),
+                                    None => None,
+                                };
+                                if let Err(error) = service
+                                    .register_session_tools(
+                                        inputs.registrar.clone(),
+                                        tool_search.as_deref_mut(),
+                                    )
+                                    .await
                                 {
                                     service.report_registration_error(&error.to_string());
                                 }
-                            });
-                        } else if let Some(inputs) = registration_inputs {
-                            deferred_registration.track(async move {
-                                let mut service = service.lock().await;
-                                if !(credentials_current)() {
-                                    if let Err(error) = service.resync_current_config().await {
-                                        service.report_registration_error(&error.to_string());
-                                    }
-                                } else {
-                                    let mut tool_search = match &inputs.tool_search {
-                                        Some(tool_search) => Some(tool_search.lock().await),
-                                        None => None,
-                                    };
-                                    if let Err(error) = service
-                                        .register_session_tools(
-                                            inputs.registrar.clone(),
-                                            tool_search.as_deref_mut(),
-                                        )
-                                        .await
-                                    {
-                                        service.report_registration_error(&error.to_string());
-                                    }
-                                }
-                            });
-                        }
+                            }
+                            reg_sender.send_replace(true);
+                        });
+                    } else {
+                        reg_sender.send_replace(true);
                     }
+                    // Settle the race after enqueuing follow-up work, not after it takes the lock.
+                    sender.send_replace(true);
                 });
+                if let Some(connects) = startup_connects.as_deref_mut() {
+                    connects.push(Box::pin(async move {
+                        while !*reg_settled.borrow() {
+                            if reg_settled.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                    }));
+                }
                 races.push((timeout, settled));
             }
         }
@@ -1060,6 +1415,30 @@ impl McpService {
         );
         entry.list_changed_tasks.push(task);
         entry.list_changed_coalescer = Some(coalescer);
+        let state_weak = self.self_weak.clone();
+        let mut state_changes = entry.connection.on_state_change();
+        let state_task = tokio::spawn(async move {
+            loop {
+                match state_changes.recv().await {
+                    Ok(_) => {
+                        let Some(service) = state_weak.as_ref().and_then(std::sync::Weak::upgrade)
+                        else {
+                            return;
+                        };
+                        let mut service = service.lock().await;
+                        if service.session_mode == Some(maho_ext_api::ExtensionMode::Rpc) {
+                            let session_id = service.binding.session_id();
+                            let _ = service
+                                .refresh_wire_status_snapshot(session_id.as_deref())
+                                .await;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+        entry.list_changed_tasks.push(state_task);
     }
     /// Upstream `#handleServerToolsChanged` for a reported change. Public so tests drive the same entry point.
     pub async fn handle_server_tools_changed(&mut self, name: &str) -> Result<(), McpServiceError> {
@@ -1171,6 +1550,10 @@ impl McpService {
             for error in &registration.wiring_errors {
                 self.report_registration_error(error);
             }
+        }
+        if self.session_mode == Some(maho_ext_api::ExtensionMode::Rpc) {
+            let session_id = self.binding.session_id();
+            let _ = self.capture_wire_status(session_id.as_deref(), None).await;
         }
         // Upstream `for (const listener of this.#registrationListeners) listener()`.
         self.registration_events
@@ -1714,8 +2097,16 @@ impl McpService {
         self.agent_dir = None;
         self.session_cwd = None;
         self.session_env.clear();
+        self.session_mode = None;
         self.deferred.clear();
         self.deferred_registration.clear();
+        self.startup_windows.clear();
+        self.wire_status_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.wire_status_by_session.clear();
+        self.latest_wire_status = Default::default();
         self.pending_auth
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

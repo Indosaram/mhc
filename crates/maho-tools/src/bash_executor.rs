@@ -174,7 +174,8 @@ pub async fn execute_bash_with_operations(
             redact_secrets_in_output: options.redact_secrets_in_output,
             signal: execution_signal.clone(),
             timeout: None,
-            env: options.env.unwrap_or_else(|| std::env::vars().collect()),
+            env: options.env,
+            session_id: None,
         },
     );
     tokio::pin!(operation);

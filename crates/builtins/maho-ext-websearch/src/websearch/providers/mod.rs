@@ -56,6 +56,15 @@ impl DomainFilters {
     }
 }
 
+/// A count chosen for one call outranks a provider entry's own value, which outranks the caller's default.
+pub fn max_results_for(config: &SearchProviderConfig, request: &SearchRequest) -> f64 {
+    if request.max_results_from_call {
+        request.max_results
+    } else {
+        config.max_results.unwrap_or(request.max_results)
+    }
+}
+
 pub fn build_context<'a>(
     config: &'a SearchProviderConfig,
     request: &'a SearchRequest,
@@ -63,7 +72,7 @@ pub fn build_context<'a>(
 ) -> BuildContext<'a> {
     BuildContext {
         query: &request.query,
-        max_results: config.max_results.unwrap_or(request.max_results),
+        max_results: max_results_for(config, request),
         api_key: config.api_key.as_deref(),
         base_url: config.base_url.as_deref(),
         allowed_domains: filters.allowed.as_deref(),
@@ -162,14 +171,65 @@ pub fn build_search_request(
     }
     Ok(built)
 }
+/// A streamable-HTTP MCP answer is either plain JSON or server-sent events whose `data:` lines carry JSON-RPC.
+pub fn parse_event_stream(body_text: &str) -> Value {
+    if body_text.trim_start().starts_with('{') {
+        return serde_json::from_str(body_text).unwrap_or_else(|_| serde_json::json!({}));
+    }
+    for line in body_text.lines() {
+        let Some(rest) = line.strip_prefix("data:") else {
+            continue;
+        };
+        if let Ok(message) = serde_json::from_str::<Value>(rest.trim())
+            && let Some(obj) = message.as_object()
+            && (obj.contains_key("result") || obj.contains_key("error"))
+        {
+            return message;
+        }
+    }
+    serde_json::json!({})
+}
+
 /// senpi `parseBody`: providers whose reply is a streamed body fold it into a JSON payload first.
 pub fn parse_search_body(provider: SearchProvider, body_text: &str) -> Option<Value> {
     match provider {
         SearchProvider::ChatgptSubscription => Some(
             super::providers::response_stream::collect_response_stream(body_text),
         ),
+        SearchProvider::ExaMcp => Some(exa_mcp::parse_body(body_text)),
+        SearchProvider::Parallel => Some(parse_event_stream(body_text)),
         _ => None,
     }
+}
+
+pub fn search_response_error(provider: SearchProvider, payload: &Value) -> Option<String> {
+    match provider {
+        SearchProvider::ExaMcp => exa_mcp::response_error(payload),
+        SearchProvider::Firecrawl => firecrawl::response_error(payload),
+        SearchProvider::Jina => jina::response_error(payload),
+        SearchProvider::Parallel => parallel::response_error(payload),
+        _ => None,
+    }
+}
+
+pub fn search_paginates(provider: SearchProvider) -> bool {
+    matches!(provider, SearchProvider::Tinyfish)
+}
+
+pub fn next_search_page_request(
+    config: &SearchProviderConfig,
+    request: &SearchRequest,
+    payload: &Value,
+    page_index: usize,
+) -> Option<BuiltSearchRequest> {
+    if config.provider != SearchProvider::Tinyfish {
+        return None;
+    }
+    let filters = DomainFilters::resolve(config, request);
+    let ctx = build_context(config, request, &filters);
+    let mut page = tinyfish::next_page(&ctx, payload, page_index)?;
+    shared::with_auth_headers(config.headers.as_ref(), &mut page.headers);
+    Some(page)
 }
 pub fn normalize_search_response(
     provider: SearchProvider,
@@ -234,6 +294,7 @@ mod tests {
             max_results: 10.,
             allowed_domains: Some(vec!["b".into()]),
             blocked_domains: None,
+            ..Default::default()
         };
         let built = build_search_request(&config, &request).unwrap();
         assert_eq!(built.body.as_ref().expect("request body")["numResults"], 2.);
@@ -283,6 +344,7 @@ mod tests {
                 max_results: 1.,
                 allowed_domains: None,
                 blocked_domains: None,
+                ..Default::default()
             };
             assert!(
                 !build_search_request(&config, &request)
@@ -301,6 +363,7 @@ mod tests {
             max_results: 1.,
             allowed_domains: None,
             blocked_domains: None,
+            ..Default::default()
         };
         let error =
             build_search_request(&SearchProviderConfig::new(SearchProvider::Public), &request)

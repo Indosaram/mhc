@@ -66,12 +66,17 @@ pub struct EvalPromptOptions {
     pub run_budget_seconds: Option<f64>,
     pub max_detached_cells: Option<f64>,
     pub kernel_preludes: Vec<KernelPrelude>,
+    /// Tools withheld from the model's direct list and reachable only as `tool.<name>(...)` in a
+    /// cell (`senpi#6886`).
+    pub eval_only_tools: Vec<String>,
 }
 
 pub struct EvalPromptParts {
     pub description: String,
     pub prompt_snippet: String,
     pub prompt_guidelines: Vec<String>,
+    /// Pre-diet guidelines, rendered by presets that declare full shared sections (`senpi#5665`).
+    pub full_prompt_guidelines: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,6 +111,12 @@ pub fn build_eval_prompt(
     ] {
         context.insert(key.to_owned(), serde_json::Value::Bool(value));
     }
+    let bun_skill_path = match options.bun_skill_path.as_deref() {
+        Some(path) => {
+            crate::extension::host_facts::pinned_display_path(path).map_err(EvalPromptError)?
+        }
+        None => String::new(),
+    };
     for (key, value) in [
         (
             "spawnDefaultAgent",
@@ -123,10 +134,7 @@ pub fn build_eval_prompt(
                 .as_ref()
                 .map_or_else(String::new, |runtime| runtime.version.clone()),
         ),
-        (
-            "bunSkillPath",
-            options.bun_skill_path.clone().unwrap_or_default(),
-        ),
+        ("bunSkillPath", bun_skill_path),
         (
             "runBudgetSeconds",
             options
@@ -150,6 +158,7 @@ pub fn build_eval_prompt(
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+        ("evalOnlyTools", options.eval_only_tools.join(", ")),
     ] {
         context.insert(key.to_owned(), serde_json::Value::String(value));
     }
@@ -183,10 +192,13 @@ pub fn build_eval_prompt(
     };
     Ok(EvalPromptParts {
         description,
-        prompt_snippet: "Run one incremental code cell in the persistent JavaScript kernel.".into(),
+        prompt_snippet: "Run one incremental code cell in a persistent kernel.".into(),
         prompt_guidelines: vec![
+            "Bracketed kernel memory notice in eval result names biggest globals -> drop unneeded ones.".into(),
+        ],
+        full_prompt_guidelines: vec![
             guideline.into(),
-            "Use eval reset only when the JavaScript kernel must be wiped.".into(),
+            "Use eval reset only when a language kernel must be wiped; reset is scoped to the selected language. A bracketed kernel memory notice in a result names the globals holding the most memory; drop the ones you no longer need.".into(),
         ],
     })
 }

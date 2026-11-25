@@ -449,75 +449,10 @@ pub(crate) fn generate_diff_string_from_rows(
 pub fn generate_unified_patch(path: &str, old: &str, new: &str, context: usize) -> String {
     crate::unified_diff::create_unified_patch(path, path, old, new, context)
 }
-/// senpi `computeEditsDiff`: the `Err` side is the upstream `{ error }` preview result.
-pub async fn compute_edits_diff(
-    path: &str,
-    edits: &[Edit],
-    cwd: &std::path::Path,
-) -> Result<EditDiffResult, ToolError> {
-    let absolute = crate::path_utils::resolve_to_cwd(path, cwd);
-    // Check if file exists and is readable.
-    if let Err(error) = tokio::fs::File::open(&absolute).await {
-        let code = match error.kind() {
-            std::io::ErrorKind::NotFound => "ENOENT",
-            std::io::ErrorKind::PermissionDenied => "EACCES",
-            std::io::ErrorKind::NotADirectory => "ENOTDIR",
-            _ => "UNKNOWN",
-        };
-        return Err(ToolError::Message(format!(
-            "Could not edit file: {path}. Error code: {code}."
-        )));
-    }
-    let bytes = tokio::fs::read(&absolute).await?;
-    let text = String::from_utf8_lossy(&bytes);
-    // Strip BOM before matching (LLM won't include invisible BOM in oldText).
-    let normalized = normalize_to_lf(text.strip_prefix('\u{feff}').unwrap_or(&text));
-    let result = apply_edits_to_normalized_content(&normalized, edits, path)?;
-    Ok(generate_diff_string(
-        &result.base_content,
-        &result.new_content,
-        4,
-    ))
-}
 
 #[cfg(test)]
 mod tests {
     use super::diff_lines;
-
-    #[tokio::test]
-    async fn compute_edits_diff_reports_a_missing_file_with_its_error_code() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let edits = [super::Edit {
-            old_text: "a".into(),
-            new_text: "b".into(),
-        }];
-        let error = super::compute_edits_diff("missing.txt", &edits, directory.path())
-            .await
-            .expect_err("missing");
-        assert_eq!(
-            error.to_string(),
-            "Could not edit file: missing.txt. Error code: ENOENT."
-        );
-    }
-
-    #[tokio::test]
-    async fn compute_edits_diff_previews_without_writing() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        std::fs::write(directory.path().join("f.txt"), "\u{feff}one\r\ntwo\r\n").expect("write");
-        let edits = [super::Edit {
-            old_text: "two".into(),
-            new_text: "three".into(),
-        }];
-        let diff = super::compute_edits_diff("f.txt", &edits, directory.path())
-            .await
-            .expect("diff");
-        assert_eq!(diff.first_changed_line, Some(2));
-        assert!(diff.diff.contains("+2 three"));
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("f.txt")).expect("read"),
-            "\u{feff}one\r\ntwo\r\n"
-        );
-    }
 
     /// The previous full-trace implementation, kept as the oracle for `diff_lines`.
     fn reference_diff_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {

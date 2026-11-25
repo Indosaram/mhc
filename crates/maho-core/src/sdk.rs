@@ -206,6 +206,7 @@ pub fn built_in_tools_options(
         },
         grep: maho_tools::grep::index::GrepToolOptions {
             filesystem_policy: Some(filesystem_policy.clone()),
+            ..Default::default()
         },
         find: maho_tools::find::FindToolOptions {
             filesystem_policy: Some(filesystem_policy.clone()),
@@ -219,6 +220,7 @@ pub fn built_in_tools_options(
             filesystem_policy: Some(filesystem_policy),
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 

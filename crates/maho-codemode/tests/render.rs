@@ -271,3 +271,153 @@ fn legacy_oversized_display_entries_render_bounded() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn live_eval_card_holds_height_floor_until_terminal_and_resets_on_toggle() {
+    let theme = maho_ext_api::Theme {
+        colors: [("muted".to_owned(), "<m>".to_owned())].into(),
+        ..Default::default()
+    };
+    let renderers = std::sync::Arc::new(eval_tool_renderers_with(None));
+    let args = json!({"language":"js","summary":"work","code":"1+1"});
+    let context = maho_ext_api::ToolRenderContext {
+        args,
+        tool_call_id: "live-floor-1".into(),
+        invalidate: std::rc::Rc::new(|| {}),
+        last_component: None,
+        state: (),
+        cwd: "/tmp".into(),
+        execution_started: true,
+        args_complete: true,
+        is_partial: true,
+        expanded: false,
+        show_images: false,
+        image_protocol: None,
+        is_error: false,
+        has_result: Some(true),
+        spinner_frame: Some(0),
+    };
+    let mut session = maho_ext_api::ToolRendererSession { renderers, context };
+
+    let mut tall = AgentToolResult::text("a\nb\nc\nd\ne");
+    tall.details = json!({"cells":[{"language":"js","code":"1+1","status":"running","startedAt":1000,"output":"a\nb\nc\nd\ne"}]});
+    let tall_lines = session.render_result(&tall, &theme, 80).expect("tall");
+
+    let mut short_live = AgentToolResult::text("a");
+    short_live.details = json!({"cells":[{"language":"js","code":"1+1","status":"running","startedAt":1000,"output":"a"}]});
+    let padded_lines = session
+        .render_result(&short_live, &theme, 80)
+        .expect("padded");
+    assert_eq!(padded_lines.len(), tall_lines.len());
+
+    session.context.expanded = true;
+    let expanded_lines = session
+        .render_result(&short_live, &theme, 80)
+        .expect("expanded");
+    assert!(expanded_lines.len() < tall_lines.len());
+
+    session.context.expanded = false;
+    session.context.is_partial = false;
+    let mut done = AgentToolResult::text("a");
+    done.details = json!({"cells":[{"language":"js","code":"1+1","status":"complete","startedAt":1000,"durationMs":5,"output":"a"}]});
+    let done_lines = session.render_result(&done, &theme, 80).expect("done");
+    assert!(done_lines.len() < tall_lines.len());
+}
+
+#[test]
+fn custom_nested_tool_renderers_draw_call_and_result_and_keep_state() {
+    use maho_codemode::tool::tool_widgets::{
+        NestedToolRendererLookup, WidgetOptions, is_core_widget_name,
+        render_tool_call_widget_with_renderers,
+    };
+    use maho_ext_api::{ToolRenderers, erase_tool_renderers};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    assert!(is_core_widget_name("bash"));
+    assert!(!is_core_widget_name("thread_list"));
+
+    let prefetches = Arc::new(AtomicUsize::new(0));
+    let prefetches_in_call = Arc::clone(&prefetches);
+
+    let typed: Arc<ToolRenderers<bool, serde_json::Value>> = Arc::new(ToolRenderers {
+        render_call: Some(Arc::new(move |args, _theme, context| {
+            if !context.state {
+                context.state = true;
+                prefetches_in_call.fetch_add(1, Ordering::SeqCst);
+            }
+            let suffix = if args["all_scope"] == true {
+                " all workspaces"
+            } else {
+                ""
+            };
+            Box::new(maho_tui::components::text::Text::new(format!(
+                "thread_list{suffix}"
+            )))
+        })),
+        render_result: Some(Arc::new(|result, _options, _theme, _context| {
+            let count = result.details["result"]["threads"]
+                .as_array()
+                .map_or(0, Vec::len);
+            Box::new(maho_tui::components::text::Text::new(format!(
+                "{count} threads in this workspace"
+            )))
+        })),
+    });
+
+    let erased = erase_tool_renderers(typed, "/tmp".into());
+    let lookup: NestedToolRendererLookup = Arc::new(move |name| {
+        if name == "thread_list" {
+            Some(Arc::clone(&erased))
+        } else {
+            None
+        }
+    });
+    let theme = maho_ext_api::Theme {
+        colors: [
+            ("success".to_owned(), String::new()),
+            ("error".to_owned(), String::new()),
+            ("muted".to_owned(), String::new()),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let options = WidgetOptions {
+        cwd: std::path::Path::new("/tmp"),
+        theme: Some(&theme),
+        expanded: false,
+        width: 80,
+    };
+
+    let summary_with_details = json!({
+        "name": "thread_list",
+        "ok": true,
+        "callId": "t-1",
+        "args": {"all_scope": true},
+        "durationMs": 300,
+        "resultPreview": "{\"kind\":\"ok\"}",
+        "details": {"result": {"threads": [{"name": "planner"}, {"name": "builder"}]}},
+    });
+    for _ in 0..3 {
+        let lines =
+            render_tool_call_widget_with_renderers(&summary_with_details, &options, Some(&lookup));
+        let text = lines.join("\n");
+        assert!(text.contains("thread_list all workspaces"), "{text}");
+        assert!(text.contains("2 threads in this workspace"), "{text}");
+    }
+    assert_eq!(prefetches.load(Ordering::SeqCst), 1);
+
+    let without_details = json!({
+        "name": "thread_list",
+        "ok": true,
+        "args": {},
+        "resultPreview": "{\"kind\":\"ok\"}",
+    });
+    let fallback_preview =
+        render_tool_call_widget_with_renderers(&without_details, &options, Some(&lookup))
+            .join("\n");
+    assert!(fallback_preview.contains("thread_list"));
+    assert!(fallback_preview.contains("{\"kind\":\"ok\"}"));
+}

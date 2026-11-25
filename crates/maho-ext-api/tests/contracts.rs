@@ -82,7 +82,7 @@ fn every_event_kind_roundtrips_without_duplicate_names() {
         EventKind::ALL.iter().map(|kind| kind.as_str()).collect();
     // senpi-tip packages/coding-agent/src/core/extensions/types.ts includes
     // ui_prompt_start, ui_prompt_end, and input_disposition as well as the wake events.
-    assert_eq!(names.len(), 51);
+    assert_eq!(names.len(), 53);
     for kind in EventKind::ALL {
         assert_eq!(EventKind::parse(kind.as_str()), Some(kind));
     }
@@ -1253,4 +1253,117 @@ fn background_task_status_serde_roundtrip_preserves_counts() {
     let empty = BackgroundTaskStatus::default();
     assert!(empty.is_empty());
     assert!(empty.is_cleared());
+}
+
+#[test]
+fn get_mcp_servers_and_unregister_mcp_server_reflect_live_state() {
+    let runtime = ExtensionRuntime::default();
+    let mut first = ExtensionApi::new(
+        LoadedExtension::new("first", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        runtime.clone(),
+    );
+    let mut second = ExtensionApi::new(
+        LoadedExtension::new("second", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        runtime,
+    );
+    first.register_mcp_server(
+        "alpha",
+        McpServerDeclaration {
+            command: Some("npx".into()),
+            ..Default::default()
+        },
+    );
+    second.register_mcp_server(
+        "beta",
+        McpServerDeclaration {
+            url: Some("https://example.com/mcp".into()),
+            ..Default::default()
+        },
+    );
+    let names: Vec<String> = first
+        .get_mcp_servers()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, vec!["alpha", "beta"]);
+    first.unregister_mcp_server("alpha");
+    let names: Vec<String> = second
+        .get_mcp_servers()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, vec!["beta"]);
+}
+
+#[test]
+fn extension_side_filters_handlers_and_tools_by_profile_side() {
+    let profile = ExtensionSessionProfile {
+        side: Some(ExtensionSide::Hand),
+        ..Default::default()
+    };
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("ext", "/tmp".into(), SourceInfo::default()),
+        profile,
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let handler: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::None) }));
+    api.on_with_options(
+        EventKind::TurnStart,
+        handler.clone(),
+        ExtensionHandlerOptions {
+            runs: Some(ExtensionSide::Brain),
+            ..Default::default()
+        },
+    );
+    api.on_with_options(
+        EventKind::TurnEnd,
+        handler.clone(),
+        ExtensionHandlerOptions {
+            runs: Some(ExtensionSide::Hand),
+            ..Default::default()
+        },
+    );
+    api.on_with_options(
+        EventKind::AgentStart,
+        handler,
+        ExtensionHandlerOptions::default(),
+    );
+    assert!(!api.registered.handlers.contains_key(&EventKind::TurnStart));
+    assert_eq!(api.registered.handlers[&EventKind::TurnEnd].len(), 1);
+    assert_eq!(api.registered.handlers[&EventKind::AgentStart].len(), 1);
+
+    let execute: maho_tools::definition::ToolExecutor =
+        Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) }));
+    api.try_register_tool_with_runs(
+        ToolDefinition::new(
+            "brain_only",
+            "brain_only",
+            JsonValue::Object(Default::default()),
+            execute.clone(),
+        ),
+        Some(ExtensionSide::Brain),
+    )
+    .unwrap();
+    api.try_register_tool_with_runs(
+        ToolDefinition::new(
+            "hand_ok",
+            "hand_ok",
+            JsonValue::Object(Default::default()),
+            execute,
+        ),
+        Some(ExtensionSide::Hand),
+    )
+    .unwrap();
+    let tool_names: Vec<&str> = api
+        .registered
+        .tools
+        .iter()
+        .map(|t| t.definition.name.as_str())
+        .collect();
+    assert_eq!(tool_names, vec!["hand_ok"]);
 }

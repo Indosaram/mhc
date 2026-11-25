@@ -159,6 +159,9 @@ pub async fn diagnose_mcp_connect_failure(
     if let Some(cwd) = &config.cwd {
         process.current_dir(cwd);
     }
+    // senpi#3965: an MCP server command can be a console-subsystem exe on Windows; never flash its own console window.
+    #[cfg(windows)]
+    process.creation_flags(0x0800_0000);
     process.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = async {
         let mut child = process.spawn()?;

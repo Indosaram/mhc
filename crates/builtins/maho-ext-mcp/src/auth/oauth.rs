@@ -560,15 +560,15 @@ pub async fn finish_authorization(
             provider.code_verifier_async().await?,
         ),
     ];
-    add_resource_param(
-        &mut form,
-        &normalize_resource_url(&provider.store.server_url),
-    );
+    let resource = normalize_resource_url(&provider.store.server_url);
+    add_resource_param(&mut form, &resource);
     if let Some(redirect) = &provider.redirect_url {
         form.push(("redirect_uri".into(), redirect.clone()));
     }
-    match request_tokens(client, &info, &client_info, form).await {
-        Ok(tokens) => {
+    let _ = provider.validate_resource_url(&provider.store.server_url, Some(&resource));
+    match provider
+        .with_fresh_authorization(|| async {
+            let tokens = request_tokens(client, &info, &client_info, form).await?;
             provider
                 .save_tokens_with_issuer_async(
                     &tokens,
@@ -576,8 +576,11 @@ pub async fn finish_authorization(
                     Some(issuer.as_str()),
                 )
                 .await?;
-            Ok(())
-        }
+            Ok::<_, OAuthRequestError>(())
+        })
+        .await
+    {
+        Ok(()) => Ok(()),
         Err(OAuthRequestError::Flow(error))
             if error.oauth_kind == OAuthFailureKind::InvalidGrant =>
         {
@@ -712,17 +715,20 @@ pub async fn client_credentials_grant(
     if let Some(scopes) = provider.effective_scopes() {
         form.push(("scope".into(), scopes.join(" ")));
     }
-    add_resource_param(
-        &mut form,
-        &normalize_resource_url(&provider.store.server_url),
-    );
-    let tokens = request_tokens(client, &info, &information, form).await?;
+    let resource = normalize_resource_url(&provider.store.server_url);
+    add_resource_param(&mut form, &resource);
+    let _ = provider.validate_resource_url(&provider.store.server_url, Some(&resource));
     provider
-        .save_tokens_with_issuer_async(
-            &tokens,
-            chrono::Utc::now().timestamp_millis() as f64,
-            Some(issuer.as_str()),
-        )
+        .with_fresh_authorization(|| async {
+            let tokens = request_tokens(client, &info, &information, form).await?;
+            provider
+                .save_tokens_with_issuer_async(
+                    &tokens,
+                    chrono::Utc::now().timestamp_millis() as f64,
+                    Some(issuer.as_str()),
+                )
+                .await
+        })
         .await?;
     Ok(())
 }

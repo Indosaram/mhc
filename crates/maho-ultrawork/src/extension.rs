@@ -161,6 +161,7 @@ impl Extension for UltraworkExtension {
             ExtensionHandlerOptions {
                 preview_safe: true,
                 mutates_messages: None,
+                ..Default::default()
             },
         );
 

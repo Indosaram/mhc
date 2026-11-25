@@ -1,4 +1,12 @@
-use crate::{definition::*, filesystem_policy::*, model_only_text::model_only_text, truncate::*};
+use crate::{
+    definition::*,
+    filesystem_policy::*,
+    fs_error_code::tool_error_from_machine,
+    machine::{ToolMachine, default_tool_machine},
+    model_only_text::model_only_text,
+    truncate::*,
+};
+use maho_machine_ops::{EntryType, ListRequest, OpName, StatRequest};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -95,10 +103,104 @@ pub fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
         .then_with(|| left.1.cmp(&right.1))
         .then_with(|| a.cmp(b))
 }
+struct MachineLsOperations {
+    machine: ToolMachine,
+    signal: AbortSignal,
+}
+
+impl LsOperations for MachineLsOperations {
+    fn exists<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> {
+        Box::pin(async move {
+            let ctx = self.machine.context(Some(&self.signal), None);
+            Ok(self
+                .machine
+                .ops()
+                .files()
+                .stat(
+                    StatRequest {
+                        path: path.to_string_lossy().into_owned(),
+                        access: None,
+                    },
+                    &ctx,
+                )
+                .await
+                .is_ok())
+        })
+    }
+
+    fn is_directory<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> {
+        Box::pin(async move {
+            let ctx = self.machine.context(Some(&self.signal), None);
+            let info = self
+                .machine
+                .ops()
+                .files()
+                .stat(
+                    StatRequest {
+                        path: path.to_string_lossy().into_owned(),
+                        access: None,
+                    },
+                    &ctx,
+                )
+                .await
+                .map_err(tool_error_from_machine)?;
+            Ok(info.entry_type == EntryType::Directory)
+        })
+    }
+
+    fn readdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<String>> {
+        Box::pin(async move {
+            let ctx = self.machine.context(Some(&self.signal), None);
+            let list = self
+                .machine
+                .ops()
+                .files()
+                .list(
+                    ListRequest {
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                    &ctx,
+                )
+                .await
+                .map_err(tool_error_from_machine)?;
+            Ok(list.entries.into_iter().map(|e| e.name).collect())
+        })
+    }
+
+    fn readdir_typed<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<(String, Option<bool>)>> {
+        Box::pin(async move {
+            let ctx = self.machine.context(Some(&self.signal), None);
+            let list = self
+                .machine
+                .ops()
+                .files()
+                .list(
+                    ListRequest {
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                    &ctx,
+                )
+                .await
+                .map_err(tool_error_from_machine)?;
+            let mut out = Vec::with_capacity(list.entries.len());
+            for entry in list.entries {
+                let dir = match entry.entry_type {
+                    EntryType::Directory => Some(true),
+                    EntryType::File | EntryType::Other => Some(false),
+                    EntryType::Symlink => self.is_directory(&path.join(&entry.name)).await.ok(),
+                };
+                out.push((entry.name, dir));
+            }
+            Ok(out)
+        })
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct LsToolOptions {
     pub operations: Option<Arc<dyn LsOperations>>,
     pub filesystem_policy: Option<FilesystemPolicyChecker>,
+    pub machine: Option<ToolMachine>,
 }
 #[derive(Deserialize)]
 pub struct LsToolInput {
@@ -108,17 +210,28 @@ pub struct LsToolInput {
 }
 pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDefinition {
     let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
-    let ops = options
-        .operations
-        .unwrap_or_else(|| Arc::new(LocalLsOperations));
+    let custom_ops = options.operations;
+    let machine = options.machine.unwrap_or_else(default_tool_machine);
     let policy = options.filesystem_policy;
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone();
-        let ops = Arc::clone(&ops);
+        let custom_ops = custom_ops.clone();
+        let machine = machine.clone();
         let policy = policy.clone();
         Box::pin(async move {
             call.signal.check()?;
             let input: LsToolInput = serde_json::from_value(call.params)?;
+            let gate_args = json!({ "path": input.path, "limit": input.limit });
+            if let Some(admitted) = machine.begin(OpName::FilesList, gate_args, Some(&call.signal))
+            {
+                admitted.await?;
+            }
+            let ops: Arc<dyn LsOperations> = custom_ops.unwrap_or_else(|| {
+                Arc::new(MachineLsOperations {
+                    machine: machine.clone(),
+                    signal: call.signal.clone(),
+                })
+            });
             let path = crate::path_utils::resolve_to_cwd(
                 input
                     .path

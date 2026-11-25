@@ -71,6 +71,7 @@ fn input(id: &str) -> EvalToolInput {
         on_timeout: None,
         reset: None,
         isolate: None,
+        language_inferred: None,
     }
 }
 

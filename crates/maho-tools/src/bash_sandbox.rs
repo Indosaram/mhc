@@ -340,8 +340,7 @@ mod tests {
                 &[],
                 &|_| None,
             )
-            .err()
-            .expect("test");
+            .expect_err("test");
             assert_eq!(
                 error.to_string(),
                 format!("bashSandbox is \"required\" but {tool} is not available on this system")

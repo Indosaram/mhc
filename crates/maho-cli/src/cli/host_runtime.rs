@@ -1473,6 +1473,7 @@ pub fn host_runtime_factory_with_mcp_registry(
                         shared_host_enabled: false,
                         session_kind: profile.session_kind.unwrap_or_default(),
                         session_context: profile.session_context.clone().unwrap_or_default(),
+                        side: None,
                     },
                     mcp_registry: Some(mcp_registry),
                     // senpi main.ts `sessionExtensionFlagValues(parsed.unknownFlags, launchProfile)`: the

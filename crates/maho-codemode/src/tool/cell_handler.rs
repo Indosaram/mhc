@@ -1,8 +1,10 @@
 use super::{
     call_capture::*,
     cell_runtime::CellResultBuilder,
+    nested_tool_call::run_nested_tool,
+    nested_tool_output::CellToolUpdateSink,
     status_events::upsert_status_event,
-    tool_result_marshal::{marshal_tool_result, tool_result_is_error},
+    tool_widgets::{NestedToolRendererLookup, is_core_widget_name},
 };
 use crate::{
     bridges::{
@@ -29,6 +31,7 @@ pub struct CellBridgeRuntime {
     pub eval_handle_host: Option<Arc<dyn EvalHandleHost>>,
     pub owner_session_id: Option<String>,
     pub completion_handles: Arc<crate::bridges::handles::CompletionHandleRegistry>,
+    pub renderer_lookup: Option<NestedToolRendererLookup>,
 }
 
 pub type CellCompletionHandler = Arc<
@@ -54,12 +57,14 @@ pub struct CellHandler {
     environments: Option<Arc<crate::environments::js_environments::JsEnvironments>>,
 }
 
+type CellToolReplyPayload = (Value, bool, Option<String>, Option<String>, Option<Value>);
+
 pub struct PendingCellToolResult {
     message: Value,
     capture: ToolCallCapture,
     metric_index: usize,
     error_code: Option<&'static str>,
-    reply: Result<(Value, bool, Option<String>, Option<String>), String>,
+    reply: Result<CellToolReplyPayload, String>,
 }
 pub type PendingCellToolCall =
     std::pin::Pin<Box<dyn std::future::Future<Output = PendingCellToolResult> + Send>>;
@@ -86,6 +91,11 @@ impl CellHandler {
         emitter: crate::bridges::agent_bridge::AgentStatusEmitter,
     ) {
         self.emit_status = Some(emitter);
+    }
+
+    /// Where the cell's bridge calls stream their nested tools' partial results.
+    pub fn tool_updates(&self) -> Arc<dyn CellToolUpdateSink> {
+        self.builder.tool_update_sink()
     }
 
     pub async fn handle(&mut self, message: &Value) -> Result<(), String> {
@@ -164,6 +174,7 @@ impl CellHandler {
         let agent_bridge = self.agent_bridge.clone();
         let emit_status = self.emit_status.clone();
         let environments = self.environments.clone();
+        let tool_updates = self.builder.tool_update_sink();
         let message = message.clone();
         Box::pin(async move {
             let name = message["toolName"].as_str().unwrap_or("");
@@ -229,6 +240,7 @@ impl CellHandler {
                                     true,
                                     None,
                                     None,
+                                    None,
                                 )),
                                 Err(error) => Err(error.message),
                             }
@@ -244,6 +256,7 @@ impl CellHandler {
                                     .cloned()
                                     .unwrap_or(Value::Null),
                                 true,
+                                None,
                                 None,
                                 None,
                             )
@@ -268,7 +281,7 @@ impl CellHandler {
                         error_code = error.code();
                         error.to_string()
                     })
-                    .map(|value| (value, true, None, None))
+                    .map(|value| (value, true, None, None, None))
                 } else {
                     Err("eval handle requires an owning session id".to_string())
                 }
@@ -281,40 +294,41 @@ impl CellHandler {
                     runtime.tools.as_ref().map(|list| list()).transpose()
                 };
                 match tools {
-                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:runtime.executor.as_ref(),task_tool_name:&runtime.settings.task_tools.task,task_output_tool_name:&runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status,agent_bridge:&agent_bridge,environments:environments.as_deref().map(|environment|environment as &dyn crate::bridges::packages_install::PackagesInstallEnvironments)}).await.map(|value|(value,true,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
+                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:runtime.executor.as_ref(),task_tool_name:&runtime.settings.task_tools.task,task_output_tool_name:&runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status,agent_bridge:&agent_bridge,environments:environments.as_deref().map(|environment|environment as &dyn crate::bridges::packages_install::PackagesInstallEnvironments)}).await.map(|value|(value,true,None,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
                 Err(error)=>Err(error),
             }
             } else {
-                runtime
-                    .executor
-                    .execute_tool(name, message["args"].clone(), options)
-                    .await
-                    .map(|result| {
-                        let ok = !tool_result_is_error(&result);
-                        let preview = ok.then(|| tool_call_result_preview(&result)).flatten();
-                        let error = (!ok)
-                            .then(|| {
-                                result.content.iter().find_map(|part| match part {
-                                    maho_ext_api::ContentBlock::Text(content) => {
-                                        Some(cap_code_points(
-                                            &crate::host_sdk::sanitize_terminal_label(
-                                                &content.text,
-                                            ),
-                                            512,
-                                        ))
-                                    }
-                                    _ => None,
-                                })
-                            })
-                            .flatten();
-                        (marshal_tool_result(&result), ok, preview, error)
-                    })
-                    .map_err(|error| {
-                        error_code = Some(
-                            crate::bridges::reserved_dispatch::execute_tool_error_code(&error.code),
-                        );
-                        error.to_string()
-                    })
+                let keep_details = !is_core_widget_name(name)
+                    && runtime
+                        .renderer_lookup
+                        .as_ref()
+                        .and_then(|lookup| lookup(name))
+                        .is_some_and(|renderers| renderers.has_result_renderer());
+                run_nested_tool(
+                    runtime.executor.as_ref(),
+                    name,
+                    call_id,
+                    message["args"].clone(),
+                    runtime.signal.clone(),
+                    Some(tool_updates),
+                    keep_details,
+                )
+                .await
+                .map(|reply| {
+                    (
+                        reply.value,
+                        reply.tool_call_ok,
+                        reply.result_preview,
+                        reply.error_text,
+                        reply.details,
+                    )
+                })
+                .map_err(|error| {
+                    error_code = Some(crate::bridges::reserved_dispatch::execute_tool_error_code(
+                        &error.code,
+                    ));
+                    error.to_string()
+                })
             };
             PendingCellToolResult {
                 message,
@@ -340,13 +354,14 @@ impl CellHandler {
             return Ok(());
         }
         match reply {
-            Ok((value, ok, preview, error)) => {
+            Ok((value, ok, preview, error, details)) => {
                 record_tool_call(
                     &mut self.builder.state.tool_calls,
                     ok,
                     &mut capture,
                     preview.as_deref(),
                     error.as_deref(),
+                    details.as_ref(),
                     now_ms(),
                 );
                 (self.runtime.deliver_reply)(
@@ -378,6 +393,7 @@ impl CellHandler {
                     &mut capture,
                     None,
                     Some(&error),
+                    None,
                     now_ms(),
                 );
                 let mut payload = json!({"message":error});

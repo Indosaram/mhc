@@ -45,3 +45,24 @@ fn ended_fields() {
     value["exitCode"] = json!(1.5);
     assert!(!is_terminal_monitor_ended_event(&value));
 }
+#[test]
+fn background_age_fields_and_constants() {
+    assert_eq!(JOB_WIDGET_STATE_EVENT, "job_widget_state");
+    assert_eq!(TERMINAL_BACKGROUND_AGE_EVENT, "terminal_background_age");
+    let mut value = json!({
+        "kind": "running",
+        "id": "bash-1",
+        "description": "sleep",
+        "startedAtMs": 1000,
+        "ageMs": 600000,
+        "ageMinutes": 10,
+        "autoReapMinutes": null,
+        "stop": { "tool": "kill_bash", "args": { "bash_id": "bash-1" } }
+    });
+    assert!(is_terminal_background_age_event(&value));
+    value["kind"] = json!("reaped");
+    value["autoReapMinutes"] = json!(30);
+    assert!(is_terminal_background_age_event(&value));
+    value["kind"] = json!("bogus");
+    assert!(!is_terminal_background_age_event(&value));
+}
