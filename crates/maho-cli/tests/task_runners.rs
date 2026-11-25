@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use maho_cli::cli::task_runners::{authenticated_rpc_options, native_rpc_options};
+use maho_cli::cli::task_runners::{
+    authenticated_rpc_options, native_rpc_options, with_inherited_permission_preset,
+};
 use senpi_task::runners::types::RpcRunnerSpec;
 
 #[test]
@@ -520,6 +522,55 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
         Some(path.to_string_lossy().as_ref())
     );
     assert_eq!(restored.current_context().messages.len(), 2);
+}
+
+#[test]
+fn native_rpc_spawn_survives_permission_preset_inheritance() {
+    let dir = tempfile::tempdir().expect("isolated task state");
+    let executable = if cfg!(windows) {
+        dir.path().join("mhc.exe")
+    } else {
+        dir.path().join("mhc")
+    };
+    let native = || {
+        native_rpc_options(
+            executable.clone(),
+            "native-agent",
+            BTreeMap::new(),
+            Vec::new(),
+        )
+    };
+    let spec = RpcRunnerSpec {
+        task_id: "child".into(),
+        cwd: dir.path().to_string_lossy().into_owned(),
+        state_dir: dir.path().to_string_lossy().into_owned(),
+        model: Some("provider/model".into()),
+        ..Default::default()
+    };
+
+    // A default parent preset must keep the native builder: without it the runner falls back to
+    // whichever `senpi` is on PATH.
+    let default_parent = with_inherited_permission_preset(native(), None)
+        .build_spawn
+        .expect("native spawn builder kept for a default preset")(&spec);
+    let explicit_parent = with_inherited_permission_preset(native(), Some("read-only".into()))
+        .build_spawn
+        .expect("native spawn builder kept for an explicit preset")(&spec);
+
+    assert_eq!(default_parent.command, executable.to_string_lossy());
+    assert!(
+        !default_parent
+            .args
+            .iter()
+            .any(|arg| arg == "--permission-preset")
+    );
+    assert_eq!(explicit_parent.command, executable.to_string_lossy());
+    assert!(
+        explicit_parent
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--permission-preset", "read-only"])
+    );
 }
 
 #[test]

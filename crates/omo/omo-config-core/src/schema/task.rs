@@ -198,12 +198,27 @@ pub fn omo_task_isolation_layer_schema() -> Node {
     ])
 }
 
+pub fn omo_task_cloud_schema() -> Node {
+    strict_object(vec![
+        optional("mode", enumeration(&["auto", "always", "off"])),
+        optional("local_threshold", nonnegative_integer()),
+        optional("offload_isolated", boolean()),
+        optional("fallback_to_local", boolean()),
+        optional("sync_workspace", boolean()),
+        optional("apply_patch", boolean()),
+        optional("delete_on_release", boolean()),
+        optional("provider", string()),
+        optional("ttl_seconds", positive_integer()),
+        optional("ferryx_cli", string()),
+    ])
+}
+
 pub fn omo_task_settings_schema() -> Node {
     strict_object(vec![
         defaulted("isolation", omo_task_isolation_schema(), default_isolation),
         defaulted(
             "default_execution_mode",
-            enumeration(&["auto", "in-process", "process"]),
+            enumeration(&["auto", "in-process", "process", "cloud"]),
             default_execution_mode,
         ),
         defaulted(
@@ -259,6 +274,7 @@ pub fn omo_task_settings_schema() -> Node {
             positive_integer(),
             default_completion_batch_limit,
         ),
+        optional("cloud", omo_task_cloud_schema()),
     ])
 }
 
@@ -300,7 +316,7 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("isolation", omo_task_isolation_layer_schema()),
         optional(
             "default_execution_mode",
-            enumeration(&["auto", "in-process", "process"]),
+            enumeration(&["auto", "in-process", "process", "cloud"]),
         ),
         optional("process_runner", enumeration(&["host", "child-process"])),
         optional("host_engine_policy", enumeration(&["upgrade", "fallback"])),
@@ -329,6 +345,7 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("dag", omo_task_dag_settings_layer_schema()),
         optional("completion_transport_limit", integer_between(1000, 64000)),
         optional("completion_batch_limit", positive_integer()),
+        optional("cloud", omo_task_cloud_schema()),
     ])
 }
 

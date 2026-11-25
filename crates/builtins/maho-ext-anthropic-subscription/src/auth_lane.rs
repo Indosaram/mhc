@@ -13,7 +13,13 @@ pub enum TokenInjection {
     Ambient,
     OAuthSlots,
     ConfigDir,
+    /// The attempt lane of a claude CLI account (senpi `AnthropicSubscriptionAuthLane` `claude-cli`, senpi#4436): its
+    /// own config dir links `projects` to the shared transcript root. Never a configured `tokenInjection`.
+    ClaudeCli,
 }
+/// A stored account that names no account cannot be selected, signed into, or affinity-routed. Refusing keeps the turn
+/// from silently falling back to ambient host credentials (oh-my-openagent#12228).
+const UNUSABLE_STORED_ACCOUNT_ERROR: &str = "claude_account_unusable: a stored Claude account has no name, so no turn can use it; run /login anthropic-subscription to add a named account";
 pub const PROVIDER_ID: &str = "anthropic-subscription";
 pub struct ManagedPool {
     pub accounts: Vec<AccountSlot>,
@@ -29,6 +35,8 @@ pub struct ManagedPool {
 pub struct PreparedSlot {
     pub env: BTreeMap<String, String>,
     pub credential_digest: String,
+    /// senpi `laneFor`: `claude-cli` for a claude CLI account, else the pool's lane.
+    pub lane: TokenInjection,
 }
 const TRANSIENT_REFRESH_FAILURE: &str = r"\bstatus=5\d\d\b|\bTimeoutError\b";
 /// senpi `refreshFailure`: throttling, server errors and timeouts on the token endpoint are not a verdict on the
@@ -125,7 +133,11 @@ impl ManagedPool {
             + Send
             + 'static,
     {
-        if selected.source == AccountSource::Env || now < selected.expires - EXPIRING_WITHIN_MS {
+        // A claude CLI account holds no token: the CLI renews its own login (senpi#4436).
+        if selected.is_claude_cli()
+            || selected.source == AccountSource::Env
+            || now < selected.expires - EXPIRING_WITHIN_MS
+        {
             return Ok(());
         }
         let abort = signal.clone();
@@ -226,7 +238,21 @@ pub async fn managed_pool(
     }
     let lane = request_lane(settings, &accounts, request)?;
     if lane == TokenInjection::Ambient {
-        return Ok(None);
+        // An ambient lane the user configured explicitly is their choice and is never overridden (omo#6784); a lane that
+        // defaulted to ambient only because every stored account was dropped names the real cause instead.
+        let explicit = settings
+            .values
+            .get("tokenInjection")
+            .and_then(serde_json::Value::as_str)
+            == Some("ambient");
+        let unusable = credential
+            .as_ref()
+            .and_then(|value| value.as_oauth())
+            .map_or(0, crate::accounts::unusable_stored_slot_count);
+        if explicit || unusable == 0 {
+            return Ok(None);
+        }
+        anyhow::bail!(UNUSABLE_STORED_ACCOUNT_ERROR);
     }
     let settings_pin = settings
         .values
@@ -311,6 +337,9 @@ pub fn prepared_environment(
     agent_dir: &Path,
     now_ms: u64,
 ) -> anyhow::Result<PreparedSlot> {
+    if slot.is_claude_cli() {
+        return prepare_claude_cli_slot(environment, slot, agent_dir);
+    }
     let access = if slot.source == AccountSource::Env {
         env_slot_token(&|name| environment.get(name).cloned(), &slot.name)
     } else {
@@ -333,11 +362,41 @@ pub fn prepared_environment(
                 directory.to_string_lossy().into_owned(),
             );
         }
-        TokenInjection::Ambient => anyhow::bail!("ambient lane does not prepare a managed slot"),
+        TokenInjection::Ambient | TokenInjection::ClaudeCli => {
+            anyhow::bail!("this lane does not prepare a token slot")
+        }
     };
     Ok(PreparedSlot {
         env: child,
         credential_digest,
+        lane,
+    })
+}
+/// senpi `prepareClaudeCliSlot`: a claude-cli account turn gets no token, only the account's own config dir (its links
+/// repaired first, so the transcript lands in the shared root). Every inherited auth variable is stripped, so the CLI
+/// can only use the login in its own store.
+fn prepare_claude_cli_slot(
+    environment: &BTreeMap<String, String>,
+    slot: &AccountSlot,
+    agent_dir: &Path,
+) -> anyhow::Result<PreparedSlot> {
+    let account_dir = crate::claude_cli_account_dir::ensure_account_dir(
+        agent_dir,
+        slot.dir_id.as_deref().unwrap_or_default(),
+        &crate::claude_cli_account_dir::claude_cli_shared_root(environment),
+    )?;
+    let env = crate::claude_cli_environment::build_claude_cli_environment(
+        environment,
+        &account_dir,
+        None,
+    );
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"claude-cli\0");
+    digest.update(account_dir.to_string_lossy().as_bytes());
+    Ok(PreparedSlot {
+        env,
+        credential_digest: format!("{:x}", digest.finalize()),
+        lane: TokenInjection::ClaudeCli,
     })
 }
 #[cfg(test)]
@@ -447,6 +506,122 @@ mod tests {
             block_reason: None,
             ..Default::default()
         }
+    }
+    #[tokio::test]
+    async fn a_claude_cli_account_runs_in_its_own_dir_with_no_token_and_is_never_refreshed() {
+        use maho_ai::{
+            auth::{
+                credential_store::InMemoryCredentialStore,
+                types::{Credential, CredentialStore},
+            },
+            utils::abort::AbortController,
+        };
+        let temp = tempfile::tempdir().expect("temp");
+        let shared = temp.path().join("claude");
+        let environment: BTreeMap<String, String> = [
+            (
+                "CLAUDE_CONFIG_DIR".into(),
+                shared.to_string_lossy().into_owned(),
+            ),
+            ("CLAUDE_CODE_OAUTH_TOKEN".into(), "host".into()),
+            ("ANTHROPIC_API_KEY".into(), "host".into()),
+            ("PATH".into(), "/bin".into()),
+        ]
+        .into();
+        let mut slot = AccountSlot {
+            name: "default".into(),
+            store: Some(crate::accounts::AccountStore::ClaudeCli),
+            dir_id: Some("0123456789abcdef0123456789abcdef".into()),
+            ..Default::default()
+        };
+        let store = InMemoryCredentialStore::new();
+        let credential =
+            crate::accounts::add_account(&crate::accounts::empty_credential(), slot.clone())
+                .expect("account");
+        store
+            .modify(
+                PROVIDER_ID,
+                Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
+                None,
+            )
+            .await
+            .expect("seed");
+        let pool = managed_pool(&store, &settings_default(), &environment, None)
+            .await
+            .expect("pool")
+            .expect("managed");
+        assert_eq!(pool.lane, TokenInjection::OAuthSlots);
+        assert_eq!(pool.accounts.len(), 2);
+        pool.refresh_selected(
+            &store,
+            &mut slot,
+            0.0,
+            AbortController::new().signal(),
+            |_, _| async { anyhow::bail!("a claude CLI account is never refreshed") },
+        )
+        .await
+        .expect("no refresh");
+        let prepared =
+            prepared_environment(&environment, pool.lane, &slot, temp.path(), 0).expect("prepare");
+        let account_dir = temp
+            .path()
+            .join("anthropic-subscription-claude")
+            .join("0123456789abcdef0123456789abcdef");
+        assert_eq!(prepared.lane, TokenInjection::ClaudeCli);
+        assert_eq!(
+            prepared.env,
+            [
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    account_dir.to_string_lossy().into_owned()
+                ),
+                ("NO_COLOR".into(), "1".into()),
+                ("PATH".into(), "/bin".into()),
+            ]
+            .into()
+        );
+        assert_eq!(
+            std::fs::read_link(account_dir.join("projects")).expect("projects"),
+            shared.join("projects")
+        );
+    }
+    #[tokio::test]
+    async fn a_pool_left_with_only_nameless_claude_cli_accounts_refuses_instead_of_going_ambient() {
+        use maho_ai::auth::{
+            credential_store::InMemoryCredentialStore,
+            types::{Credential, CredentialStore},
+        };
+        let store = InMemoryCredentialStore::new();
+        let credential = crate::accounts::empty_credential().with_extra(
+            "accounts",
+            serde_json::json!([{"source":"login","store":"claude-cli","dirId":"0123456789abcdef0123456789abcdef"}]),
+        );
+        store
+            .modify(
+                PROVIDER_ID,
+                Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
+                None,
+            )
+            .await
+            .expect("seed");
+        let error = managed_pool(&store, &settings_default(), &BTreeMap::new(), None)
+            .await
+            .err()
+            .expect("refused");
+        assert!(error.to_string().starts_with("claude_account_unusable:"));
+        assert!(
+            managed_pool(&store, &settings("ambient"), &BTreeMap::new(), None)
+                .await
+                .expect("explicit ambient")
+                .is_none()
+        );
+    }
+    fn settings_default() -> ProviderSettings {
+        crate::settings::load(
+            &serde_json::Value::Null,
+            &serde_json::Value::Null,
+            &BTreeMap::new(),
+        )
     }
     #[test]
     fn managed_empty_pool_refuses_and_request_token_changes_config_root_lane() {

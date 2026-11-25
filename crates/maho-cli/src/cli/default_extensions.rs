@@ -840,7 +840,7 @@ impl Extension for Task {
                     });
                 });
                 let parent_registry = super::task_runners::live_parent_registry(weak.clone());
-                let mut native = super::task_runners::native_rpc_options(
+                let native = super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
                     &maho_core::config::get_agent_dir(), environment.clone(), Vec::new());
                 // Children inherit the parent's effective preset (CLI flag, else project/global `permissionPreset`) only when explicitly non-default; a default parent leaves children on the default (full-access).
@@ -855,13 +855,7 @@ impl Extension for Task {
                         .and_then(|preset| serde_json::to_value(preset).ok())
                         .and_then(|value| value.as_str().map(str::to_owned))
                 };
-                if let (Some(preset), Some(build)) = (explicit_preset, native.build_spawn.take()) {
-                    native.build_spawn = Some(Arc::new(move |spec| {
-                        let mut spec = spec.clone();
-                        spec.permission_preset.get_or_insert_with(|| preset.clone());
-                        build(&spec)
-                    }));
-                }
+                let native = super::task_runners::with_inherited_permission_preset(native, explicit_preset);
                 let process = super::task_runners::authenticated_rpc_options(native, weak.clone());
                 let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).

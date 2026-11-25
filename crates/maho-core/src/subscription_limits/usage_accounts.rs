@@ -10,6 +10,11 @@
 //! `refresh_slot`, `is_grant_rejected`, the auth-block re-probe interval) are small local ports. The
 //! refresher is injected through `AccountSources::refresher`, and the poller's `AbortSignal` (a watch
 //! receiver) is bridged to the pi-ai abort signal the refresher takes.
+//!
+//! claude CLI accounts (senpi#4436, v2026.11.19-5): such an account polls with the access token the CLI keeps in its
+//! own store, read as it stands and never refreshed; `read_claude_cli_access_token` ports
+//! `claude-cli-account-dir.ts` `readClaudeCliAccessToken` here for the same cycle reason. On macOS the CLI keeps the
+//! token in the Keychain, so a macOS account offers none and is not polled.
 
 use std::sync::Arc;
 
@@ -46,12 +51,16 @@ pub struct AccountSources {
     pub env: EnvLookup,
     pub refresher: SlotRefresher,
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    /// Where the claude CLI account dirs live; without it, claude CLI accounts are not polled.
+    pub agent_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 struct ClaudeSlot {
     name: String,
     is_env: bool,
+    /// A claude CLI account's dir: its token is the CLI's own, never refreshed here.
+    cli_account_dir: Option<std::path::PathBuf>,
     access: String,
     refresh: String,
     expires: f64,
@@ -65,7 +74,34 @@ fn text(slot: &Value, key: &str) -> String {
         .to_owned()
 }
 
-fn stored_claude_slots(credential: &OAuthCredential) -> Vec<ClaudeSlot> {
+fn is_valid_account_dir_id(dir_id: &str) -> bool {
+    dir_id.len() == 32
+        && dir_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A claude CLI slot's account dir, or `None` when it cannot be polled: no agent dir, a sign-in it must redo, or a
+/// dir id that names no directory.
+fn cli_account_dir(
+    slot: &Value,
+    agent_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let dir_id = text(slot, "dirId");
+    if slot
+        .get("signInRequired")
+        .is_some_and(|reason| !reason.is_null())
+        || !is_valid_account_dir_id(&dir_id)
+    {
+        return None;
+    }
+    Some(crate::config::claude_cli_account_root(agent_dir?).join(dir_id))
+}
+
+fn stored_claude_slots(
+    credential: &OAuthCredential,
+    agent_dir: Option<&std::path::Path>,
+) -> Vec<ClaudeSlot> {
     let Some(accounts) = credential.extra.get("accounts").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -74,10 +110,20 @@ fn stored_claude_slots(credential: &OAuthCredential) -> Vec<ClaudeSlot> {
         .filter(|slot| {
             !(text(slot, "access") == SENTINEL_TOKEN && text(slot, "refresh") == SENTINEL_TOKEN)
         })
-        .filter(|slot| !text(slot, "name").is_empty())
-        .map(|slot| ClaudeSlot {
+        .filter(|slot| !text(slot, "name").trim().is_empty())
+        .filter_map(|slot| {
+            let is_cli = slot.get("store").and_then(Value::as_str) == Some("claude-cli");
+            let cli_account_dir = if is_cli {
+                Some(cli_account_dir(slot, agent_dir)?)
+            } else {
+                None
+            };
+            Some((slot, cli_account_dir))
+        })
+        .map(|(slot, cli_account_dir)| ClaudeSlot {
             name: text(slot, "name"),
             is_env: slot.get("source").and_then(Value::as_str) == Some("env"),
+            cli_account_dir,
             access: text(slot, "access"),
             refresh: text(slot, "refresh"),
             expires: slot.get("expires").and_then(Value::as_f64).unwrap_or(0.0),
@@ -106,6 +152,7 @@ fn env_claude_slots(env: &(dyn Fn(&str) -> Option<String> + Send + Sync)) -> Vec
                         format!("env-{index}")
                     },
                     is_env: true,
+                    cli_account_dir: None,
                     access: String::new(),
                     refresh: String::new(),
                     expires: 0.0,
@@ -190,7 +237,9 @@ pub async fn list_poll_accounts(sources: &AccountSources) -> Vec<PollAccount> {
 
 fn claude_accounts(stored: Option<Credential>, sources: &AccountSources) -> Vec<PollAccount> {
     let mut slots = match &stored {
-        Some(Credential::OAuth(credential)) => stored_claude_slots(credential),
+        Some(Credential::OAuth(credential)) => {
+            stored_claude_slots(credential, sources.agent_dir.as_deref())
+        }
         _ => Vec::new(),
     };
     slots.extend(env_claude_slots(&*sources.env));
@@ -219,6 +268,9 @@ async fn claude_access(
     if slot.is_env {
         return env_slot_token(&*sources.env, &slot.name).map(Ok);
     }
+    if let Some(account_dir) = &slot.cli_account_dir {
+        return read_claude_cli_access_token(account_dir, (sources.now)() as f64).map(Ok);
+    }
     let expiring = |now: i64, expires: f64| now as f64 >= expires - EXPIRING_WITHIN_MS;
     if !expiring((sources.now)(), slot.expires) {
         return Some(Ok(slot.access.clone()));
@@ -229,7 +281,7 @@ async fn claude_access(
     }
     match refresh_slot(sources, &slot.name, &signal).await {
         Ok(Some(Credential::OAuth(refreshed))) => {
-            let renewed = stored_claude_slots(&refreshed)
+            let renewed = stored_claude_slots(&refreshed, None)
                 .into_iter()
                 .find(|candidate| candidate.name == slot.name);
             match renewed {
@@ -252,6 +304,70 @@ async fn claude_access(
             Some(Err(SIGN_IN_NEEDED.to_owned()))
         }
     }
+}
+
+/// senpi `readClaudeCliAccessToken`: the access token the claude CLI keeps for an account dir, as it stands: read
+/// only, never refreshed (senpi#4436). `None` when the credential file is missing, unreadable, malformed or already
+/// expired; the CLI renews it on its next turn. It follows no link: a linked account dir or credential file offers
+/// none, including one swapped in after the check.
+pub fn read_claude_cli_access_token(account_dir: &std::path::Path, now: f64) -> Option<String> {
+    let file = account_dir.join(".credentials.json");
+    let dir_before = std::fs::symlink_metadata(account_dir).ok()?;
+    let file_before = std::fs::symlink_metadata(&file).ok()?;
+    if !dir_before.is_dir() || !file_before.is_file() {
+        return None;
+    }
+    let contents = read_unlinked(&file, &file_before)?;
+    // The dir is not opened, so a dir swapped for a link during the read shows up as a changed dir afterwards.
+    let dir_after = std::fs::symlink_metadata(account_dir).ok()?;
+    if !dir_after.is_dir() || !same_file(&dir_before, &dir_after) {
+        return None;
+    }
+    let parsed: Value = serde_json::from_str(&contents).ok()?;
+    let oauth = parsed.get("claudeAiOauth")?.as_object()?;
+    let access = oauth
+        .get("accessToken")?
+        .as_str()
+        .filter(|token| !token.is_empty())?;
+    if oauth
+        .get("expiresAt")
+        .and_then(Value::as_f64)
+        .is_some_and(|expires| expires <= now)
+    {
+        return None;
+    }
+    Some(access.to_owned())
+}
+
+/// Checked, then read: the open refuses a final link where the platform can, and the opened handle must be the very
+/// file that was checked.
+fn read_unlinked(file: &std::path::Path, checked: &std::fs::Metadata) -> Option<String> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits());
+    }
+    let mut handle = options.open(file).ok()?;
+    let opened = handle.metadata().ok()?;
+    if !opened.is_file() || !same_file(&opened, checked) {
+        return None;
+    }
+    let mut contents = String::new();
+    handle.read_to_string(&mut contents).ok()?;
+    Some(contents)
+}
+
+#[cfg(unix)]
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.ino() == right.ino() && left.dev() == right.dev()
+}
+#[cfg(not(unix))]
+fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// A background poll records the auth_error lock only on an explicit rejection from the token endpoint:
@@ -506,6 +622,49 @@ mod tests {
             .collect();
         assert_eq!(names, ["env", "env-2"]);
         assert_eq!(env_slot_token(&*env, "env-2").as_deref(), Some("secret"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_cli_accounts_poll_with_the_cli_token_as_it_stands_and_never_through_a_link() {
+        let temp = tempfile::tempdir().expect("temp");
+        let dir_id = "0123456789abcdef0123456789abcdef";
+        let account_dir = temp
+            .path()
+            .join("anthropic-subscription-claude")
+            .join(dir_id);
+        std::fs::create_dir_all(&account_dir).expect("account dir");
+        let credential = OAuthCredential::new(SENTINEL_TOKEN, SENTINEL_TOKEN, 1.0).with_extra(
+            "accounts",
+            json!([
+                {"name":"cli","source":"login","store":"claude-cli","dirId":dir_id},
+                {"name":"expired","source":"login","store":"claude-cli","dirId":dir_id,"signInRequired":"login_expired"},
+                {"name":"broken","source":"login","store":"claude-cli","dirId":"nope"}
+            ]),
+        );
+        assert!(stored_claude_slots(&credential, None).is_empty());
+        let slots = stored_claude_slots(&credential, Some(temp.path()));
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            slots[0].cli_account_dir.as_deref(),
+            Some(account_dir.as_path())
+        );
+        assert_eq!(read_claude_cli_access_token(&account_dir, 10.0), None);
+        let file = account_dir.join(".credentials.json");
+        std::fs::write(
+            &file,
+            r#"{"claudeAiOauth":{"accessToken":"synthetic","expiresAt":100}}"#,
+        )
+        .expect("credentials");
+        assert_eq!(
+            read_claude_cli_access_token(&account_dir, 10.0).as_deref(),
+            Some("synthetic")
+        );
+        assert_eq!(read_claude_cli_access_token(&account_dir, 100.0), None);
+        let elsewhere = temp.path().join("elsewhere.json");
+        std::fs::rename(&file, &elsewhere).expect("move");
+        std::os::unix::fs::symlink(&elsewhere, &file).expect("link");
+        assert_eq!(read_claude_cli_access_token(&account_dir, 10.0), None);
     }
 
     #[test]

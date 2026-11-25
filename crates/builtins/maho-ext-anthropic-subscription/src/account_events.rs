@@ -87,6 +87,7 @@ fn sdk_error_kind_name(kind: SdkErrorKind) -> &'static str {
         SdkErrorKind::RateLimit => "rate_limit",
         SdkErrorKind::Overloaded => "overloaded",
         SdkErrorKind::AuthError => "auth_error",
+        SdkErrorKind::LoginUnreadable => "login_unreadable",
         SdkErrorKind::Billing => "billing",
         SdkErrorKind::OrgNotAllowed => "org_not_allowed",
         SdkErrorKind::Entitlement => "entitlement",

@@ -16,6 +16,7 @@ fn lane_name(lane: crate::auth_lane::TokenInjection) -> &'static str {
         crate::auth_lane::TokenInjection::Ambient => "ambient",
         crate::auth_lane::TokenInjection::OAuthSlots => "oauth-slots",
         crate::auth_lane::TokenInjection::ConfigDir => "config-dir",
+        crate::auth_lane::TokenInjection::ClaudeCli => "claude-cli",
     }
 }
 
@@ -77,6 +78,7 @@ async fn recover_auth_blocks(
             is_usable: Box::new(move |account: &crate::accounts::AccountSlot| {
                 !crate::affinity::is_blocked_for(account, now, Some(&model))
             }),
+            claude_cli_status: Some(claude_cli_status(pool_ref, deps)),
             now,
             transient_error: Box::new(|error: anyhow::Error| {
                 if crate::auth_lane::is_store_busy(&error) {
@@ -88,8 +90,43 @@ async fn recover_auth_blocks(
         },
     )
     .await?;
-    pool.accounts = accounts;
+    // A slot that must sign in again is never selected, like a removed one, and neither is a stored CLI slot whose
+    // account dir id is unusable (omo#12228). With none left the turn names them.
+    let signed_out = crate::sign_in_again::sign_in_required_accounts(&accounts);
+    pool.accounts = accounts
+        .into_iter()
+        .filter(crate::sign_in_again::is_servable_account_slot)
+        .collect();
+    if pool.accounts.is_empty() {
+        return Err(crate::sign_in_again::ClaudeSignInRequiredError::new(&signed_out).into());
+    }
     Ok(())
+}
+
+/// senpi `activeBoundary.claudeCliAuthStatus`: `claude auth status` in one CLI-store account dir, the auth-block
+/// re-probe of a `claude-cli` slot.
+fn claude_cli_status<'a>(
+    pool: &'a crate::auth_lane::ManagedPool,
+    deps: &'a StreamDeps,
+) -> crate::auth_block_recovery::ClaudeCliStatusReader<'a> {
+    Box::new(move |slot: &crate::accounts::AccountSlot| {
+        let config_dir = crate::claude_cli_account_dir::account_dir_for(
+            &deps.agent_dir,
+            slot.dir_id.as_deref().unwrap_or_default(),
+        );
+        Box::pin(async move {
+            let run = crate::claude_cli_process::ClaudeCliRun {
+                executable: &deps.executable,
+                config_dir: config_dir?,
+                parent_env: &pool.environment,
+            };
+            Ok(crate::claude_cli_auth_status::read_claude_cli_auth_status(
+                &run,
+                crate::claude_cli_process::DEFAULT_SHORT_COMMAND_TIMEOUT_MS,
+            )
+            .await)
+        })
+    })
 }
 
 pub struct StreamDeps {
@@ -274,10 +311,10 @@ pub fn stream_anthropic_subscription(
                     selected = Some(slot.clone());
                     let prepared = crate::auth_lane::prepared_environment(&pool.environment, pool.lane, &slot, &deps.agent_dir, (deps.now)() as u64)?;
                     // auth-lane.ts: `pinSource: input.pinnedAccount !== undefined ? "cli" : pool.pinSource`.
-                    let attempt = crate::account_context::AttemptAccount { account_name: &slot.name, accounts, auth_lane: pool.lane, pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source } };
+                    let attempt = crate::account_context::AttemptAccount { account_name: &slot.name, accounts, auth_lane: prepared.lane, pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source } };
                     attempt_account = Some(crate::account_context::attempt_account_context(&attempt));
                     crate::account_context::log_attempt_account(&attempt, options.as_ref().and_then(|options| options.stream.session_id.as_deref()), &deps.agent_dir);
-                    (pool.lane, prepared.env, slot.name, Some(prepared.credential_digest))
+                    (prepared.lane, prepared.env, slot.name, Some(prepared.credential_digest))
                 },
                 None => {
                     let attempt = crate::account_context::AttemptAccount { account_name: "ambient", accounts: &[], auth_lane: crate::auth_lane::TokenInjection::Ambient, pin_source: None };
@@ -374,6 +411,13 @@ pub fn stream_anthropic_subscription(
                 Some(signal) => maho_ai::utils::abort::race_with_abort_signal(spawn, signal).await??,
                 None => spawn.await?,
             };
+            // auth-lane.ts `claudeCliInitializationCheck`: fails the attempt closed on an inherited credential.
+            if lane == crate::auth_lane::TokenInjection::ClaudeCli
+                && let Err(leak) = crate::claude_cli_token_source::verify_claude_cli_initialization(&handle.initialization)
+            {
+                handle.close().await?;
+                return Err(leak.into());
+            }
             query = Some(handle);
             let messages = context_json["messages"].as_array().ok_or_else(|| anyhow::anyhow!("Context messages are not an array"))?;
             let blocks = crate::prompt_bridge::build_prompt_blocks_with(messages, &resolved.to_sdk, tool_note.as_deref(), one_shot_cache_ttl);

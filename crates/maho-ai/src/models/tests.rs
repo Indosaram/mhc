@@ -17,7 +17,7 @@ fn builtin(provider: &str, id: &str) -> Model {
 #[test]
 fn catalog_matches_senpi_generated_counts_and_order() {
     assert_eq!(get_builtin_providers().len(), 43);
-    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1900);
+    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1999);
     assert_eq!(
         get_builtin_providers().first().copied(),
         Some("alibaba-token-plan")
@@ -140,10 +140,11 @@ fn anthropic_claude_models_resolve_with_senpi_context_windows() {
         .into_iter()
         .filter(|m| m.id.starts_with("claude-"))
         .collect();
-    assert_eq!(claude.len(), 17);
+    assert_eq!(claude.len(), 18);
     let expected = [
         ("claude-fable-5", 1_000_000, 128_000),
         ("claude-fable-5-1", 1_000_000, 128_000),
+        ("claude-fable-5-2", 1_000_000, 128_000),
         ("claude-haiku-4-5", 200_000, 64_000),
         ("claude-haiku-4-5-20251001", 200_000, 64_000),
     ];

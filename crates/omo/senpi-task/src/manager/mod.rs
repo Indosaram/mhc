@@ -1,6 +1,7 @@
 //! Task manager (`manager/` in TypeScript).
 
 pub mod child_handle;
+pub mod cloud_router;
 pub mod concurrency;
 pub mod continue_result;
 pub mod credential_failure;

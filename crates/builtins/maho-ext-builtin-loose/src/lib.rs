@@ -7,6 +7,7 @@ pub mod import_repro;
 pub mod monitor_state_event;
 pub mod oauth_login_interaction;
 pub mod prompt_url_widget;
+pub mod provider_context;
 pub mod redraws;
 pub mod service_tier;
 pub mod tps;

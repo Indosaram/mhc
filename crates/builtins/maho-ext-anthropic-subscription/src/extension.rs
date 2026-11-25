@@ -67,9 +67,13 @@ impl AnthropicSubscriptionExtension {
                     } else {
                         settings
                     };
+                    // senpi `index.ts`: the stream reads `{ systemPrompt, tools }`, which the transcript carries
+                    // in its system messages.
                     crate::stream::stream_anthropic_subscription(
                         model.clone(),
-                        context.clone(),
+                        maho_ext_builtin_loose::provider_context::to_builtin_provider_context(
+                            context,
+                        ),
                         options,
                         crate::stream::StreamDeps {
                             executable,
@@ -103,6 +107,18 @@ impl AnthropicSubscriptionExtension {
 /// opt-in (senpi#3408, senpi#3801).
 pub fn models() -> Vec<ProviderModelConfig> {
     models_for(crate::long_context::long_context_available())
+}
+
+/// The registration's catalog half (account ownership, API and models) without the session's stream and login
+/// flow: what a diagnostic runtime needs to list this provider's models the way a session does.
+pub fn catalog_provider_config(long_context: bool) -> ProviderConfig {
+    ProviderConfig {
+        owns_account_selection: true,
+        base_url: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
+        api: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
+        models: Some(models_for(long_context)),
+        ..Default::default()
+    }
 }
 
 pub fn models_for(long_context: bool) -> Vec<ProviderModelConfig> {
@@ -156,16 +172,12 @@ impl Extension for AnthropicSubscriptionExtension {
         // Each registration is the whole config: the runtime validates a registration on its own, not merged with
         // the previous one.
         let config = ProviderConfig {
-            owns_account_selection: true,
-            base_url: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
-            api: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
-            models: None,
             stream_simple: Some(self.stream.clone()),
             oauth: Some(self.oauth.clone()),
             fallback_eligible: Some(Arc::new(move || {
                 (settings)().values.get("enabled") != Some(&serde_json::Value::Bool(false))
             })),
-            ..Default::default()
+            ..catalog_provider_config(false)
         };
         let provider_config = move |long_context: bool| ProviderConfig {
             models: Some(models_for(long_context)),
@@ -227,5 +239,19 @@ mod tests {
             window(false, "claude-opus-4-6"),
             Some(crate::context_window::CLAUDE_CODE_DEFAULT_CONTEXT_WINDOW)
         );
+    }
+
+    #[test]
+    fn claude_fable_5_2_is_listed_with_its_catalog_window() {
+        for long_context in [true, false] {
+            let fable = models_for(long_context)
+                .into_iter()
+                .find(|model| model.id == "claude-fable-5-2")
+                .expect("claude-fable-5-2 in the anthropic-subscription catalog");
+            assert_eq!(fable.name, "Claude Fable 5.2");
+            assert_eq!(fable.context_window, 1_000_000);
+            assert_eq!(fable.max_tokens, 128_000);
+            assert!(fable.reasoning);
+        }
     }
 }

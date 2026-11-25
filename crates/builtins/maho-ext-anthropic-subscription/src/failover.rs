@@ -269,6 +269,7 @@ fn kind_name(kind: SdkErrorKind) -> &'static str {
         SdkErrorKind::RateLimit => "rate_limit",
         SdkErrorKind::Overloaded => "overloaded",
         SdkErrorKind::AuthError => "auth_error",
+        SdkErrorKind::LoginUnreadable => "login_unreadable",
         SdkErrorKind::Billing => "billing",
         SdkErrorKind::OrgNotAllowed => "org_not_allowed",
         SdkErrorKind::Entitlement => "entitlement",
@@ -293,6 +294,18 @@ pub fn blocked_account(
         );
         blocked.block_reason = Some("auth_error".into());
         blocked.blocked_at = Some(now);
+        if blocked.is_claude_cli() {
+            // Only a claude CLI login can be marked for a new sign-in; an env token account has no login to expire
+            // (senpi#5350).
+            if let Some(reason) = crate::errors::sign_in_required(error) {
+                blocked.sign_in_required = Some(reason);
+            }
+            // The verdict names the sign-in it is about, so a block another engine writes is told apart (senpi#5623).
+            blocked.auth_verdict = Some(crate::accounts::ClaudeCliAuthVerdict {
+                dir_id: blocked.dir_id.clone().unwrap_or_default(),
+                at: now,
+            });
+        }
         return blocked;
     }
     let fallback = (base_block_ms * 2_f64.powi(attempt)).min(MAX_RATE_LIMIT_BLOCK_MS);
@@ -343,6 +356,15 @@ fn block_state(
     if let Some(at) = account.blocked_at {
         state.insert("blockedAt".into(), json!(at));
     }
+    if account.is_claude_cli() {
+        if let Some(reason) = account.sign_in_required {
+            state.insert("signInRequired".into(), serde_json::to_value(reason)?);
+        }
+        // Only this write's own auth verdict stays with the block (senpi#5623).
+        if let Some(verdict) = &account.auth_verdict {
+            state.insert("authVerdict".into(), serde_json::to_value(verdict)?);
+        }
+    }
     // Union with what a concurrent request stored meanwhile, later expiry winning.
     let existing: Option<ModelBlocks> = stored
         .and_then(|stored| stored.get("modelBlocks"))
@@ -391,10 +413,19 @@ pub async fn persist_block(
                                 .find(|existing| existing["name"] == account.name)
                         })
                         .cloned();
+                    // An auth_error is a verdict on the sign-in that failed: the token a token slot sent, or the account dir
+                    // a claude CLI slot ran in. When a re-login replaced it meanwhile, nothing is written.
+                    let superseded_material = |stored: &Value| {
+                        if account.is_claude_cli() {
+                            stored.get("dirId").and_then(Value::as_str) != account.dir_id.as_deref()
+                        } else {
+                            stored["access"] != account.access
+                                || stored["refresh"] != account.refresh
+                        }
+                    };
                     if account.block_reason.as_deref() == Some("auth_error")
                         && let Some(stored) = &stored
-                        && (stored["access"] != account.access
-                            || stored["refresh"] != account.refresh)
+                        && superseded_material(stored)
                     {
                         *found.lock().unwrap_or_else(PoisonError::into_inner) =
                             serde_json::from_value::<AccountSlot>(stored.clone()).ok();
@@ -413,7 +444,8 @@ pub async fn persist_block(
                             let object = existing
                                 .as_object_mut()
                                 .ok_or_else(|| anyhow::anyhow!("account must be object"))?;
-                            for key in ["blockedUntil", "blockReason", "modelBlocks"] {
+                            for key in ["blockedUntil", "blockReason", "modelBlocks", "authVerdict"]
+                            {
                                 object.remove(key);
                             }
                             object.extend(state);
@@ -655,6 +687,25 @@ impl<'a> FailoverTurn<'a> {
                 account: account.name.clone(),
                 delay_ms: None,
                 long_context_refused: true,
+            });
+        }
+        // A login this process could not read (senpi#5630) moves this turn to another account and is stored nowhere:
+        // other sessions may read it fine, and an unlocked keychain must work on the very next turn.
+        if classification.kind == SdkErrorKind::LoginUnreadable {
+            if visible || self.attempt + 1 >= self.attempt_limit {
+                return Err(classified.into());
+            }
+            let mut unreadable = account.clone();
+            unreadable.blocked_until = Some(
+                now + maho_core::subscription_limits::usage_accounts::AUTH_BLOCK_REPROBE_MS as f64,
+            );
+            unreadable.block_reason = Some("login_unreadable".into());
+            unreadable.blocked_at = Some(now);
+            self.replace(unreadable.clone());
+            self.attempt += 1;
+            return Ok(FailureStep::Rotate {
+                blocked: unreadable,
+                classification,
             });
         }
         // A transient failure says nothing about the account: retried in place a bounded number of times, never

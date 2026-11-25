@@ -208,7 +208,7 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
     } else {
         Default::default()
     };
-    let mut runtime = match maho_core::model_runtime::ModelRuntime::create_sync(
+    let runtime = match maho_core::model_runtime::ModelRuntime::create_sync(
         maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(Path::new(agent_dir).join("models.json")),
             credentials: Some(std::sync::Arc::new(
@@ -225,15 +225,41 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
         }
     };
     let mut registration_failures = Vec::new();
-    for provider in ["claude-sdk-oauth", "cursor-cli-oauth"] {
-        if let Err(error) = runtime.register_provider(
-            provider,
-            maho_core::provider_composer::ProviderConfigInput::default(),
-        ) {
-            registration_failures.push(format!(
-                "WARN task categories: could not register provider {provider}: {error}"
-            ));
-        }
+    // omo `category-coverage.js` `engineAvailableModels`: anthropic-subscription is the one chain provider a
+    // builtin extension registers instead of the catalog, so its models come from the extension's own
+    // registration, converted exactly as a session converts it.
+    let subscription = maho_ext_anthropic_subscription::auth_lane::PROVIDER_ID;
+    let actions = maho_core::agent_session_runtime::ExtensionModelRuntimeActions(
+        std::sync::Mutex::new(runtime),
+    );
+    if let Err(error) = maho_ext_api::ExtensionProviderActions::register_provider(
+        &actions,
+        maho_ext_api::ProviderRegistration::Config {
+            name: subscription.to_owned(),
+            config: Box::new(
+                maho_ext_anthropic_subscription::extension::catalog_provider_config(
+                    maho_ext_anthropic_subscription::long_context::long_context_available(),
+                ),
+            ),
+        },
+        subscription,
+    ) {
+        registration_failures.push(format!(
+            "WARN task categories: could not register provider {subscription}: {}",
+            error.message
+        ));
+    }
+    let mut runtime = actions
+        .0
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Err(error) = runtime.register_provider(
+        "cursor-cli-oauth",
+        maho_core::provider_composer::ProviderConfigInput::default(),
+    ) {
+        registration_failures.push(format!(
+            "WARN task categories: could not register provider cursor-cli-oauth: {error}"
+        ));
     }
     let available = runtime
         .get_models(None)
