@@ -53,6 +53,21 @@ pub struct ParsedMemoryFile {
 
 const CONTRACT_KEYS: &[&str] = &["description", "read_only", "kind", "aliases", "limit"];
 
+const MISSING_FRONTMATTER_MESSAGE: &str =
+    "frontmatter: target file is missing required frontmatter";
+const MISSING_DESCRIPTION_MESSAGE: &str =
+    "frontmatter: target file frontmatter is missing 'description'";
+
+/// True only for the "no frontmatter block at all" failure, so callers can offer the one repair that adds it.
+pub fn is_missing_frontmatter_error(error: &FrontmatterError) -> bool {
+    error.message == MISSING_FRONTMATTER_MESSAGE
+}
+
+/// True only for the "a header parsed but it carries no description" failure.
+pub fn is_missing_description_error(error: &FrontmatterError) -> bool {
+    error.message == MISSING_DESCRIPTION_MESSAGE
+}
+
 fn is_contract_key(key: &str) -> bool {
     CONTRACT_KEYS.contains(&key)
 }
@@ -70,7 +85,7 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
         Some(res) => res,
         None => {
             return Err(FrontmatterError {
-                message: "frontmatter: target file is missing required frontmatter".to_string(),
+                message: MISSING_FRONTMATTER_MESSAGE.to_string(),
             });
         }
     };
@@ -103,8 +118,7 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
         Some(desc) if !desc.trim().is_empty() => desc,
         _ => {
             return Err(FrontmatterError {
-                message: "frontmatter: target file frontmatter is missing 'description'"
-                    .to_string(),
+                message: MISSING_DESCRIPTION_MESSAGE.to_string(),
             });
         }
     };

@@ -17,8 +17,8 @@ use crate::agreements::{
 use super::agreements_target::render_agreements_target;
 use super::extraction::{FactsBatch, FactsExtractionRecord};
 use super::person_routing::{
-    AliasTieCallback, FactsPeopleRouting, facts_routing_paths, plan_facts_routing,
-    render_person_targets,
+    AliasTieCallback, FactsPeopleRouting, FactsRoutingPlan, facts_routing_paths,
+    plan_facts_routing, render_person_targets,
 };
 
 /// Post-mutation target identity for index and worktree.
@@ -177,11 +177,17 @@ pub fn render_facts_note(
             (parsed.frontmatter, parsed.body)
         }
         Err(_) => {
-            let slice_start = relative_path.len().saturating_sub(10);
-            let slice_end = relative_path.len().saturating_sub(3);
-            let date_slice = relative_path
-                .get(slice_start..slice_end)
-                .unwrap_or_default();
+            let date_slice = records
+                .first()
+                .and_then(|record| record.date().get(..7))
+                .filter(|month| !month.is_empty())
+                .unwrap_or_else(|| {
+                    let slice_start = relative_path.len().saturating_sub(10);
+                    let slice_end = relative_path.len().saturating_sub(3);
+                    relative_path
+                        .get(slice_start..slice_end)
+                        .unwrap_or_default()
+                });
             (
                 MemoryFrontmatter {
                     description: format!("Explicit facts for {date_slice}"),
@@ -241,7 +247,10 @@ pub fn plan_facts_mutation(
         .map_err(MutationPlanError::Git)?
         .ok_or(MutationPlanError::NoHead)?;
 
-    let routing = plan_facts_routing(&repo.dir, &batch.records, people, on_alias_tie);
+    let routing = with_live_ledgers(
+        repo,
+        plan_facts_routing(&repo.dir, &batch.records, people, on_alias_tie),
+    )?;
     let agreement_records = batch.agreements.as_deref().unwrap_or_default();
     let ledger = if agreement_records.is_empty() {
         None
@@ -355,6 +364,48 @@ pub fn plan_facts_mutation(
         people: people.cloned(),
         paths: planned,
     })
+}
+
+/// Never reuses a month ledger path that was archived or deleted; picks the first live or never-used
+/// `<month>-<n>.md` successor so links to archived ledgers do not revive with unrelated facts (#12642).
+fn with_live_ledgers(
+    repo: &GitMemoryRepo,
+    plan: FactsRoutingPlan,
+) -> Result<FactsRoutingPlan, MutationPlanError> {
+    let mut notes = std::collections::BTreeMap::new();
+    for (path, records) in plan.notes {
+        let live = live_ledger_path(repo, &path)?;
+        notes.entry(live).or_insert_with(Vec::new).extend(records);
+    }
+    Ok(FactsRoutingPlan {
+        notes,
+        observations: plan.observations,
+    })
+}
+
+fn live_ledger_path(repo: &GitMemoryRepo, path: &str) -> Result<String, MutationPlanError> {
+    let stem = path.strip_suffix(".md").unwrap_or(path);
+    for generation in 1u64.. {
+        let candidate = if generation == 1 {
+            path.to_owned()
+        } else {
+            format!("{stem}-{generation}.md")
+        };
+        if repo.dir.join(&candidate).exists() {
+            return Ok(candidate);
+        }
+        let history = repo
+            .log(Some(&crate::git::GitLogOptions {
+                paths: Some(vec![candidate.clone()]),
+                limit: Some(1),
+                ..Default::default()
+            }))
+            .map_err(MutationPlanError::Git)?;
+        if history.is_empty() {
+            return Ok(candidate);
+        }
+    }
+    Ok(path.to_owned())
 }
 
 #[cfg(test)]

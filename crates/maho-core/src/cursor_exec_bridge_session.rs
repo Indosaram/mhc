@@ -25,8 +25,12 @@ pub fn create_session_cursor_exec_bridge(
 ) -> maho_ai::api::cursor_agent::types::CursorExecHandlers {
     let tool_session = session_ref.clone();
     let preflight_session = session_ref.clone();
+    let settle_session = session_ref.clone();
     let result_session = session_ref;
     let event_agent = agent.clone();
+    let scope_agent = agent.clone();
+    let open_batch_store = agent.batch_store_factory();
+    let record_witness = agent.on_execution_pipeline();
     let options = CursorExecBridgeOptions {
         get_tool: Arc::new(move |name| {
             tool_session().and_then(|session| session.get_registered_tool(name))
@@ -53,6 +57,11 @@ pub fn create_session_cursor_exec_bridge(
                 })
             },
         )),
+        settle_tool_call: Some(Arc::new(move |tool_call_id| {
+            if let Some(session) = settle_session() {
+                session.settle_exec_bridge_tool_call(&tool_call_id);
+            }
+        })),
         preflight_tool_call: Some(Arc::new(move |id, name, input| {
             let session = preflight_session();
             Box::pin(async move {
@@ -86,6 +95,12 @@ pub fn create_session_cursor_exec_bridge(
                 .filter(|active| active.same_signal(run_signal))
                 .map(|_| run_signal.clone())
         }),
+        open_batch_store,
+        get_execution_scope: Some(Arc::new(move || scope_agent.execution_scope())),
+        record_witness,
+        after_tool_freeze: Some(Arc::new(
+            crate::execution::preflight_carry::carry_preflight_facts,
+        )),
     };
     create_cursor_exec_bridge(options)
 }

@@ -680,3 +680,46 @@ fn test_append_and_reconcile_refuse_up_front_when_already_cancelled() {
     assert!(matches!(appended, Err(JournalError::Aborted)));
     assert_eq!(journal.lock_path.exists(), false);
 }
+
+#[test]
+fn test_noop_reconcile_skips_rewriting_state_file_and_reads_tail_incrementally() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp_dir.path());
+    let first_batch = vec![
+        TranscriptProjection::User {
+            message_id: "u1".to_string(),
+            text: "hello".to_string(),
+        },
+        TranscriptProjection::Assistant {
+            message_id: "a1".to_string(),
+            text_blocks: vec!["hi".to_string()],
+            reasoning_blocks: Vec::new(),
+            tool_calls: Vec::new(),
+        },
+    ];
+    let first = journal.reconcile(&first_batch).unwrap();
+    assert_eq!(first.appended, 2);
+
+    // Replace state.json with a distinguishable timestamp marker inside valid JSON; no-op reconcile
+    // leaves state.json untouched when state hasn't changed (#14351).
+    let before = std::fs::read(&journal.state_path).unwrap();
+    let noop = journal.reconcile(&first_batch).unwrap();
+    assert_eq!(noop.appended, 0);
+    assert_eq!(noop.skipped, 2);
+    assert_eq!(std::fs::read(&journal.state_path).unwrap(), before);
+
+    // Incremental reconcile after appending a new step picks up only the new entries.
+    let second_batch = vec![
+        first_batch[0].clone(),
+        first_batch[1].clone(),
+        TranscriptProjection::Assistant {
+            message_id: "a2".to_string(),
+            text_blocks: vec!["next".to_string()],
+            reasoning_blocks: Vec::new(),
+            tool_calls: Vec::new(),
+        },
+    ];
+    let second = journal.reconcile(&second_batch).unwrap();
+    assert_eq!(second.appended, 1);
+    assert_eq!(journal.get_state().unwrap().total_completed_steps, 2);
+}

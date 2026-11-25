@@ -780,6 +780,18 @@ fn capture_harness(
     Arc<CapturingChild>,
     tempfile::TempDir,
 ) {
+    capture_harness_with(event_caps, |_| {})
+}
+
+fn capture_harness_with(
+    event_caps: Option<KibitzerEventCaps>,
+    customize: impl FnOnce(&mut MemoryRecallWiringOptions),
+) -> (
+    Arc<MemoryRecallWiring>,
+    MemoryIdentityContext,
+    Arc<CapturingChild>,
+    tempfile::TempDir,
+) {
     let root = tempfile::tempdir().unwrap();
     let paths = build_identity_paths(root.path(), "agent");
     std::fs::create_dir_all(&paths.locks).unwrap();
@@ -805,7 +817,7 @@ fn capture_harness(
         let context = context.clone();
         Arc::new(move |_session_id: &str| Some(context.clone()))
     };
-    let options = MemoryRecallWiringOptions {
+    let mut options = MemoryRecallWiringOptions {
         resolve_context,
         resolve_settings: Arc::new(|| Ok(Value::Null)),
         env: Arc::new(|_name: &str| None),
@@ -842,6 +854,7 @@ fn capture_harness(
         }),
         drain_queued: None,
     };
+    customize(&mut options);
     (MemoryRecallWiring::new(options), context, child, root)
 }
 
@@ -1216,5 +1229,74 @@ mod wake_log_wiring {
 
         assert_eq!(lines(&root, "s1").len(), 1);
         assert_eq!(lines(&root, "s2").len(), 1);
+    }
+}
+
+#[test]
+fn tool_result_hook_does_not_block_on_slow_steer_delivery() {
+    use std::sync::{Condvar, Mutex};
+
+    let gate_pair = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let entered = Arc::clone(&gate_pair);
+    let (wiring, context, _child, _root) = capture_harness_with(None, |opts| {
+        opts.offload_blocking = Arc::new(|task| {
+            std::thread::spawn(task);
+        });
+        opts.send_message = Arc::new(move |_| {
+            let (lock, cvar) = &*entered;
+            let mut guard = lock.lock().unwrap();
+            guard.0 = true;
+            cvar.notify_all();
+            while !guard.1 {
+                guard = cvar.wait(guard).unwrap();
+            }
+            Ok(())
+        });
+    });
+
+    let delivery = wiring.delivery();
+    // Hold a nudge before the tool call is running so accept() keeps it pending until on_tool_result.
+    delivery.accept(
+        SESSION,
+        &context,
+        &[memory_core::recall::RecallNudge {
+            path: "notes/n1.md".to_owned(),
+            hint: "note one".to_owned(),
+            source: None,
+        }],
+    );
+    delivery.mark_running(SESSION);
+    delivery.mark_tool_started(SESSION, "call-1");
+
+    let sink: Arc<dyn crate::kibitzer_hooks::KibitzerHookSink> = wiring;
+    let result = crate::kibitzer_hooks::KibitzerToolResultEvent {
+        tool_call_id: "call-1",
+        tool_name: "read",
+        input: &serde_json::json!({}),
+        content: &[],
+        is_error: false,
+    };
+    let branch = crate::kibitzer_hooks::BranchTail {
+        len: 0,
+        entries: &[],
+        summary: &[],
+    };
+    let gate = crate::kibitzer_delivery::KibitzerToolResultGate {
+        has_pending_messages: false,
+        is_idle: false,
+    };
+
+    // Returns immediately even though send_message is blocked waiting on `gate_pair`.
+    sink.on_tool_result(SESSION, &result, &branch, &gate);
+    {
+        let (lock, cvar) = &*gate_pair;
+        let mut guard = lock.lock().unwrap();
+        let (timed_guard, timeout) = cvar
+            .wait_timeout_while(guard, std::time::Duration::from_secs(2), |g| !g.0)
+            .unwrap();
+        assert!(!timeout.timed_out(), "background steer must start");
+        guard = timed_guard;
+        guard.1 = true;
+        cvar.notify_all();
     }
 }

@@ -9,8 +9,11 @@ pub struct SelectorFailure<'a> {
 
 pub struct SelectorCooldowns {
     expires_at_by_selector: HashMap<String, f64>,
+    wall_expires_at_by_selector: HashMap<String, f64>,
+    stated_reset_at_by_selector: HashMap<String, f64>,
     now: Box<dyn Fn() -> f64 + Send + Sync>,
     random: Box<dyn Fn() -> f64 + Send + Sync>,
+    wall_now: Box<dyn Fn() -> f64 + Send + Sync>,
     patterns: Vec<(Regex, f64)>,
 }
 
@@ -18,6 +21,14 @@ impl SelectorCooldowns {
     pub fn new(
         now: impl Fn() -> f64 + Send + Sync + 'static,
         random: impl Fn() -> f64 + Send + Sync + 'static,
+    ) -> Result<Self, regex::Error> {
+        Self::with_wall_clock(now, random, || chrono::Utc::now().timestamp_millis() as f64)
+    }
+
+    pub fn with_wall_clock(
+        now: impl Fn() -> f64 + Send + Sync + 'static,
+        random: impl Fn() -> f64 + Send + Sync + 'static,
+        wall_now: impl Fn() -> f64 + Send + Sync + 'static,
     ) -> Result<Self, regex::Error> {
         let patterns = [
             (r"usage[- ]limit|quota|insufficient_quota|billing|credits[-_ ]required|credits are required", 1_800_000.0),
@@ -28,27 +39,53 @@ impl SelectorCooldowns {
         ].into_iter().map(|(pattern, duration)| Regex::new(pattern).map(|regex| (regex, duration))).collect::<Result<_, _>>()?;
         Ok(Self {
             expires_at_by_selector: HashMap::new(),
+            wall_expires_at_by_selector: HashMap::new(),
+            stated_reset_at_by_selector: HashMap::new(),
             now: Box::new(now),
             random: Box::new(random),
+            wall_now: Box::new(wall_now),
             patterns,
         })
     }
 
     pub fn note(&mut self, base_selector: &str, failure: SelectorFailure<'_>) {
-        let duration = self.duration_for(failure);
+        let (duration, stated) = self.duration_for(failure);
+        let wall_now = (self.wall_now)();
         self.expires_at_by_selector
             .insert(base_selector.to_owned(), (self.now)() + duration);
+        self.wall_expires_at_by_selector
+            .insert(base_selector.to_owned(), wall_now + duration);
+        if stated {
+            self.stated_reset_at_by_selector
+                .insert(base_selector.to_owned(), wall_now + duration);
+        } else {
+            self.stated_reset_at_by_selector.remove(base_selector);
+        }
     }
 
     pub fn is_suppressed(&mut self, base_selector: &str) -> bool {
-        let Some(expires_at) = self.expires_at_by_selector.get(base_selector) else {
+        let Some(expires_at) = self.expires_at_by_selector.get(base_selector).copied() else {
             return false;
         };
-        if (self.now)() < *expires_at {
+        let wall_expires = self
+            .wall_expires_at_by_selector
+            .get(base_selector)
+            .copied()
+            .unwrap_or(f64::INFINITY);
+        if (self.now)() < expires_at && (self.wall_now)() < wall_expires {
             return true;
         }
-        self.expires_at_by_selector.remove(base_selector);
+        self.clear(base_selector);
         false
+    }
+
+    /// When a live suppression ends, if the provider stated it; `None` for a guessed default or no suppression.
+    pub fn stated_reset_at(&mut self, base_selector: &str) -> Option<f64> {
+        if self.is_suppressed(base_selector) {
+            self.stated_reset_at_by_selector.get(base_selector).copied()
+        } else {
+            None
+        }
     }
 
     /// The injected-clock time the selector's cooldown lifts at, if one is recorded.
@@ -56,19 +93,56 @@ impl SelectorCooldowns {
         self.expires_at_by_selector.get(base_selector).copied()
     }
 
-    pub fn clear(&mut self, base_selector: &str) {
-        self.expires_at_by_selector.remove(base_selector);
-    }
-    pub fn clear_all(&mut self) {
-        self.expires_at_by_selector.clear();
+    pub fn wall_clock(&self) -> f64 {
+        (self.wall_now)()
     }
 
-    fn duration_for(&self, failure: SelectorFailure<'_>) -> f64 {
-        // Reset hints are wall-clock times; the stored deadline stays on the injected clock.
+    pub fn clear(&mut self, base_selector: &str) {
+        self.expires_at_by_selector.remove(base_selector);
+        self.wall_expires_at_by_selector.remove(base_selector);
+        self.stated_reset_at_by_selector.remove(base_selector);
+    }
+
+    /// Clears `base_selector` and every rung of it (`base_selector:<thinking level>`), never another model.
+    pub fn clear_model(&mut self, base_selector: &str) {
+        let prefix = format!("{base_selector}:");
+        let keys: Vec<String> = self
+            .expires_at_by_selector
+            .keys()
+            .filter(|key| {
+                key.as_str() == base_selector
+                    || key.strip_prefix(&prefix).is_some_and(|suffix| {
+                        maho_ai::types::ModelThinkingLevel::parse(suffix).is_some()
+                    })
+            })
+            .cloned()
+            .collect();
+        for key in keys {
+            self.clear(&key);
+        }
+    }
+
+    pub fn clear_all(&mut self) {
+        self.expires_at_by_selector.clear();
+        self.wall_expires_at_by_selector.clear();
+        self.stated_reset_at_by_selector.clear();
+    }
+
+    fn duration_for(&self, failure: SelectorFailure<'_>) -> (f64, bool) {
+        if let Some(stated) = self.stated_duration_ms(failure) {
+            return (stated, true);
+        }
+        (self.default_duration_ms(failure.error_message), false)
+    }
+
+    fn stated_duration_ms(&self, failure: SelectorFailure<'_>) -> Option<f64> {
         let reset_ms = failure
             .error_message
             .and_then(|text| {
-                crate::credential_pool::reset_time::usage_limit_reset_ms(text, (self.now)() as i64)
+                crate::credential_pool::reset_time::usage_limit_reset_ms(
+                    text,
+                    (self.wall_now)() as i64,
+                )
             })
             .map_or(0.0, |ms| ms as f64);
         let retry_ms = failure
@@ -76,11 +150,13 @@ impl SelectorCooldowns {
             .filter(|n| n.is_finite() && *n > 0.0)
             .unwrap_or(0.0);
         let hinted_ms = reset_ms.max(retry_ms);
-        if hinted_ms > 0.0 {
-            return hinted_ms
-                .min(crate::credential_pool::failover_consts::MAX_SLOT_BLOCK_MS as f64);
-        }
-        let message = failure.error_message.unwrap_or_default().to_lowercase();
+        (hinted_ms > 0.0).then(|| {
+            hinted_ms.min(crate::credential_pool::failover_consts::MAX_SLOT_BLOCK_MS as f64)
+        })
+    }
+
+    fn default_duration_ms(&self, error_message: Option<&str>) -> f64 {
+        let message = error_message.unwrap_or_default().to_lowercase();
         for (index, (pattern, duration)) in self.patterns.iter().enumerate() {
             if pattern.is_match(&message) {
                 return duration

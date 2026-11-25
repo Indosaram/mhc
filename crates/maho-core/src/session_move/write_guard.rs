@@ -41,7 +41,7 @@ impl SessionWriteGuard {
         entry: &Value,
         session_file: &str,
     ) -> Result<(), SessionMovedAwayError> {
-        let ownership = self.current(entries);
+        let ownership = self.ownership(entries);
         let SessionOwnership::Refused(refused) = ownership else {
             return Ok(());
         };
@@ -62,7 +62,7 @@ impl SessionWriteGuard {
         entries: &[Value],
         session_file: &str,
     ) -> Result<(), SessionMovedAwayError> {
-        match self.current(entries) {
+        match self.ownership(entries) {
             SessionOwnership::Writable => Ok(()),
             SessionOwnership::Refused(refused) => {
                 Err(SessionMovedAwayError::new(session_file, refused))
@@ -71,10 +71,10 @@ impl SessionWriteGuard {
     }
 
     pub fn is_writable(&mut self, entries: &[Value]) -> bool {
-        matches!(self.current(entries), SessionOwnership::Writable)
+        matches!(self.ownership(entries), SessionOwnership::Writable)
     }
 
-    fn current(&mut self, entries: &[Value]) -> SessionOwnership {
+    pub fn ownership(&mut self, entries: &[Value]) -> SessionOwnership {
         let address = entries.as_ptr() as usize;
         if self.source != Some(address) || entries.len() < self.seen {
             self.source = Some(address);

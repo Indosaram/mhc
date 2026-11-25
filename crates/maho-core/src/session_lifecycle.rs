@@ -38,6 +38,7 @@ fn degraded_lifecycle(raw: &Value) -> SessionLifecycle {
         } else {
             EpochOrigin::Automatic
         },
+        run_id: raw["runId"].as_str().map(str::to_owned),
         completion_id: raw["completionId"].as_str().map(str::to_owned),
         human_input_revision: number("humanInputRevision"),
         self_settle_eligible: raw["selfSettleEligible"].as_bool().unwrap_or(false),
@@ -200,6 +201,8 @@ pub struct SessionLifecycleController {
     pub children: LifecycleChildren,
     idle_boundary_passed: bool,
     pending_human: bool,
+    /// A host restart continues the engine-started run it cut short (`senpi#7020`); cleared when that run starts.
+    restart_continues: bool,
     admitting_human: bool,
     run_admitted: bool,
     goal: Option<Value>,
@@ -212,11 +215,23 @@ pub struct SessionLifecycleController {
 }
 impl SessionLifecycleController {
     pub fn new(options: SessionLifecycleOptions) -> Self {
+        Self::with_ended_run_id(options, None)
+    }
+
+    pub fn with_ended_run_id(
+        options: SessionLifecycleOptions,
+        ended_run_id: Option<String>,
+    ) -> Self {
         let spawned = options
             .spawned_by
             .as_ref()
             .map(|s| serde_json::to_value(s).expect("spawned by"));
-        let ledger = LifecycleLedger::new(&options.session_id, spawned.as_ref(), &options.entries);
+        let ledger = LifecycleLedger::with_ended_run_id(
+            &options.session_id,
+            spawned.as_ref(),
+            &options.entries,
+            ended_run_id.as_deref(),
+        );
         let children = LifecycleChildren::new(&options.entries);
         let liveness = ledger.last_turn_end.clone();
         let restored_run_id = ledger.run_id.clone();
@@ -230,7 +245,11 @@ impl SessionLifecycleController {
             append,
             custody,
         } = options;
-        let obligations = crate::work_obligations::SessionWorkObligations::new(custody);
+        let mut obligations = crate::work_obligations::SessionWorkObligations::new(custody);
+        obligations.settle_ended_runs(
+            ledger.run_id.as_deref(),
+            ledger.run_id.is_some() && ledger.run_id == ended_run_id,
+        );
         Self {
             goal_service: maho_ext_api::goal_lifecycle::goal_lifecycle_service(&session_id),
             options: ControllerOptions {
@@ -244,6 +263,7 @@ impl SessionLifecycleController {
             children,
             idle_boundary_passed: false,
             pending_human: false,
+            restart_continues: false,
             admitting_human: false,
             run_admitted: false,
             goal: None,
@@ -271,7 +291,21 @@ impl SessionLifecycleController {
         })
     }
     pub fn requires_human_continuation(&self) -> bool {
-        self.ledger.interrupted && !self.pending_human
+        self.ledger.interrupted && !self.pending_human && !self.restart_continues
+    }
+    /// The current run when this process started it, not the run the session file left current.
+    pub fn run_started_here(&self) -> Option<&str> {
+        let run_id = self.ledger.run_id.as_deref()?;
+        (self.restored_run_id.as_deref() != Some(run_id)).then_some(run_id)
+    }
+    /// The host's clean stop cut the running run short: record it interrupted, as a kill leaves it (`senpi#7020`).
+    pub fn cut_by_host_shutdown(&mut self) {
+        self.ledger.interrupted = true;
+        self.checkpoint();
+    }
+    /// The interrupted run was the engine's and a host restart cut it: its continuation needs no person (`senpi#7020`).
+    pub fn continue_after_restart(&mut self) {
+        self.restart_continues = true;
     }
     /// The hold key to install when this session is opened, if its run must wait for a person.
     pub fn opening_hold_key(&self) -> Option<&'static str> {
@@ -339,18 +373,15 @@ impl SessionLifecycleController {
         self.liveness = None;
         self.stop_facts = None;
         self.deadline_stop = None;
-        let interrupted = self
-            .ledger
-            .interrupted
-            .then(|| self.ledger.run_id.clone())
-            .flatten();
+        let previous_run = self.ledger.run_id.clone();
         self.ledger
             .start_run(match origin.unwrap_or(self.next_run_origin()) {
                 EpochOrigin::Human => "human",
                 EpochOrigin::Automatic => "automatic",
             });
         self.pending_human = false;
-        if let Some(id) = interrupted {
+        self.restart_continues = false;
+        if let Some(id) = previous_run {
             self.obligations.settle_run(&id);
         }
         self.recompute();
@@ -574,9 +605,21 @@ impl SessionLifecycleController {
                 .map(|r| r.active_count.unwrap_or(1.) as usize)
                 .sum(),
         );
+        let delivery_in_flight = active
+            .iter()
+            .any(|r| self.obligations.is_delivery_in_flight(r));
+        let live_run = self
+            .ledger
+            .run_active
+            .then_some(self.ledger.run_id.as_deref())
+            .flatten();
         let background = active
             .iter()
-            .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background)
+            .filter(|r| {
+                r.kind == crate::work_custody_record::ObligationKind::Background
+                    && !self.obligations.is_delivery_in_flight(r)
+                    && !self.obligations.is_consumed_by(r, live_run)
+            })
             .map(project)
             .collect();
         let facts = evaluate_turn_facts(
@@ -589,7 +632,8 @@ impl SessionLifecycleController {
             runtime.activity.is_streaming
                 || runtime.activity.is_compacting
                 || runtime.activity.is_bash_running
-                || runtime.activity.has_session_work,
+                || runtime.activity.has_session_work
+                || delivery_in_flight,
         );
         let mut human = if self.ledger.current["role"] == "root" {
             runtime

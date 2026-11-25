@@ -194,6 +194,7 @@ fn given_clean_worktree_with_valid_commit_when_validated_then_validation_succeed
             tip_sha,
             changed_paths,
             dropped,
+            ..
         } => {
             assert_eq!(changed_paths, vec!["learned.md"]);
             assert!(dropped.is_empty());
@@ -971,5 +972,112 @@ fn given_a_tip_equal_to_the_base_when_validated_then_it_reports_no_changes() {
             assert!(dropped.is_empty());
         }
         other => panic!("expected NoChanges completion, got {other:?}"),
+    }
+}
+
+#[test]
+fn dream_removes_note_repoints_links_preserves_non_utf8_and_passes_target_doc() {
+    use crate::reflection::completion_validation::paths_outside_target;
+
+    let temp = TempDir::new().expect("temp dir");
+    let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
+        dir: temp.path().join("memory"),
+        agent_id: "agent-one".to_string(),
+        exec: None,
+        install_hooks: None,
+    })
+    .expect("open repo");
+    repo.init(InitializeGitRepoOptions {
+        seed_files: [
+            ("system/human.md", GOOD),
+            ("notes/old.md", GOOD),
+            (
+                "notes/referrer.md",
+                "---\ndescription: Referrer\n---\nSee [old](old.md) for details.\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(path, content)| GitSeedFile {
+            relative_path: path.to_string(),
+            content: content.to_string(),
+        })
+        .collect(),
+        author_name: Some("Reflection Agent".to_string()),
+        install_hooks: None,
+    })
+    .expect("repo init");
+    let exec = system_git_exec();
+    let raw_bytes: &[u8] = b"\xff\xfeinvalid utf8 notes/old.md\n";
+    std::fs::write(repo.dir.join("notes/blob.bin"), raw_bytes).expect("write blob");
+    git_out(exec.as_ref(), &repo.dir, &["add", "-A"]);
+    git_out(
+        exec.as_ref(),
+        &repo.dir,
+        &[
+            "-c",
+            "user.email=fixture@example.com",
+            "-c",
+            "user.name=fixture",
+            "commit",
+            "-qm",
+            "add binary",
+        ],
+    );
+    let worktree = create_reflection_worktree(
+        &repo,
+        "run-link-repair",
+        &temp.path().join("worktrees"),
+        exec.as_ref(),
+        None,
+    )
+    .expect("create worktree");
+    let fixture = Fixture {
+        _temp: temp,
+        _repo: repo,
+        worktree,
+        exec,
+    };
+
+    std::fs::remove_file(fixture.worktree.dir.join("notes/old.md")).expect("remove old note");
+    commit_files(
+        fixture.exec.as_ref(),
+        &fixture.worktree.dir,
+        &[(
+            "system/human.md",
+            "---\ndescription: Updated\n---\n\nbody\n",
+        )],
+        "dream forget",
+    );
+
+    match validate(&fixture) {
+        CompletionValidation::Valid {
+            changed_paths,
+            link_repairs,
+            ..
+        } => {
+            assert!(link_repairs.contains(&"notes/referrer.md".to_string()));
+            assert!(
+                !link_repairs.contains(&"notes/blob.bin".to_string()),
+                "non-UTF-8 file must not be touched by link repair"
+            );
+            assert_eq!(
+                std::fs::read(fixture.worktree.dir.join("notes/blob.bin")).expect("read blob"),
+                raw_bytes
+            );
+            let updated_ref =
+                std::fs::read_to_string(fixture.worktree.dir.join("notes/referrer.md"))
+                    .expect("read referrer");
+            assert!(!updated_ref.contains("old.md"));
+            assert!(updated_ref.contains("See old for details."));
+            assert!(
+                paths_outside_target(
+                    &changed_paths,
+                    &link_repairs,
+                    &["system/human.md", "notes/old.md"]
+                )
+                .is_empty()
+            );
+        }
+        other => panic!("expected Valid completion, got {other:?}"),
     }
 }

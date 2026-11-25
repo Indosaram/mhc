@@ -10,6 +10,7 @@ use std::{path::PathBuf, sync::Arc};
 pub struct ModelRegistry {
     pub model_runtime: ModelRuntime,
     pub auth_storage: Arc<AuthStorage>,
+    busy_retried_this_turn: Arc<std::sync::atomic::AtomicBool>,
 }
 #[derive(Debug)]
 pub enum ResolvedRequestAuth {
@@ -30,7 +31,36 @@ impl ModelRegistry {
         Self {
             auth_storage: runtime.credentials.clone(),
             model_runtime: runtime,
+            busy_retried_this_turn: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Re-reads `auth.json` when the previous load saw a busy lock or failed with a load error
+    /// (senpi#4413, #6841), waiting at most once per async turn.
+    pub fn retry_busy_credential_read(&self) {
+        use std::sync::atomic::Ordering;
+        if !self.auth_storage.is_credential_store_busy()
+            && self.auth_storage.get_load_error().is_none()
+        {
+            return;
+        }
+        if self.busy_retried_this_turn.load(Ordering::SeqCst) {
+            return;
+        }
+        if !self.auth_storage.reload_checking_busy() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            self.busy_retried_this_turn.store(true, Ordering::SeqCst);
+            let flag = Arc::clone(&self.busy_retried_this_turn);
+            handle.spawn(async move {
+                flag.store(false, Ordering::SeqCst);
+            });
+        }
+    }
+
+    pub fn provider_auth_is_header_only(&self, provider: &str) -> bool {
+        self.model_runtime.provider_auth_is_header_only(provider)
     }
     pub fn create(
         auth_storage: Arc<AuthStorage>,
@@ -99,6 +129,7 @@ impl ModelRegistry {
             .len()
     }
     pub fn has_configured_auth(&self, model: &Model) -> bool {
+        self.retry_busy_credential_read();
         self.auth_storage.get(&model.provider).is_some()
             || self
                 .model_runtime
@@ -106,6 +137,7 @@ impl ModelRegistry {
                 .configured
     }
     pub fn get_provider_auth_status(&self, id: &str) -> AuthStatus {
+        self.retry_busy_credential_read();
         self.model_runtime.get_provider_auth_status(id)
     }
     pub fn get_provider(&self, id: &str) -> Option<Arc<dyn Provider>> {
@@ -172,6 +204,79 @@ impl ModelRegistry {
     }
     pub async fn get_api_key_and_headers(&self, model: &Model) -> ResolvedRequestAuth {
         self.get_api_key_and_headers_for_slot(model, None).await
+    }
+
+    pub async fn get_api_key_and_headers_for_session(
+        &self,
+        model: &Model,
+        session_id: Option<&str>,
+    ) -> ResolvedRequestAuth {
+        let Some(session_id) = session_id else {
+            return self.get_api_key_and_headers(model).await;
+        };
+        if let Some(error) =
+            crate::provider_consent::consent_failure(&self.auth_storage, &model.provider, None)
+        {
+            return ResolvedRequestAuth::Failed {
+                error,
+                class: Some(crate::provider_consent::CONSENT_REQUIRED_CLASS.into()),
+                code: Some(crate::provider_consent::CONSENT_REQUIRED_CODE.into()),
+            };
+        }
+        let mut compatibility = self.model_runtime.get_compatibility_request_config(model);
+        let resolution = match self.model_runtime.get_session_auth(model, session_id).await {
+            Ok(auth) => auth,
+            Err(error) => {
+                return ResolvedRequestAuth::Failed {
+                    error: error.message,
+                    class: Some("ModelsError".into()),
+                    code: Some(error.code.as_str().to_owned()),
+                };
+            }
+        };
+        if resolution.is_none() && compatibility.auth_header {
+            return ResolvedRequestAuth::Failed {
+                error: format!("No API key found for \"{}\"", model.provider),
+                class: None,
+                code: None,
+            };
+        }
+        if resolution.is_none() {
+            compatibility.upstream_model_id = None;
+            compatibility.service_tier = None;
+        }
+        let mut auth = resolution
+            .as_ref()
+            .map(|r| r.auth.clone())
+            .unwrap_or_default();
+        let env = resolution.as_ref().and_then(|r| r.env.clone());
+        let header_env = env
+            .as_ref()
+            .map(|v| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        match self
+            .model_runtime
+            .get_compatibility_request_headers(model, header_env.as_ref())
+            .await
+        {
+            Ok(Some(headers)) => auth
+                .headers
+                .get_or_insert_with(Default::default)
+                .extend(headers),
+            Ok(None) => {}
+            Err(error) => {
+                return ResolvedRequestAuth::Failed {
+                    error,
+                    class: None,
+                    code: None,
+                };
+            }
+        }
+        ResolvedRequestAuth::Resolved {
+            ambient: resolution.as_ref().is_some_and(|result| result.ambient),
+            auth,
+            compatibility,
+            env,
+        }
     }
     /// senpi `runtime.getAuth(model, { slotName })`: the slot is threaded into the provider probe so
     /// the model's own headers resolve against the same account. Only the provider probe yields a

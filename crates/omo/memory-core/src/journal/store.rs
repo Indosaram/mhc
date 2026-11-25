@@ -2,9 +2,10 @@
 
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use crate::journal::cursor::{
     ReflectionSnapshot, ReflectionTranscriptState, capture_cursor_snapshot_with_max_bytes,
@@ -98,6 +99,17 @@ impl TranscriptJournalOptions {
     }
 }
 
+#[derive(Clone)]
+struct TranscriptTailCache {
+    byte_offset: u64,
+    mtime: Option<SystemTime>,
+    raw_len: usize,
+    completed_steps: usize,
+    source_ids: HashSet<String>,
+    anchor_id: Option<String>,
+    bytes_since_anchor: usize,
+}
+
 /// Durable append-only journal for conversation transcript entries.
 pub struct TranscriptJournal {
     pub transcript_path: PathBuf,
@@ -107,6 +119,8 @@ pub struct TranscriptJournal {
     now: Box<dyn Fn() -> String + Send + Sync>,
     lock: Arc<dyn JournalLock>,
     snapshot_max_bytes: Option<u64>,
+    transcript_tail: Mutex<Option<TranscriptTailCache>>,
+    persisted_state_json: Mutex<Option<String>>,
 }
 
 impl TranscriptJournal {
@@ -127,6 +141,8 @@ impl TranscriptJournal {
             now,
             lock,
             snapshot_max_bytes: options.snapshot_max_bytes,
+            transcript_tail: Mutex::new(None),
+            persisted_state_json: Mutex::new(None),
         }
     }
 
@@ -225,8 +241,19 @@ impl TranscriptJournal {
 
     fn read_state_unlocked(&self) -> Result<ReflectionTranscriptState, JournalError> {
         match std::fs::read_to_string(&self.state_path) {
-            Ok(content) => parse_state(&content),
+            Ok(content) => {
+                let parsed = parse_state(&content)?;
+                *self
+                    .persisted_state_json
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = serde_json::to_string(&parsed).ok();
+                Ok(parsed)
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                *self
+                    .persisted_state_json
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
                 Ok(initial_reflection_state())
             }
             Err(err) => Err(JournalError::Io(err)),
@@ -238,17 +265,51 @@ impl TranscriptJournal {
         state: &ReflectionTranscriptState,
         total_completed_steps: usize,
     ) -> Result<(), JournalError> {
+        self.write_state_with_hint_unlocked(state, total_completed_steps, None)
+    }
+
+    fn write_state_with_hint_unlocked(
+        &self,
+        state: &ReflectionTranscriptState,
+        total_completed_steps: usize,
+        cached_tail: Option<&TranscriptTailCache>,
+    ) -> Result<(), JournalError> {
         let mut derived = derive_state_with_total(state, total_completed_steps);
-        let (entries, raw) = self.read_entries_and_raw_unlocked()?;
-        derived.unreflected_bytes = Some(
-            raw.len()
-                .saturating_sub(derived.reflected_through_byte_offset.unwrap_or(0)),
-        );
-        if derived.reflected_through_byte_offset.is_none() {
-            derived.reflected_through_byte_offset = derived
-                .reflected_through_message_id
-                .as_deref()
-                .map(|id| crate::journal::cursor::reflected_through_byte_offset(&entries, id));
+        if let Some(tail) = cached_tail
+            && tail.anchor_id == derived.reflected_through_message_id
+        {
+            if derived.reflected_through_byte_offset.is_some() {
+                derived.unreflected_bytes = Some(
+                    tail.raw_len
+                        .saturating_sub(derived.reflected_through_byte_offset.unwrap_or(0)),
+                );
+            } else {
+                derived.reflected_through_byte_offset =
+                    Some(tail.raw_len.saturating_sub(tail.bytes_since_anchor));
+                derived.unreflected_bytes = Some(tail.bytes_since_anchor);
+            }
+        } else {
+            let (entries, raw) = self.read_entries_and_raw_unlocked()?;
+            derived.unreflected_bytes = Some(
+                raw.len()
+                    .saturating_sub(derived.reflected_through_byte_offset.unwrap_or(0)),
+            );
+            if derived.reflected_through_byte_offset.is_none() {
+                derived.reflected_through_byte_offset = derived
+                    .reflected_through_message_id
+                    .as_deref()
+                    .map(|id| crate::journal::cursor::reflected_through_byte_offset(&entries, id));
+            }
+        }
+        let compact_json = serde_json::to_string(&derived).map_err(JournalError::Json)?;
+        if self
+            .persisted_state_json
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            == Some(compact_json.as_str())
+        {
+            return Ok(());
         }
         let temp_filename = format!(
             "{}.tmp-{}",
@@ -262,13 +323,96 @@ impl TranscriptJournal {
         let json = serde_json::to_string_pretty(&derived).map_err(JournalError::Json)?;
         std::fs::write(&temporary_path, format!("{json}\n")).map_err(JournalError::Io)?;
         std::fs::rename(&temporary_path, &self.state_path).map_err(JournalError::Io)?;
+        *self
+            .persisted_state_json
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(compact_json);
         Ok(())
     }
 
-    fn append_unlocked(&self, entries: &[TranscriptEntry]) -> Result<AppendResult, JournalError> {
+    fn load_tail_cache_unlocked(
+        &self,
+        anchor_id: Option<&str>,
+    ) -> Result<TranscriptTailCache, JournalError> {
+        let meta = match std::fs::metadata(&self.transcript_path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.transcript_path)
+                    .map_err(JournalError::Io)?;
+                let meta = std::fs::metadata(&self.transcript_path).map_err(JournalError::Io)?;
+                let empty = TranscriptTailCache {
+                    byte_offset: 0,
+                    mtime: meta.modified().ok(),
+                    raw_len: 0,
+                    completed_steps: 0,
+                    source_ids: HashSet::new(),
+                    anchor_id: anchor_id.map(str::to_owned),
+                    bytes_since_anchor: 0,
+                };
+                *self
+                    .transcript_tail
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(empty.clone());
+                return Ok(empty);
+            }
+            Err(err) => return Err(JournalError::Io(err)),
+        };
+
+        let size = meta.len();
+        let mtime = meta.modified().ok();
+        let cached = self
+            .transcript_tail
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
+        if let Some(mut cache) = cached
+            && cache.anchor_id.as_deref() == anchor_id
+            && mtime.is_some()
+        {
+            if size == cache.byte_offset && mtime == cache.mtime {
+                return Ok(cache);
+            }
+            if size > cache.byte_offset
+                && let Ok(mut file) = std::fs::File::open(&self.transcript_path)
+                && file.seek(SeekFrom::Start(cache.byte_offset)).is_ok()
+            {
+                let delta = (size - cache.byte_offset) as usize;
+                let mut buf = vec![0u8; delta];
+                if file.read_exact(&mut buf).is_ok()
+                    && let Ok(tail_str) = String::from_utf8(buf)
+                {
+                    for line in tail_str.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let row = parse_row_probe(trimmed)?;
+                        if row.is_completed_step() {
+                            cache.completed_steps += 1;
+                        }
+                        cache.source_ids.insert(row.source_line_id.into_owned());
+                    }
+                    cache.byte_offset = size;
+                    cache.mtime = mtime;
+                    cache.raw_len += delta;
+                    cache.bytes_since_anchor += delta;
+                    *self
+                        .transcript_tail
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(cache.clone());
+                    return Ok(cache);
+                }
+            }
+        }
+
         let raw = self.read_raw_unlocked()?;
-        let mut existing_completed = 0;
-        let mut source_ids: HashSet<std::borrow::Cow<'_, str>> = HashSet::new();
+        let meta_after = std::fs::metadata(&self.transcript_path).ok();
+        let mut completed_steps = 0usize;
+        let mut source_ids = HashSet::new();
         for line in raw.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -276,18 +420,55 @@ impl TranscriptJournal {
             }
             let row = parse_row_probe(trimmed)?;
             if row.is_completed_step() {
-                existing_completed += 1;
+                completed_steps += 1;
             }
-            source_ids.insert(row.source_line_id);
+            source_ids.insert(row.source_line_id.into_owned());
         }
+        let bytes_since_anchor = match anchor_id {
+            None => raw.len(),
+            Some(id) => {
+                let entries = raw
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| {
+                        let value = serde_json::from_str(line)
+                            .map_err(|_| JournalError::InvalidTranscriptJournalRow)?;
+                        parse_transcript_entry(value)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let offset = crate::journal::cursor::reflected_through_byte_offset(&entries, id);
+                raw.len().saturating_sub(offset)
+            }
+        };
+        let fresh_cache = TranscriptTailCache {
+            byte_offset: meta_after.as_ref().map_or(raw.len() as u64, |m| m.len()),
+            mtime: meta_after.and_then(|m| m.modified().ok()),
+            raw_len: raw.len(),
+            completed_steps,
+            source_ids,
+            anchor_id: anchor_id.map(str::to_owned),
+            bytes_since_anchor,
+        };
+        *self
+            .transcript_tail
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(fresh_cache.clone());
+        Ok(fresh_cache)
+    }
+
+    fn append_unlocked(&self, entries: &[TranscriptEntry]) -> Result<AppendResult, JournalError> {
+        let current_state = self.read_state_unlocked()?;
+        let mut cache =
+            self.load_tail_cache_unlocked(current_state.reflected_through_message_id.as_deref())?;
+        let existing_empty = cache.source_ids.is_empty();
         let mut fresh = Vec::new();
         let mut skipped = 0;
         for entry in entries {
             let id = entry.source_line_id();
-            if source_ids.contains(id) {
+            if cache.source_ids.contains(id) {
                 skipped += 1;
             } else {
-                source_ids.insert(std::borrow::Cow::Borrowed(id));
+                cache.source_ids.insert(id.to_owned());
                 fresh.push(entry);
             }
         }
@@ -297,19 +478,49 @@ impl TranscriptJournal {
                 .append(true)
                 .open(&self.transcript_path)
                 .map_err(JournalError::Io)?;
+            let mut appended_bytes = 0usize;
             for entry in fresh.iter().copied() {
                 let json = serde_json::to_string(entry).map_err(JournalError::Json)?;
                 writeln!(file, "{json}").map_err(JournalError::Io)?;
+                appended_bytes += json.len() + 1;
             }
             file.flush().map_err(JournalError::Io)?;
+            let fresh_completed = fresh
+                .iter()
+                .filter(|entry| count_completed_steps(std::slice::from_ref(*entry)) == 1)
+                .count();
+            cache.completed_steps += fresh_completed;
+            cache.raw_len += appended_bytes;
+            cache.bytes_since_anchor += appended_bytes;
+            if let Ok(meta) = std::fs::metadata(&self.transcript_path) {
+                cache.byte_offset = meta.len();
+                cache.mtime = meta.modified().ok();
+            } else {
+                cache.byte_offset += appended_bytes as u64;
+            }
+            *self
+                .transcript_tail
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(cache.clone());
         }
         let appended = fresh.len();
-        let fresh_completed = fresh
-            .iter()
-            .filter(|entry| count_completed_steps(std::slice::from_ref(*entry)) == 1)
-            .count();
-        let current_state = self.read_state_unlocked()?;
-        self.write_state_unlocked(&current_state, existing_completed + fresh_completed)?;
+        let next_state = if existing_empty
+            && !fresh.is_empty()
+            && current_state.transcript_pruned_at.is_some()
+        {
+            reanchor_after_prune(&current_state, &fresh)
+        } else {
+            current_state
+        };
+        let hint = if existing_empty
+            && !fresh.is_empty()
+            && next_state.reflected_through_message_id.is_some()
+        {
+            None
+        } else {
+            Some(&cache)
+        };
+        self.write_state_with_hint_unlocked(&next_state, cache.completed_steps, hint)?;
         Ok(AppendResult { appended, skipped })
     }
 
@@ -674,6 +885,33 @@ pub fn sync_journal_file(path: &Path) -> Result<(), JournalError> {
 /// Fsync the journal directory if supported by the platform.
 pub fn sync_journal_directory(dir: &Path) -> Result<(), JournalError> {
     sync_path(dir)
+}
+
+/// Reanchor cursor counters after a retention prune truncated `transcript.jsonl`.
+fn reanchor_after_prune(
+    state: &ReflectionTranscriptState,
+    entries: &[&TranscriptEntry],
+) -> ReflectionTranscriptState {
+    let mut next = state.clone();
+    next.transcript_pruned_at = None;
+    next.reflected_through_byte_offset = None;
+    let Some(anchor) = state.reflected_through_message_id.as_deref() else {
+        return next;
+    };
+    let anchor_index = entries
+        .iter()
+        .rposition(|entry| entry.source_message_id() == anchor);
+    if let Some(index) = anchor_index {
+        let completed = entries[..=index]
+            .iter()
+            .filter(|entry| count_completed_steps(std::slice::from_ref(*entry)) == 1)
+            .count();
+        next.reflected_completed_steps = completed;
+    } else {
+        next.reflected_through_message_id = None;
+        next.reflected_completed_steps = 0;
+    }
+    next
 }
 
 #[cfg(test)]

@@ -32,6 +32,15 @@ pub struct LifecycleLedger {
 }
 impl LifecycleLedger {
     pub fn new(session_id: &str, spawned_by: Option<&Value>, entries: &[Value]) -> Self {
+        Self::with_ended_run_id(session_id, spawned_by, entries, None)
+    }
+
+    pub fn with_ended_run_id(
+        session_id: &str,
+        spawned_by: Option<&Value>,
+        entries: &[Value],
+        ended_run_id: Option<&str>,
+    ) -> Self {
         let restored = entries
             .iter()
             .filter(|e| e["type"] == "custom" && e["customType"] == "session-lifecycle")
@@ -53,7 +62,9 @@ impl LifecycleLedger {
         let r = restored.as_ref().unwrap_or(&Value::Null);
         let sealed = r["epochSealed"] == true;
         let run_id = r["runId"].as_str().map(str::to_owned);
-        let interrupted = r["interrupted"] == true || (r["runActive"] == true && !sealed);
+        // A run recorded active is interrupted only when the transcript holds no end of it (senpi#7016).
+        let interrupted = r["interrupted"] == true
+            || (r["runActive"] == true && !sealed && run_id.as_deref() != ended_run_id);
         let goal_completed = r["completedGoalId"].as_str().map(str::to_owned);
         let run_completed = r["completedRunId"].as_str().map(str::to_owned);
         let last_turn_end = r.get("lastTurnEnd").cloned();
@@ -66,7 +77,6 @@ impl LifecycleLedger {
             "synthetic",
             "epochSealed",
             "settleRequest",
-            "runId",
             "runActive",
             "interrupted",
             "completedGoalId",
@@ -154,7 +164,9 @@ impl LifecycleLedger {
             .as_object_mut()
             .expect("object")
             .remove("lastStop");
-        self.run_id = Some(uuid::Uuid::new_v4().to_string());
+        let next_run_id = uuid::Uuid::new_v4().to_string();
+        self.run_id = Some(next_run_id.clone());
+        self.current["runId"] = json!(next_run_id);
         self.run_active = true;
         self.admission_write_failed = false;
         // A new run is unsaved state even inside an open epoch: `update` treats records that differ only in

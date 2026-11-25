@@ -4,11 +4,20 @@
 use std::sync::Arc;
 
 use maho_ext_api::ExtensionApi;
-
-use super::doctor_checks::{
-    CheckLevel, DoctorCheck, check_abandoned_runs, check_disk, check_frontmatter, check_locks,
-    check_reflection_health, check_repository, check_soul_seed, check_tokens, check_worktrees,
+use memory_core::locks::ProcessLiveness;
+use memory_core::reflection::stale_holder::{LockReadError, ReflectionLockProbe};
+use memory_core::reflection::stale_lock_reaper::{
+    StaleLockProbe, StaleLockReaperOptions, format_stale_lock_fix_lines, reclaim_dead_owner_locks,
+    run_stale_lock_reaper,
 };
+
+use super::args::{ParseCommandArgsOptions, parse_command_args_full};
+use super::doctor_checks::{
+    CheckLevel, DoctorCheck, RuntimeSizeCheckInput, RuntimeSizeReport, check_abandoned_runs,
+    check_disk, check_frontmatter, check_locks, check_reflection_health, check_repository,
+    check_runtime_size, check_soul_seed, check_tokens, check_worktrees,
+};
+use super::facts_failure_cause::facts_parked_cause_summary;
 use super::facts_status::{
     ReadFactsOverviewInput, facts_remediation_hint, format_facts_advisory, read_facts_overview,
 };
@@ -45,10 +54,15 @@ fn check_facts(deps: &MemoryCommandDeps, identity: &MemoryCommandIdentity) -> Op
     });
     let advisory = format_facts_advisory(&overview)?;
     let hint = facts_remediation_hint(&overview);
+    let causes =
+        facts_parked_cause_summary(&overview.records, Some(&identity.identity_paths.facts));
     let detail = format!(
-        "{}{}",
+        "{}{}{}",
         advisory.strip_prefix("facts: ").unwrap_or(&advisory),
-        hint.map(|hint| format!("; {hint}")).unwrap_or_default()
+        hint.map(|hint| format!("; {hint}")).unwrap_or_default(),
+        causes
+            .map(|summary| format!(" ({summary})"))
+            .unwrap_or_default()
     );
     Some(DoctorCheck {
         name: "facts".to_owned(),
@@ -61,28 +75,150 @@ fn check_facts(deps: &MemoryCommandDeps, identity: &MemoryCommandIdentity) -> Op
     })
 }
 
+struct DepsStaleLockProbe<'a>(&'a MemoryCommandDeps);
+
+impl ReflectionLockProbe for DepsStaleLockProbe<'_> {
+    fn read_text(&self, path: &std::path::Path) -> Result<String, LockReadError> {
+        memory_core::reflection::stale_holder::SystemReflectionLockProbe.read_text(path)
+    }
+
+    fn hostname(&self) -> String {
+        memory_core::reflection::stale_holder::SystemReflectionLockProbe.hostname()
+    }
+
+    fn pid_liveness(&self, pid: u32) -> ProcessLiveness {
+        if self.0.is_process_alive.is_some() {
+            if self.0.process_alive(pid) {
+                ProcessLiveness::Alive
+            } else {
+                ProcessLiveness::Dead
+            }
+        } else {
+            memory_core::reflection::stale_holder::SystemReflectionLockProbe.pid_liveness(pid)
+        }
+    }
+
+    fn process_start_identity(&self, pid: u32) -> Result<Option<String>, String> {
+        memory_core::reflection::stale_holder::SystemReflectionLockProbe.process_start_identity(pid)
+    }
+}
+
+impl StaleLockProbe for DepsStaleLockProbe<'_> {
+    fn now_ms(&self) -> i64 {
+        self.0.now_ms()
+    }
+}
+
 pub async fn handle_doctor(
     deps: &MemoryCommandDeps,
     ctx: &CommandContext,
     args: &str,
 ) -> CommandResponse {
-    let parsed_json = args.contains("--json");
+    let parsed = parse_command_args_full(
+        args,
+        ParseCommandArgsOptions {
+            booleans: &["json", "fix", "dry-run"],
+        },
+    );
+    for flag in parsed.flags.keys() {
+        if flag != "json" && flag != "fix" && flag != "dry-run" {
+            return respond(ctx, format!("unknown flag --{flag}"), NotifyLevel::Error);
+        }
+    }
+    if !parsed.positionals.is_empty()
+        || parsed.flags.values().any(|value| !value.is_true())
+        || (parsed.has_flag("dry-run") && !parsed.has_flag("fix"))
+    {
+        return respond(
+            ctx,
+            "usage: /doctor [--json] [--fix [--dry-run]]",
+            NotifyLevel::Error,
+        );
+    }
+    let parsed_json = parsed.has_flag("json");
+    let fix_mode = parsed.has_flag("fix");
+    let dry_run = parsed.has_flag("dry-run");
     let identity = match require_identity(deps, ctx) {
         Ok(identity) => identity,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
+
+    let write_denied = ctx
+        .session_id
+        .as_deref()
+        .and_then(|session| (deps.resolve_context)(session))
+        .is_some_and(|context| context.memory_write_denied);
 
     let repository = check_repository(&identity);
     let mut checks = vec![repository];
     let mut extra: Vec<String> = Vec::new();
     let mut receipts_summary: Option<super::doctor_receipts::ReceiptSummaries> = None;
     let mut quarantined_runs: Vec<super::doctor_receipts::QuarantinedRun> = Vec::new();
+    let mut runtime_size: Option<RuntimeSizeReport> = None;
+
+    if fix_mode {
+        if write_denied {
+            extra.push(format!(
+                "[fix] skipped; {}",
+                crate::write_policy::memory_write_denied_message("doctor --fix")
+            ));
+        } else {
+            let probe = DepsStaleLockProbe(deps);
+            match run_stale_lock_reaper(StaleLockReaperOptions {
+                runtime_dir: &identity.identity_paths.runtime,
+                probe: Some(&probe),
+                settle: None,
+                settle_always: false,
+                should_settle: None,
+                dry_run,
+                append_receipt: None,
+            }) {
+                Ok(report) => {
+                    let locks = if dry_run {
+                        None
+                    } else {
+                        Some(reclaim_dead_owner_locks(&identity.identity_paths.locks))
+                    };
+                    for line in
+                        format_stale_lock_fix_lines(&identity.identity, &report, locks.as_ref())
+                    {
+                        extra.push(format!("[fix] {line}"));
+                    }
+                }
+                Err(error) => {
+                    extra.push(format!("[fix] stale-lock reaper failed: {error}"));
+                }
+            }
+        }
+    }
 
     if checks[0].level == CheckLevel::Ok {
-        let warn_tokens = (deps.settings)()
-            .ok()
-            .and_then(|settings| settings["compile_warn_tokens"].as_u64())
-            .unwrap_or(0) as usize;
+        let settings_val = (deps.settings)().unwrap_or_default();
+        let warn_tokens = settings_val["compile_warn_tokens"].as_u64().unwrap_or(0) as usize;
+        let policy = crate::memory_runtime_retention::resolve_runtime_retention_policy(
+            &settings_val,
+            &identity.identity,
+        );
+        let max_bytes = crate::memory_runtime_retention::resolve_runtime_max_bytes(
+            &settings_val,
+            &identity.identity,
+        );
+        let reflection_enabled = crate::memory_runtime_retention::resolve_agent_reflection_enabled(
+            &settings_val,
+            &identity.identity,
+        );
+        let (runtime_check, runtime_report) = check_runtime_size(
+            &identity.identity_paths,
+            &RuntimeSizeCheckInput {
+                max_bytes,
+                policy: policy.clone(),
+                now_ms: deps.now_ms(),
+                reflection_enabled,
+                discard_unreflected_journals: policy.discard_unreflected_journals,
+                measure_budget_ms: Some(policy.pass_budget_ms.max(60_000)),
+            },
+        );
+        runtime_size = Some(runtime_report);
         let (receipts_check, receipts_map) = match super::doctor_receipts::check_receipts(
             &identity.identity_paths.runtime,
             deps.now_ms(),
@@ -108,6 +244,7 @@ pub async fn handle_doctor(
         ));
         checks.push(check_tokens(&identity.identity_paths.repo, warn_tokens));
         checks.push(check_disk(&identity));
+        checks.push(runtime_check);
         match memory_core::audit::audit::audit_memory_repo(
             &identity.identity_paths.repo,
             &memory_core::audit::audit::MemoryAuditOptions::default(),
@@ -142,11 +279,6 @@ pub async fn handle_doctor(
 
         // The skill frontmatter repair writes into the memory repository: a memory-write-denied
         // session runs every read-only check but never the repair (`crate::write_policy`).
-        let write_denied = ctx
-            .session_id
-            .as_deref()
-            .and_then(|session| (deps.resolve_context)(session))
-            .is_some_and(|context| context.memory_write_denied);
         if write_denied {
             extra.push(format!(
                 "[info] skills: frontmatter repair skipped; {}",
@@ -192,6 +324,7 @@ pub async fn handle_doctor(
             })).collect::<Vec<_>>(),
             "receipts": receipts_summary,
             "quarantinedRuns": quarantined_runs,
+            "runtimeSize": runtime_size,
         });
         return respond(
             ctx,
@@ -653,5 +786,60 @@ mod tests {
 
         assert!(response.text.contains("not bound"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
+    }
+
+    #[tokio::test]
+    async fn doctor_fix_and_dry_run_reap_stale_lock_and_report_runtime_size() {
+        let (_root, identity, fake) = harness(true);
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let active = serde_json::json!({
+            "runId": "reflection-run-8",
+            "reservedAt": "2020-01-01T00:00:00.000Z",
+            "launcherPid": 999_999_991u32,
+            "launcherHostname": memory_core::support::host::hostname(),
+            "request": {
+                "trigger": "step-count",
+                "conversationIds": ["c1"],
+                "snapshots": []
+            }
+        });
+        std::fs::create_dir_all(&identity.identity_paths.reflection).unwrap();
+        std::fs::write(
+            identity.identity_paths.reflection.join("active.lock"),
+            active.to_string(),
+        )
+        .unwrap();
+
+        let dry = handle_doctor(&fake.deps, &context.ctx, "--fix --dry-run").await;
+        assert!(dry.text.contains("[fix] WOULD FIX"));
+        assert!(
+            identity
+                .identity_paths
+                .reflection
+                .join("active.lock")
+                .exists()
+        );
+
+        let fixed = handle_doctor(&fake.deps, &context.ctx, "--fix").await;
+        assert!(fixed.text.contains("[fix] FIXED"));
+        assert!(
+            !identity
+                .identity_paths
+                .reflection
+                .join("active.lock")
+                .exists()
+        );
+
+        let json_res = handle_doctor(&fake.deps, &context.ctx, "--json").await;
+        let parsed: serde_json::Value = serde_json::from_str(&json_res.text).unwrap();
+        assert!(parsed["runtimeSize"].is_object());
+        assert!(
+            parsed["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["name"] == "runtime-size")
+        );
     }
 }

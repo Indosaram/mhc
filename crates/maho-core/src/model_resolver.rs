@@ -726,11 +726,9 @@ pub async fn restore_model_from_session(
     runtime: &crate::model_runtime::ModelRuntime,
 ) -> Result<InitialModelResult, maho_ai::models::ModelsError> {
     let restored = resolve_stored_model_reference(provider, id, &runtime.get_models(None));
+    // A signed-out provider keeps its model; the first prompt asks for a login (senpi#4410).
     if let Some(parsed) = &restored
-        && parsed
-            .model
-            .as_ref()
-            .is_some_and(|m| runtime.get_provider_auth_status(&m.provider).configured)
+        && parsed.model.is_some()
     {
         return Ok(InitialModelResult {
             parsed: parsed.clone(),
@@ -738,11 +736,7 @@ pub async fn restore_model_from_session(
             provenance: InitialModelProvenance::Settings,
         });
     }
-    let reason = if restored.is_none() {
-        "model no longer exists"
-    } else {
-        "no auth configured"
-    };
+    let reason = "model no longer exists";
     let model = if current.is_some() {
         current
     } else {

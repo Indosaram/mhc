@@ -96,6 +96,31 @@ impl AdmissionLedger {
             || self.failed.contains_key(id)
     }
 }
+/// Optional provenance stamped onto an admitted external delivery (senpi#6490 / turn-origin).
+#[derive(Debug, Clone, Default)]
+pub struct DeliveryStamp {
+    pub remote_origin: Option<Value>,
+    pub chain_count: Option<u64>,
+    pub turn_mark: Option<crate::turn_origin::InputTurnMark>,
+}
+
+/// Every delivery id the transcript holds an entry for: what answers for the process-lifetime ledger after a restart.
+pub static WRITTEN_DELIVERY_IDS: crate::session_history_reduce::HistoryReducer<
+    std::collections::HashSet<String>,
+> = crate::session_history_reduce::HistoryReducer {
+    initial: std::collections::HashSet::new,
+    add: |ids, entry| {
+        if entry.get("type").and_then(Value::as_str) == Some("custom_message")
+            && entry.get("customType").and_then(Value::as_str)
+                == Some(SESSION_CONTROL_DELIVERY_TYPE)
+            && is_session_control_delivery_details(&entry["details"])
+            && let Some(id) = entry["details"]["delivery_id"].as_str()
+        {
+            ids.insert(id.to_owned());
+        }
+    },
+};
+
 impl ExternalAdmission {
     /// Releases restored reservations no longer owned. The ownership closures read custody (session manager,
     /// work obligations), so they run after the ledger lock is released, never under it.
@@ -192,6 +217,13 @@ impl ExternalAdmission {
             .closed
             .get_or_insert(reason);
     }
+    pub fn closed_reason(&self) -> Option<String> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed
+            .clone()
+    }
     pub fn reopen(&self) {
         self.ledger
             .lock()
@@ -213,6 +245,18 @@ impl ExternalAdmission {
         input: &Value,
         editor: &Value,
         busy: bool,
+        deliver: impl FnOnce(Value, &str) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        self.admit_with_stamp_and_holds(input, editor, busy, &[], DeliveryStamp::default(), deliver)
+    }
+
+    pub fn admit_with_stamp_and_holds(
+        &self,
+        input: &Value,
+        editor: &Value,
+        busy: bool,
+        held_by: &[String],
+        stamp: DeliveryStamp,
         deliver: impl FnOnce(Value, &str) -> Result<(), String>,
     ) -> Result<Value, String> {
         let gate = self.gate(editor);
@@ -240,7 +284,14 @@ impl ExternalAdmission {
         }
         let busy = busy || l.pending.values().any(|p| p == "start");
         let (kind, lane) = if !busy && input["whenIdle"] != "queue" {
-            ("started", "start")
+            (
+                if held_by.is_empty() {
+                    "started"
+                } else {
+                    "held"
+                },
+                "start",
+            )
         } else if busy && input["deliverAs"] == "steer" {
             if input.get("expected_turn_id").is_none() {
                 return Ok(result("turn_conflict", l.epoch));
@@ -256,12 +307,16 @@ impl ExternalAdmission {
                 },
             )
         };
-        let message = delivery_message(input);
+        let message = delivery_message_with_stamp(input, &stamp);
         l.pending.insert(id.into(), lane.into());
         let epoch = l.epoch;
         drop(l);
         deliver(message, lane)?;
-        Ok(result(kind, epoch))
+        if kind == "held" {
+            Ok(json!({"kind":"held","holds":held_by,"turn_epoch":epoch}))
+        } else {
+            Ok(result(kind, epoch))
+        }
     }
     pub fn list(&self) -> Value {
         self.release_restored();
@@ -365,13 +420,27 @@ impl ExternalAdmission {
     }
 }
 pub fn delivery_message(input: &Value) -> Value {
+    delivery_message_with_stamp(input, &DeliveryStamp::default())
+}
+
+pub fn delivery_message_with_stamp(input: &Value, stamp: &DeliveryStamp) -> Value {
     let mut details = json!({"delivery_id":input["delivery_id"],"source":"session_control","deliverAs":input["deliverAs"]});
     for k in ["sender", "display_text"] {
         if let Some(v) = input.get(k) {
             details[k] = v.clone();
         }
     }
-    json!({"role":"custom","customType":SESSION_CONTROL_DELIVERY_TYPE,"content":input["text"],"display":true,"details":details,"timestamp":chrono::Utc::now().timestamp_millis()})
+    if let Some(remote_origin) = &stamp.remote_origin {
+        details["remote_origin"] = remote_origin.clone();
+    }
+    if let Some(chain_count) = stamp.chain_count {
+        details["chain_count"] = json!(chain_count);
+    }
+    let mut message = json!({"role":"custom","customType":SESSION_CONTROL_DELIVERY_TYPE,"content":input["text"],"display":true,"details":details,"timestamp":chrono::Utc::now().timestamp_millis()});
+    if let Some(turn_mark) = stamp.turn_mark {
+        crate::turn_origin::mark_input_turn_origin(&mut message, turn_mark);
+    }
+    message
 }
 pub fn delivery_id_of(message: &Value) -> Option<&str> {
     (message["role"] == "custom"

@@ -28,6 +28,8 @@ pub struct MemoryWiring {
     stale_lock_notices_shown: std::collections::BTreeSet<String>,
     /// Holders this session already asked reconciliation to settle, keyed `<session>:<run>`.
     stale_holder_reconciles: std::collections::BTreeSet<String>,
+    /// In-flight memory reads/work awaited on shutdown drain (`#11671`, `hook-work.ts`).
+    pub work: std::sync::Arc<memory_core::compile::InFlightReads>,
 }
 pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
     MemoryWiring {
@@ -43,6 +45,7 @@ pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
         user_activity: Default::default(),
         stale_lock_notices_shown: Default::default(),
         stale_holder_reconciles: Default::default(),
+        work: std::sync::Arc::new(memory_core::compile::InFlightReads::new()),
     }
 }
 /// The host UI the sync notices are written to (`SyncNoticeUi`).
@@ -628,7 +631,15 @@ impl MemoryWiring {
         }
         let facts =
             facts.ok_or("memory facts wiring options are missing for a write-enabled bind")?;
-        reconcile().await?;
+        let runtime_dir = input.identity.identity_paths.runtime.clone();
+        crate::reflection_stale_active_sync::reconcile_through_stale_lock_reaper_async(
+            &runtime_dir,
+            reconcile,
+            &|error| {
+                eprintln!("memory stale-lock reaper skipped during bind: {error}");
+            },
+        )
+        .await?;
         // Session-start reconciliation runs once per session; a holder that dies after it is only
         // recoverable from a later turn, which is what `recover_stale_holder_after_turn` does.
         self.user_activity.mark_reconciled(input.session_id);
@@ -1038,19 +1049,56 @@ impl MemoryWiring {
             .runtime
             .resolve_context(session)
             .is_some_and(|context| context.memory_write_denied);
-        // Upstream `onSessionShutdown` calls `w.dispose()` synchronously and never awaits `settled()`: an in-flight
-        // maintenance run is cancelled and winds down in the background instead of being joined on the shutdown path.
+        // Background packing is never worth holding an exit for: stop it before the drain.
         self.maintenance.dispose();
-        // pin `wiring.ts` raceDetached "recall-store-settle": after "status-settle", before the reflection-live shutdown,
-        // so the recall term-store save finishes. A save that outlives the deadline is left running.
+        // The journal flush runs FIRST, before the pre-drain awaits can consume the fixed budget (`2a55e3024b`):
+        // transcript bytes are already on disk (append writes immediately, flush is fsync), so one
+        // first-position flush captures everything and the drain will not re-run it.
+        let evaluators = if denied {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.evaluators)
+        };
+        let journal_flushed = {
+            let mut drain = crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps {
+                wiring: self,
+                now,
+            });
+            drain.flush_journal(session, deadline, now, warn).await
+        };
+        let maintenance_settle = self.maintenance.detach_settled();
+        crate::wiring_shutdown::race_detached_step(
+            "maintenance-settle",
+            deadline,
+            now,
+            warn,
+            maintenance_settle,
+        )
+        .await;
+        // A recall ranking saves the repository's terms into its `.git` after the prompt; let that write finish.
         if let Some(settle) = self.seams.recall_store_settle.clone() {
-            let remaining = std::time::Duration::from_secs_f64(
-                ((deadline - now()).max(0.0) / 1000.0).min(u64::MAX as f64),
-            );
-            let work = tokio::task::spawn_blocking(move || settle());
-            if tokio::time::timeout(remaining, work).await.is_err() {
-                warn("recall-store-settle", None);
-            }
+            crate::wiring_shutdown::race_detached_step(
+                "recall-store-settle",
+                deadline,
+                now,
+                warn,
+                async move {
+                    let _ = tokio::task::spawn_blocking(move || settle()).await;
+                },
+            )
+            .await;
+        }
+        if let Some(settle) = self.seams.prompt_cache_settle.clone() {
+            crate::wiring_shutdown::race_detached_step(
+                "memory-block-settle",
+                deadline,
+                now,
+                warn,
+                async move {
+                    let _ = tokio::task::spawn_blocking(move || settle()).await;
+                },
+            )
+            .await;
         }
         self.shutdown(session);
         let identity = self
@@ -1062,11 +1110,6 @@ impl MemoryWiring {
         {
             facts.cancel_active().await;
         }
-        let evaluators = if denied {
-            Vec::new()
-        } else {
-            std::mem::take(&mut self.evaluators)
-        };
         let evaluators = {
             let mut drain = crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps {
                 wiring: self,
@@ -1075,9 +1118,22 @@ impl MemoryWiring {
             for evaluator in evaluators {
                 drain.register_evaluator(evaluator);
             }
-            drain.run(reason, session, deadline, now, warn).await;
+            drain
+                .run_with_journal_flushed(reason, session, deadline, now, journal_flushed, warn)
+                .await;
             std::mem::take(&mut drain.evaluators)
         };
+        let work = std::sync::Arc::clone(&self.work);
+        crate::wiring_shutdown::race_detached_step(
+            "memory-work-settle",
+            deadline,
+            now,
+            warn,
+            async move {
+                let _ = tokio::task::spawn_blocking(move || work.settled()).await;
+            },
+        )
+        .await;
         if !denied {
             self.evaluators = evaluators;
         }

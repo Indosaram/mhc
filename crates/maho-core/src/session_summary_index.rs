@@ -108,8 +108,12 @@ pub struct SessionSummaryIndex {
 
 impl SessionSummaryIndex {
     pub fn new(dir: &str, max_bytes: Option<usize>) -> Self {
+        Self::with_index_dir(dir, max_bytes, None)
+    }
+
+    pub fn with_index_dir(dir: &str, max_bytes: Option<usize>, index_dir: Option<&str>) -> Self {
         Self {
-            path: Path::new(dir)
+            path: Path::new(index_dir.unwrap_or(dir))
                 .join(SESSION_SUMMARY_INDEX_FILE)
                 .to_string_lossy()
                 .into_owned(),
@@ -185,6 +189,9 @@ impl SessionSummaryIndex {
         let result = if (!loaded.usable && !kept.is_empty())
             || (loaded.usable && loaded.entry_bytes + appended_bytes > 2 * kept_bytes)
         {
+            if let Some(parent) = Path::new(&self.path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             rewrite_index_file(&self.path, &kept).map(|()| {
                 self.remember(
                     stat_stamp(&self.path),
@@ -192,6 +199,9 @@ impl SessionSummaryIndex {
                 )
             })
         } else if loaded.usable && !appended.is_empty() {
+            if let Some(parent) = Path::new(&self.path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             append_index_entries(&self.path, &appended, loaded.ends_with_newline).map(|()| {
                 let mut in_file: HashMap<String, FileStamp> = loaded
                     .entries

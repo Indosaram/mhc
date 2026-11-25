@@ -9,6 +9,7 @@ pub mod facts_child_launch;
 pub mod facts_lock_broker;
 #[cfg(test)]
 mod facts_lock_broker_tests;
+pub mod failure_detail;
 #[cfg(test)]
 pub mod fixtures;
 pub mod fork_cost;

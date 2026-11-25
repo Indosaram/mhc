@@ -2,6 +2,13 @@
 
 use maho_ext_api::InputSource;
 
+/// Attribution of an `input` event (user vs agent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputAttribution {
+    User,
+    Agent,
+}
+
 use crate::manual_continue::MANUAL_CONTINUE_CUSTOM_TYPE;
 
 /// senpi continue-from-leaf.ts `CONTINUE_FROM_LEAF_CUSTOM_TYPE`.
@@ -30,6 +37,29 @@ pub fn input_origin_of(source: Option<InputSource>) -> InputOrigin {
     } else {
         InputOrigin::Person
     }
+}
+
+/// What attribution needs to know about an input: who started it, its channel, and for RPC the connection's role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttributedInput {
+    pub origin: InputOrigin,
+    pub source: Option<InputSource>,
+    pub interactive_user: bool,
+}
+
+/// The `input` event's attribution.
+pub fn input_attribution_of(input: AttributedInput) -> InputAttribution {
+    if input.origin != InputOrigin::Person {
+        return InputAttribution::Agent;
+    }
+    if input.source == Some(InputSource::Rpc) {
+        return if input.interactive_user {
+            InputAttribution::User
+        } else {
+            InputAttribution::Agent
+        };
+    }
+    InputAttribution::User
 }
 
 pub fn custom_turn_origin(custom_type: &str) -> InputOrigin {

@@ -5,6 +5,18 @@ use super::{
     run_liveness::RunProcessVerdict,
 };
 use std::{future::Future, path::Path, pin::Pin};
+
+use memory_core::reflection::stale_lock_reaper::{
+    QuarantineStrandedRunOptions, StrandedRunAction, StrandedRunDecision, SystemStaleLockProbe,
+    decide_stranded_run, is_settled_under_dead_launcher, quarantine_stranded_run,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WaitPolicy {
+    #[default]
+    Deadline,
+    None,
+}
 pub type ReconcileFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + 'a>>;
 pub trait ReflectionRecoveryPort {
     fn hostname(&self) -> String;
@@ -161,6 +173,16 @@ pub async fn reconcile_run_with_signal(
     recovery: &dyn ReflectionRecoveryPort,
     signal: Option<&maho_ext_api::AbortSignal>,
 ) -> Result<Option<ReservationRunResult>, String> {
+    reconcile_run_with_policy(context, dir, ledger, recovery, signal, WaitPolicy::Deadline).await
+}
+pub async fn reconcile_run_with_policy(
+    context: &RunFinalizationContext<'_>,
+    dir: &Path,
+    ledger: ReservationRunLedger,
+    recovery: &dyn ReflectionRecoveryPort,
+    signal: Option<&maho_ext_api::AbortSignal>,
+    wait_policy: WaitPolicy,
+) -> Result<Option<ReservationRunResult>, String> {
     use super::run_liveness::throw_if_aborted;
     let outcome = dir.join("outcome.json");
     let is_matching = matching(&outcome, &ledger)?;
@@ -200,6 +222,9 @@ pub async fn reconcile_run_with_signal(
         supervisor,
         RunProcessVerdict::Alive | RunProcessVerdict::Unknown
     ) {
+        if wait_policy == WaitPolicy::None {
+            return Ok(None);
+        }
         recovery
             .wait_outcome(
                 &outcome,
@@ -252,6 +277,9 @@ pub async fn reconcile_run_with_signal(
             return recovery.fail(dir, &ledger, false, true);
         }
         RunProcessVerdict::Alive => {}
+    }
+    if wait_policy == WaitPolicy::None {
+        return Ok(None);
     }
     recovery
         .wait_until(
@@ -336,6 +364,25 @@ pub async fn reconcile_reflection_runs_with_signal(
     defer_on_scheduler_contention: bool,
     signal: Option<&maho_ext_api::AbortSignal>,
 ) -> Result<Vec<(String, String)>, String> {
+    reconcile_reflection_runs_with_policy(
+        context,
+        recovery,
+        logger,
+        defer_on_scheduler_contention,
+        signal,
+        WaitPolicy::Deadline,
+    )
+    .await
+}
+
+pub async fn reconcile_reflection_runs_with_policy(
+    context: &RunFinalizationContext<'_>,
+    recovery: &dyn ReflectionRecoveryPort,
+    logger: Option<&(dyn super::run_reconciliation_sweep::ReflectionSweepLogger + Sync)>,
+    defer_on_scheduler_contention: bool,
+    signal: Option<&maho_ext_api::AbortSignal>,
+    wait_policy: WaitPolicy,
+) -> Result<Vec<(String, String)>, String> {
     use super::run_liveness::throw_if_aborted;
     throw_if_aborted(signal)?;
     let mut results = vec![];
@@ -369,7 +416,10 @@ pub async fn reconcile_reflection_runs_with_signal(
                     .map_err(|error| error.to_string())?
                     .is_dir()
                 {
-                    paths.push(entry.path());
+                    let name = entry.file_name();
+                    if !name.to_string_lossy().starts_with('.') {
+                        paths.push(entry.path());
+                    }
                 }
             }
         }
@@ -377,6 +427,7 @@ pub async fn reconcile_reflection_runs_with_signal(
         Err(error) => return Err(error.to_string()),
     }
     paths.sort();
+    let mut reserved_state: Option<memory_core::reflection::ReservationState> = None;
     for path in paths {
         throw_if_aborted(signal)?;
         super::run_temporaries::sweep_stranded_run_temporaries(
@@ -397,16 +448,52 @@ pub async fn reconcile_reflection_runs_with_signal(
             );
             continue;
         }
-        if !path.join("ledger.json").exists() {
-            continue;
-        }
-        let ledger = parse_reservation_run_ledger(
-            read_run_json(&path.join("ledger.json")).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        let ledger = if path.join("ledger.json").exists() {
+            read_run_json(&path.join("ledger.json"))
+                .ok()
+                .and_then(|value| parse_reservation_run_ledger(value).ok())
+        } else {
+            None
+        };
         throw_if_aborted(signal)?;
+        let Some(ledger) = ledger else {
+            let run_id = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            let state = match &reserved_state {
+                Some(state) => state,
+                None => {
+                    let loaded = if defer_on_scheduler_contention {
+                        context
+                            .reservation
+                            .read_state_with_wait(Some(0))
+                            .map_err(|error| error.to_string())?
+                    } else {
+                        context.reservation.read_state()?
+                    };
+                    reserved_state.insert(loaded)
+                }
+            };
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.run_id == run_id)
+                || state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.run_id == run_id)
+            {
+                continue;
+            }
+            if let Some(settled) = settle_stranded_run(context, &path, &run_id, signal)? {
+                results.push(settled);
+            }
+            continue;
+        };
         if let Some(result) =
-            reconcile_run_with_signal(context, &path, ledger, recovery, signal).await?
+            reconcile_run_with_policy(context, &path, ledger, recovery, signal, wait_policy).await?
         {
             results.push((result.run_id, result.outcome));
         }
@@ -444,6 +531,21 @@ pub fn reconcile_prelaunch_with_signal(
     let Some(active) = active else {
         return Ok(None);
     };
+    if is_settled_under_dead_launcher(&context.identity.paths.reflection, &SystemStaleLockProbe) {
+        let transition = context.reservation.complete_with_options(
+            &active.run_id,
+            memory_core::reflection::ReflectionOutcome::Failed,
+            memory_core::reflection::CompleteOptions {
+                promote_pending: true,
+            },
+        )?;
+        if let Some(next) = transition.launch
+            && let Some(launch) = context.launch
+        {
+            launch(&next);
+        }
+        return Ok(Some((active.run_id, "failed".into())));
+    }
     let (Some(reserved), Some(pid), Some(host)) = (
         &active.reserved_at,
         active.launcher_pid,
@@ -525,6 +627,34 @@ pub fn reconcile_prelaunch_with_signal(
         "a reclaim must never launch a fresh run"
     );
     Ok(Some((active.run_id, "failed".into())))
+}
+
+fn settle_stranded_run(
+    context: &RunFinalizationContext<'_>,
+    run_dir: &Path,
+    run_id: &str,
+    signal: Option<&maho_ext_api::AbortSignal>,
+) -> Result<Option<(String, String)>, String> {
+    use super::run_liveness::throw_if_aborted;
+    let decision = decide_stranded_run(run_dir, &SystemStaleLockProbe);
+    throw_if_aborted(signal)?;
+    let StrandedRunDecision::Reap { action, .. } = decision else {
+        return Ok(None);
+    };
+    // A valid ledger never reaches here: reconcile_run settles it with worktree-tip recovery.
+    if action == StrandedRunAction::ProcessesDead {
+        return Ok(None);
+    }
+    let now_fn = context.now_ms;
+    let settled = quarantine_stranded_run(&QuarantineStrandedRunOptions {
+        runtime_dir: &context.identity.paths.runtime,
+        run_dir,
+        run_id,
+        action,
+        now_ms: Some(now_fn),
+        append_receipt: None,
+    })?;
+    Ok(settled.then(|| (run_id.to_owned(), "failed".to_owned())))
 }
 
 #[cfg(test)]

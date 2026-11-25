@@ -83,6 +83,67 @@ pub fn assert_session_cwd_exists(
     }
 }
 
+/// A session cwd that exists but is not a folder (a file, a socket): its tools could not run there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCwdNotDirectoryIssue {
+    pub session_file: Option<String>,
+    pub session_cwd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCwdNotDirectoryError {
+    pub issue: SessionCwdNotDirectoryIssue,
+}
+
+impl fmt::Display for SessionCwdNotDirectoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let session_file = self
+            .issue
+            .session_file
+            .as_ref()
+            .map(|file| format!("\nSession file: {file}"))
+            .unwrap_or_default();
+        write!(
+            f,
+            "Session working directory is not a directory: {}{session_file}",
+            self.issue.session_cwd
+        )
+    }
+}
+
+impl std::error::Error for SessionCwdNotDirectoryError {}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionCwdError {
+    #[error(transparent)]
+    Missing(#[from] MissingSessionCwdError),
+    #[error(transparent)]
+    NotDirectory(#[from] SessionCwdNotDirectoryError),
+}
+
+/// Async version of session cwd validation (`senpi` `assertSessionCwdExists`): checks both
+/// existence and that an existing cwd is a directory.
+pub async fn assert_session_cwd_exists_async(
+    session_manager: &dyn SessionCwdSource,
+    fallback_cwd: &str,
+) -> Result<(), SessionCwdError> {
+    assert_session_cwd_exists(session_manager, fallback_cwd)?;
+    let session_cwd = session_manager.get_cwd();
+    if !session_cwd.is_empty()
+        && let Ok(meta) = tokio::fs::metadata(session_cwd).await
+        && !meta.is_dir()
+    {
+        return Err(SessionCwdNotDirectoryError {
+            issue: SessionCwdNotDirectoryIssue {
+                session_file: session_manager.get_session_file().map(str::to_owned),
+                session_cwd: session_cwd.to_owned(),
+            },
+        }
+        .into());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Asynchronous session rebind I/O (senpi packages/coding-agent/src/core/session-rebind.ts)
 // ---------------------------------------------------------------------------
@@ -210,11 +271,27 @@ async fn moved_already(source: &Path, target: &Path) -> bool {
     !path_exists(source).await && path_exists(target).await
 }
 
+#[cfg(test)]
 async fn move_session_file(
     source: &Path,
     target: &Path,
     cwd: &str,
 ) -> Result<std::path::PathBuf, std::io::Error> {
+    move_session_file_with_hook::<futures::future::Ready<Result<(), std::io::Error>>>(
+        source, target, cwd, None,
+    )
+    .await
+}
+
+async fn move_session_file_with_hook<F>(
+    source: &Path,
+    target: &Path,
+    cwd: &str,
+    before_rename: Option<F>,
+) -> Result<std::path::PathBuf, std::io::Error>
+where
+    F: std::future::Future<Output = Result<(), std::io::Error>>,
+{
     if target != source && moved_already(source, target).await {
         return Ok(target.to_path_buf());
     }
@@ -246,6 +323,20 @@ async fn move_session_file(
             &header.id,
         )
         .await?;
+    }
+    if let Some(hook) = before_rename
+        && let Err(error) = hook.await
+    {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        if target != source {
+            let _ = move_session_sidecars(
+                target_dir,
+                source.parent().unwrap_or_else(|| Path::new(".")),
+                &header.id,
+            )
+            .await;
+        }
+        return Err(error);
     }
     tokio::fs::rename(&temp_path, target).await?;
     if target != source {
@@ -340,8 +431,28 @@ pub async fn rebind_session_file(
     source_path: &Path,
     target_cwd: &Path,
     session_dir: Option<&Path>,
-    _move_lock_wait_ms: Option<u64>,
+    move_lock_wait_ms: Option<u64>,
 ) -> Result<std::path::PathBuf, std::io::Error> {
+    rebind_session_file_with_hook::<futures::future::Ready<Result<(), std::io::Error>>>(
+        source_path,
+        target_cwd,
+        session_dir,
+        move_lock_wait_ms,
+        None,
+    )
+    .await
+}
+
+pub async fn rebind_session_file_with_hook<F>(
+    source_path: &Path,
+    target_cwd: &Path,
+    session_dir: Option<&Path>,
+    _move_lock_wait_ms: Option<u64>,
+    before_rename: Option<F>,
+) -> Result<std::path::PathBuf, std::io::Error>
+where
+    F: std::future::Future<Output = Result<(), std::io::Error>>,
+{
     let source = tokio::fs::canonicalize(source_path)
         .await
         .unwrap_or_else(|_| source_path.to_path_buf());
@@ -373,21 +484,28 @@ pub async fn rebind_session_file(
             holders,
         ))
     };
-    let moved = crate::session_move::session_lock::with_session_move_lock(
-        &source,
-        async {
-            let holders = match live_holders_of(&source, &header.id).await {
-                Ok(holders) => holders,
-                Err(error) => return Ok(Err(error)),
-            };
-            if !holders.is_empty() {
-                return Ok(Err(held(holders)));
-            }
-            Ok(move_session_file(&source, &target, &cwd.to_string_lossy()).await)
-        },
-        None,
-    )
-    .await;
+    let moved =
+        crate::session_move::session_lock::with_session_move_lock(
+            &source,
+            async {
+                let holders = match live_holders_of(&source, &header.id).await {
+                    Ok(holders) => holders,
+                    Err(error) => return Ok(Err(error)),
+                };
+                if !holders.is_empty() {
+                    return Ok(Err(held(holders)));
+                }
+                Ok(move_session_file_with_hook(
+                    &source,
+                    &target,
+                    &cwd.to_string_lossy(),
+                    before_rename,
+                )
+                .await)
+            },
+            None,
+        )
+        .await;
     match moved {
         Ok(result) => result,
         // The lock itself refused because a live holder or another mover has the session: name the holders

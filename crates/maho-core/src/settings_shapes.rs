@@ -20,6 +20,7 @@ pub struct PromptCacheSettings {
     pub safety_buffer_seconds: Option<i64>,
     pub goal_backstop_max_seconds: Option<i64>,
     pub keep_alive: Option<PromptCacheKeepAliveSettings>,
+    pub session_affinity: Option<bool>,
 }
 
 /// Offer "start fresh with a handoff" when a large session's cache has expired (senpi#3230).
@@ -55,6 +56,16 @@ pub struct ImageSettings {
     pub auto_resize: Option<bool>,
     pub block_images: Option<bool>,
     pub max_historical_images: Option<i64>,
+}
+
+pub const JOB_WIDGETS_DEFAULT_AUTHOR_AFTER_MS: u64 = 15_000;
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct JobWidgetsSettings {
+    pub enabled: Option<bool>,
+    pub model: Option<String>,
+    pub author_after_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

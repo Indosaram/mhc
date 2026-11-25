@@ -111,7 +111,10 @@ fn collect_live_run_ids(
     let runs_dir = context.identity.paths.reflection.join("runs");
     for run_id in run_directory_names(&runs_dir)? {
         let run_dir = runs_dir.join(&run_id);
-        if run_dir.join("final.json").exists() || run_dir.join("abandoned.json").exists() {
+        if run_dir.join("final.json").exists()
+            || run_dir.join("abandoned.json").exists()
+            || run_dir.join("quarantined.json").exists()
+        {
             continue;
         }
         // prelaunch.json is written before the worktree exists, so it claims the directory early.
@@ -137,7 +140,10 @@ fn run_directory_names(path: &Path) -> Result<Vec<String>, String> {
             .map_err(|error| error.to_string())?
             .is_dir()
         {
-            names.push(entry.file_name().to_string_lossy().into_owned());
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with('.') {
+                names.push(name);
+            }
         }
     }
     Ok(names)

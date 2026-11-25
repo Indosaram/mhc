@@ -1061,7 +1061,7 @@ pub struct ToolChildRow {
 
 #[derive(Clone)]
 pub struct AgentSession {
-    inner: Arc<AgentSessionInner>,
+    pub(crate) inner: Arc<AgentSessionInner>,
 }
 
 /// Settles the session start when dropped, including on cancellation (senpi's `finally`).
@@ -1080,9 +1080,9 @@ type NestedHostCallSlot = (
 
 #[doc(hidden)]
 pub struct AgentSessionInner {
-    agent: Agent,
-    session_manager: Mutex<SessionManager>,
-    lifecycle: Mutex<crate::lifecycle_ledger::LifecycleLedger>,
+    pub(crate) agent: Agent,
+    pub(crate) session_manager: Mutex<SessionManager>,
+    pub(crate) lifecycle: Mutex<crate::lifecycle_ledger::LifecycleLedger>,
     external_admission: crate::external_admission::ExternalAdmission,
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
     /// senpi `_pendingInputs`: identified queued input in durable custody (senpi#3549). Set once the session exists.
@@ -1113,26 +1113,16 @@ pub struct AgentSessionInner {
     /// senpi `_unregisterMemoryReport`: a no-op unless `SENPI_MEMORY_REPORT=1`; released on dispose.
     memory_report_unregister: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
-    model_registry: ModelRegistry,
+    pub(crate) model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
     extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
     boundary_context_changed: AtomicBool,
-    /// Bumped each time a runner is installed, so a renderer snapshot keyed on it (with the
-    /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
     extension_runner_epoch: AtomicU64,
-    /// senpi `_handlerTurnScope`: bumped per admitted prompt turn (`_promptAgent`), so the turn deadline
-    /// releases only the held extension handler waits its own turn started (senpi#3650).
     handler_turn_scope: Arc<AtomicU64>,
-    /// senpi `_deadlineTracker`: the turn's inactivity lease and max-runtime cap (senpi#3227), armed at
-    /// prompt admission and disarmed when the run settles idle. Set once, right after construction.
     deadline_tracker: std::sync::OnceLock<crate::turn_deadline::AgentDeadlineTracker>,
-    /// senpi `SessionLifecycleController.deadlineStop`: the deadline that stopped the current run,
-    /// captured before its durable write. Lock order: `lifecycle`, then this.
     lifecycle_deadline_stop: Mutex<Option<crate::lifecycle_stop::DeadlineStopCapture>>,
-    /// The host's project-trust inputs for a switch into another project (senpi `createServices` re-run
-    /// for the target cwd with `projectTrustByCwd`, `--approve`, and `projectTrustContextFactory`).
     switch_project_trust: Mutex<Option<SwitchProjectTrust>>,
-    event_bus: EventBus,
+    pub(crate) event_bus: EventBus,
     event_listeners: SharedEventListeners,
     next_listener_id: Arc<AtomicU64>,
     human_input_listeners: Arc<Mutex<Vec<(u64, HumanInputListener)>>>,
@@ -1145,7 +1135,7 @@ pub struct AgentSessionInner {
     nested_tool_queue: tokio::sync::Mutex<()>,
     reload_admission: tokio::sync::Mutex<()>,
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
-    retry_fallback: tokio::sync::Mutex<
+    pub(crate) retry_fallback: tokio::sync::Mutex<
         Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>,
     >,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
@@ -1190,8 +1180,7 @@ pub struct AgentSessionInner {
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     /// senpi `_requestShapeRecovery`: one same-model recovery per request-shape failing streak.
     request_shape_recovery: Mutex<crate::retry_fallback::request_shape::RequestShapeRecovery>,
-    /// senpi `_engineTurnHold`: the durable hold ledger. Lock order: hold, then `engine_turn_input`.
-    engine_turn_hold: Arc<Mutex<crate::engine_turn_hold::EngineTurnHold>>,
+    pub(crate) engine_turn_hold: Arc<Mutex<crate::engine_turn_hold::EngineTurnHold>>,
     engine_turn_release: crate::engine_turn_release::EngineTurnRelease,
     engine_turn_input: Mutex<crate::engine_turn_input::EngineTurnInput>,
     /// senpi `_engineTurnStarts`: this process's own record of engine turns since the user's last message.
@@ -1258,8 +1247,8 @@ pub struct AgentSessionInner {
             maho_ext_api::MessageDeliveryReceipt,
         )>,
     >,
-    /// Session-file repairs reported inside a session-manager append; emitted only after its lock is released.
     pending_session_recoveries: Mutex<Vec<crate::session_write_recovery::SessionRecovery>>,
+    pub(crate) p8: crate::agent_session_p8::AgentSessionP8State,
 }
 
 pub type HtmlThemeResolver = Arc<
@@ -1275,7 +1264,7 @@ pub type HtmlThemeResolver = Arc<
         + Sync,
 >;
 
-struct SessionFallbackDeps(
+pub(crate) struct SessionFallbackDeps(
     std::sync::Weak<AgentSessionInner>,
     crate::retry_fallback::log::FallbackLogger,
 );
@@ -4021,6 +4010,9 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
             });
         }
     }
+    fn recovery_revision(&self, provider: &str) -> Option<String> {
+        crate::agent_session_p8::weak_provider_recovery_revision(&self.0, provider)
+    }
 }
 
 impl std::ops::Deref for AgentSession {
@@ -4333,7 +4325,7 @@ impl crate::memory_report::memory_report_registry::MemoryReportSessionSource
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4876,6 +4868,7 @@ impl AgentSession {
                 custody_run_id: Mutex::new(uuid::Uuid::new_v4().to_string()),
                 queued_custom_receipts: Mutex::new(Vec::new()),
                 pending_session_recoveries: Mutex::new(Vec::new()),
+                p8: Default::default(),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
@@ -6196,7 +6189,7 @@ impl AgentSession {
         let snapshot = ledger.snapshot().clone();
         drop(ledger);
         if changed {
-            self.event_bus.emit("session_lifecycle", &json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot}));
+            self.emit_sequenced_lifecycle(json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot}));
         }
     }
 
@@ -15546,9 +15539,18 @@ impl AgentSession {
             return files;
         }
         let agent_dir = self.agent_dir();
-        let limits = self.with_settings_manager(|manager| manager.get_context_files_limits());
-        let loaded =
-            crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir, limits);
+        let (limits, global_path) = self.with_settings_manager(|manager| {
+            (
+                manager.get_context_files_limits(),
+                manager.get_global_context_file_path(),
+            )
+        });
+        let loaded = crate::resource_loader::load_project_context_files_with_global_path(
+            &self.cwd(),
+            &agent_dir,
+            limits,
+            global_path.as_deref(),
+        );
         let mut files = loaded.files;
         // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
         // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
@@ -20296,7 +20298,7 @@ impl AgentSession {
             .map_err(|error| error.message)
     }
 
-    fn emit_entry_appended(&self, entry_id: &str) {
+    pub(crate) fn emit_entry_appended(&self, entry_id: &str) {
         if self.state().extension_mode != ExtensionMode::Rpc {
             return;
         }
@@ -20309,6 +20311,7 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
+        self.observe_p8_event(&event);
         let carrier = match &event {
             AgentSessionEvent::Agent(event) => self.observe_recovery(event),
             _ => None,

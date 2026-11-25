@@ -124,8 +124,32 @@ async fn import_fault_boundaries_reconcile_from_file_and_never_land_twice() {
                 f.import().await.expect("retry");
             }
             MoveStep::ImportStamped => {
-                assert!(matches!(status, MoveStatus::Failed { .. }));
+                assert_eq!(status, MoveStatus::Receiving);
                 assert!(f.import().await.is_err());
+                let base_clock = move_landing::StampClock::default();
+                let base_now = (base_clock.now)();
+                let base_uptime = (base_clock.uptime)();
+                let after = MoveLedger::with_clock(
+                    f.ledger.dir(),
+                    move_landing::StampClock {
+                        now: std::sync::Arc::new(move || {
+                            base_now + move_landing::COMMIT_SETTLE_AFTER_MS + 1_000
+                        }),
+                        uptime: std::sync::Arc::new(move || {
+                            base_uptime + move_landing::COMMIT_SETTLE_AFTER_MS + 1_000
+                        }),
+                        host: base_clock.host,
+                    },
+                );
+                let settled = import::answer_move_status(&after, "m1", None)
+                    .await
+                    .expect("settled status");
+                assert_eq!(
+                    settled,
+                    MoveStatus::Failed {
+                        reason: move_ledger::FailReason::ImportFailed
+                    }
+                );
             }
             _ => {
                 assert_eq!(status, MoveStatus::Accepted);

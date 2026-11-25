@@ -23,6 +23,13 @@ pub struct SessionHolder {
     pub host_instance: Option<String>,
 }
 
+/// Holder record paired with whether its OS process identity was proven (`!unproven`, senpi#5970).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedSessionHolder {
+    pub holder: SessionHolder,
+    pub unproven: bool,
+}
+
 /// The host generation a holder record names, as written by `hold_session_file`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HolderGeneration {
@@ -59,6 +66,18 @@ pub async fn live_holders(
     probes: &dyn SessionHolderProbes,
     fence_session: Option<&(dyn Fn() -> std::io::Result<()> + Sync)>,
 ) -> Result<Vec<SessionHolder>> {
+    Ok(live_holders_checked(dir, probes, fence_session)
+        .await?
+        .into_iter()
+        .map(|checked| checked.holder)
+        .collect())
+}
+
+pub async fn live_holders_checked(
+    dir: &Path,
+    probes: &dyn SessionHolderProbes,
+    fence_session: Option<&(dyn Fn() -> std::io::Result<()> + Sync)>,
+) -> Result<Vec<CheckedSessionHolder>> {
     let mut holders = Vec::new();
     for name in names(dir)? {
         if !name
@@ -96,29 +115,44 @@ pub async fn live_holders(
             .as_ref()
             .and(parsed.as_ref())
             .and_then(|parsed| string_field(parsed, "host_socket"));
-        holders.push(SessionHolder {
-            pid,
-            cwd: parsed
-                .as_ref()
-                .and_then(|parsed| string_field(parsed, "cwd")),
-            host_socket,
-            host_instance,
+        holders.push(CheckedSessionHolder {
+            holder: SessionHolder {
+                pid,
+                cwd: parsed
+                    .as_ref()
+                    .and_then(|parsed| string_field(parsed, "cwd")),
+                host_socket,
+                host_instance,
+            },
+            unproven,
         });
     }
     Ok(holders)
 }
 
-/// Live processes that have `session_file` open right now (stale records of dead or reused pids are
-/// reclaimed on the way). A caller about to start another writer uses it to wait instead of racing one.
 pub async fn live_session_holders(
     session_file: &Path,
     session_id: &str,
     probes: &dyn SessionHolderProbes,
 ) -> Result<Vec<SessionHolder>> {
+    Ok(
+        live_session_holders_checked(session_file, session_id, probes)
+            .await?
+            .into_iter()
+            .map(|checked| checked.holder)
+            .collect(),
+    )
+}
+
+pub async fn live_session_holders_checked(
+    session_file: &Path,
+    session_id: &str,
+    probes: &dyn SessionHolderProbes,
+) -> Result<Vec<CheckedSessionHolder>> {
     let dir = crate::schedule::runner_lease::session_holders_dir(session_file, session_id)?;
-    let file = session_file.to_string_lossy().into_owned();
-    let fence = move || crate::session_write_fence::advance_session_fence(&file);
-    live_holders(&dir, probes, Some(&fence)).await
+    let fence_target = session_file.to_string_lossy().into_owned();
+    let fence = move || crate::session_write_fence::advance_session_fence(&fence_target);
+    live_holders_checked(&dir, probes, Some(&fence)).await
 }
 
 #[cfg(test)]

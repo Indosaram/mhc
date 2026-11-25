@@ -52,6 +52,8 @@ pub struct ReflectionTranscriptState {
     pub consecutive_failures: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_eligible_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_pruned_at: Option<String>,
 }
 
 fn reflected_cursor_index(entries: &[TranscriptEntry], message_id: &str) -> Option<usize> {
@@ -150,6 +152,7 @@ pub(crate) fn derive_state_with_total(
         pending_compaction: state.pending_compaction,
         consecutive_failures: state.consecutive_failures,
         next_eligible_at: state.next_eligible_at.clone(),
+        transcript_pruned_at: state.transcript_pruned_at.clone(),
     }
 }
 
@@ -273,6 +276,7 @@ pub fn initial_reflection_state() -> ReflectionTranscriptState {
         pending_compaction: None,
         consecutive_failures: None,
         next_eligible_at: None,
+        transcript_pruned_at: None,
     }
 }
 
@@ -346,6 +350,11 @@ pub fn parse_state(raw: &str) -> Result<ReflectionTranscriptState, JournalError>
             .and_then(|v| u32::try_from(v).ok()),
         next_eligible_at: obj
             .get("next_eligible_at")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        transcript_pruned_at: obj
+            .get("transcript_pruned_at")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from),

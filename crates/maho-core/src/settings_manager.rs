@@ -23,6 +23,8 @@ use crate::settings_overrides::without_override;
 use crate::text::strip_bom;
 
 pub const DEFAULT_STREAM_START_TIMEOUT_MS: u64 = 300_000;
+/// Cap on keep-alive-only silence (15 minutes).
+pub const DEFAULT_STREAM_KEEP_ALIVE_TIMEOUT_MS: u64 = 900_000;
 pub const DEFAULT_PROVIDER_STREAM_RETRY_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_SESSION_SHUTDOWN_HANDLER_WARN_MS: u64 = 2_000;
 pub const DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS: u64 = 10_000;
@@ -740,12 +742,27 @@ pub fn is_terminal_mouse_mode(value: &str) -> bool {
 }
 
 /// senpi `envValue` over the process environment.
+pub struct ProjectSettingsFile {
+    pub path: String,
+    pub exists: bool,
+    pub settings: Option<Settings>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedJobWidgetsSettings {
+    pub enabled: bool,
+    pub model: Option<String>,
+    pub author_after_ms: u64,
+}
+
 pub struct SettingsManager {
     storage: Box<dyn SettingsStorage>,
     global_settings: Settings,
     project_settings: Settings,
     settings: Settings,
     project_trusted: bool,
+    project_trust_locked: bool,
     /// senpi `trustFromFullAccess`: the project trust exists only because the session runs Full access
     /// (senpi#3414); leaving it withdraws the trust, and going back restores it (#3420).
     trust_from_full_access: bool,
@@ -804,6 +821,7 @@ impl SettingsManager {
             project_settings: project_load.0,
             settings,
             project_trusted,
+            project_trust_locked: false,
             trust_from_full_access: false,
             trust_epoch: 0,
             global_settings_load_error: global_load.1,
@@ -902,6 +920,129 @@ impl SettingsManager {
 
     pub fn is_project_trusted(&self) -> bool {
         self.project_trusted
+    }
+
+    /// True when the launch named the project trust explicitly; a trust decision saved in the session cannot apply.
+    pub fn is_project_trust_locked(&self) -> bool {
+        self.project_trust_locked
+    }
+
+    pub fn set_project_trust_locked(&mut self, locked: bool) {
+        self.project_trust_locked = locked;
+    }
+
+    /// Only the global layer (and runtime overrides): project-trust checks read the global path
+    /// (senpi#5567), so the project layer is deliberately skipped.
+    pub fn get_global_context_file_path(&self) -> Option<String> {
+        self.overrides
+            .get("contextFiles")
+            .and_then(|v| v.get("globalPath"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                self.global_settings
+                    .get("contextFiles")
+                    .and_then(|v| v.get("globalPath"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_owned)
+    }
+
+    /// The project settings file at `path` as stored: parsed and migrated like a load, but never gated by trust.
+    pub fn read_project_settings_file(&self, path: &str) -> ProjectSettingsFile {
+        let mut content: Option<String> = None;
+        let lock_res = self
+            .storage
+            .with_lock(SettingsScope::Project, &mut |current| {
+                content = current.map(str::to_owned);
+                None
+            });
+        if let Err(err) = lock_res {
+            return ProjectSettingsFile {
+                path: path.to_owned(),
+                exists: content.is_some(),
+                settings: None,
+                error: Some(err),
+            };
+        }
+        let Some(raw) = content else {
+            return ProjectSettingsFile {
+                path: path.to_owned(),
+                exists: false,
+                settings: None,
+                error: None,
+            };
+        };
+        match parse_settings_json(&raw) {
+            Ok(parsed) => ProjectSettingsFile {
+                path: path.to_owned(),
+                exists: true,
+                settings: Some(migrate_settings(parsed)),
+                error: None,
+            },
+            Err(err) => ProjectSettingsFile {
+                path: path.to_owned(),
+                exists: true,
+                settings: None,
+                error: Some(err),
+            },
+        }
+    }
+
+    pub fn get_prompt_cache_session_affinity(&self) -> bool {
+        self.get_value("promptCache")
+            .and_then(|v| v.get("sessionAffinity"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
+
+    pub fn get_job_widgets_settings(&self) -> ResolvedJobWidgetsSettings {
+        let configured = self.get_value("jobWidgets");
+        let enabled = configured
+            .and_then(|v| v.get("enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let model = configured
+            .and_then(|v| v.get("model"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let author_after_ms = configured
+            .and_then(|v| v.get("authorAfterMs"))
+            .and_then(Value::as_u64)
+            .unwrap_or(crate::settings_shapes::JOB_WIDGETS_DEFAULT_AUTHOR_AFTER_MS);
+        ResolvedJobWidgetsSettings {
+            enabled,
+            model,
+            author_after_ms,
+        }
+    }
+
+    /// The user's thread chain count limit (`threads.chainCountLimit`): non-negative integer, else None.
+    pub fn get_thread_chain_count_limit(&self) -> Option<u64> {
+        self.get_value("threads")
+            .and_then(|v| v.get("chainCountLimit"))
+            .and_then(Value::as_u64)
+    }
+
+    pub fn get_reduced_motion(&self) -> bool {
+        self.get_value("reducedMotion")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    pub fn get_retry_fallback_settings(
+        &self,
+    ) -> crate::retry_fallback::settings::ResolvedRetryFallbackSettings {
+        let session_policy = self
+            .overrides
+            .get("retry")
+            .and_then(|v| v.get("fallbackChains"))
+            .is_some();
+        crate::retry_fallback::settings::resolve_retry_fallback_settings_with_policy(
+            self.get_value("retry"),
+            session_policy,
+        )
     }
 
     /// senpi `SettingsManagerCreateOptions.trustFromFullAccess`: marks the project trust as coming only
@@ -1922,6 +2063,19 @@ impl SettingsManager {
         Ok(self
             .get_agent_stream_idle_timeout_ms()?
             .map(|idle| DEFAULT_STREAM_START_TIMEOUT_MS.min(idle)))
+    }
+
+    /// Cap on keep-alive-only silence (15 minutes by default; 0 disables the cap).
+    pub fn get_agent_stream_keep_alive_timeout_ms(&self) -> Option<u64> {
+        if let Some(explicit) = self
+            .get_value("retry")
+            .and_then(|retry| retry.get("provider"))
+            .and_then(|provider| provider.get("keepAliveTimeoutMs"))
+            .and_then(settings_ms)
+        {
+            return (explicit > 0).then_some(explicit);
+        }
+        Some(DEFAULT_STREAM_KEEP_ALIVE_TIMEOUT_MS)
     }
 
     /// `getWebSocketConnectTimeoutMs`: an invalid value is an error

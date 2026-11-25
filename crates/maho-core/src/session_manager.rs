@@ -943,11 +943,37 @@ impl Clone for EntriesCache {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+struct SessionManagerProjectionHooks {
+    write_fence: Arc<Mutex<crate::session_write_fence::SessionWriteFence>>,
+}
+
+impl crate::session_store::durable_binding::ProjectionHooks for SessionManagerProjectionHooks {
+    fn before_write(&self, path: &str) -> Result<(), String> {
+        self.write_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .assert_owned(path)
+            .map_err(|e| e.to_string())?;
+        crate::session_write_reservation::reserve_session_write(path);
+        Ok(())
+    }
+
+    fn after_replace(
+        &self,
+        _path: &str,
+        _identity: Option<crate::session_file_identity::FileIdentity>,
+    ) {
+    }
+}
+
+#[derive(Clone)]
 pub struct SessionManager {
     session_id: String,
     session_file: Option<String>,
     session_dir: String,
+    /// Set by `adopt_home_session_dir` when the open session lives in another app's store.
+    home_session_dir: Option<String>,
     cwd: String,
     persist: bool,
     flushed: bool,
@@ -960,11 +986,19 @@ pub struct SessionManager {
     label_timestamps_by_id: HashMap<String, String>,
     leaf_id: Option<String>,
     session_name_cache: Option<String>,
+    archived_cache: bool,
+    settled_cache: crate::session_settled::SessionSettled,
     usage_totals: UsageTotals,
     ownership: Arc<Mutex<SessionOwnership>>,
     writer_token: Arc<SessionWriterToken>,
     resident_store: crate::session_resident_store::ResidentStringStore,
     resident_blobs_dir: Arc<Mutex<Option<String>>>,
+    call_keys: crate::session_file_call_keys::SessionFileCallKeys,
+    durable: Option<Arc<crate::session_store::durable_binding::DurableSessionBinding>>,
+    bind_pending: bool,
+    bind_raced: bool,
+    projection_warning_listeners:
+        Arc<Mutex<Vec<crate::session_store::durable_binding::ProjectionWarnCallback>>>,
     mirror_trimmed: bool,
     /// senpi `fullEntryCount`: non-header entries in the full history, kept across mirror trims.
     full_entry_count: usize,
@@ -988,6 +1022,17 @@ pub struct SessionManager {
     transcript_file: crate::session_transcript_file::TranscriptFile,
     transcript_journal: Option<crate::session_transcript_journal::TranscriptJournal>,
     captures_transcript_base: bool,
+}
+
+impl std::fmt::Debug for SessionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionManager")
+            .field("session_id", &self.session_id)
+            .field("session_file", &self.session_file)
+            .field("cwd", &self.cwd)
+            .field("persist", &self.persist)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Receives each repair of a session file once (senpi `onRecovery`).
@@ -1072,6 +1117,7 @@ impl SessionManager {
             session_id: String::new(),
             session_file: None,
             session_dir: normalize_path(session_dir, &PathInputOptions::default()),
+            home_session_dir: None,
             cwd: resolve_path(cwd, cwd, &PathInputOptions::default()),
             persist,
             flushed: false,
@@ -1083,11 +1129,18 @@ impl SessionManager {
             label_timestamps_by_id: HashMap::new(),
             leaf_id: None,
             session_name_cache: None,
+            archived_cache: false,
+            settled_cache: crate::session_settled::NOT_SETTLED,
             usage_totals: UsageTotals::default(),
             ownership,
             writer_token,
             resident_store,
             resident_blobs_dir,
+            call_keys: crate::session_file_call_keys::SessionFileCallKeys::default(),
+            durable: None,
+            bind_pending: false,
+            bind_raced: false,
+            projection_warning_listeners: Arc::new(Mutex::new(Vec::new())),
             mirror_trimmed: false,
             full_entry_count: 0,
             trimmed_entry_count: 0,
@@ -1483,9 +1536,7 @@ impl SessionManager {
             Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
             None => get_default_session_dir(cwd),
         };
-        let filter_cwd =
-            session_dir.is_some() && dir != get_default_session_dir_path(cwd, &get_agent_dir());
-        match find_most_recent_session(&dir, filter_cwd.then_some(cwd)) {
+        match Self::recent_session_file(cwd, session_dir) {
             Some(path) => {
                 let mut manager = Self::build(cwd, &dir, true);
                 manager.set_session_file(&path, None)?;
@@ -1493,6 +1544,17 @@ impl SessionManager {
             }
             None => Ok(Self::create(cwd, Some(&dir), None)),
         }
+    }
+
+    /// The file `continue_recent` would open, found without loading it.
+    pub fn recent_session_file(cwd: &str, session_dir: Option<&str>) -> Option<String> {
+        let dir = match session_dir {
+            Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
+            None => get_default_session_dir(cwd),
+        };
+        let filter_cwd =
+            session_dir.is_some() && dir != get_default_session_dir_path(cwd, &get_agent_dir());
+        find_most_recent_session(&dir, filter_cwd.then_some(cwd))
     }
 
     pub fn in_memory(
@@ -1511,6 +1573,7 @@ impl SessionManager {
                 .cloned();
             if let Some(header) = header {
                 manager.file_entries = entries;
+                manager.call_keys.adopt(&mut manager.file_entries);
                 manager.session_id = header
                     .get("id")
                     .and_then(Value::as_str)
@@ -1519,7 +1582,9 @@ impl SessionManager {
                 migrate_to_current_version(&mut manager.file_entries);
             } else {
                 manager.new_session(None);
-                manager.file_entries.extend(entries);
+                let mut ingested = entries;
+                manager.call_keys.adopt(&mut ingested);
+                manager.file_entries.extend(ingested);
             }
             manager.externalize_file_entries();
             manager.build_index();
@@ -1559,6 +1624,9 @@ impl SessionManager {
                 .map_err(|error| error.to_string())?;
         }
         let resolved_file = resolve_path(session_file, session_file, &PathInputOptions::default());
+        if self.session_file.as_deref() != Some(resolved_file.as_str()) {
+            self.durable = None;
+        }
         let recovery_cause = if self.session_file.as_deref() == Some(resolved_file.as_str())
             && self.tail_may_be_torn
         {
@@ -1573,6 +1641,7 @@ impl SessionManager {
         self.mirror_trimmed = false;
         self.trimmed_entry_count = 0;
         self.resident_store.clear();
+        self.call_keys.clear();
         let Some(current) = self.session_file.clone() else {
             return Ok(());
         };
@@ -1630,6 +1699,8 @@ impl SessionManager {
                     None,
                 )
             };
+            let mut entries = entries;
+            self.call_keys.adopt(&mut entries);
             if self.captures_transcript_base && !entries.is_empty() {
                 self.transcript_file.capture(identity, Some(&entries));
             }
@@ -1690,11 +1761,13 @@ impl SessionManager {
     }
 
     pub fn new_session(&mut self, options: Option<NewSessionOptions>) -> Option<String> {
+        self.durable = None;
         let timestamp = self.reset_to_new_session(options);
         self.owned_header_file = None;
         if self.persist {
             let file_timestamp = timestamp.replace([':', '.'], "-");
-            let path = Path::new(&self.session_dir)
+            let dir = self.move_to_home_session_dir();
+            let path = Path::new(&dir)
                 .join(format!("{file_timestamp}_{}.jsonl", self.session_id))
                 .to_string_lossy()
                 .into_owned();
@@ -1748,6 +1821,7 @@ impl SessionManager {
             header.insert("spawnedBy".to_owned(), val);
         }
         self.file_entries = vec![Value::Object(header)];
+        self.call_keys.clear();
         self.transcript_file.reset();
         self.history_generation += 1;
         self.verbatim_from_count = 0;
@@ -1764,6 +1838,8 @@ impl SessionManager {
         self.label_timestamps_by_id.clear();
         self.leaf_id = None;
         self.session_name_cache = None;
+        self.archived_cache = false;
+        self.settled_cache = crate::session_settled::NOT_SETTLED;
         self.usage_totals = UsageTotals::default();
         self.flushed = false;
         timestamp
@@ -1779,7 +1855,11 @@ impl SessionManager {
         self.label_timestamps_by_id.clear();
         self.leaf_id = None;
         self.session_name_cache = None;
-        self.usage_totals = UsageTotals::default();
+        if !self.mirror_trimmed {
+            self.archived_cache = false;
+            self.settled_cache = crate::session_settled::NOT_SETTLED;
+            self.usage_totals = UsageTotals::default();
+        }
         let entries = self.file_entries.clone();
         let mut full_entry_count = 0;
         for (order, entry) in entries.iter().enumerate() {
@@ -1792,7 +1872,10 @@ impl SessionManager {
             };
             self.by_id.insert(id.clone(), order);
             self.leaf_id = Some(id.clone());
-            self.accumulate_usage(entry);
+            if !self.mirror_trimmed {
+                self.accumulate_usage(entry);
+                self.note_session_flags(entry);
+            }
             if entry_type(entry) == "session_info" {
                 // A name of 1 KiB or more is a resident-store token at this point; caching the token
                 // would show it as the session title and, through the label path below, persist it.
@@ -1934,6 +2017,22 @@ impl SessionManager {
             return;
         }
         crate::session_write_reservation::reserve_session_write(&session_file);
+        if self.bind_pending {
+            self.bind_raced = true;
+        }
+        let durable = self.durable.clone();
+        if let Some(durable) = &durable {
+            let header_line = self.header_line_for_store();
+            let stored = self.stored_entries_for_store(&self.file_entries);
+            if let Err(err) = durable.commit_rewrite(&header_line, stored) {
+                self.last_write_error = Some(err);
+                return;
+            }
+            if durable.projection_stale() {
+                durable.schedule_repair(&session_file);
+                return;
+            }
+        }
         let mut content = String::new();
         for entry in &self.file_entries {
             // PERF-DIVERGENCE(senpi session-manager.ts): upstream serializes each stored object directly; this borrows entries without resident tokens instead of deep-cloning them through materialize. Serialized text is identical.
@@ -1956,11 +2055,26 @@ impl SessionManager {
         if let Some(identity) = captured {
             self.capture_written_base(identity);
         }
-        if let Err(error) = written {
-            self.last_write_error = Some(error.to_string());
-            crate::hidden_stdout_log::append_debug_note(&format!(
-                "cannot rewrite session {session_file}: {error}"
-            ));
+        match written {
+            Ok(()) => {
+                if let Some(durable) = &durable {
+                    durable.record_whole(&session_file);
+                }
+            }
+            Err(error) => {
+                if let Some(durable) = &durable {
+                    durable.projection_failed(
+                        &session_file,
+                        &error.kind().to_string(),
+                        &error.to_string(),
+                    );
+                    return;
+                }
+                self.last_write_error = Some(error.to_string());
+                crate::hidden_stdout_log::append_debug_note(&format!(
+                    "cannot rewrite session {session_file}: {error}"
+                ));
+            }
         }
     }
 
@@ -1976,25 +2090,86 @@ impl SessionManager {
             .assert_owned(&session_file)
             .map_err(std::io::Error::other)?;
         crate::session_write_reservation::reserve_session_write(&session_file);
+        if self.bind_pending {
+            self.bind_raced = true;
+        }
+        let durable = self.durable.clone();
         // PERF-DIVERGENCE(senpi session-manager.ts _persist): upstream scans every entry for an assistant message on each append; once flushed both branches below append the line regardless, so this skips the O(n) scan (and the materialize) then. Bytes written are identical.
         if self.flushed {
+            let bound = if let Some(durable) = &durable {
+                let entry_val = &self.file_entries[order];
+                let entry_id = entry_val
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let line = serialize_entry(&self.materialize_for_write(entry_val));
+                let stored = maho_agent::durable::StoredEntry {
+                    key: crate::session_store::durable_binding::store_key_of(entry_id),
+                    line,
+                };
+                durable
+                    .commit_append(std::slice::from_ref(&stored))
+                    .map_err(std::io::Error::other)?;
+                if durable.projection_stale() {
+                    durable.schedule_repair(&session_file);
+                    return Ok(());
+                }
+                Some(stored)
+            } else {
+                None
+            };
             if self.tail_may_be_torn {
-                let recovery = crate::session_write_recovery::truncate_to_last_complete_line(
+                match crate::session_write_recovery::truncate_to_last_complete_line(
                     Path::new(&session_file),
                     self.torn_tail_cause,
-                )?;
-                self.tail_may_be_torn = false;
-                if let Some(recovery) = recovery {
-                    self.report_recovery(recovery);
+                ) {
+                    Ok(recovery) => {
+                        self.tail_may_be_torn = false;
+                        if let Some(recovery) = recovery {
+                            self.report_recovery(recovery);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(durable) = &durable
+                            && bound.is_some()
+                        {
+                            durable.projection_failed(
+                                &session_file,
+                                &error.kind().to_string(),
+                                &error.to_string(),
+                            );
+                            return Ok(());
+                        }
+                        return Err(error);
+                    }
                 }
             }
             let persisted_entry = self.materialize_for_write(&self.file_entries[order]);
             let appended = append_line(&session_file, &persisted_entry);
-            if let Err(error) = &appended {
-                self.tail_may_be_torn = true;
-                self.torn_tail_cause = crate::session_write_recovery::session_recovery_cause(error);
+            match appended {
+                Ok(()) => {
+                    if let (Some(durable), Some(stored)) = (&durable, bound) {
+                        durable.projected(&session_file, stored);
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.tail_may_be_torn = true;
+                    self.torn_tail_cause =
+                        crate::session_write_recovery::session_recovery_cause(&error);
+                    if let Some(durable) = &durable
+                        && bound.is_some()
+                    {
+                        durable.projection_failed(
+                            &session_file,
+                            &error.kind().to_string(),
+                            &error.to_string(),
+                        );
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
             }
-            return appended;
         }
         let durable_lifecycle = {
             let entry = &self.file_entries[order];
@@ -2050,6 +2225,7 @@ impl SessionManager {
         }
         self.full_entry_count += 1;
         self.accumulate_usage(&entry);
+        self.note_session_flags(&entry);
         if entry_type(&entry) == "session_info" {
             self.session_name_cache = entry
                 .get("name")
@@ -2303,9 +2479,26 @@ impl SessionManager {
     }
 
     pub fn append_message(&mut self, message: Value) -> Value {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let mut entry = self.base_entry("message");
         entry.insert("message".to_owned(), message);
         let entry = Value::Object(entry);
+        match role.as_deref() {
+            Some("assistant") => self.call_keys.record_assistant(&entry, None, None),
+            Some("toolResult") => {
+                let leaf = self.leaf_id.clone();
+                let by_id = &self.by_id;
+                let file_entries = &self.file_entries;
+                self.call_keys
+                    .record_result(&entry, leaf.as_deref(), &|id| {
+                        by_id.get(id).and_then(|&idx| file_entries.get(idx))
+                    });
+            }
+            _ => {}
+        }
         self.append_entry(entry.clone());
         entry
     }
@@ -2328,7 +2521,22 @@ impl SessionManager {
         input_source: Option<maho_ext_api::InputSource>,
         recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
     ) -> Value {
-        let entry = self.owned_message_entry(message, input_source);
+        self.append_owned_message_with_recovery_and_bridged(
+            message,
+            input_source,
+            recovery_owner,
+            None,
+        )
+    }
+
+    pub fn append_owned_message_with_recovery_and_bridged(
+        &mut self,
+        message: Value,
+        input_source: Option<maho_ext_api::InputSource>,
+        recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
+        bridged_calls: Option<&HashMap<usize, String>>,
+    ) -> Value {
+        let entry = self.owned_message_entry(message, input_source, recovery_owner, bridged_calls);
         self.append_entry_owned_by(entry.clone(), recovery_owner);
         entry
     }
@@ -2340,16 +2548,18 @@ impl SessionManager {
         input_source: Option<maho_ext_api::InputSource>,
         recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
     ) -> Option<String> {
-        let entry = self.owned_message_entry(message, input_source);
+        let entry = self.owned_message_entry(message, input_source, recovery_owner, None);
         let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
         self.append_entry_owned_by(entry, recovery_owner);
         id
     }
 
     fn owned_message_entry(
-        &self,
+        &mut self,
         message: Value,
         input_source: Option<maho_ext_api::InputSource>,
+        recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
+        bridged_calls: Option<&HashMap<usize, String>>,
     ) -> Value {
         let mut entry = self.base_entry("message");
         entry.insert("message".to_owned(), message);
@@ -2361,7 +2571,29 @@ impl SessionManager {
             };
             entry.insert("inputSource".to_owned(), Value::from(name));
         }
-        Value::Object(entry)
+        let entry = Value::Object(entry);
+        match entry["message"].get("role").and_then(Value::as_str) {
+            Some("assistant") => self.call_keys.record_assistant(
+                &entry,
+                recovery_owner.map(|o| o.message_id.as_str()),
+                bridged_calls,
+            ),
+            Some("toolResult") => {
+                let by_id = &self.by_id;
+                let file_entries = &self.file_entries;
+                self.call_keys
+                    .record_result(&entry, self.leaf_id.as_deref(), &|id| {
+                        by_id.get(id).and_then(|&idx| file_entries.get(idx))
+                    });
+            }
+            _ => {}
+        }
+        entry
+    }
+
+    /// `entry` as the session file holds it: its persisted call keys back in place.
+    pub fn persisted_entry(&self, entry: &Value) -> Value {
+        self.call_keys.decorate(entry.clone())
     }
 
     pub fn append_thinking_level_change(
@@ -2693,8 +2925,210 @@ impl SessionManager {
         &self.session_dir
     }
 
+    pub fn home_session_dir(&self) -> &str {
+        self.home_session_dir
+            .as_deref()
+            .unwrap_or(&self.session_dir)
+    }
+
+    /// Called right after opening a picked session (`/resume`, `--resume`): when its file lives in
+    /// another app's registered store, this folder's own session dir stays the home for listing
+    /// and new sessions (omo-desktop-app#8097).
+    pub async fn adopt_home_session_dir(&mut self) {
+        if !crate::shared_session_stores::is_shared_session_store_dir(&self.session_dir, None) {
+            return;
+        }
+        let home = get_default_session_dir_path(&self.cwd, &get_agent_dir());
+        if self.persist {
+            let _ = tokio::fs::create_dir_all(&home).await;
+        }
+        self.home_session_dir = Some(home);
+    }
+
+    fn move_to_home_session_dir(&mut self) -> String {
+        let dir = self.home_session_dir().to_owned();
+        self.session_dir = dir.clone();
+        self.home_session_dir = None;
+        dir
+    }
+
     pub fn uses_default_session_dir(&self) -> bool {
-        self.session_dir == get_default_session_dir_path(&self.cwd, &get_agent_dir())
+        self.home_session_dir() == get_default_session_dir_path(&self.cwd, &get_agent_dir())
+    }
+
+    /// Give an unclaimed in-memory session its first file without rebuilding or changing identity.
+    pub async fn enable_persistence(&mut self) -> Result<(), String> {
+        if self.persist {
+            return Ok(());
+        }
+        let dir = get_default_session_dir_path(&self.cwd, &get_agent_dir());
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.finish_enable_persistence(dir)
+    }
+
+    /// Synchronous counterpart for `AgentSessionRuntime::persist_session`.
+    pub fn enable_persistence_sync(&mut self) -> Result<(), String> {
+        if self.persist {
+            return Ok(());
+        }
+        let dir = get_default_session_dir_path(&self.cwd, &get_agent_dir());
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        self.finish_enable_persistence(dir)
+    }
+
+    fn finish_enable_persistence(&mut self, dir: String) -> Result<(), String> {
+        let timestamp = self
+            .file_entries
+            .first()
+            .and_then(|h| h.get("timestamp"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .replace([':', '.'], "-");
+        let path = Path::new(&dir)
+            .join(format!("{timestamp}_{}.jsonl", self.session_id))
+            .to_string_lossy()
+            .into_owned();
+        crate::session_write_reservation::reserve_session_write(&path);
+        self.session_dir = dir;
+        self.session_file = Some(path);
+        self.persist = true;
+        self.ownership
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .persisted = true;
+        self.sync_session_file_ownership();
+        crate::session_write_reservation::register_session_writer(&self.writer_owner());
+        Ok(())
+    }
+
+    /// Who may write this file now, from the same fold every persisted write is checked against.
+    pub fn get_ownership(&self) -> crate::session_move::ownership::SessionOwnership {
+        if !self.persist || self.session_file.is_none() {
+            return crate::session_move::ownership::SessionOwnership::Writable;
+        }
+        crate::session_move::ownership::session_ownership(&self.file_entries)
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_cache
+    }
+
+    pub fn get_settled(&self) -> crate::session_settled::SessionSettled {
+        self.settled_cache.clone()
+    }
+
+    fn note_session_flags(&mut self, entry: &Value) {
+        if let Some(archived) = crate::session_archived::archived_flag_of(entry, &self.session_id) {
+            self.archived_cache = archived;
+        }
+        if let Some(settled) = crate::session_settled::settled_state_of(entry, &self.session_id) {
+            self.settled_cache = settled;
+        }
+    }
+
+    fn header_line_for_store(&self) -> String {
+        self.file_entries
+            .iter()
+            .find(|e| entry_type(e) == "session")
+            .map(|h| serialize_entry(&self.materialize_for_write(h)))
+            .unwrap_or_else(|| "{}".to_owned())
+    }
+
+    fn stored_entries_for_store(&self, entries: &[Value]) -> Vec<maho_agent::durable::StoredEntry> {
+        entries
+            .iter()
+            .filter(|e| entry_type(e) != "session")
+            .map(|e| {
+                let id = e.get("id").and_then(Value::as_str).unwrap_or_default();
+                maho_agent::durable::StoredEntry {
+                    key: crate::session_store::durable_binding::store_key_of(id),
+                    line: serialize_entry(&self.materialize_for_write(e)),
+                }
+            })
+            .collect()
+    }
+
+    /// S20b: binds this session to the durable store. From here every write commits to the store
+    /// first and the JSONL is its projection.
+    pub async fn bind_durable_store(
+        &mut self,
+        binding: crate::session_store::durable_binding::DurableStoreBinding,
+    ) -> Result<(), String> {
+        let Some(session_file) = self.session_file.clone() else {
+            return Err(
+                "only a persisted session with a file path can be bound to the durable store"
+                    .to_owned(),
+            );
+        };
+        if !self.persist {
+            return Err(
+                "only a persisted session with a file path can be bound to the durable store"
+                    .to_owned(),
+            );
+        }
+        self.bind_pending = true;
+        self.bind_raced = false;
+        let listeners = Arc::clone(&self.projection_warning_listeners);
+        let warn: crate::session_store::durable_binding::ProjectionWarnCallback =
+            Arc::new(move |warning| {
+                let cbs = listeners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                for cb in cbs {
+                    cb(warning.clone());
+                }
+            });
+        let hooks = Arc::new(SessionManagerProjectionHooks {
+            write_fence: Arc::new(Mutex::new(self.write_fence.clone())),
+        });
+        let opened = crate::session_store::durable_binding::DurableSessionBinding::open(
+            binding,
+            &session_file,
+            &self.session_id,
+            &self.header_line_for_store(),
+            warn,
+            hooks,
+        )
+        .await;
+        self.bind_pending = false;
+        let (session, reprojected) = opened?;
+        if self.session_file.as_deref() != Some(session_file.as_str()) {
+            return Err(format!(
+                "the session moved to another file while it was being bound: {session_file} was not bound"
+            ));
+        }
+        if self.bind_raced {
+            session.commit_rewrite(
+                &self.header_line_for_store(),
+                self.stored_entries_for_store(&self.file_entries),
+            )?;
+            if reprojected {
+                session.mark_projection_stale(&session_file)?;
+            }
+        } else if reprojected {
+            self.reload_from_disk()?;
+        }
+        self.durable = Some(session);
+        Ok(())
+    }
+
+    pub async fn settle_durable_projection(&self) {
+        if let Some(durable) = &self.durable {
+            durable.settled().await;
+        }
+    }
+
+    pub fn on_projection_warning(
+        &self,
+        listener: crate::session_store::durable_binding::ProjectionWarnCallback,
+    ) {
+        self.projection_warning_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(listener);
     }
 
     pub fn session_id(&self) -> &str {
@@ -2745,7 +3179,10 @@ impl SessionManager {
 
     fn load_full_history_entries(&self) -> Vec<Value> {
         match &self.session_file {
-            Some(session_file) => load_entries_from_file(session_file),
+            Some(session_file) => load_entries_from_file(session_file)
+                .into_iter()
+                .map(|entry| self.call_keys.strip(entry))
+                .collect(),
             None => self.file_entries.clone(),
         }
     }
@@ -2753,27 +3190,29 @@ impl SessionManager {
     /// Materializes an entry for a write, recovering from the JSONL when the store no longer holds a
     /// string: the resident store is a bounded cache and `release_blobs_dir_unless_shared` may have
     /// dropped its directory, and a write that fell back to the token would persist it as the text.
-    /// Borrows the entry unchanged when it holds no token, which is the common case.
+    /// Borrows rows without resident tokens or out-of-band call keys.
     fn materialize_for_write<'a>(&self, entry: &'a Value) -> std::borrow::Cow<'a, Value> {
-        let std::borrow::Cow::Owned(materialized) = self.resident_store.materialize_cow(entry)
-        else {
-            return std::borrow::Cow::Borrowed(entry);
+        let materialized = match self.resident_store.materialize_cow(entry) {
+            std::borrow::Cow::Owned(mat)
+                if crate::session_resident_store::contains_resident_token(&mat) =>
+            {
+                let missing = std::cell::Cell::new(false);
+                let recovered = self.resident_store.materialize_with(
+                    &mat,
+                    Some(&|_| {
+                        missing.set(true);
+                        None
+                    }),
+                );
+                if missing.get() {
+                    std::borrow::Cow::Owned(self.materialize_entry(entry))
+                } else {
+                    std::borrow::Cow::Owned(recovered)
+                }
+            }
+            materialized => materialized,
         };
-        if !crate::session_resident_store::contains_resident_token(&materialized) {
-            return std::borrow::Cow::Owned(materialized);
-        }
-        let missing = std::cell::Cell::new(false);
-        let recovered = self.resident_store.materialize_with(
-            &materialized,
-            Some(&|_| {
-                missing.set(true);
-                None
-            }),
-        );
-        if missing.get() {
-            return std::borrow::Cow::Owned(self.materialize_entry(entry));
-        }
-        std::borrow::Cow::Owned(recovered)
+        self.call_keys.decorate_cow(materialized)
     }
 
     fn materialize_entry(&self, entry: &Value) -> Value {
@@ -3441,7 +3880,7 @@ impl SessionManager {
         let new_session_id = create_session_id();
         let timestamp = now_iso_millis();
         let file_timestamp = timestamp.replace([':', '.'], "-");
-        let new_session_file = Path::new(&self.session_dir)
+        let new_session_file = Path::new(self.home_session_dir())
             .join(format!("{file_timestamp}_{new_session_id}.jsonl"))
             .to_string_lossy()
             .into_owned();
@@ -3517,7 +3956,9 @@ impl SessionManager {
         if self.persist {
             crate::session_write_reservation::reserve_session_write(&new_session_file);
             self.release_blobs_dir_unless_shared();
+            self.durable = None;
             self.session_id = new_session_id;
+            self.move_to_home_session_dir();
             self.session_file = Some(new_session_file.clone());
             self.sync_session_file_ownership();
             self.check_session_hold()?;
@@ -3660,15 +4101,25 @@ impl SessionManager {
                 .into_iter()
                 .filter(|session| include(session))
                 .collect();
+        if !filter_cwd {
+            let listed: std::collections::HashSet<String> = sessions
+                .iter()
+                .flat_map(|s| [s.path.clone(), s.id.clone()])
+                .collect();
+            let shared = crate::shared_session_stores::list_shared_store_sessions(None, |s| {
+                !s.cwd.is_empty()
+                    && resolve_path(&s.cwd, &s.cwd, &options) == resolved_cwd
+                    && !listed.contains(&s.path)
+                    && !listed.contains(&s.id)
+            });
+            sessions.extend(shared);
+        }
         sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
         sessions
     }
 
     /// senpi `SessionManager.listAll(sessionDir)`: every session in a custom dir, or across every
-    /// project directory under the agent sessions dir, newest first. `on_progress` reports
-    /// `(loaded, total)` across every directory and publishes partial rows every
-    /// [`crate::session_discovery::ALL_SESSION_LIST_PUBLISH_INTERVAL`] files. Files load newest first
-    /// across all directories (see [`crate::session_discovery::session_files_newest_first`]).
+    /// project directory under the agent sessions dir, newest first.
     pub fn list_all(
         session_dir: Option<&str>,
         on_progress: Option<crate::session_discovery::SessionListProgress<'_>>,
@@ -3681,7 +4132,7 @@ impl SessionManager {
                 None,
             ),
             None => {
-                let dirs: Vec<PathBuf> = std::fs::read_dir(get_sessions_dir())
+                let project_dirs: Vec<PathBuf> = std::fs::read_dir(get_sessions_dir())
                     .map(|entries| {
                         entries
                             .filter_map(Result::ok)
@@ -3690,14 +4141,48 @@ impl SessionManager {
                             .collect()
                     })
                     .unwrap_or_default();
-                let files = crate::session_discovery::session_files_newest_first(&dirs);
-                crate::session_discovery::list_session_files(
+                let project_strs: std::collections::HashSet<String> = project_dirs
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                let store_dirs: Vec<PathBuf> =
+                    crate::shared_session_stores::shared_session_store_dirs(None)
+                        .into_iter()
+                        .filter(|d| !project_strs.contains(d))
+                        .map(PathBuf::from)
+                        .collect();
+                let mut all_dirs = project_dirs.clone();
+                all_dirs.extend(store_dirs.clone());
+                let files = crate::session_discovery::session_files_newest_first(&all_dirs);
+                let listed = crate::session_discovery::list_session_files(
                     &files,
                     on_progress,
                     0,
                     files.len(),
                     crate::session_discovery::ALL_SESSION_LIST_PUBLISH_INTERVAL,
-                )
+                );
+                let store_set: std::collections::HashSet<PathBuf> =
+                    store_dirs.into_iter().collect();
+                let mut own_ids = std::collections::HashSet::new();
+                let mut deduped = Vec::with_capacity(listed.len());
+                for session in &listed {
+                    let in_store = Path::new(&session.path)
+                        .parent()
+                        .is_some_and(|p| store_set.contains(p));
+                    if !in_store {
+                        own_ids.insert(session.id.clone());
+                    }
+                }
+                for session in listed {
+                    let in_store = Path::new(&session.path)
+                        .parent()
+                        .is_some_and(|p| store_set.contains(p));
+                    if in_store && own_ids.contains(&session.id) {
+                        continue;
+                    }
+                    deduped.push(session);
+                }
+                deduped
             }
         };
         sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
@@ -4331,6 +4816,59 @@ mod tests {
             manager.pending_recoveries[0]
                 .notice
                 .contains("the disk was full")
+        );
+    }
+
+    #[test]
+    fn message_id_append_persists_paired_call_keys_without_exposing_them_in_memory() {
+        use crate::session_recovery_identity::RecoveryCarrier;
+
+        let dir = tempfile::tempdir().expect("session directory");
+        let cwd = dir.path().to_str().expect("fixture path");
+        let mut manager = SessionManager::create(cwd, Some(cwd), None);
+        let owner = RecoveryCarrier {
+            message_id: "owner".into(),
+            epoch: "epoch".into(),
+            durable_entry_id: None,
+        };
+        let assistant_id = manager
+            .append_owned_message_id(
+                json!({"role":"assistant","content":[{"type":"toolCall","id":"call"}]}),
+                None,
+                Some(&owner),
+            )
+            .expect("assistant entry id");
+        let result_id = manager
+            .append_owned_message_id(
+                json!({"role":"toolResult","toolCallId":"call","content":[]}),
+                None,
+                None,
+            )
+            .expect("tool result entry id");
+
+        let disk = std::fs::read_to_string(manager.session_file().expect("session file"))
+            .expect("persisted session");
+        let rows: HashMap<String, Value> = disk
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("JSONL row"))
+            .filter_map(|row| Some((row.get("id")?.as_str()?.to_owned(), row)))
+            .collect();
+        assert_eq!(
+            rows[&assistant_id]["message"]["content"][0]["runtimeItemKey"],
+            "blk:owner:0"
+        );
+        assert_eq!(rows[&result_id]["runtimeItemKey"], "blk:owner:0");
+        assert!(
+            manager.entry(&assistant_id).expect("assistant")["message"]["content"][0]
+                .get("runtimeItemKey")
+                .is_none()
+        );
+        assert!(
+            manager
+                .entry(&result_id)
+                .expect("tool result")
+                .get("runtimeItemKey")
+                .is_none()
         );
     }
 

@@ -10,8 +10,9 @@ use crate::git::exec::{GitExec, GitExecResult};
 use crate::memfs::{describe_frontmatter_violation, is_memory_content_path, split_frontmatter};
 use crate::sync::redact::redact_secret_like_material;
 
+use super::completion_links::{apply_link_repair, recognize_link_repair};
 use super::completion_repair::{
-    DroppedEntry, commit_count, read_dropped_trailers, squash_without_paths,
+    DroppedEntry, commit_count, read_dropped_trailers as read_trailers_at, squash_without_paths,
 };
 use super::completion_secret_scan::find_secret_like_failures;
 use super::worktree::ReflectionWorktree;
@@ -33,6 +34,8 @@ pub enum CompletionValidation {
         changed_paths: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dropped: Vec<DroppedEntry>,
+        #[serde(rename = "linkRepairs", default, skip_serializing_if = "Vec::is_empty")]
+        link_repairs: Vec<String>,
     },
     NoChanges {
         #[serde(rename = "tipSha")]
@@ -92,6 +95,36 @@ pub fn validate_dream_token_budget(
             ),
         }
     }
+}
+
+/// The drop report a validated tip carries, read past the gate's own link-repair commit when one sits on top.
+pub fn read_dropped_trailers(
+    exec: &dyn GitExec,
+    dir: &Path,
+    base_sha: &str,
+    tip_sha: &str,
+) -> Result<Vec<DroppedEntry>, String> {
+    let repair = recognize_link_repair(exec, dir, base_sha, tip_sha)?;
+    read_trailers_at(
+        exec,
+        dir,
+        base_sha,
+        repair.as_ref().map_or(tip_sha, |r| r.run_tip.as_str()),
+    )
+}
+
+/// Changed paths a run restricted to `allowed` may not touch; the gate's own link repairs do not count against it.
+pub fn paths_outside_target(
+    changed_paths: &[String],
+    link_repairs: &[String],
+    allowed: &[&str],
+) -> Vec<String> {
+    let repairs: BTreeSet<&str> = link_repairs.iter().map(String::as_str).collect();
+    changed_paths
+        .iter()
+        .filter(|path| !allowed.contains(&path.as_str()) && !repairs.contains(path.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Validates worktree invariants, git administrative snapshots, and branch commits.
@@ -156,7 +189,53 @@ fn validate_completion_inner(
         });
     }
 
-    screen_entries(exec, worktree, recorded_base, &tip_sha)
+    let prior = recognize_link_repair(exec, &worktree.dir, recorded_base, &tip_sha)?;
+    if let Some(ref recognized) = prior {
+        git_must(
+            exec,
+            &worktree.dir,
+            &["reset", "-q", "--hard", recognized.run_tip.as_str()],
+        )?;
+    }
+    let start_tip = prior
+        .as_ref()
+        .map_or(tip_sha.as_str(), |recognized| recognized.run_tip.as_str());
+    let screened = screen_entries(exec, worktree, recorded_base, start_tip)?;
+    match screened {
+        CompletionValidation::Valid {
+            tip_sha: screened_tip,
+            changed_paths: screened_paths,
+            dropped,
+            ..
+        } => {
+            let dropped_paths: Vec<String> = dropped.iter().map(|e| e.path.clone()).collect();
+            let Some(repair) = apply_link_repair(
+                exec,
+                &worktree.dir,
+                recorded_base,
+                &screened_tip,
+                &dropped_paths,
+                prior.as_ref(),
+            )?
+            else {
+                return Ok(CompletionValidation::Valid {
+                    tip_sha: screened_tip,
+                    changed_paths: screened_paths,
+                    dropped,
+                    link_repairs: Vec::new(),
+                });
+            };
+            let changed_paths =
+                list_reflection_changed_paths(exec, &worktree.dir, recorded_base, &repair.tip_sha)?;
+            Ok(CompletionValidation::Valid {
+                tip_sha: repair.tip_sha,
+                changed_paths,
+                dropped,
+                link_repairs: repair.link_repairs,
+            })
+        }
+        other => Ok(other),
+    }
 }
 
 /// One entry that fails validation must not discard the run's valid entries.
@@ -230,12 +309,13 @@ fn screen_entries(
         }
         if secrets.is_empty() && frontmatter.is_empty() {
             if dropped.is_empty() {
-                dropped = read_dropped_trailers(exec, dir, recorded_base, &tip_sha)?;
+                dropped = read_trailers_at(exec, dir, recorded_base, &tip_sha)?;
             }
             return Ok(CompletionValidation::Valid {
                 tip_sha,
                 changed_paths,
                 dropped,
+                link_repairs: Vec::new(),
             });
         }
         if round >= MAX_REPAIR_ROUNDS {

@@ -24,6 +24,8 @@ pub struct CachedReading {
     pub updated_at: i64,
     /// Not asked again before this: the freshness window on success, the backoff on failure.
     pub next_at: i64,
+    /// No answer yet: nothing to ask with right now; kept out of the limit store.
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,10 +47,26 @@ pub fn usage_key(provider: &str, account: &str) -> String {
 }
 
 pub fn is_due(cache: &UsageCacheFile, key: &str, now: i64) -> bool {
-    if let Some(reading) = cache.accounts.get(key)
-        && now < reading.next_at
-    {
-        return false;
+    is_due_with_min_age(cache, key, now, None)
+}
+
+pub fn is_due_with_min_age(
+    cache: &UsageCacheFile,
+    key: &str,
+    now: i64,
+    min_age_ms: Option<i64>,
+) -> bool {
+    if let Some(reading) = cache.accounts.get(key) {
+        let early = min_age_ms.is_some() && reading.error.is_none();
+        let next_at = match min_age_ms {
+            Some(min_age) if early => reading
+                .next_at
+                .min(reading.updated_at.saturating_add(min_age)),
+            _ => reading.next_at,
+        };
+        if now < next_at {
+            return false;
+        }
     }
     match cache.fetching.get(key) {
         None => true,
@@ -191,6 +209,9 @@ fn to_value(cache: &UsageCacheFile) -> Value {
             }
             object.insert("updatedAt".into(), json!(reading.updated_at));
             object.insert("nextAt".into(), json!(reading.next_at));
+            if reading.pending {
+                object.insert("pending".into(), json!(true));
+            }
             (key.clone(), Value::Object(object))
         })
         .collect();
@@ -266,6 +287,10 @@ fn sanitize(value: &Value) -> UsageCacheFile {
                 error: text(reading.and_then(|r| r.get("error"))),
                 updated_at: updated_at as i64,
                 next_at: next_at as i64,
+                pending: reading
+                    .and_then(|r| r.get("pending"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
         );
     }
@@ -311,6 +336,7 @@ mod tests {
             error: error.map(str::to_owned),
             updated_at,
             next_at,
+            pending: false,
         }
     }
 

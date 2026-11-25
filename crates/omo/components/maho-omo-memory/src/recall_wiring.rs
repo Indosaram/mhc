@@ -669,7 +669,14 @@ impl KibitzerHookSink for MemoryRecallWiring {
         self.delivery
             .mark_tool_finished(session_id, event.tool_call_id);
         if let Some(context) = (self.options.resolve_context)(session_id) {
-            self.delivery.on_tool_result(session_id, &context, gate);
+            // Not awaited (#13074): delivery reads the context and gate synchronously, and a slow
+            // steer/send_message or ledger write must not block the PostToolUse hook or the turn.
+            let delivery = Arc::clone(&self.delivery);
+            let session_id = session_id.to_owned();
+            let gate = *gate;
+            (self.options.offload_blocking)(Box::new(move || {
+                delivery.on_tool_result(&session_id, &context, &gate);
+            }));
         }
     }
 

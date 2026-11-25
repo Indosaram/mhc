@@ -1,5 +1,6 @@
 use super::expansion::{
     FallbackAuthTiers, MAX_PROVIDERS_PER_FAMILY, parse_bare_selector, rank_family_models,
+    rank_family_models_with_session,
 };
 pub use super::settings::FallbackChains;
 use crate::model_resolver::{find_exact_model_reference_match, parse_model_pattern};
@@ -95,23 +96,34 @@ pub fn canonicalize_fallback_chains(
     let mut canonical = FallbackChains::new();
     let mut explicit_keys = HashSet::new();
     let mut tombstones = HashSet::new();
-    let expand = |entries: &[String], key: &str| -> Vec<String> {
-        entries
-            .iter()
-            .flat_map(|entry| {
-                if let Some(bare) = parse_bare_selector(entry) {
-                    rank_family_models(models, &bare.family, tiers, Some(MAX_PROVIDERS_PER_FAMILY))
-                        .into_iter()
-                        .map(|m| format_selector(m, bare.thinking_level))
-                        .filter(|s| normalized_base(s) != normalized_base(key))
-                        .collect()
-                } else {
-                    parse_fallback_selector(entry, models)
-                        .map(|p| vec![format_parsed(&p)])
-                        .unwrap_or_default()
+    let expand = |entries: &[String], key: &str, session_provider: &str| -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for entry in entries {
+            let expanded: Vec<String> = if let Some(bare) = parse_bare_selector(entry) {
+                rank_family_models_with_session(
+                    models,
+                    &bare.family,
+                    tiers,
+                    Some(MAX_PROVIDERS_PER_FAMILY),
+                    Some(session_provider),
+                )
+                .into_iter()
+                .map(|m| format_selector(m, bare.thinking_level))
+                .filter(|s| normalized_base(s) != normalized_base(key))
+                .collect()
+            } else {
+                parse_fallback_selector(entry, models)
+                    .map(|p| vec![format_parsed(&p)])
+                    .unwrap_or_default()
+            };
+            for item in expanded {
+                if seen.insert(item.clone()) {
+                    out.push(item);
                 }
-            })
-            .collect()
+            }
+        }
+        out
     };
     for (key, entries) in chains {
         let Some(bare) = parse_bare_selector(key) else {
@@ -123,7 +135,7 @@ pub fn canonicalize_fallback_chains(
                 continue;
             }
             let key = format_selector(model, bare.thinking_level);
-            let entries = expand(entries, &key);
+            let entries = expand(entries, &key, &model.provider);
             if !entries.is_empty() {
                 canonical.insert(key, entries);
             }
@@ -142,7 +154,7 @@ pub fn canonicalize_fallback_chains(
             continue;
         }
         explicit_keys.insert(key.to_lowercase());
-        let entries = expand(entries, &key);
+        let entries = expand(entries, &key, &parsed.provider);
         if !entries.is_empty() {
             canonical.insert(key, entries);
         }
@@ -158,6 +170,24 @@ pub fn resolve_chain_key(
     thinking: Option<ModelThinkingLevel>,
     chains: &FallbackChains,
 ) -> Option<String> {
+    resolve_chain_key_with_fast_sibling(model, thinking, chains, None)
+}
+
+pub fn resolve_chain_key_with_fast_sibling(
+    model: &Model,
+    thinking: Option<ModelThinkingLevel>,
+    chains: &FallbackChains,
+    fast_sibling: Option<&Model>,
+) -> Option<String> {
+    own_chain_key(model, thinking, chains)
+        .or_else(|| sibling_chain_key(model, thinking, chains, fast_sibling))
+}
+
+fn own_chain_key(
+    model: &Model,
+    thinking: Option<ModelThinkingLevel>,
+    chains: &FallbackChains,
+) -> Option<String> {
     let base = format_selector(model, None);
     let exact = format_selector(model, thinking);
     if chains.contains_key(&exact) {
@@ -167,6 +197,16 @@ pub fn resolve_chain_key(
     } else {
         None
     }
+}
+
+fn sibling_chain_key(
+    model: &Model,
+    thinking: Option<ModelThinkingLevel>,
+    chains: &FallbackChains,
+    sibling: Option<&Model>,
+) -> Option<String> {
+    let sibling = sibling.filter(|s| s.provider == model.provider)?;
+    own_chain_key(sibling, thinking, chains)
 }
 
 pub fn candidates_after<'a>(entries: &'a [String], current: &str) -> &'a [String] {

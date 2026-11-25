@@ -74,6 +74,8 @@ pub struct AuthNotice {
     pub id: String,
     pub provider: String,
     pub message: String,
+    /// Shown at every start while the problem lasts, instead of once per change.
+    pub repeats: bool,
 }
 
 /// One notice per provider whose stored credential holds slots its type cannot use (senpi#3448).
@@ -104,10 +106,91 @@ pub fn unused_login_notices(data: &AuthStorageData) -> Vec<AuthNotice> {
                     kind_label(kind),
                     names.join(", "),
                 ),
+                repeats: false,
             });
         }
     }
     notices
+}
+
+fn is_valid_claude_dir_id(dir_id: &str) -> bool {
+    dir_id.len() == 32
+        && dir_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// One notice, at every start, while Claude subscription accounts from the retired sign-in still
+/// need a sign-in again (senpi#4436); it repeats until signed in again or removed, so it is never
+/// marked seen.
+pub fn sign_in_required_notices(data: &AuthStorageData) -> Vec<AuthNotice> {
+    let Some(accounts) = data
+        .get("anthropic-subscription")
+        .and_then(|entry| entry.get("accounts"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut legacy_names: Vec<String> = Vec::new();
+    let mut expired_names: Vec<String> = Vec::new();
+    let mut all_names: Vec<String> = Vec::new();
+    for slot in accounts {
+        let Some(obj) = slot.as_object() else {
+            continue;
+        };
+        if obj.get("store").and_then(Value::as_str) != Some("claude-cli") {
+            continue;
+        }
+        let Some(name) = obj.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        match obj.get("signInRequired").and_then(Value::as_str) {
+            Some("legacy_sign_in_retired") => {
+                legacy_names.push(name.to_owned());
+                all_names.push(name.to_owned());
+            }
+            Some("login_expired") => {
+                expired_names.push(name.to_owned());
+                all_names.push(name.to_owned());
+            }
+            None => {
+                let valid = obj
+                    .get("dirId")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_valid_claude_dir_id);
+                if !valid {
+                    expired_names.push(name.to_owned());
+                    all_names.push(name.to_owned());
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    if all_names.is_empty() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    if !legacy_names.is_empty() {
+        parts.push(format!(
+            "Claude sign-in changed. Sign in again with Claude to keep using: {}. Run /login anthropic-subscription.",
+            legacy_names.join(", ")
+        ));
+    }
+    if !expired_names.is_empty() {
+        parts.push(format!(
+            "Claude sign-in expired. Sign in again with Claude to keep using: {}. Run /login anthropic-subscription.",
+            expired_names.join(", ")
+        ));
+    }
+    vec![AuthNotice {
+        id: format!(
+            "anthropic-subscription:sign-in-required:{}",
+            all_names.join(",")
+        ),
+        provider: "anthropic-subscription".to_owned(),
+        message: parts.join(" "),
+        repeats: true,
+    }]
 }
 
 /// What a login that replaced a credential of the other kind tells the user (senpi#3448, #3486).
@@ -642,6 +725,29 @@ impl FileAuthStorageBackend {
         }
         Ok(result)
     }
+
+    /// Independent cross-process lock for refreshing one account slot (`<auth>.refresh-<hash>`),
+    /// matching upstream `FileAuthStorageBackend.withRefreshLock` (30s budget).
+    pub async fn with_refresh_lock<T>(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        action: impl AsyncFnOnce(&mut crate::lockfile_policy::LockGuard) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.ensure_parent_dir()?;
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(
+            serde_json::to_string(&(provider_id, slot_name))
+                .unwrap_or_else(|_| format!("{provider_id}:{slot_name}"))
+                .as_bytes(),
+        );
+        let refresh_path = format!("{}.refresh-{}", self.auth_path, hex::encode(digest));
+        let mut guard = acquire_lock_async(&refresh_path, 30_000)
+            .await
+            .map_err(|error: CredentialStoreBusyError| error.message())?;
+        let result = action(&mut guard).await?;
+        guard.assert_held()?;
+        Ok(result)
+    }
 }
 
 #[derive(Default)]
@@ -917,6 +1023,10 @@ pub struct AuthStorage {
     seen_in_memory: std::sync::Mutex<std::collections::HashSet<String>>,
     taken_notices: std::sync::Mutex<std::collections::HashSet<String>>,
     replacements: std::sync::Mutex<HashMap<String, CredentialReplacement>>,
+    load_error: std::sync::Mutex<Option<crate::auth_store_load_error::AuthStoreLoadError>>,
+    busy_reads: std::sync::atomic::AtomicUsize,
+    data_loaded: std::sync::atomic::AtomicBool,
+    data_from_busy_read: std::sync::atomic::AtomicBool,
     pub(crate) account_mutation: tokio::sync::Mutex<()>,
     refresh_locks: RefreshLocks,
 }
@@ -929,7 +1039,7 @@ enum AuthStorageBackend {
 impl AuthStorage {
     pub fn create(auth_path: &str) -> Self {
         let normalized = normalize_path(auth_path, &crate::paths::PathInputOptions::default());
-        let mut storage = Self {
+        let storage = Self {
             storage: AuthStorageBackend::File(FileAuthStorageBackend::new(&normalized)),
             auth_path: Some(normalized),
             data: std::sync::Mutex::new(AuthStorageData::new()),
@@ -940,6 +1050,10 @@ impl AuthStorage {
             seen_in_memory: std::sync::Mutex::new(std::collections::HashSet::new()),
             taken_notices: std::sync::Mutex::new(std::collections::HashSet::new()),
             replacements: std::sync::Mutex::new(HashMap::new()),
+            load_error: std::sync::Mutex::new(None),
+            busy_reads: std::sync::atomic::AtomicUsize::new(0),
+            data_loaded: std::sync::atomic::AtomicBool::new(false),
+            data_from_busy_read: std::sync::atomic::AtomicBool::new(false),
             account_mutation: tokio::sync::Mutex::new(()),
             refresh_locks: std::sync::Mutex::new(HashMap::new()),
         };
@@ -966,7 +1080,7 @@ impl AuthStorage {
     pub fn in_memory(data: AuthStorageData) -> Self {
         let backend = InMemoryAuthStorageBackend::default();
         let _ = backend.with_lock(|_| Ok(((), Some(serialize_auth_data(&data)))));
-        let mut storage = Self {
+        let storage = Self {
             storage: AuthStorageBackend::InMemory(backend),
             auth_path: None,
             data: std::sync::Mutex::new(AuthStorageData::new()),
@@ -977,6 +1091,10 @@ impl AuthStorage {
             seen_in_memory: std::sync::Mutex::new(std::collections::HashSet::new()),
             taken_notices: std::sync::Mutex::new(std::collections::HashSet::new()),
             replacements: std::sync::Mutex::new(HashMap::new()),
+            load_error: std::sync::Mutex::new(None),
+            busy_reads: std::sync::atomic::AtomicUsize::new(0),
+            data_loaded: std::sync::atomic::AtomicBool::new(false),
+            data_from_busy_read: std::sync::atomic::AtomicBool::new(false),
             account_mutation: tokio::sync::Mutex::new(()),
             refresh_locks: std::sync::Mutex::new(HashMap::new()),
         };
@@ -999,6 +1117,72 @@ impl AuthStorage {
             .entry((provider_id.to_owned(), slot_name.to_owned()))
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    /// Why the store could not be loaded on its last read, or `None` once any read or write finds
+    /// it good again (senpi#4413).
+    pub fn get_load_error(&self) -> Option<crate::auth_store_load_error::AuthStoreLoadError> {
+        self.load_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn is_credential_store_busy(&self) -> bool {
+        self.data_from_busy_read
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn get_busy_read_count(&self) -> usize {
+        self.busy_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// While another process holds `auth.json`'s lock and this store has never loaded, fills its
+    /// credentials from the file read without the lock (#6841).
+    pub async fn read_while_busy(&self) {
+        if !self.is_credential_store_busy()
+            || self.data_loaded.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let Some(auth_path) = self.auth_path.clone() else {
+            return;
+        };
+        let timeout = std::time::Duration::from_millis(FILE_STORAGE_SYNC_LOCK_BUDGET_MS);
+        let Ok(Ok(Ok(content))) = tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || std::fs::read_to_string(&auth_path)),
+        )
+        .await
+        else {
+            return;
+        };
+        if let Ok((data, _, _)) = Self::parse_storage_content(Some(&content))
+            && self.is_credential_store_busy()
+            && !self.data_loaded.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            *self
+                .data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+        }
+    }
+
+    /// Holds the backend's per-slot refresh lock across a token exchange (senpi#6849 / refresh lock).
+    pub async fn with_refresh_lock<T>(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        action: impl AsyncFnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match &self.storage {
+            AuthStorageBackend::File(backend) => {
+                backend
+                    .with_refresh_lock(provider_id, slot_name, async move |_| action().await)
+                    .await
+            }
+            AuthStorageBackend::InMemory(_) => action().await,
+        }
     }
 
     pub fn errors(&self) -> Vec<String> {
@@ -1055,7 +1239,7 @@ impl AuthStorage {
         let seen = self.seen_notice_ids();
         Self::lock_set(&self.notices)
             .iter()
-            .filter(|notice| !seen.contains(&notice.id))
+            .filter(|notice| notice.repeats || !seen.contains(&notice.id))
             .cloned()
             .collect()
     }
@@ -1151,42 +1335,104 @@ impl AuthStorage {
         Ok((migrated, repaired_flag, migrated_flag))
     }
 
-    /// The load seam of senpi `parseStorageContent`: after repair and the key migration, Claude logins of the
-    /// retired sign-in are signed out (`signOutLegacyClaudeLogins`); mutation paths read without that step.
-    fn parse_storage_load(
-        content: Option<&str>,
-    ) -> Result<(AuthStorageData, bool, bool, Option<String>), String> {
-        let (data, repaired, migrated) = Self::parse_storage_content(content)?;
-        let moved = crate::anthropic_legacy_sign_out::sign_out_legacy_claude_logins(&data);
-        Ok((
-            moved.data,
-            repaired,
-            migrated || moved.migrated,
-            moved.skipped,
-        ))
+    /// Reload credentials from storage; a written repair or migration invalidates the revision.
+    pub fn reload(&self) {
+        let _ = self.reload_checking_busy();
     }
 
-    /// Reload credentials from storage; a written repair or migration invalidates the revision.
-    pub fn reload(&mut self) {
+    /// Reload credentials from storage, returning `true` when `auth.json` could not be locked
+    /// because another writer held the lock.
+    pub fn reload_checking_busy(&self) -> bool {
         let mut skipped = None;
+        let mut parsed_ok = false;
+        let mut parse_load_error: Option<crate::auth_store_load_error::AuthStoreLoadError> = None;
+        let mut is_busy_err = false;
         let result: Result<(AuthStorageData, bool, bool), String> = match &self.storage {
-            AuthStorageBackend::File(backend) => backend.with_lock(|current| {
-                let (data, repaired, migrated, moved_skip) = Self::parse_storage_load(current)?;
-                skipped = moved_skip;
-                if migrated {
-                    backup_auth_file(self.auth_path.as_deref(), current);
-                }
-                if repaired || migrated {
-                    Ok((
-                        (data.clone(), repaired, migrated),
-                        Some(serialize_auth_data(&data)),
-                    ))
-                } else {
-                    Ok(((data, repaired, migrated), None))
-                }
-            }),
+            AuthStorageBackend::File(backend) => {
+                let mut acquire_and_read = || -> Result<(AuthStorageData, bool, bool), String> {
+                    backend.ensure_parent_dir()?;
+                    backend.ensure_file_exists()?;
+                    let mut guard = match acquire_lock_sync(
+                        &backend.auth_path,
+                        FILE_STORAGE_SYNC_LOCK_BUDGET_MS,
+                    ) {
+                        Ok(guard) => guard,
+                        Err(busy) => {
+                            is_busy_err = true;
+                            return Err(busy.message());
+                        }
+                    };
+                    let current = std::fs::read_to_string(&backend.auth_path).ok();
+                    let (data, repaired, migrated, moved_skip) = match current.as_deref() {
+                        None => (AuthStorageData::new(), false, false, None),
+                        Some(text) => {
+                            let doc = match crate::auth_store_load_error::parse_auth_document(text)
+                            {
+                                Ok(doc) => doc,
+                                Err(load_err) => {
+                                    let msg = load_err.message();
+                                    parse_load_error = Some(load_err);
+                                    return Err(msg);
+                                }
+                            };
+                            let (repaired_data, repaired_flag) = repair_poisoned_pool_slots(&doc);
+                            let (migrated_data, migrated_flag) =
+                                migrate_legacy_provider_keys(&repaired_data);
+                            let moved =
+                                crate::anthropic_legacy_sign_out::sign_out_legacy_claude_logins(
+                                    &migrated_data,
+                                );
+                            (
+                                moved.data,
+                                repaired_flag,
+                                migrated_flag || moved.migrated,
+                                moved.skipped,
+                            )
+                        }
+                    };
+                    parsed_ok = true;
+                    skipped = moved_skip;
+                    if migrated {
+                        backup_auth_file(self.auth_path.as_deref(), current.as_deref());
+                    }
+                    guard.assert_held()?;
+                    if repaired || migrated {
+                        let next = serialize_auth_data(&data);
+                        if !guard.broker_write(&next)? {
+                            write_auth_file(&backend.auth_path, &next)?;
+                        }
+                    }
+                    Ok((data, repaired, migrated))
+                };
+                acquire_and_read()
+            }
             AuthStorageBackend::InMemory(backend) => backend.with_lock(|current| {
-                let (data, repaired, migrated, moved_skip) = Self::parse_storage_load(current)?;
+                let (data, repaired, migrated, moved_skip) = match current {
+                    None => (AuthStorageData::new(), false, false, None),
+                    Some(text) => {
+                        let doc = match crate::auth_store_load_error::parse_auth_document(text) {
+                            Ok(doc) => doc,
+                            Err(load_err) => {
+                                let msg = load_err.message();
+                                parse_load_error = Some(load_err);
+                                return Err(msg);
+                            }
+                        };
+                        let (repaired_data, repaired_flag) = repair_poisoned_pool_slots(&doc);
+                        let (migrated_data, migrated_flag) =
+                            migrate_legacy_provider_keys(&repaired_data);
+                        let moved = crate::anthropic_legacy_sign_out::sign_out_legacy_claude_logins(
+                            &migrated_data,
+                        );
+                        (
+                            moved.data,
+                            repaired_flag,
+                            migrated_flag || moved.migrated,
+                            moved.skipped,
+                        )
+                    }
+                };
+                parsed_ok = true;
                 skipped = moved_skip;
                 Ok(((data, repaired, migrated), None))
             }),
@@ -1205,17 +1451,61 @@ impl AuthStorage {
         }
         match result {
             Ok((data, _, _)) => {
-                *Self::lock_set(&self.notices) = unused_login_notices(&data);
+                let mut notices = unused_login_notices(&data);
+                notices.extend(sign_in_required_notices(&data));
+                *Self::lock_set(&self.notices) = notices;
                 *self
                     .data
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+                self.data_loaded
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.data_from_busy_read
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                *self
+                    .load_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                false
             }
-            Err(error) => self
-                .errors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(error),
+            Err(error) => {
+                if !parsed_ok {
+                    let described = crate::auth_store_load_error::describe_auth_store_load_failure(
+                        parse_load_error.as_ref(),
+                        None,
+                        is_busy_err,
+                        false,
+                        None,
+                    );
+                    let mut guard = self
+                        .load_error
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let repeated = described.is_some() && *guard == described;
+                    if let Some(err) = described {
+                        *guard = Some(err);
+                    }
+                    drop(guard);
+                    if !repeated {
+                        self.errors
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(error);
+                    }
+                    if is_busy_err && !self.data_loaded.load(std::sync::atomic::Ordering::SeqCst) {
+                        self.busy_reads
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        self.data_from_busy_read
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                } else {
+                    self.errors
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(error);
+                }
+                is_busy_err
+            }
         }
     }
 
@@ -1363,6 +1653,10 @@ impl AuthStorage {
         match outcome {
             Ok((data, replacement)) => {
                 *cached = data;
+                *self
+                    .load_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 Ok(replacement)
             }
             Err(error) => {
@@ -1445,8 +1739,10 @@ impl AuthStorage {
                         },
                     });
                 })?;
-            let stored = serde_json::to_value(next.to_stored_credential())
-                .map_err(|error| error.to_string())?;
+            let stored = serde_json::to_value(maho_ai::auth::pool::login_id::stamp_login(
+                next.to_stored_credential(),
+            ))
+            .map_err(|error| error.to_string())?;
             data.insert(provider_id.to_owned(), stored);
             Ok((data.clone(), Some(serialize_auth_data(&data))))
         };
@@ -1461,6 +1757,10 @@ impl AuthStorage {
         match result {
             Ok(data) => {
                 *cached = data;
+                *self
+                    .load_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 Ok(receipt)
             }
             Err(error) => {
@@ -1578,6 +1878,10 @@ impl AuthStorage {
                     .data
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+                *self
+                    .load_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 Ok(result)
             }
             Err(error) => {

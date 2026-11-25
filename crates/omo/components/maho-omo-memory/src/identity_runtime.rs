@@ -212,6 +212,23 @@ impl MemoryIdentityRuntime {
         launch: &dyn Fn(&memory_core::reflection::ReservedRun),
         signal: Option<&maho_ext_api::AbortSignal>,
     ) -> Result<Vec<(String, String)>, String> {
+        self.reconcile_with_wait_policy(
+            now,
+            recovery,
+            launch,
+            signal,
+            crate::worker::run_reconciliation::WaitPolicy::Deadline,
+        )
+        .await
+    }
+    pub async fn reconcile_with_wait_policy(
+        &self,
+        now: &dyn Fn() -> i64,
+        recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
+        launch: &dyn Fn(&memory_core::reflection::ReservedRun),
+        signal: Option<&maho_ext_api::AbortSignal>,
+        wait_policy: crate::worker::run_reconciliation::WaitPolicy,
+    ) -> Result<Vec<(String, String)>, String> {
         use crate::worker::run_liveness::{OBSERVATION_ABORTED, throw_if_aborted};
         let mut attempt = 0;
         loop {
@@ -244,7 +261,9 @@ impl MemoryIdentityRuntime {
                         slot: &self.reconciliation,
                         id,
                     };
-                    let outcome = self.drive_reconcile(now, recovery, launch, signal).await;
+                    let outcome = self
+                        .drive_reconcile(now, recovery, launch, signal, wait_policy)
+                        .await;
                     drop(_clear);
                     let _ = publish.send(Some(outcome.clone()));
                     // The flight's owner reports what the pass did: a failure is not masked by its abort.
@@ -284,9 +303,10 @@ impl MemoryIdentityRuntime {
         recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
         launch: &dyn Fn(&memory_core::reflection::ReservedRun),
         signal: Option<&maho_ext_api::AbortSignal>,
+        wait_policy: crate::worker::run_reconciliation::WaitPolicy,
     ) -> Result<Vec<(String, String)>, String> {
         let identity = as_memory_identity(&self.identity);
-        crate::worker::run_reconciliation::reconcile_reflection_runs_with_signal(
+        crate::worker::run_reconciliation::reconcile_reflection_runs_with_policy(
             &crate::worker::run_finalization_types::RunFinalizationContext {
                 identity: &identity,
                 reservation: self.store.as_ref(),
@@ -299,6 +319,7 @@ impl MemoryIdentityRuntime {
             None,
             true,
             signal,
+            wait_policy,
         )
         .await
     }

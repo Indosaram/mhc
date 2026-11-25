@@ -442,6 +442,35 @@ pub static BASE64_RUN_RE: LazyLock<Regex> =
 /// senpi BASE64_CHAR_WEIGHT.
 pub const BASE64_CHAR_WEIGHT: usize = 4;
 
+const CJK_CHAR_WEIGHT: usize = 3;
+
+fn cjk_extra_chars(text: &str) -> usize {
+    text.chars()
+        .filter(|ch| {
+            matches!(
+                u32::from(*ch),
+                0x1100..=0x11ff
+                    | 0x2e80..=0x9fff
+                    | 0xac00..=0xd7af
+                    | 0xf900..=0xfaff
+                    | 0xff00..=0xffef
+                    | 0x20000..=0x2fa1f
+            )
+        })
+        .map(|ch| ch.len_utf16() * (CJK_CHAR_WEIGHT - 1))
+        .sum()
+}
+
+/// Token estimate used only by the cut-point walk (`find_cut_point`): the shared chars/4 estimate
+/// plus the CJK correction over the message's serialized form (senpi#4617).
+fn estimate_cut_point_tokens(message: &Value) -> u64 {
+    let base = estimate_tokens(message);
+    let Ok(serialized) = serde_json::to_string(message) else {
+        return base;
+    };
+    base.saturating_add(cjk_extra_chars(&serialized).div_ceil(4) as u64)
+}
+
 /// senpi weightedChars: long base64-ish runs count four times over.
 pub fn weighted_chars(text: &str) -> usize {
     let mut chars = text.encode_utf16().count();
@@ -702,7 +731,7 @@ pub fn find_cut_point(
             .iter()
             .enumerate()
             .filter(|(position, _)| weighted[entry_offsets[local] + position])
-            .map(|(_, message)| estimate_tokens(message) as i64)
+            .map(|(_, message)| estimate_cut_point_tokens(message) as i64)
             .sum();
         if message_tokens != 0 {
             accumulated_tokens += message_tokens;

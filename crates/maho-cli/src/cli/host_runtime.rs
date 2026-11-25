@@ -29,6 +29,15 @@ use maho_ext_host::ExtensionRunner;
 
 use super::args::Args;
 
+/// An answer this process gave a folder without saving it, with the trust store revision
+/// it was given under (#6823).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RememberedProjectTrust {
+    pub saved_state: maho_core::trust_manager::SavedProjectTrust,
+    pub revision: String,
+    pub trusted: bool,
+}
+
 /// senpi `CliRuntimeConfiguration`.
 #[derive(Clone, Debug)]
 pub struct CliRuntimeConfiguration {
@@ -55,6 +64,8 @@ pub struct CliRuntimeConfiguration {
     pub project_trust_override: Option<bool>,
     /// senpi `projectTrustByCwd`: one decision per cwd for every runtime this factory creates.
     pub project_trust_by_cwd: Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
+    /// Revision-pinned trust memory for `no_inherit` and unsaved decisions (#6823).
+    pub remembered_project_trust: Arc<std::sync::Mutex<BTreeMap<String, RememberedProjectTrust>>>,
     /// senpi `parsed.unknownFlags`: extension flag values every mounted session applies.
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
     /// senpi `toolRuntime`: the resolved `--tool-runtime` (flag, then env); absent means `in-process`.
@@ -86,6 +97,7 @@ impl Default for CliRuntimeConfiguration {
             additional_hook_paths: Vec::new(),
             project_trust_override: None,
             project_trust_by_cwd: Arc::default(),
+            remembered_project_trust: Arc::default(),
             extension_flag_values: None,
             tool_runtime: None,
         }
@@ -116,6 +128,7 @@ impl CliRuntimeConfiguration {
             additional_hook_paths: Vec::new(),
             project_trust_override: parsed.project_trust_override,
             project_trust_by_cwd: Arc::default(),
+            remembered_project_trust: Arc::default(),
             tool_runtime: parsed.tool_runtime,
             extension_flag_values: (!parsed.unknown_flags.is_empty()).then(|| {
                 parsed
@@ -220,6 +233,7 @@ impl CliRuntimeConfiguration {
                 .get("projectTrustOverride")
                 .and_then(serde_json::Value::as_bool),
             project_trust_by_cwd: Arc::default(),
+            remembered_project_trust: Arc::default(),
             tool_runtime: text("toolRuntime")
                 .as_deref()
                 .and_then(super::tool_runtime::ToolRuntimeKind::parse),
@@ -408,12 +422,47 @@ pub async fn resolve_launch_project_trust_with(
     launch_profile: Option<&AgentSessionLaunchProfile>,
     session_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 ) -> LaunchProjectTrust {
-    let cached = config
-        .project_trust_by_cwd
+    let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
+    let saved_read =
+        maho_core::trust_manager::get_saved_project_trust_state(&trust_store, cwd).await;
+    let saved_state = saved_read
+        .as_ref()
+        .ok()
+        .copied()
+        .unwrap_or(maho_core::trust_manager::SavedProjectTrust::None);
+    let saved = match saved_state {
+        maho_core::trust_manager::SavedProjectTrust::Trusted => Some(true),
+        maho_core::trust_manager::SavedProjectTrust::Untrusted => Some(false),
+        maho_core::trust_manager::SavedProjectTrust::NoInherit
+        | maho_core::trust_manager::SavedProjectTrust::None => None,
+    };
+    let trust_revision = trust_store.revision_async().await.unwrap_or_default();
+    let remembered = config
+        .remembered_project_trust
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(cwd)
-        .copied();
+        .cloned();
+    let cached = remembered
+        .filter(|entry| {
+            entry.saved_state == saved_state
+                && (saved_state == maho_core::trust_manager::SavedProjectTrust::None
+                    || entry.revision == trust_revision)
+        })
+        .map(|entry| entry.trusted)
+        .or_else(|| {
+            // Preserve direct test pre-population of `project_trust_by_cwd` when no saved decision overrides it.
+            (saved.is_none() && saved_state == maho_core::trust_manager::SavedProjectTrust::None)
+                .then(|| {
+                    config
+                        .project_trust_by_cwd
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(cwd)
+                        .copied()
+                })
+                .flatten()
+        });
     let has_trust_requiring_resources =
         maho_core::trust_manager::has_trust_requiring_project_resources(cwd, None);
     let bootstrap = SettingsManager::create(
@@ -422,10 +471,7 @@ pub async fn resolve_launch_project_trust_with(
         &maho_core::config::home_dir(),
         false,
     );
-    let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
     // Fails closed: an unreadable trust store grants no Full-access trust (senpi throws here).
-    let saved_read = trust_store.get(cwd);
-    let saved = saved_read.as_ref().ok().copied().flatten();
     let flags = maho_core::session_extension_flags::session_extension_flag_values(
         &config.extension_flag_values.clone().unwrap_or_default(),
         launch_profile,
@@ -553,6 +599,24 @@ pub async fn resolve_launch_project_trust_with(
     let store_failed = !store_errors.is_empty();
     warnings.extend(store_errors);
     if should_resolve && !store_failed {
+        if matches!(
+            saved_state,
+            maho_core::trust_manager::SavedProjectTrust::None
+                | maho_core::trust_manager::SavedProjectTrust::NoInherit
+        ) {
+            config
+                .remembered_project_trust
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    cwd.to_owned(),
+                    RememberedProjectTrust {
+                        saved_state,
+                        revision: trust_revision,
+                        trusted,
+                    },
+                );
+        }
         config
             .project_trust_by_cwd
             .lock()
@@ -800,7 +864,8 @@ pub async fn mount_agent_session_runtime(
                 Some(&launch_profile),
             )
             .await;
-            let settings = resolved.settings_manager(&cwd, &config.agent_dir);
+            let mut settings = resolved.settings_manager(&cwd, &config.agent_dir);
+            settings.set_project_trust_locked(config.project_trust_override.is_some());
             trust_warnings = resolved.warnings;
             settings
         }
@@ -1434,7 +1499,9 @@ pub fn host_runtime_factory_with_mcp_registry(
                 for warning in &resolved.warnings {
                     maho_core::output_guard::maho_write_stderr(&format!("Warning: {warning}\n"));
                 }
-                let settings = resolved.settings_manager(&profile.runtime.cwd, &config.agent_dir);
+                let mut settings =
+                    resolved.settings_manager(&profile.runtime.cwd, &config.agent_dir);
+                settings.set_project_trust_locked(config.project_trust_override.is_some());
                 let is_continuing = !session_manager.current_context().messages.is_empty();
                 let initial = resolve_cli_initial_model(
                     creation_model,

@@ -1,14 +1,28 @@
 //! Reflection scheduling, isolated worktrees, state machine, and persona assets.
 
+pub mod abandoned;
 pub mod assets;
+pub mod completion_links;
 pub mod completion_repair;
 pub mod completion_secret_scan;
 pub mod completion_validation;
 pub mod description_preflight;
+pub mod host_sweep;
+pub mod identity_orphan_sweep;
+pub mod link_removals;
+pub mod link_rewrite;
 pub mod machine;
 pub mod orphan_sweep;
+pub mod quarantine;
+pub mod reflection_lock_bundle;
+pub mod release_without_promotion;
 pub mod reservation;
+pub mod run_id_high_water;
+pub mod run_ledger;
+pub mod run_process;
 pub mod stale_holder;
+pub mod stale_lock_reaper;
+pub mod terminal_claim;
 pub mod worktree;
 pub mod worktree_integration;
 
@@ -24,16 +38,18 @@ pub use completion_secret_scan::{
     SecretLikeFailure, find_secret_like_failure, find_secret_like_failures,
 };
 pub use completion_validation::{
-    CompletionValidation, frontmatter_block, list_reflection_changed_paths, validate_completion,
+    CompletionValidation, frontmatter_block, list_reflection_changed_paths, paths_outside_target,
+    read_dropped_trailers as read_validated_dropped_trailers, validate_completion,
 };
 pub use description_preflight::{
     DescriptionPreflightWarn, TrimmedDescription, preflight_reflection_descriptions,
 };
 pub use machine::{
     CapturedConversation, CompleteOptions, CompleteTransition, DreamOrigin, EvaluationAction,
-    EvaluationResult, JournalSnapshot, MachineState, ReflectionEvent, ReflectionOutcome,
-    ReflectionRequest, ReflectionTrigger, ReservationState, ReservedRun, TriggerConfig,
-    complete_transition, evaluate_transitions, reserve_transition,
+    EvaluationResult, JournalSnapshot, MachineState, PromoteTransition, ReflectionEvent,
+    ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState, ReservedRun,
+    TriggerConfig, complete_transition, evaluate_transitions, promote_transition,
+    reserve_transition,
 };
 pub use orphan_sweep::{
     OrphanKind, REFLECTION_ORPHAN_GRACE_MS, ReflectionLeftovers, ReflectionOrphanReceipt,
