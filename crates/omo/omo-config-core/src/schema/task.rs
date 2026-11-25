@@ -190,6 +190,21 @@ pub fn omo_task_isolation_layer_schema() -> Node {
     ])
 }
 
+pub fn omo_task_cloud_schema() -> Node {
+    strict_object(vec![
+        optional("mode", enumeration(&["auto", "always", "off"])),
+        optional("local_threshold", nonnegative_integer()),
+        optional("offload_isolated", boolean()),
+        optional("fallback_to_local", boolean()),
+        optional("sync_workspace", boolean()),
+        optional("apply_patch", boolean()),
+        optional("delete_on_release", boolean()),
+        optional("provider", string()),
+        optional("ttl_seconds", positive_integer()),
+        optional("ferryx_cli", string()),
+    ])
+}
+
 pub fn omo_task_settings_schema() -> Node {
     strict_object(vec![
         defaulted(
@@ -199,7 +214,7 @@ pub fn omo_task_settings_schema() -> Node {
         ),
         defaulted(
             "default_execution_mode",
-            enumeration(&["in-process", "process"]),
+            enumeration(&["in-process", "process", "cloud"]),
             default_execution_mode,
         ),
         defaulted(
@@ -223,6 +238,7 @@ pub fn omo_task_settings_schema() -> Node {
         defaulted("wait", omo_task_wait_schema(), default_wait),
         defaulted("team", omo_task_team_settings_schema(), default_team),
         optional("dag", omo_task_dag_settings_schema()),
+        optional("cloud", omo_task_cloud_schema()),
     ])
 }
 
@@ -264,7 +280,7 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("isolation", omo_task_isolation_layer_schema()),
         optional(
             "default_execution_mode",
-            enumeration(&["in-process", "process"]),
+            enumeration(&["in-process", "process", "cloud"]),
         ),
         optional("default_concurrency", positive_integer()),
         optional("provider_concurrency", record(positive_integer())),
@@ -279,6 +295,7 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("wait", omo_task_wait_layer_schema()),
         optional("team", omo_task_team_settings_layer_schema()),
         optional("dag", omo_task_dag_settings_layer_schema()),
+        optional("cloud", omo_task_cloud_schema()),
     ])
 }
 

@@ -1,6 +1,7 @@
 //! Child runners (`runners/` in TypeScript): in-process sessions and RPC child processes.
 
 pub mod in_process;
+pub mod remote_cloud;
 pub mod rpc;
 pub mod rpc_process;
 pub mod types;

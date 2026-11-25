@@ -6,6 +6,7 @@ pub enum ExecutionMode {
     #[default]
     InProcess,
     Process,
+    Cloud,
 }
 
 impl ExecutionMode {
@@ -13,6 +14,7 @@ impl ExecutionMode {
         match self {
             Self::InProcess => "in-process",
             Self::Process => "process",
+            Self::Cloud => "cloud",
         }
     }
 
@@ -20,6 +22,7 @@ impl ExecutionMode {
         match value {
             "in-process" => Some(Self::InProcess),
             "process" => Some(Self::Process),
+            "cloud" => Some(Self::Cloud),
             _ => None,
         }
     }
