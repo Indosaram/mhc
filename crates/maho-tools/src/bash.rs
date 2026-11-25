@@ -83,7 +83,11 @@ fn local_shell_host(
             })
         }),
         env_mode: EnvMode::Exact,
-        default_env: Arc::new(|| Some(std::env::vars().collect())),
+        default_env: Arc::new(|| {
+            Some(crate::bash_executor::with_kill_guard_env(
+                std::env::vars().collect(),
+            ))
+        }),
         signal_number: Arc::new(move |sig| {
             let os = os_machine.ops().info().host().os;
             crate::posix_signals::posix_signal_number(&os, sig)
@@ -218,9 +222,13 @@ pub fn create_shell_tool_definition(
         })
     };
 
-    let shell_env = options
-        .shell_env
-        .unwrap_or_else(|| Arc::new(|| std::env::vars().collect::<BTreeMap<String, String>>()));
+    let shell_env = options.shell_env.unwrap_or_else(|| {
+        Arc::new(|| {
+            crate::bash_executor::with_kill_guard_env(
+                std::env::vars().collect::<BTreeMap<String, String>>(),
+            )
+        })
+    });
 
     let mut def = create_shell_tool_core(
         cwd,

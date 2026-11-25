@@ -1,3 +1,4 @@
+pub mod background_auto_reap;
 pub mod bash;
 pub mod bash_input;
 pub mod bash_output;

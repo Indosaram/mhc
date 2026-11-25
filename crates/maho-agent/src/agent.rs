@@ -17,10 +17,18 @@ use maho_ai::types::{
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 
 use crate::agent_loop::{
-    AgentEventSink, build_provider_context, run_agent_loop, run_agent_loop_continue,
+    AgentEventSink, AgentLoopError, build_provider_context, run_agent_loop, run_agent_loop_continue,
 };
-use crate::assistant_terminal_state::now_ms;
+use crate::assistant_terminal_state::{
+    AgentStreamError, create_terminal_failure_assistant_message, now_ms,
+};
+use crate::execution::prepared::memory_batch_store::open_memory_batch_store;
+use crate::execution::tool_host::{
+    AfterToolFreeze, ExecutionScope, ToolHost, WitnessRecorder, no_preflight_carry_fn,
+};
+use crate::step_commit::StepCommitFn;
 use crate::stream_fn::get_default_stream_fn;
+use crate::types::BatchStoreFactory;
 use crate::types::{
     AfterToolCall, AfterToolCallContext, AfterToolCallResult, AgentContext, AgentEvent,
     AgentLoopConfig, AgentLoopTurnUpdate, AgentMessage, AgentState, AgentTool, BeforeToolCall,
@@ -154,6 +162,7 @@ pub(crate) fn default_model() -> Model {
 #[derive(Clone, Default)]
 pub struct PartialAgentState {
     pub system_prompt: Option<String>,
+    pub system_prompt_stable_prefix: Option<String>,
     pub model: Option<Model>,
     pub thinking_level: Option<ModelThinkingLevel>,
     pub thinking_selection: Option<ThinkingSelection>,
@@ -190,8 +199,16 @@ pub struct AgentOptions {
     pub transport: Option<Transport>,
     pub timeout_ms: Option<u64>,
     pub stream_start_timeout_ms: Option<u64>,
+    pub stream_keep_alive_timeout_ms: Option<u64>,
     pub max_retry_delay_ms: Option<u64>,
     pub tool_execution: Option<ToolExecutionMode>,
+    pub tool_host: Option<Arc<dyn ToolHost>>,
+    pub batch_store_factory: Option<BatchStoreFactory>,
+    pub after_tool_freeze: Option<AfterToolFreeze>,
+    pub execution_scope: Option<ExecutionScope>,
+    /// Makes each finished model step durable before the loop acts on it (hosted custody, C6 C.P3); unset on fused and split-local.
+    pub commit_step: Option<StepCommitFn>,
+    pub on_execution_pipeline: Option<WitnessRecorder>,
     pub removed_tool_hints: Option<BTreeMap<String, String>>,
     pub resolve_unknown_tool_call: Option<ResolveUnknownToolCall>,
     pub abort_server_side_fallback: Option<bool>,
@@ -360,6 +377,7 @@ struct AgentInner {
     steering_queue: Mutex<PendingMessageQueue>,
     follow_up_queue: Mutex<PendingMessageQueue>,
     active_run: Mutex<Option<ActiveRun>>,
+    last_run_error: Mutex<Option<AgentLoopError>>,
     settings: Mutex<AgentSettings>,
 }
 
@@ -383,8 +401,16 @@ struct AgentSettings {
     transport: Option<Transport>,
     timeout_ms: Option<u64>,
     stream_start_timeout_ms: Option<u64>,
+    stream_keep_alive_timeout_ms: Option<u64>,
     max_retry_delay_ms: Option<u64>,
     tool_execution: ToolExecutionMode,
+    tool_host: Option<Arc<dyn ToolHost>>,
+    batch_store_factory: Option<BatchStoreFactory>,
+    after_tool_freeze: Option<AfterToolFreeze>,
+    execution_scope: ExecutionScope,
+    commit_step: Option<StepCommitFn>,
+    get_execution_scope: Option<Arc<dyn Fn() -> ExecutionScope + Send + Sync>>,
+    on_execution_pipeline: Option<WitnessRecorder>,
     removed_tool_hints: BTreeMap<String, String>,
     resolve_unknown_tool_call: Option<ResolveUnknownToolCall>,
     abort_server_side_fallback: Option<bool>,
@@ -407,12 +433,27 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(options: AgentOptions) -> Self {
+    /// Construct an `Agent` with the package-entry prepared-pipeline defaults
+    /// (`open_memory_batch_store()` and `no_preflight_carry_fn()`) when omitted.
+    pub fn new(mut options: AgentOptions) -> Self {
+        if options.batch_store_factory.is_none() {
+            options.batch_store_factory = Some(open_memory_batch_store());
+        }
+        if options.after_tool_freeze.is_none() {
+            options.after_tool_freeze = Some(no_preflight_carry_fn());
+        }
+        Self::new_core(options)
+    }
+
+    /// Construct the raw loop-core `Agent` without defaulting `batch_store_factory` or
+    /// `after_tool_freeze` (fail-closed if omitted without `tool_host`).
+    pub fn new_core(options: AgentOptions) -> Self {
         let initial_state = options.initial_state.clone().unwrap_or_default();
         let mut state = AgentState::new(
             initial_state.system_prompt.clone().unwrap_or_default(),
             initial_state.model.clone().unwrap_or_else(default_model),
         );
+        state.system_prompt_stable_prefix = initial_state.system_prompt_stable_prefix.clone();
         state.thinking_level = initial_state
             .thinking_level
             .unwrap_or(ModelThinkingLevel::Off);
@@ -447,10 +488,21 @@ impl Agent {
             transport: options.transport,
             timeout_ms: options.timeout_ms,
             stream_start_timeout_ms: options.stream_start_timeout_ms,
+            stream_keep_alive_timeout_ms: options.stream_keep_alive_timeout_ms,
             max_retry_delay_ms: options.max_retry_delay_ms,
             tool_execution: options
                 .tool_execution
                 .unwrap_or(ToolExecutionMode::Parallel),
+            tool_host: options.tool_host.clone(),
+            batch_store_factory: options.batch_store_factory.clone(),
+            after_tool_freeze: options.after_tool_freeze.clone(),
+            execution_scope: options.execution_scope.unwrap_or_else(|| ExecutionScope {
+                id: uuid::Uuid::new_v4().to_string(),
+                root: String::new(),
+            }),
+            commit_step: options.commit_step.clone(),
+            get_execution_scope: None,
+            on_execution_pipeline: options.on_execution_pipeline.clone(),
             removed_tool_hints: options.removed_tool_hints.clone().unwrap_or_default(),
             resolve_unknown_tool_call: options.resolve_unknown_tool_call.clone(),
             abort_server_side_fallback: options.abort_server_side_fallback,
@@ -472,6 +524,7 @@ impl Agent {
                     options.follow_up_mode.unwrap_or(QueueMode::OneAtATime),
                 )),
                 active_run: Mutex::new(None),
+                last_run_error: Mutex::new(None),
                 settings: Mutex::new(settings),
             }),
         }
@@ -580,6 +633,20 @@ impl Agent {
         lock(&self.inner.state).system_prompt.clone()
     }
 
+    /// `state.systemPromptStablePrefix` alone.
+    pub fn system_prompt_stable_prefix(&self) -> Option<String> {
+        lock(&self.inner.state).system_prompt_stable_prefix.clone()
+    }
+
+    /// Most recent `AgentLoopError` from the last run, if any.
+    pub fn last_run_error(&self) -> Option<AgentLoopError> {
+        lock(&self.inner.last_run_error).clone()
+    }
+
+    pub fn take_last_run_error(&self) -> Option<AgentLoopError> {
+        lock(&self.inner.last_run_error).take()
+    }
+
     /// Assign `state.tools`, copying the provided top-level array.
     pub fn set_tools(&self, tools: Vec<AgentTool>) {
         lock(&self.inner.state).set_tools(tools);
@@ -596,6 +663,10 @@ impl Agent {
 
     pub fn set_system_prompt(&self, system_prompt: impl Into<String>) {
         lock(&self.inner.state).system_prompt = system_prompt.into();
+    }
+
+    pub fn set_system_prompt_stable_prefix(&self, prefix: Option<String>) {
+        lock(&self.inner.state).system_prompt_stable_prefix = prefix;
     }
 
     pub fn set_model(&self, model: Model) {
@@ -779,6 +850,7 @@ impl Agent {
             state.error_message = None;
             state.provider_diagnostic = None;
         }
+        *lock(&self.inner.last_run_error) = None;
         self.clear_follow_up_queue();
         self.clear_steering_queue();
     }
@@ -912,7 +984,8 @@ impl Agent {
                 signal,
                 Some(self.stream_function()),
             ))
-            .await;
+            .await
+            .map(|_| ())
         })
         .await;
         Ok(())
@@ -949,7 +1022,8 @@ impl Agent {
                         Some(self.stream_function()),
                     )
                 })
-                .await;
+                .await
+                .map(|_| ())
             }
         })
         .await;
@@ -957,7 +1031,7 @@ impl Agent {
 
     async fn run_queued_messages(&self, queue: PendingQueue, options: PromptRunOptions) {
         self.run_with_lifecycle(|signal| async move {
-            Box::pin(self.run_claimed_queue(queue, options, signal)).await;
+            Box::pin(self.run_claimed_queue(queue, options, signal)).await
         })
         .await;
     }
@@ -967,7 +1041,7 @@ impl Agent {
         queue: PendingQueue,
         options: PromptRunOptions,
         signal: Option<AbortSignal>,
-    ) {
+    ) -> Result<(), AgentLoopError> {
         let config = self.create_loop_config(options);
         let messages = match self.take_queued_messages(queue).await {
             Ok(messages) => messages,
@@ -979,11 +1053,11 @@ impl Agent {
                     &agent_event_sink(self.clone()),
                 )
                 .await;
-                return;
+                return Ok(());
             }
         };
         if messages.is_empty() {
-            return;
+            return Ok(());
         }
         Box::pin(run_agent_loop(
             messages,
@@ -993,7 +1067,8 @@ impl Agent {
             signal,
             Some(self.stream_function()),
         ))
-        .await;
+        .await
+        .map(|_| ())
     }
 
     async fn run_continuation(&self, options: AgentContinuationOptions) {
@@ -1013,7 +1088,8 @@ impl Agent {
                     Some(self.stream_function()),
                 )
             })
-            .await;
+            .await
+            .map(|_| ())
         })
         .await;
     }
@@ -1022,6 +1098,7 @@ impl Agent {
         let state = lock(&self.inner.state);
         AgentContext {
             system_prompt: state.system_prompt.clone(),
+            system_prompt_stable_prefix: state.system_prompt_stable_prefix.clone(),
             messages: state.messages().to_vec(),
             tools: Some(state.tools().to_vec()),
             declared_tools: state.declared_tools.clone(),
@@ -1070,10 +1147,20 @@ impl Agent {
         config.transform_context = settings.transform_context.clone();
         config.get_api_key = settings.get_api_key.clone();
         config.stream_start_timeout_ms = settings.stream_start_timeout_ms;
+        config.stream_keep_alive_timeout_ms = settings.stream_keep_alive_timeout_ms;
         config.initial_request_timeout_ms = options.initial_request_timeout_ms;
         config.initial_request_stream_start_timeout_ms =
             options.initial_request_stream_start_timeout_ms;
         config.tool_execution = Some(settings.tool_execution);
+        config.tool_host = settings.tool_host.clone();
+        config.batch_store_factory = settings.batch_store_factory.clone();
+        config.after_tool_freeze = settings.after_tool_freeze.clone();
+        config.execution_scope = Some(match &settings.get_execution_scope {
+            Some(get_scope) => get_scope(),
+            None => settings.execution_scope.clone(),
+        });
+        config.commit_step = settings.commit_step.clone();
+        config.on_execution_pipeline = settings.on_execution_pipeline.clone();
         config.removed_tool_hints = Some(settings.removed_tool_hints.clone());
         config.resolve_unknown_tool_call = settings.resolve_unknown_tool_call.clone();
         config.before_tool_call = settings.before_tool_call.clone();
@@ -1287,12 +1374,13 @@ impl Agent {
     async fn run_with_lifecycle<F, Fut>(&self, executor: F)
     where
         F: FnOnce(Option<AbortSignal>) -> Fut,
-        Fut: std::future::Future<Output = ()>,
+        Fut: std::future::Future<Output = Result<(), AgentLoopError>>,
     {
         if lock(&self.inner.active_run).is_some() {
             panic!("Agent is already processing.");
         }
 
+        *lock(&self.inner.last_run_error) = None;
         let abort_controller = AbortController::new();
         let (completion, _receiver) = tokio::sync::watch::channel(false);
         *lock(&self.inner.active_run) = Some(ActiveRun {
@@ -1309,7 +1397,16 @@ impl Agent {
             state.provider_diagnostic = None;
         }
 
-        crate::heap_future::heap_future(|| executor(Some(abort_controller.signal()))).await;
+        let outcome =
+            crate::heap_future::heap_future(|| executor(Some(abort_controller.signal()))).await;
+
+        if let Err(err) = outcome {
+            *lock(&self.inner.last_run_error) = Some(err.clone());
+            self.handle_run_failure(err, abort_controller.signal().aborted())
+                .await;
+            self.finish_run();
+            return;
+        }
 
         // A provider-returned terminal error/abort has no safe implicit owner for
         // queued work. Park it until an external retry/compaction owner continues,
@@ -1330,11 +1427,57 @@ impl Agent {
             {
                 break;
             }
-            self.run_queued_messages_after_agent_end(Some(abort_controller.signal()))
-                .await;
+            if let Err(err) = self
+                .run_queued_messages_after_agent_end(Some(abort_controller.signal()))
+                .await
+            {
+                *lock(&self.inner.last_run_error) = Some(err.clone());
+                self.handle_run_failure(err, abort_controller.signal().aborted())
+                    .await;
+                break;
+            }
         }
 
         self.finish_run();
+    }
+
+    async fn handle_run_failure(&self, error: AgentLoopError, aborted: bool) {
+        let model = self.model();
+        let stop_reason = if aborted {
+            maho_ai::types::StopReason::Aborted
+        } else {
+            maho_ai::types::StopReason::Error
+        };
+        let mut failure_message = create_terminal_failure_assistant_message(
+            &model,
+            stop_reason,
+            &AgentStreamError::Other {
+                message: error.to_string(),
+            },
+            None,
+        );
+        if !aborted && crate::local_failure::is_local_failure(&error) {
+            failure_message.failure_source = Some(maho_ai::types::AssistantFailureSource::Local);
+        }
+        let failure = AgentMessage::Llm(Message::Assistant(Arc::new(failure_message)));
+        self.process_events(AgentEvent::MessageStart {
+            message: failure.clone(),
+            streaming: None,
+        })
+        .await;
+        self.process_events(AgentEvent::MessageEnd {
+            message: failure.clone(),
+        })
+        .await;
+        self.process_events(AgentEvent::TurnEnd {
+            message: failure.clone(),
+            tool_results: Vec::new(),
+        })
+        .await;
+        self.process_events(AgentEvent::AgentEnd {
+            messages: vec![failure],
+        })
+        .await;
     }
 
     fn can_drain_queued_messages_after_run(&self) -> bool {
@@ -1351,24 +1494,29 @@ impl Agent {
         }
     }
 
-    async fn run_queued_messages_after_agent_end(&self, signal: Option<AbortSignal>) {
+    async fn run_queued_messages_after_agent_end(
+        &self,
+        signal: Option<AbortSignal>,
+    ) -> Result<(), AgentLoopError> {
         if lock(&self.inner.steering_queue).has_items() {
-            self.run_claimed_queue(
-                PendingQueue::Steering,
-                PromptRunOptions {
-                    skip_initial_steering_poll: true,
-                    initial_request_timeout_ms: None,
-                    initial_request_stream_start_timeout_ms: None,
-                },
-                signal,
-            )
-            .await;
-            return;
-        }
-        if lock(&self.inner.follow_up_queue).has_items() {
-            self.run_claimed_queue(PendingQueue::FollowUp, PromptRunOptions::default(), signal)
+            return self
+                .run_claimed_queue(
+                    PendingQueue::Steering,
+                    PromptRunOptions {
+                        skip_initial_steering_poll: true,
+                        initial_request_timeout_ms: None,
+                        initial_request_stream_start_timeout_ms: None,
+                    },
+                    signal,
+                )
                 .await;
         }
+        if lock(&self.inner.follow_up_queue).has_items() {
+            return self
+                .run_claimed_queue(PendingQueue::FollowUp, PromptRunOptions::default(), signal)
+                .await;
+        }
+        Ok(())
     }
 
     fn finish_run(&self) {
@@ -1626,6 +1774,68 @@ impl Agent {
 
     pub fn set_stream_start_timeout_ms(&self, timeout_ms: Option<u64>) {
         lock(&self.inner.settings).stream_start_timeout_ms = timeout_ms;
+    }
+
+    /// `Agent.streamKeepAliveTimeoutMs`.
+    pub fn stream_keep_alive_timeout_ms(&self) -> Option<u64> {
+        lock(&self.inner.settings).stream_keep_alive_timeout_ms
+    }
+
+    pub fn set_stream_keep_alive_timeout_ms(&self, timeout_ms: Option<u64>) {
+        lock(&self.inner.settings).stream_keep_alive_timeout_ms = timeout_ms;
+    }
+
+    /// `Agent.toolHost`.
+    pub fn tool_host(&self) -> Option<Arc<dyn ToolHost>> {
+        lock(&self.inner.settings).tool_host.clone()
+    }
+
+    pub fn set_tool_host(&self, tool_host: Option<Arc<dyn ToolHost>>) {
+        lock(&self.inner.settings).tool_host = tool_host;
+    }
+
+    /// `Agent.batchStoreFactory`.
+    pub fn batch_store_factory(&self) -> Option<BatchStoreFactory> {
+        lock(&self.inner.settings).batch_store_factory.clone()
+    }
+
+    pub fn set_batch_store_factory(&self, factory: Option<BatchStoreFactory>) {
+        lock(&self.inner.settings).batch_store_factory = factory;
+    }
+
+    /// `Agent.afterToolFreeze`.
+    pub fn after_tool_freeze(&self) -> Option<AfterToolFreeze> {
+        lock(&self.inner.settings).after_tool_freeze.clone()
+    }
+
+    pub fn set_after_tool_freeze(&self, after_tool_freeze: Option<AfterToolFreeze>) {
+        lock(&self.inner.settings).after_tool_freeze = after_tool_freeze;
+    }
+
+    /// `Agent.executionScope`.
+    pub fn execution_scope(&self) -> ExecutionScope {
+        lock(&self.inner.settings).execution_scope.clone()
+    }
+
+    pub fn set_execution_scope(&self, scope: ExecutionScope) {
+        lock(&self.inner.settings).execution_scope = scope;
+    }
+
+    /// `Agent.getExecutionScope`.
+    pub fn set_get_execution_scope(
+        &self,
+        getter: Option<Arc<dyn Fn() -> ExecutionScope + Send + Sync>>,
+    ) {
+        lock(&self.inner.settings).get_execution_scope = getter;
+    }
+
+    /// `Agent.onExecutionPipeline`.
+    pub fn on_execution_pipeline(&self) -> Option<WitnessRecorder> {
+        lock(&self.inner.settings).on_execution_pipeline.clone()
+    }
+
+    pub fn set_on_execution_pipeline(&self, recorder: Option<WitnessRecorder>) {
+        lock(&self.inner.settings).on_execution_pipeline = recorder;
     }
 
     /// `Agent.maxRetryDelayMs`.

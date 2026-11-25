@@ -8,6 +8,7 @@ autotests = false
 
 [dependencies]
 maho-agent = { path = "../maho-agent" }
+maho-core = { path = "../maho-core" }
 maho-ext-api = { path = "../maho-ext-api" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-interactive = { path = "../maho-interactive" }

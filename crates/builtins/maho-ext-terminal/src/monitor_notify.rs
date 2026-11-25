@@ -137,6 +137,13 @@ impl MonitorNotifier {
 /// runs only once the wake is committed. Returns the id of the wake it took, if any.
 ///
 /// `report` receives every diagnostic line (`maho_ext_api::diagnostic` in production).
+enum DeliverOutcome {
+    Idle,
+    Sent(#[cfg_attr(not(test), allow(dead_code))] u64),
+    StaleContext,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn deliver(
     queue: &mut MonitorDeliveryQueue,
     now: f64,
@@ -146,10 +153,27 @@ fn deliver(
     settled: &tokio::sync::mpsc::WeakUnboundedSender<NotifierAction>,
     report: &dyn Fn(&str),
 ) -> Option<u64> {
-    if queue.awaiting_receipt() {
-        return None;
+    match deliver_checked(queue, now, settings, send, commit, settled, report) {
+        DeliverOutcome::Sent(wake) => Some(wake),
+        DeliverOutcome::Idle | DeliverOutcome::StaleContext => None,
     }
-    let (injection, checkpoint, undo) = queue.flush_with_checkpoint(now, settings)?;
+}
+
+fn deliver_checked(
+    queue: &mut MonitorDeliveryQueue,
+    now: f64,
+    settings: &crate::settings::MonitorDeliverySettings,
+    send: &MonitorSend,
+    commit: Option<&MonitorCommit>,
+    settled: &tokio::sync::mpsc::WeakUnboundedSender<NotifierAction>,
+    report: &dyn Fn(&str),
+) -> DeliverOutcome {
+    if queue.awaiting_receipt() {
+        return DeliverOutcome::Idle;
+    }
+    let Some((injection, checkpoint, undo)) = queue.flush_with_checkpoint(now, settings) else {
+        return DeliverOutcome::Idle;
+    };
     let wake = queue.allocate_wake();
     let offered_pause_ids = injection.pause_ids.clone();
     let monitor_ids = wake_monitor_ids(&injection.details);
@@ -190,6 +214,11 @@ fn deliver(
             );
         }
         Err(error) => {
+            if error.starts_with(maho_ext_goal::stale_context::STALE_EXTENSION_CONTEXT_ERROR_PREFIX)
+            {
+                queue.dispose();
+                return DeliverOutcome::StaleContext;
+            }
             // No interleaving window: nothing reached the queue since the take, so the
             // whole-snapshot rollback is exact here.
             queue.rollback(checkpoint);
@@ -204,7 +233,7 @@ fn deliver(
             }
         }
     }
-    Some(wake)
+    DeliverOutcome::Sent(wake)
 }
 fn report_pause_not_applied(pause_ids: &[String], report: &dyn Fn(&str)) {
     if !pause_ids.is_empty() {
@@ -339,7 +368,9 @@ fn spawn_notifier_loop(
                 tokio::select! {action=receiver.recv()=>action,_=tokio::time::sleep_until(due)=>{
                     if !available() {queue.dispose();deadline=None;continue;}
                     let now=epoch.elapsed().as_secs_f64()*1000.0;
-                    deliver(&mut queue,now,&settings,&send,commit.as_ref(),&settled,&maho_ext_api::diagnostic);
+                    if matches!(deliver_checked(&mut queue,now,&settings,&send,commit.as_ref(),&settled,&maho_ext_api::diagnostic), DeliverOutcome::StaleContext) {
+                        return;
+                    }
                     // A wake waiting on its receipt holds the next flush until it settles.
                     deadline=if queue.awaiting_receipt() {None} else {queue.next_delay(now,&settings).map(after)};
                     continue;
@@ -1982,5 +2013,26 @@ mod tests {
             .count();
         assert_eq!(terminal, 1);
         assert!(queue.pending_ids().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_context_error_retires_notifier_loop_immediately() {
+        let mut settings = crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;
+        settings.coalesce_window_ms = 1.0;
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let notifier = MonitorNotifier::new(settings, move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(format!(
+                "{} stale context",
+                maho_ext_goal::stale_context::STALE_EXTENSION_CONTEXT_ERROR_PREFIX
+            ))
+        });
+        notifier.notify_event(line("ready")).unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(10)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(notifier.task.is_finished());
     }
 }

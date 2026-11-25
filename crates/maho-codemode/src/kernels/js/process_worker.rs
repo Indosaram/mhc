@@ -31,6 +31,12 @@ pub async fn spawn_process_worker(
         "SENPI_CODEMODE_PROCESS_CWD".into(),
         options.cwd.to_string_lossy().into_owned(),
     );
+    if options.kill_guard.is_some() {
+        env.insert(
+            "SENPI_KILL_GUARD_BRIDGE_PORT".into(),
+            options.connection.port.to_string(),
+        );
+    }
     super::worker_host::scrub_host_env(&mut env, options.env_passthrough);
     let token = uuid::Uuid::new_v4().simple().to_string();
     let mut process = SubprocessProcess::spawn_with_frame_token(

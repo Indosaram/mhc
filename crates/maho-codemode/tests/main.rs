@@ -97,6 +97,12 @@ mod kernel_tools_errors;
 mod kernel_tools_host;
 #[path = "kernel_tools_scope.rs"]
 mod kernel_tools_scope;
+#[path = "kill_guard_kernels.rs"]
+mod kill_guard_kernels;
+#[path = "kill_guard_runtime_env.rs"]
+mod kill_guard_runtime_env;
+#[path = "kill_guard_worker_capture.rs"]
+mod kill_guard_worker_capture;
 #[path = "local_module_loader.rs"]
 mod local_module_loader;
 #[path = "managed_cell.rs"]

@@ -2,9 +2,15 @@
 
 use std::collections::BTreeMap;
 
-/// `getShellEnv()`: the process environment (including extension `process.env` writes) with the
-/// agent bin dir prepended to PATH.
+/// The environment agent-spawned shells get: the user's shell environment plus the kill guard's
+/// runtime layer (senpi#5349).
 pub fn get_shell_env() -> BTreeMap<String, String> {
+    crate::kill_guard::runtime::with_kill_guard_runtime(get_user_shell_env())
+}
+
+/// The environment for a command the user typed (`!cmd`): no kill guard runtime layer, which
+/// judges only what the agent runs (senpi#5349).
+pub fn get_user_shell_env() -> BTreeMap<String, String> {
     let mut env = maho_ext_api::process_env::vars();
     let key = env
         .keys()

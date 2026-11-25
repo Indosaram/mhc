@@ -7,7 +7,7 @@ use crate::runtime_session::{
 use crate::shared::safe_reg_exp;
 use maho_pty::PtyExit;
 pub fn bash_output_schema() -> serde_json::Value {
-    serde_json::json!({"type":"object","properties":{"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"filter":{"type":"string","description":"Only return output lines matching this regex."},"view":{"type":"string","enum":["log","screen"],"description":"'log' returns new raw output (default); 'screen' returns the rendered xterm grid."}},"required":["bash_id"]})
+    serde_json::json!({"type":"object","properties":{"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"filter":{"type":"string","description":"Only return output lines matching this regex. An invalid regex is ignored and the whole unfiltered output comes back."},"view":{"type":"string","enum":["log","screen"],"description":"'log' returns new raw output (default); 'screen' returns the rendered xterm grid."}},"required":["bash_id"]})
 }
 /// What bash-output.ts reads of a `TerminalRuntimeSession`: `exited`/`exitResult`, `snapshot()` and
 /// `readDelta()`. The upstream peek suite drives the tool through a fake runtime with exactly these.

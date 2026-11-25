@@ -64,12 +64,27 @@ pub enum TerminalBackgroundWake {
         id: String,
         description: String,
         started_at_ms: f64,
+        command: Option<String>,
+        auto_reap_minutes: Option<u64>,
     },
     BackgroundExit {
         id: String,
         exit: Option<PtyExit>,
         output: String,
+        auto_reaped_after_minutes: Option<u64>,
     },
+    BackgroundReapFailed {
+        id: String,
+        auto_reap_minutes: u64,
+        reason: String,
+    },
+}
+
+fn optional_minutes(value: Option<&Value>) -> Option<u64> {
+    value
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 1.0)
+        .map(|value| value.trunc() as u64)
 }
 
 /// `TerminalExitView["exitResult"]` as the child sends it: `{ exitCode, signal, cancelled, timedOut }` or null.
@@ -105,7 +120,21 @@ fn parse_background_wake(value: &Value) -> Option<TerminalBackgroundWake> {
             id: id.to_owned(),
             description: object.get("description")?.as_str()?.to_owned(),
             started_at_ms: object.get("startedAtMs")?.as_f64()?,
+            command: object
+                .get("command")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            auto_reap_minutes: optional_minutes(object.get("autoReapMinutes")),
         }),
+        "background_reap_failed" => {
+            let auto_reap_minutes = optional_minutes(object.get("autoReapMinutes"))?;
+            let reason = object.get("reason")?.as_str()?.to_owned();
+            Some(TerminalBackgroundWake::BackgroundReapFailed {
+                id: id.to_owned(),
+                auto_reap_minutes,
+                reason,
+            })
+        }
         "background_exit" => {
             let output = object.get("output")?.as_str()?;
             let exit = parse_exit_result(object.get("exit")?)?;
@@ -113,14 +142,23 @@ fn parse_background_wake(value: &Value) -> Option<TerminalBackgroundWake> {
                 id: id.to_owned(),
                 exit,
                 output: output.to_owned(),
+                auto_reaped_after_minutes: optional_minutes(object.get("autoReapedAfterMinutes")),
             })
         }
         _ => None,
     }
 }
 
-fn exit_view(exit: Option<PtyExit>, output: &str) -> TerminalExitView {
-    TerminalExitView::new(exit, output.to_owned())
+fn exit_view(
+    exit: Option<PtyExit>,
+    output: &str,
+    auto_reaped_after_minutes: Option<u64>,
+) -> TerminalExitView {
+    let mut view = TerminalExitView::new(exit, output.to_owned());
+    if let Some(minutes) = auto_reaped_after_minutes {
+        view = view.with_auto_reaped_after_minutes(minutes);
+    }
+    view
 }
 
 fn bash_id_of(value: &Value) -> Option<&str> {
@@ -212,6 +250,11 @@ pub fn terminal_child_job(ctx: &TerminalToolContext, kind: &'static str) -> Tool
                 {
                     fields.insert("shellPath".to_owned(), Value::String(shell_path));
                 }
+                if let (Some(minutes), Some(fields)) =
+                    (settings.background_auto_reap_minutes, args.as_object_mut())
+                {
+                    fields.insert("backgroundAutoReapMinutes".to_owned(), json!(minutes));
+                }
                 args
             },
         ),
@@ -238,22 +281,44 @@ fn background_relay(ctx: &TerminalToolContext) -> (Wake, ChildExited) {
                 id,
                 description,
                 started_at_ms,
+                command,
+                auto_reap_minutes,
             } => {
                 wake_running
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(id.clone(), generation);
                 if let Some(on_start) = &wake_ctx.on_background_start {
-                    on_start(&id, &description, started_at_ms);
+                    on_start(
+                        &id,
+                        &description,
+                        started_at_ms,
+                        command.as_deref(),
+                        auto_reap_minutes,
+                    );
                 }
             }
-            TerminalBackgroundWake::BackgroundExit { id, exit, output } => {
+            TerminalBackgroundWake::BackgroundReapFailed {
+                id,
+                auto_reap_minutes,
+                reason,
+            } => {
+                if let Some(on_failed) = &wake_ctx.on_background_reap_failed {
+                    on_failed(&id, auto_reap_minutes, &reason);
+                }
+            }
+            TerminalBackgroundWake::BackgroundExit {
+                id,
+                exit,
+                output,
+                auto_reaped_after_minutes,
+            } => {
                 wake_running
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .shift_remove(&id);
                 if let Some(on_exit) = &wake_ctx.on_background_exit {
-                    on_exit(&id, exit_view(exit, &output));
+                    on_exit(&id, exit_view(exit, &output, auto_reaped_after_minutes));
                 }
             }
         }
@@ -286,6 +351,7 @@ fn background_relay(ctx: &TerminalToolContext) -> (Wake, ChildExited) {
                         &format!(
                             "The session's tool child (generation {generation}) exited, which ended this session and every process it started."
                         ),
+                        None,
                     ),
                 );
             }
@@ -385,7 +451,7 @@ mod tests {
         let exits: Arc<Mutex<Vec<Exit>>> = Arc::default();
         let mut hooks = context();
         let started_sink = started.clone();
-        hooks.on_background_start = Some(Arc::new(move |id, _, _| {
+        hooks.on_background_start = Some(Arc::new(move |id, _, _, _, _| {
             started_sink
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -454,5 +520,97 @@ mod tests {
         assert!(after[1].1.contains("tool child (generation 1) exited"));
         child_exited(1);
         assert_eq!(snapshot(&exits).len(), 2);
+    }
+
+    #[test]
+    fn carries_the_auto_reap_setting_to_the_child_and_the_reap_back_to_the_server_hooks() {
+        type StartedCall = (String, String, f64, Option<String>, Option<u64>);
+        let started: Arc<Mutex<Vec<StartedCall>>> = Arc::default();
+        let reaped: Arc<Mutex<Vec<Option<u64>>>> = Arc::default();
+        let failed: Arc<Mutex<Vec<(String, u64, String)>>> = Arc::default();
+
+        let mut hooks = context();
+        hooks
+            .configuration
+            .lock()
+            .expect("config")
+            .0
+            .background_auto_reap_minutes = Some(45);
+        let started_sink = started.clone();
+        hooks.on_background_start = Some(Arc::new(move |id, desc, started_at, cmd, reap| {
+            started_sink.lock().expect("started").push((
+                id.to_owned(),
+                desc.to_owned(),
+                started_at,
+                cmd.map(str::to_owned),
+                reap,
+            ));
+        }));
+        let reaped_sink = reaped.clone();
+        hooks.on_background_exit = Some(Arc::new(move |_, view| {
+            reaped_sink
+                .lock()
+                .expect("reaped")
+                .push(view.auto_reaped_after_minutes);
+        }));
+        let failed_sink = failed.clone();
+        hooks.on_background_reap_failed = Some(Arc::new(move |id, age, reason| {
+            failed_sink
+                .lock()
+                .expect("failed")
+                .push((id.to_owned(), age, reason.to_owned()));
+        }));
+
+        let bash = terminal_child_job(&hooks, TERMINAL_CHILD_JOB_KINDS.bash);
+        let args = (bash.args)(&json!({ "command": "x" }), "call", None);
+        assert_eq!(args["backgroundAutoReapMinutes"], json!(45));
+
+        let wake = bash.wake.as_ref().expect("wake");
+        wake(
+            &json!({
+                "event": "background_start",
+                "id": "bash_c1_1",
+                "description": "soak",
+                "startedAtMs": 5,
+                "command": "./soak.sh",
+                "autoReapMinutes": 45,
+            }),
+            1,
+        );
+        assert_eq!(
+            *started.lock().expect("started"),
+            vec![(
+                "bash_c1_1".to_owned(),
+                "soak".to_owned(),
+                5.0,
+                Some("./soak.sh".to_owned()),
+                Some(45),
+            )]
+        );
+        wake(
+            &json!({ "event": "background_reap_failed", "id": "bash_c1_1", "autoReapMinutes": 45, "reason": "EPERM" }),
+            1,
+        );
+        wake(
+            &json!({ "event": "background_reap_failed", "id": "bash_c1_1", "reason": "no age" }),
+            1,
+        );
+        assert_eq!(
+            *failed.lock().expect("failed"),
+            vec![("bash_c1_1".to_owned(), 45, "EPERM".to_owned())]
+        );
+        assert!(reaped.lock().expect("reaped").is_empty());
+
+        wake(
+            &json!({
+                "event": "background_exit",
+                "id": "bash_c1_1",
+                "exit": { "exitCode": null, "signal": "SIGTERM", "cancelled": true, "timedOut": false },
+                "output": "",
+                "autoReapedAfterMinutes": 45,
+            }),
+            1,
+        );
+        assert_eq!(*reaped.lock().expect("reaped"), vec![Some(45)]);
     }
 }

@@ -400,7 +400,8 @@ use crate::harness::execution::effect_gate::GateRefusal;
 use crate::harness::execution::tools::{
     ClearToolCallOutcome, ClearedToolCall, ExecutedToolCall, FinalizedToolCall,
     ImmediateToolOutcome, ToolCallPreparation, apply_before_tool_decision,
-    create_tool_result_message, execute_tool_call, finalize_tool_call, prepare_tool_call,
+    create_tool_result_message, execute_tool_call_with_witness, finalize_tool_call,
+    prepare_tool_call,
 };
 use crate::harness::hooks::{HookInvocation, HookName, HookResult, HookRunError};
 use crate::harness::runtime::drive::tool_placement::{
@@ -692,13 +693,14 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
     // so such a call settles like a tool that threw instead of faulting the harness.
     let executed = match tool_context {
         Some(tool_context) => {
-            execute_tool_call(
+            execute_tool_call_with_witness(
                 cleared,
                 &drive.gate,
                 on_update,
                 tool_context,
                 invocation.clone(),
                 drive.context.clone(),
+                lane.read_config().on_execution_pipeline.clone(),
             )
             .await
         }

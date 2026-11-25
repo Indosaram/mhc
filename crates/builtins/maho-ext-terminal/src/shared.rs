@@ -7,12 +7,12 @@ pub const TERMINAL_MONITOR_TOOL: &str = "monitor";
 pub const TERMINAL_MONITOR_STATE_EVENT: &str = "terminal_monitor_state";
 pub const TERMINAL_MONITOR_ENDED_EVENT: &str = "terminal_monitor_ended";
 pub const WAKE_SOURCE_STATE_EVENT: &str = "wake_source_state";
-/// Companion tools that must never dangle without a live PTY `bash`.
+pub use maho_ext_builtin_loose::monitor_state_event::TERMINAL_BACKGROUND_AGE_EVENT;
+/// Companion tools kept active beside the PTY `bash`. `bash_input` and `bash_resize` are not
+/// listed: they are search-exposed and activate on their first by-name call (`senpi#4446`).
 pub const TERMINAL_COMPANION_TOOLS: &[&str] = &[
     TERMINAL_OUTPUT_TOOL,
     TERMINAL_KILL_TOOL,
-    TERMINAL_INPUT_TOOL,
-    TERMINAL_RESIZE_TOOL,
     TERMINAL_MONITOR_TOOL,
 ];
 pub const DEFAULT_COLS: u16 = 120;
@@ -182,13 +182,7 @@ mod tests {
     fn shared_constants_keep_their_upstream_values() {
         assert_eq!(
             TERMINAL_COMPANION_TOOLS,
-            [
-                "bash_output",
-                "kill_bash",
-                "bash_input",
-                "bash_resize",
-                "monitor"
-            ]
+            ["bash_output", "kill_bash", "monitor"]
         );
         assert_eq!(
             (

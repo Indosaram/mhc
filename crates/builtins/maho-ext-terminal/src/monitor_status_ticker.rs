@@ -1,14 +1,38 @@
 use crate::monitor_registry::MonitorSnapshotEntry;
-use crate::monitor_status::format_monitor_status;
+use crate::monitor_status::format_monitor_status_animated;
+use std::sync::Arc;
 pub const MONITOR_STATUS_TICK_INTERVAL_MS: u64 = 1000;
-#[derive(Default)]
 pub struct MonitorStatusTicker {
     snapshot: Vec<MonitorSnapshotEntry>,
     last_rendered_status: Option<String>,
     has_rendered: bool,
     running: bool,
+    animate: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+impl Default for MonitorStatusTicker {
+    fn default() -> Self {
+        Self::new(|| false)
+    }
 }
 impl MonitorStatusTicker {
+    pub fn new(animate: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            snapshot: Vec::new(),
+            last_rendered_status: None,
+            has_rendered: false,
+            running: false,
+            animate: Arc::new(animate),
+        }
+    }
+    pub fn with_animate(animate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self {
+            snapshot: Vec::new(),
+            last_rendered_status: None,
+            has_rendered: false,
+            running: false,
+            animate,
+        }
+    }
     pub fn running(&self) -> bool {
         self.running
     }
@@ -30,7 +54,7 @@ impl MonitorStatusTicker {
         self.has_rendered = false;
     }
     pub fn tick(&mut self, now: f64, mut render: impl FnMut(Option<String>)) {
-        let status = format_monitor_status(&self.snapshot, now);
+        let status = format_monitor_status_animated(&self.snapshot, now, (self.animate)());
         if self.has_rendered && status == self.last_rendered_status {
             return;
         }
@@ -50,8 +74,15 @@ impl ScheduledMonitorStatusTicker {
         render: impl Fn(Option<String>) + Send + Sync + 'static,
         now: impl Fn() -> f64 + Send + Sync + 'static,
     ) -> Self {
+        Self::new_animated(render, now, || false)
+    }
+    pub fn new_animated(
+        render: impl Fn(Option<String>) + Send + Sync + 'static,
+        now: impl Fn() -> f64 + Send + Sync + 'static,
+        animate: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
-            state: Default::default(),
+            state: std::sync::Arc::new(std::sync::Mutex::new(MonitorStatusTicker::new(animate))),
             task: None,
             render: std::sync::Arc::new(render),
             now: std::sync::Arc::new(now),
@@ -101,17 +132,29 @@ impl Drop for ScheduledMonitorStatusTicker {
     }
 }
 pub fn bind_monitor_status(
-    mut state: tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>>,
+    state: tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>>,
     render: impl Fn(Option<String>) + Send + Sync + 'static,
 ) -> tokio::task::JoinHandle<()> {
+    bind_monitor_status_animated(state, render, || false)
+}
+
+pub fn bind_monitor_status_animated(
+    mut state: tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>>,
+    render: impl Fn(Option<String>) + Send + Sync + 'static,
+    animate: impl Fn() -> bool + Send + Sync + 'static,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = ScheduledMonitorStatusTicker::new(render, || {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("epoch")
-                .as_secs_f64()
-                * 1000.0
-        });
+        let mut ticker = ScheduledMonitorStatusTicker::new_animated(
+            render,
+            || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("epoch")
+                    .as_secs_f64()
+                    * 1000.0
+            },
+            animate,
+        );
         ticker.sync(state.borrow_and_update().clone());
         while state.changed().await.is_ok() {
             ticker.sync(state.borrow_and_update().clone());
@@ -196,5 +239,38 @@ mod tests {
         assert!(!ticker.running());
         ticker.sync(Vec::new(), 2000.0, |status| rendered.push(status));
         assert_eq!(rendered.last(), Some(&None));
+    }
+
+    #[test]
+    fn animated_ticker_pulses_when_animate_gate_is_true() {
+        let mut ticker = MonitorStatusTicker::new(|| true);
+        let mut rendered = Vec::new();
+        ticker.sync(
+            vec![MonitorSnapshotEntry {
+                id: "bash_1".to_owned(),
+                description: "build".to_owned(),
+                started_at_ms: 0.0,
+                ..Default::default()
+            }],
+            0.0,
+            |status| rendered.push(status),
+        );
+        ticker.tick(1000.0, |status| rendered.push(status));
+        ticker.tick(2000.0, |status| rendered.push(status));
+        assert!(
+            rendered[0]
+                .as_deref()
+                .is_some_and(|s| s.starts_with('\u{25c9}'))
+        );
+        assert!(
+            rendered[1]
+                .as_deref()
+                .is_some_and(|s| s.starts_with('\u{25ce}'))
+        );
+        assert!(
+            rendered[2]
+                .as_deref()
+                .is_some_and(|s| s.starts_with('\u{25cb}'))
+        );
     }
 }

@@ -45,6 +45,11 @@ pub enum AgentStreamError {
         "Provider stream start timed out after {timeout_ms}ms (raise streamStartTimeoutMs — retry.provider.streamStartTimeoutMs in senpi settings; 0 disables)"
     )]
     StartTimeout { timeout_ms: u64 },
+    /// `StreamKeepAliveTimeoutError`.
+    #[error(
+        "Provider stream sent only keep-alives and timed out after {timeout_ms}ms (raise streamKeepAliveTimeoutMs: retry.provider.keepAliveTimeoutMs in senpi settings; 0 disables)"
+    )]
+    StreamKeepAliveTimeout { timeout_ms: u64 },
     /// \`ProviderRetryWatchdogAbortError\`.
     #[error("{provider_cause}")]
     ProviderRetryWatchdogAbort { provider_cause: String },
@@ -68,6 +73,9 @@ impl AgentStreamError {
             }
             AgentStreamError::StartTimeout { timeout_ms } => format!(
                 "Provider stream start timed out after {timeout_ms}ms (raise streamStartTimeoutMs — retry.provider.streamStartTimeoutMs in senpi settings; 0 disables)"
+            ),
+            AgentStreamError::StreamKeepAliveTimeout { timeout_ms } => format!(
+                "Provider stream sent only keep-alives and timed out after {timeout_ms}ms (raise streamKeepAliveTimeoutMs: retry.provider.keepAliveTimeoutMs in senpi settings; 0 disables)"
             ),
             AgentStreamError::ProviderRetryWatchdogAbort { provider_cause } => {
                 provider_cause.clone()

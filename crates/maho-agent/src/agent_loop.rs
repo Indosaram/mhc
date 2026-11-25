@@ -32,17 +32,43 @@ use crate::assistant_terminal_state::{
     should_terminate_assistant_turn,
 };
 use crate::empty_assistant_recovery::with_empty_assistant_recovery;
+use crate::execution::prepared::executor_pipeline::PreparationSource;
+use crate::execution::prepared::pipeline_prepared::create_prepared_tool_host;
+use crate::execution::tool_host::{
+    BatchStoreMissingError, ExecutionScope, PreflightCarryMissingError, ToolHost, ToolHostCall,
+    ToolHostLocalContext, ToolHostOptions,
+};
+use crate::execution::tool_outcome_events::{
+    create_error_tool_result, create_tool_result_message, emit_tool_execution_end,
+    emit_tool_result_message,
+};
 use crate::internal_events::{CapturedEventSink, InternalLoopConfig};
 use crate::invocation_input::{InvocationInput, invoke_with_input};
 use crate::response_timing::create_response_timing_recorder;
+use crate::step_commit::{StepCommit, StepCommitError};
 use crate::stream_fn::get_default_stream_fn;
+use crate::stream_keepalive::{
+    SilenceDeadlineVerdict, TransportLiveness, create_transport_liveness,
+};
 use crate::tool_arguments::prepare_agent_tool_call_arguments;
-use crate::tool_name_alias::{resolve_call_tool, with_tool_name_correction};
+use crate::tool_name_alias::with_tool_name_correction;
 use crate::types::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentStreamOptions, AgentTool,
     AgentToolCall, AgentToolResult, AgentToolUpdateCallback, CursorExecHandlersConfig,
-    PendingQueue, StreamFn, ToolExecutionMode, model_thinking_level_to_reasoning,
+    PendingQueue, StreamFn, model_thinking_level_to_reasoning,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AgentLoopError {
+    #[error(transparent)]
+    BatchStoreMissing(#[from] BatchStoreMissingError),
+    #[error(transparent)]
+    PreflightCarryMissing(#[from] PreflightCarryMissingError),
+    #[error(transparent)]
+    StepCommit(#[from] StepCommitError),
+    #[error("{0}")]
+    Other(String),
+}
 
 /// Event sink the loop writes into. TS uses `(event) => Promise<void> | void`.
 pub type AgentEventSink =
@@ -86,8 +112,10 @@ pub fn agent_loop(
     });
     let end_stream = stream.clone();
     tokio::spawn(async move {
-        let messages = run_agent_loop(prompts, context, config, emit, signal, stream_fn).await;
-        end_stream.end(Some(messages));
+        match run_agent_loop(prompts, context, config, emit, signal, stream_fn).await {
+            Ok(messages) => end_stream.end(Some(messages)),
+            Err(err) => end_stream.fail(StreamError::new(err.to_string())),
+        }
     });
     stream
 }
@@ -119,8 +147,10 @@ pub fn agent_loop_continue(
     });
     let end_stream = stream.clone();
     tokio::spawn(async move {
-        let messages = run_agent_loop_continue(context, config, emit, signal, stream_fn).await;
-        end_stream.end(Some(messages));
+        match run_agent_loop_continue(context, config, emit, signal, stream_fn).await {
+            Ok(messages) => end_stream.end(Some(messages)),
+            Err(err) => end_stream.fail(StreamError::new(err.to_string())),
+        }
     });
     stream
 }
@@ -132,7 +162,7 @@ pub async fn run_agent_loop(
     emit: AgentEventSink,
     signal: Option<AbortSignal>,
     stream_fn: Option<StreamFn>,
-) -> Vec<AgentMessage> {
+) -> Result<Vec<AgentMessage>, AgentLoopError> {
     let prompts = declare_tool_changes(&context, prompts, Some(&config.model));
     let mut new_messages: Vec<AgentMessage> = prompts.clone();
     let mut current_context = context;
@@ -170,8 +200,8 @@ pub async fn run_agent_loop(
             stream_function,
         )
     })
-    .await;
-    new_messages
+    .await?;
+    Ok(new_messages)
 }
 
 pub async fn run_agent_loop_continue(
@@ -180,7 +210,7 @@ pub async fn run_agent_loop_continue(
     emit: AgentEventSink,
     signal: Option<AbortSignal>,
     stream_fn: Option<StreamFn>,
-) -> Vec<AgentMessage> {
+) -> Result<Vec<AgentMessage>, AgentLoopError> {
     if context.messages.is_empty() {
         panic!("Cannot continue: no messages in context");
     }
@@ -206,8 +236,8 @@ pub async fn run_agent_loop_continue(
             stream_function,
         )
     })
-    .await;
-    new_messages
+    .await?;
+    Ok(new_messages)
 }
 
 fn create_agent_stream() -> EventStream<AgentEvent, Vec<AgentMessage>> {
@@ -264,9 +294,15 @@ async fn run_loop(
     signal: Option<AbortSignal>,
     emit: AgentEventSink,
     stream_function: StreamFn,
-) {
+) -> Result<(), AgentLoopError> {
     let mut current_context = initial_context;
     let mut config = initial_config;
+    if config.execution_scope.is_none() {
+        config.execution_scope = Some(ExecutionScope {
+            id: uuid::Uuid::new_v4().to_string(),
+            root: String::new(),
+        });
+    }
     let mut first_turn = true;
     let mut first_provider_request = true;
     let mut drained_terminating_queue: Option<PendingQueue> = None;
@@ -307,7 +343,7 @@ async fn run_loop(
                         },
                     )
                     .await;
-                    return;
+                    return Ok(());
                 }
                 drained_terminating_queue = None;
             }
@@ -321,7 +357,7 @@ async fn run_loop(
                     restore(pending_source, pending_messages).await;
                 }
                 emit_run_failure(&config, error, true, &emit).await;
-                return;
+                return Ok(());
             }
             {
                 prepared_messages.append(&mut pending_messages);
@@ -385,7 +421,7 @@ async fn run_loop(
                 if let Some(update) = update {
                     if let Some(error) = update.failure {
                         emit_run_failure(&config, error, false, &emit).await;
-                        return;
+                        return Ok(());
                     }
                     current_context = update.context.unwrap_or(current_context);
                     apply_loop_update(
@@ -460,6 +496,13 @@ async fn run_loop(
                 new_messages.push(AgentMessage::Llm(Message::ToolResult(result.clone())));
                 tool_results.push(result.clone());
             }
+            if let Some(commit_step) = &config.commit_step {
+                commit_step(StepCommit {
+                    message: message.clone(),
+                    provider_tool_results: provider_tool_results.clone(),
+                })
+                .await?;
+            }
 
             if should_terminate_assistant_turn(&message) {
                 if let Some(finish) = &config.finish_turn {
@@ -489,7 +532,7 @@ async fn run_loop(
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
 
             // Check for tool calls
@@ -523,7 +566,7 @@ async fn run_loop(
                         signal.clone(),
                         &emit,
                     )
-                    .await
+                    .await?
                 };
                 tool_results.extend(executed_tool_batch.messages.iter().cloned());
                 tool_batch_terminated = executed_tool_batch.terminate;
@@ -571,7 +614,7 @@ async fn run_loop(
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
 
             if decision == Some(crate::types::AgentTurnDecision::End) {
@@ -582,7 +625,7 @@ async fn run_loop(
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
             explicit_continuation = decision == Some(crate::types::AgentTurnDecision::Continue);
             if let Some(should_stop) = config.should_stop_after_turn.clone()
@@ -601,7 +644,7 @@ async fn run_loop(
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
             if tool_batch_terminated {
                 pending_source = PendingQueue::Steering;
@@ -624,7 +667,7 @@ async fn run_loop(
                         },
                     )
                     .await;
-                    return;
+                    return Ok(());
                 }
                 // Give queue owners a boundary before preparation refreshes the drained
                 // snapshot, so a clear or replacement wins before admission.
@@ -694,7 +737,7 @@ async fn run_loop(
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
             if let Some(snapshot) = next_turn_snapshot {
                 current_context = snapshot.context.unwrap_or(current_context);
@@ -720,7 +763,7 @@ async fn run_loop(
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
             if drained_terminating_queue.is_some() {
                 refresh_terminating_queue_drain(
@@ -738,7 +781,7 @@ async fn run_loop(
                         },
                     )
                     .await;
-                    return;
+                    return Ok(());
                 }
                 drained_terminating_queue = None;
             }
@@ -777,6 +820,7 @@ async fn run_loop(
         },
     )
     .await;
+    Ok(())
 }
 
 fn apply_loop_update(
@@ -1020,6 +1064,8 @@ async fn stream_assistant_response(
     // Dedicated controller for the provider request so the loop can tear the
     // request down itself (idle timeout), not only when the caller aborts.
     let request_abort_controller = AbortController::new();
+    let liveness =
+        create_transport_liveness(normalize_timeout_ms(config.stream_keep_alive_timeout_ms));
     let mut detach_caller_abort: Option<maho_ai::utils::abort::ListenerId> = None;
     if let Some(signal) = signal.as_ref() {
         if signal.aborted() {
@@ -1064,6 +1110,16 @@ async fn stream_assistant_response(
         request_options.simple.stream.request.stream_kind = Some(StreamKind::Main);
         request_options.simple.stream.request.api_key = resolved_api_key;
         request_options.simple.stream.request.signal = Some(request_abort_controller.signal());
+        {
+            let prev_activity = config.options.stream.on_transport_activity.clone();
+            let liveness_activity = liveness.clone();
+            request_options.simple.stream.on_transport_activity = Some(Arc::new(move || {
+                liveness_activity.note_activity();
+                if let Some(prev) = &prev_activity {
+                    prev();
+                }
+            }));
+        }
         // Cursor exec bridging (ignored by every other provider): handlers
         // execute mid-stream; their paired results buffer here.
         if let Some(cursor_exec_handlers) = config.cursor_exec_handlers.as_ref() {
@@ -1130,6 +1186,7 @@ async fn stream_assistant_response(
                 Some(idle_error),
                 pre_stream.remaining_start_ms(),
                 signal.clone(),
+                Some(liveness.clone()),
             );
             event_reader.configured_start_timeout_ms =
                 normalize_timeout_ms(config.stream_start_timeout_ms);
@@ -1470,6 +1527,7 @@ async fn stream_assistant_response(
                         error,
                         AgentStreamError::StartTimeout { .. }
                             | AgentStreamError::IdleTimeout { .. }
+                            | AgentStreamError::StreamKeepAliveTimeout { .. }
                     ) {
                     abort_error(signal.as_ref())
                 } else {
@@ -1746,9 +1804,11 @@ struct AssistantEventReader {
     records: bool,
     signal: Option<AbortSignal>,
     on_idle_timeout: Option<Arc<dyn Fn(AgentStreamError) + Send + Sync>>,
+    liveness: Option<TransportLiveness>,
 }
 
 impl AssistantEventReader {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         stream: AssistantMessageEventStream,
         timeout_ms: Option<u64>,
@@ -1756,6 +1816,7 @@ impl AssistantEventReader {
         on_idle_timeout: Option<Arc<dyn Fn(AgentStreamError) + Send + Sync>>,
         stream_start_timeout_ms: Option<u64>,
         caller_signal: Option<AbortSignal>,
+        liveness: Option<TransportLiveness>,
     ) -> Self {
         let _ = caller_signal;
         Self {
@@ -1768,6 +1829,7 @@ impl AssistantEventReader {
             records: false,
             signal: Some(signal),
             on_idle_timeout,
+            liveness,
         }
     }
 
@@ -1809,10 +1871,15 @@ impl AssistantEventReader {
         } else {
             self.idle_timeout_ms
         };
+        let window_ms = if use_start_bound {
+            self.configured_start_timeout_ms.or(self.start_timeout_ms)
+        } else {
+            self.idle_timeout_ms
+        };
         let read_started_at = tokio::time::Instant::now();
         let result = match read_timeout_ms {
             Some(timeout_ms) => {
-                self.read_with_timeout(timeout_ms.saturating_sub(self.silent_ms).max(1))
+                self.read_with_timeout(timeout_ms.saturating_sub(self.silent_ms).max(1), window_ms)
                     .await
             }
             None => self.read_without_timeout().await,
@@ -1827,6 +1894,9 @@ impl AssistantEventReader {
                 self.silent_ms = 0;
                 if result.is_some() {
                     self.saw_first_event = true;
+                    if let Some(liveness) = &self.liveness {
+                        liveness.content_arrived();
+                    }
                 }
             }
         }
@@ -1854,6 +1924,7 @@ impl AssistantEventReader {
     async fn read_with_timeout(
         &mut self,
         timeout_ms: u64,
+        window_ms: Option<u64>,
     ) -> Result<Option<AssistantRecord>, AgentStreamError> {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         let mut seen_chunks = self.stream.provider_chunk_count();
@@ -1888,6 +1959,24 @@ impl AssistantEventReader {
                         seen_chunks = chunks;
                         deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
                         continue;
+                    }
+                    if let (Some(liveness), Some(win_ms)) = (&self.liveness, window_ms) {
+                        match liveness.on_silence_deadline(win_ms) {
+                            SilenceDeadlineVerdict::Extend { delay_ms } => {
+                                deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
+                                continue;
+                            }
+                            SilenceDeadlineVerdict::KeepAliveExhausted(keep_err) => {
+                                let error = AgentStreamError::StreamKeepAliveTimeout {
+                                    timeout_ms: keep_err.timeout_ms,
+                                };
+                                if let Some(on_idle_timeout) = self.on_idle_timeout.as_ref() {
+                                    on_idle_timeout(error.clone());
+                                }
+                                return Err(error);
+                            }
+                            SilenceDeadlineVerdict::Expire => {}
+                        }
                     }
                     let error = self.make_timeout_error(timeout_ms);
                     if let Some(on_idle_timeout) = self.on_idle_timeout.as_ref() {
@@ -1991,7 +2080,7 @@ async fn execute_tool_calls(
     config: &AgentLoopConfig,
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
-) -> ExecutedToolCallBatch {
+) -> Result<ExecutedToolCallBatch, AgentLoopError> {
     // Same filter as the loop's collection site (defense in depth): a block
     // stamped `kCursorExecResolved` was already executed by Cursor's exec
     // channel and its result buffered; running it again would duplicate a
@@ -2008,302 +2097,62 @@ async fn execute_tool_calls(
             _ => None,
         })
         .collect();
-    // One snapshot per batch, shared by every spawned call and hook context.
-    let current_context = &Arc::new(current_context.clone());
-    if config.tool_execution_mode() == ToolExecutionMode::Sequential {
-        return execute_tool_calls_sequential(
-            current_context,
-            assistant_message,
-            &tool_calls,
-            config,
-            signal,
-            emit,
-        )
-        .await;
-    }
-    execute_tool_calls_parallel(
-        current_context,
-        assistant_message,
-        &tool_calls,
-        config,
-        signal,
-        emit,
-    )
-    .await
-}
-
-async fn execute_tool_calls_sequential(
-    current_context: &Arc<AgentContext>,
-    assistant_message: &AssistantMessage,
-    tool_calls: &[AgentToolCall],
-    config: &AgentLoopConfig,
-    signal: Option<AbortSignal>,
-    emit: &AgentEventSink,
-) -> ExecutedToolCallBatch {
-    let mut finalized_calls: Vec<FinalizedToolCallOutcome> = Vec::new();
-    let mut messages: Vec<ToolResultMessage> = Vec::new();
-
-    for tool_call in tool_calls {
-        let tool = resolve_call_tool(current_context, tool_call, config).await;
-        send(
-            emit,
-            AgentEvent::ToolExecutionStart {
-                parent_tool_call_id: None,
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool
-                    .as_ref()
-                    .map(|tool| tool.name().to_owned())
-                    .unwrap_or_else(|| tool_call.name.clone()),
-                args: serde_json::Value::Object(tool_call.arguments.clone()),
-            },
-        )
-        .await;
-
-        let preparation = prepare_tool_call(
-            current_context,
-            assistant_message,
-            tool_call,
-            tool.as_ref(),
-            config,
-            signal.clone(),
-        )
-        .await;
-        let finalized = match &preparation {
-            ToolCallPreparation::Immediate {
-                tool_call,
-                result,
-                is_error,
-            } => FinalizedToolCallOutcome {
-                tool_call: tool_call.clone(),
-                result: (**result).clone(),
-                is_error: *is_error,
-            },
-            ToolCallPreparation::Prepared { .. } => {
-                let executed = execute_prepared_tool_call(&preparation, signal.clone(), emit).await;
-                finalize_executed_tool_call(
-                    current_context,
-                    assistant_message,
-                    &preparation,
-                    executed,
-                    config,
-                    signal.clone(),
-                )
-                .await
-            }
-        };
-
-        emit_tool_execution_end(&finalized, emit).await;
-        let tool_result_message = create_tool_result_message(&finalized);
-        emit_tool_result_message(&tool_result_message, emit).await;
-        finalized_calls.push(finalized);
-        messages.push(tool_result_message);
-
-        if signal.as_ref().is_some_and(AbortSignal::aborted) {
-            break;
+    let host: Arc<dyn ToolHost> = match &config.tool_host {
+        Some(host) => Arc::clone(host),
+        None => {
+            let open_store = config
+                .batch_store_factory
+                .as_ref()
+                .ok_or(BatchStoreMissingError)?;
+            let after_tool_freeze = config
+                .after_tool_freeze
+                .as_ref()
+                .ok_or(PreflightCarryMissingError)?;
+            create_prepared_tool_host(
+                PreparationSource {
+                    resolve_unknown_tool_call: config.resolve_unknown_tool_call.clone(),
+                    before_tool_call: config.before_tool_call.clone(),
+                    after_tool_call: config.after_tool_call.clone(),
+                    removed_tool_hints: config
+                        .removed_tool_hints
+                        .as_ref()
+                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+                    after_tool_freeze: Arc::clone(after_tool_freeze),
+                },
+                Arc::clone(open_store),
+            )
         }
-    }
-
-    let terminate = should_terminate_tool_batch(&finalized_calls);
-    ExecutedToolCallBatch {
-        messages,
-        terminate,
-    }
-}
-
-/// A single finalized tool call, awaited by both its dependents and the collector.
-///
-/// TS hands out one promise per call and lets several `await`s share it; a `oneshot` receiver is
-/// single-use and not `Clone`, so the port carries the outcome on a `watch` channel, which every
-/// holder can clone and await.
-type FinalizedReceiver = tokio::sync::watch::Receiver<Option<FinalizedToolCallOutcome>>;
-
-fn finalized_channel() -> (
-    tokio::sync::watch::Sender<Option<FinalizedToolCallOutcome>>,
-    FinalizedReceiver,
-) {
-    tokio::sync::watch::channel(None)
-}
-
-/// `await finalizedCall`; `None` means the producing task died without a value (TS would reject).
-async fn await_finalized(receiver: &FinalizedReceiver) -> Option<FinalizedToolCallOutcome> {
-    let mut receiver = receiver.clone();
-    loop {
-        {
-            let current = receiver.borrow();
-            if let Some(outcome) = current.as_ref() {
-                return Some(outcome.clone());
-            }
-        }
-        if receiver.changed().await.is_err() {
-            return None;
-        }
-    }
-}
-
-async fn execute_tool_calls_parallel(
-    current_context: &Arc<AgentContext>,
-    assistant_message: &AssistantMessage,
-    tool_calls: &[AgentToolCall],
-    config: &AgentLoopConfig,
-    signal: Option<AbortSignal>,
-    emit: &AgentEventSink,
-) -> ExecutedToolCallBatch {
-    let mut prepared_calls: Vec<ToolCallPreparation> = Vec::new();
-
-    for tool_call in tool_calls {
-        let tool = resolve_call_tool(current_context, tool_call, config).await;
-        send(
-            emit,
-            AgentEvent::ToolExecutionStart {
-                parent_tool_call_id: None,
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool
-                    .as_ref()
-                    .map(|tool| tool.name().to_owned())
-                    .unwrap_or_else(|| tool_call.name.clone()),
-                args: serde_json::Value::Object(tool_call.arguments.clone()),
-            },
-        )
-        .await;
-
-        let preparation = prepare_tool_call(
-            current_context,
-            assistant_message,
-            tool_call,
-            tool.as_ref(),
-            config,
-            signal.clone(),
-        )
-        .await;
-        prepared_calls.push(preparation);
-
-        if signal.as_ref().is_some_and(AbortSignal::aborted) {
-            break;
-        }
-    }
-
-    // Dependencies are assigned in the second phase after all preflight hooks have completed,
-    // so a later preflight abort vetoes every execution (the TS first-phase dependency
-    // computation is likewise discarded there).
-    let mut finalized_calls: Vec<FinalizedReceiver> = Vec::new();
-    let mut previous_sequential: Option<FinalizedReceiver> = None;
-    let mut previous_wave: Vec<FinalizedReceiver> = Vec::new();
-
-    for preparation in &prepared_calls {
-        let is_sequential = is_sequential_tool_call(current_context, preparation.tool_call());
-        let dependencies: Vec<FinalizedReceiver> = if is_sequential {
-            let mut dependencies: Vec<FinalizedReceiver> = Vec::new();
-            if let Some(previous) = previous_sequential.as_ref() {
-                dependencies.push(previous.clone());
-            }
-            dependencies.extend(previous_wave.iter().cloned());
-            dependencies
-        } else if let Some(previous) = previous_sequential.as_ref() {
-            vec![previous.clone()]
-        } else {
-            Vec::new()
-        };
-
-        let (sender, receiver) = finalized_channel();
-        let context = Arc::clone(current_context);
-        let assistant = assistant_message.clone();
-        let preparation = preparation.clone();
-        let config = config.clone();
-        let signal = signal.clone();
-        let emit = emit.clone();
-        tokio::spawn(async move {
-            for dependency in &dependencies {
-                let _ = await_finalized(dependency).await;
-            }
-            let finalized = if signal.as_ref().is_some_and(AbortSignal::aborted) {
-                FinalizedToolCallOutcome {
-                    tool_call: preparation.tool_call().clone(),
-                    result: create_error_tool_result("Operation aborted"),
-                    is_error: true,
-                }
-            } else {
-                run_prepared_tool_call(
-                    &context,
-                    &assistant,
-                    &preparation,
-                    &config,
-                    signal.clone(),
-                    &emit,
-                )
-                .await
-            };
-            emit_tool_execution_end(&finalized, &emit).await;
-            let _ = sender.send(Some(finalized));
+    };
+    let scope = config
+        .execution_scope
+        .clone()
+        .unwrap_or_else(|| ExecutionScope {
+            id: uuid::Uuid::new_v4().to_string(),
+            root: String::new(),
         });
-        finalized_calls.push(receiver.clone());
-        if is_sequential {
-            previous_sequential = Some(receiver);
-            previous_wave = Vec::new();
-        } else {
-            previous_wave.push(receiver);
-        }
-    }
-
-    let mut ordered_finalized_calls: Vec<FinalizedToolCallOutcome> = Vec::new();
-    for receiver in &finalized_calls {
-        if let Some(finalized) = await_finalized(receiver).await {
-            ordered_finalized_calls.push(finalized);
-        }
-    }
-    let mut messages: Vec<ToolResultMessage> = Vec::new();
-    for finalized in &ordered_finalized_calls {
-        let tool_result_message = create_tool_result_message(finalized);
-        emit_tool_result_message(&tool_result_message, emit).await;
-        messages.push(tool_result_message);
-    }
-
-    let terminate = should_terminate_tool_batch(&ordered_finalized_calls);
-    ExecutedToolCallBatch {
-        messages,
-        terminate,
-    }
-}
-
-async fn run_prepared_tool_call(
-    current_context: &Arc<AgentContext>,
-    assistant_message: &AssistantMessage,
-    preparation: &ToolCallPreparation,
-    config: &AgentLoopConfig,
-    signal: Option<AbortSignal>,
-    emit: &AgentEventSink,
-) -> FinalizedToolCallOutcome {
-    if let ToolCallPreparation::Immediate {
-        tool_call,
-        result,
-        is_error,
-    } = preparation
-    {
-        return FinalizedToolCallOutcome {
-            tool_call: tool_call.clone(),
-            result: (**result).clone(),
-            is_error: *is_error,
-        };
-    }
-
-    let executed = execute_prepared_tool_call(preparation, signal.clone(), emit).await;
-    finalize_executed_tool_call(
-        current_context,
-        assistant_message,
-        preparation,
-        executed,
-        config,
-        signal,
-    )
-    .await
-}
-
-fn is_sequential_tool_call(current_context: &AgentContext, tool_call: &AgentToolCall) -> bool {
-    current_context
-        .tools
-        .as_ref()
-        .and_then(|tools| tools.iter().find(|tool| tool.name() == tool_call.name))
-        .and_then(|tool| tool.execution_mode)
-        == Some(ToolExecutionMode::Sequential)
+    let result = host
+        .execute(
+            ToolHostCall {
+                scope,
+                calls: tool_calls,
+                mode: config.tool_execution_mode(),
+            },
+            ToolHostOptions {
+                signal,
+                emit: Arc::clone(emit),
+                record_witness: config.on_execution_pipeline.clone(),
+                local: Some(ToolHostLocalContext {
+                    context: current_context.clone(),
+                    assistant_message: assistant_message.clone(),
+                }),
+            },
+        )
+        .await
+        .map_err(AgentLoopError::Other)?;
+    Ok(ExecutedToolCallBatch {
+        messages: result.messages,
+        terminate: result.terminate,
+    })
 }
 
 /// `PreparedToolCall | ImmediateToolCallOutcome`.
@@ -2405,13 +2254,6 @@ pub async fn run_tool_call(
     .await
 }
 
-fn should_terminate_tool_batch(finalized_calls: &[FinalizedToolCallOutcome]) -> bool {
-    !finalized_calls.is_empty()
-        && finalized_calls
-            .iter()
-            .all(|finalized| finalized.result.terminate == Some(true))
-}
-
 /// `PreparedAgentToolCall`.
 pub struct PreparedAgentToolCall {
     pub tool_call: AgentToolCall,
@@ -2423,7 +2265,11 @@ pub fn prepare_agent_tool_call(
     tool: &AgentTool,
     tool_call: &AgentToolCall,
 ) -> Result<PreparedAgentToolCall, String> {
-    let prepared_tool_call = prepare_agent_tool_call_arguments(tool, tool_call)?;
+    let mut prepared_tool_call = prepare_agent_tool_call_arguments(tool, tool_call)?;
+    crate::tool_arguments::decode_json_encoded_structures(
+        &mut prepared_tool_call.arguments,
+        &tool.tool.parameters,
+    );
     let args = validate_tool_arguments(&tool.tool, &prepared_tool_call)
         .map_err(|error| error.to_string())?;
     Ok(PreparedAgentToolCall {
@@ -2616,14 +2462,6 @@ async fn abort_release_promise(signal: Option<AbortSignal>) {
     }
 }
 
-async fn execute_prepared_tool_call(
-    prepared: &ToolCallPreparation,
-    signal: Option<AbortSignal>,
-    emit: &AgentEventSink,
-) -> ExecutedToolCallOutcome {
-    execute_prepared_tool_call_with_update(prepared, signal, emit, None).await
-}
-
 async fn execute_prepared_tool_call_with_update(
     prepared: &ToolCallPreparation,
     signal: Option<AbortSignal>,
@@ -2806,67 +2644,6 @@ async fn finalize_executed_tool_call(
         result,
         is_error,
     }
-}
-
-fn create_error_tool_result(message: &str) -> AgentToolResult {
-    AgentToolResult {
-        content: vec![ContentBlock::text(message)],
-        details: serde_json::Value::Object(serde_json::Map::new()),
-        structured_content: None,
-        usage: None,
-        nested_calls: None,
-        added_tool_names: None,
-        terminate: None,
-        is_error: None,
-    }
-}
-
-async fn emit_tool_execution_end(finalized: &FinalizedToolCallOutcome, emit: &AgentEventSink) {
-    send(
-        emit,
-        AgentEvent::ToolExecutionEnd {
-            parent_tool_call_id: None,
-            tool_call_id: finalized.tool_call.id.clone(),
-            tool_name: finalized.tool_call.name.clone(),
-            result: serde_json::to_value(&finalized.result).unwrap_or(serde_json::Value::Null),
-            is_error: finalized.is_error,
-        },
-    )
-    .await;
-}
-
-fn create_tool_result_message(finalized: &FinalizedToolCallOutcome) -> ToolResultMessage {
-    ToolResultMessage {
-        tool_call_id: finalized.tool_call.id.clone(),
-        tool_name: finalized.tool_call.name.clone(),
-        // Untyped tools (JS extensions) can return results without content; normalize
-        // so the null never enters session history or provider payloads.
-        content: finalized.result.content.clone(),
-        details: Some(
-            serde_json::to_value(&finalized.result.details).unwrap_or(serde_json::Value::Null),
-        ),
-        usage: finalized.result.usage,
-        nested_calls: finalized.result.nested_calls.clone(),
-        added_tool_names: match finalized.result.added_tool_names.as_ref() {
-            Some(names) if !names.is_empty() => Some(names.clone()),
-            _ => None,
-        },
-        is_error: finalized.is_error,
-        timestamp: now_ms(),
-    }
-}
-
-async fn emit_tool_result_message(tool_result_message: &ToolResultMessage, emit: &AgentEventSink) {
-    let message = AgentMessage::Llm(Message::ToolResult(tool_result_message.clone()));
-    send(
-        emit,
-        AgentEvent::MessageStart {
-            message: message.clone(),
-            streaming: None,
-        },
-    )
-    .await;
-    send(emit, AgentEvent::MessageEnd { message }).await;
 }
 
 #[cfg(test)]
@@ -3073,7 +2850,8 @@ mod provider_context_tests {
             run_agent_loop(vec![prompt], context, config, emit, None, Some(stream)),
         )
         .await
-        .expect("bounded agent loop");
+        .expect("bounded agent loop")
+        .expect("agent loop");
         // Then: the inserted declaration is persisted and announced before the user prompt.
         assert_eq!(messages[0].role(), "system");
         assert_eq!(messages[1].role(), "user");
@@ -3140,7 +2918,8 @@ mod audit_gap_tests {
             ),
         )
         .await
-        .expect("loop acknowledges closure");
+        .expect("loop acknowledges closure")
+        .expect("agent loop");
         assert_eq!(closed.load(Ordering::SeqCst), 1);
     }
 
@@ -3172,7 +2951,8 @@ mod audit_gap_tests {
             ),
         )
         .await
-        .expect("bounded agent loop");
+        .expect("bounded agent loop")
+        .expect("agent loop");
         let message = messages
             .last()
             .and_then(AgentMessage::as_assistant)
@@ -3231,7 +3011,8 @@ mod audit_gap_tests {
                     ),
                 )
                 .await
-                .expect("bounded response");
+                .expect("bounded response")
+                .expect("agent loop");
                 // Then: serialization exposes requested effort separately from native effort.
                 let message = messages
                     .iter()
@@ -3348,7 +3129,8 @@ mod audit_gap_tests {
             ),
         )
         .await
-        .expect("bounded loop");
+        .expect("bounded loop")
+        .expect("agent loop");
         // Then: preparation covered both requests and the added message had a lifecycle.
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(requests.load(Ordering::SeqCst), 2);
@@ -3390,7 +3172,8 @@ mod audit_gap_tests {
             ),
         )
         .await
-        .expect("bounded loop");
+        .expect("bounded loop")
+        .expect("agent loop");
         // Then: neither provider nor transcript saw the claimed input.
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(restored.load(Ordering::SeqCst), 1);
@@ -3417,7 +3200,8 @@ mod audit_gap_tests {
             None,
             Some(stream(calls.clone())),
         )
-        .await;
+        .await
+        .expect("agent loop");
         // Then: preparation failed without starting the provider.
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -3622,6 +3406,7 @@ mod idle_rearm_tests {
             stream.clone(),
             Some(1000),
             controller.signal(),
+            None,
             None,
             None,
             None,

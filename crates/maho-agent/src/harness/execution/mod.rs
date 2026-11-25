@@ -2,4 +2,5 @@
 
 pub mod assistant;
 pub mod effect_gate;
+pub mod tool_host_call;
 pub mod tools;

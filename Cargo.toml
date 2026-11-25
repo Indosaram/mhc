@@ -65,6 +65,7 @@ members = [
     "crates/builtins/maho-ext-history-search",
     "crates/builtins/maho-ext-hooks",
     "crates/builtins/maho-ext-imagegen",
+    "crates/builtins/maho-ext-kill-guard",
     "crates/builtins/maho-ext-look-at",
     "crates/builtins/maho-ext-loop-guard",
     "crates/builtins/maho-ext-loop",

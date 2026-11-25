@@ -1,7 +1,4 @@
-use super::{
-    inline_worker::create_inline_worker_scrubbed,
-    worker_host::{JavaScriptKernelMode, WorkerHost},
-};
+use super::worker_host::{JavaScriptKernelMode, WorkerHost};
 use crate::{
     bridge::protocol::{BridgeConnectionConfig, KernelMemoryThresholds},
     kernels::shared::{
@@ -71,13 +68,21 @@ pub async fn start_worker_with_inline_fallback(
             }
         }
     }
+    let kill_guard_port = options
+        .kill_guard
+        .map(|_| options.connection.port.to_string());
+    let extra_env_storage: Vec<(&str, &str)> = kill_guard_port
+        .as_deref()
+        .map(|port| vec![("SENPI_KILL_GUARD_BRIDGE_PORT", port)])
+        .unwrap_or_default();
     let primary = explicit_or_resolved_worker_entry(options).and_then(|entry| {
-        WorkerHost::spawn_scrubbed(
+        WorkerHost::spawn_scrubbed_with_env(
             &entry,
             options.cwd,
             options.parallel_pool_width,
             JavaScriptKernelMode::Worker,
             options.env_passthrough,
+            &extra_env_storage,
         )
     });
     if let Ok(mut worker) = primary {
@@ -96,10 +101,11 @@ pub async fn start_worker_with_inline_fallback(
             "JavaScript worker startup was cancelled".into(),
         ));
     }
-    let mut worker = create_inline_worker_scrubbed(
+    let mut worker = super::inline_worker::create_inline_worker_with_env(
         options.cwd,
         options.parallel_pool_width,
         options.env_passthrough,
+        &extra_env_storage,
     )?;
     if let Err(error) = worker.initialize(options, signal).await {
         worker.terminate().await?;

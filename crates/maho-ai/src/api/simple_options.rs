@@ -207,6 +207,7 @@ pub fn build_base_options(
         on_provider_stream_event: stream.and_then(|stream| stream.on_provider_stream_event.clone()),
         async_on_provider_stream_event: stream
             .and_then(|stream| stream.async_on_provider_stream_event.clone()),
+        on_transport_activity: stream.and_then(|stream| stream.on_transport_activity.clone()),
         temperature: stream.and_then(|stream| stream.temperature),
         sampling_params,
         max_tokens: Some(max_tokens),

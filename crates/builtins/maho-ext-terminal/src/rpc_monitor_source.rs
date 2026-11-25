@@ -10,6 +10,7 @@ use crate::rpc_monitor_targets::{RpcEvents, RpcTarget};
 use crate::rpc_monitor_watch::{
     EndpointLister, ObserverOpener, RpcMonitorCheckpoint, RpcMonitorWatch, RpcWatchOptions,
 };
+use crate::rpc_remote_source::SharedRpcRemoteSource;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -40,6 +41,8 @@ pub struct RegisterRpcMonitorOptions {
     pub endpoints: Option<EndpointLister>,
     /// Observer override (tests); defaults to `open_rpc_observer`.
     pub opener: Option<ObserverOpener>,
+    /// Remote source override (tests); defaults to `current_rpc_remote_source()`.
+    pub remote_source: Option<SharedRpcRemoteSource>,
     /// A restore's saved view: the lines for what changed are injected once the watch has joined.
     pub restored_from: Option<RpcMonitorCheckpoint>,
     pub on_checkpoint: Option<RpcCheckpointSink>,
@@ -137,7 +140,7 @@ impl SourceInner {
         (host.changed)();
     }
 
-    fn settle(&self, id: &str, summary: &str) -> bool {
+    fn settle(&self, id: &str, summary: &str, explicit_reason: Option<MonitorEndedReason>) -> bool {
         let Some(mut record) = self.records().shift_remove(id) else {
             return false;
         };
@@ -162,7 +165,7 @@ impl SourceInner {
             description: record.snapshot.description.clone(),
             started_at_ms: record.snapshot.started_at_ms,
             ended_at_ms: (host.now_ms)(),
-            reason: ended_reason(summary),
+            reason: explicit_reason.unwrap_or_else(|| ended_reason(summary)),
             exit_code: None,
             fire_count: record.snapshot.fire_count.unwrap_or(0),
         });
@@ -247,19 +250,20 @@ impl RpcMonitorSource {
         options: RegisterRpcMonitorOptions,
     ) -> std::io::Result<(String, String, Vec<String>)> {
         let (id, monitor_id, start) = self.arm(options)?;
-        Ok((id, monitor_id, start.await))
+        let rows = start.await.map_err(std::io::Error::other)?;
+        Ok((id, monitor_id, rows))
     }
 
     /// The synchronous half of `register`: the record is live (snapshot, pause, settle) at once;
     /// the returned future joins the endpoints, injects a restore's detached-change lines and
-    /// resolves to the arm-time rows. A restore applied under the registry lock spawns it.
+    /// resolves to the arm-time rows (or `Err` if a remote open rejected, leaving no summary/ended).
     pub fn arm(
         &self,
         options: RegisterRpcMonitorOptions,
     ) -> std::io::Result<(
         String,
         String,
-        impl std::future::Future<Output = Vec<String>> + Send + 'static,
+        impl std::future::Future<Output = Result<Vec<String>, String>> + Send + 'static,
     )> {
         let Some(host) = self.inner.host() else {
             return Err(std::io::Error::other(
@@ -274,6 +278,8 @@ impl RpcMonitorSource {
         let weak: Weak<SourceInner> = Arc::downgrade(&self.inner);
         let line_id = id.clone();
         let line_source = weak.clone();
+        let ended_id = id.clone();
+        let ended_source = weak.clone();
         let checkpoint = options.on_checkpoint.map(|sink| {
             let monitor_id = monitor_id.clone();
             Arc::new(move |checkpoint| sink(&monitor_id, checkpoint))
@@ -292,6 +298,13 @@ impl RpcMonitorSource {
             }),
             checkpoint,
             opener: options.opener,
+            remote_source: options.remote_source,
+            restored_from: options.restored_from.clone(),
+            ended: Some(Arc::new(move |summary| {
+                if let Some(source) = ended_source.upgrade() {
+                    source.settle(&ended_id, &summary, Some(MonitorEndedReason::Exit));
+                }
+            })),
         });
         let now = (host.now_ms)();
         let timed = !options.persistent && options.timeout_ms.is_some();
@@ -300,7 +313,7 @@ impl RpcMonitorSource {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
                 if let Some(source) = source.upgrade() {
-                    source.settle(&id, RPC_WATCHER_TIMED_OUT_SUMMARY);
+                    source.settle(&id, RPC_WATCHER_TIMED_OUT_SUMMARY, None);
                 }
             })
         });
@@ -337,26 +350,51 @@ impl RpcMonitorSource {
         (host.changed)();
         let (source, start_id, restored_from) = (weak, id.clone(), options.restored_from);
         let start = async move {
-            let rows = watch.start().await;
+            let rows = match watch.start().await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    watch.stop();
+                    if let Some(source) = source.upgrade() {
+                        if let Some(mut record) = source.records().shift_remove(&start_id)
+                            && let Some(deadline) = record.deadline.take()
+                        {
+                            deadline.abort();
+                        }
+                        if let Some(host) = source.host() {
+                            (host.changed)();
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             if let (Some(saved), Some(source)) = (&restored_from, source.upgrade()) {
                 for line in watch.diff_since(saved) {
                     source.line(&start_id, line);
                 }
             }
-            rows
+            Ok(rows)
         };
         Ok((id, monitor_id, start))
     }
 
     /// Ends one watch; false when the id is not a live rpc watch.
     pub fn settle(&self, id: &str, summary: &str) -> bool {
-        self.inner.settle(id, summary)
+        self.inner.settle(id, summary, None)
+    }
+
+    pub fn settle_with_reason(
+        &self,
+        id: &str,
+        summary: &str,
+        reason: Option<MonitorEndedReason>,
+    ) -> bool {
+        self.inner.settle(id, summary, reason)
     }
 
     pub fn settle_all(&self, summary: &str) -> usize {
         let ids = self.keys();
         for id in &ids {
-            self.inner.settle(id, summary);
+            self.inner.settle(id, summary, None);
         }
         ids.len()
     }
@@ -434,6 +472,7 @@ mod tests {
                 },
             )),
             restored_from: None,
+            remote_source: None,
             on_checkpoint: None,
         }
     }
@@ -583,5 +622,37 @@ mod tests {
         assert_eq!(saved[0].0, "mon_RPC0000000000001");
         assert_eq!(saved[0].1.statuses["/tmp/h.sock#s1"], "busy");
         fixture.source.dispose();
+    }
+
+    #[tokio::test]
+    async fn failed_remote_open_cleans_up_without_summary_or_ended_event() {
+        let fixture = fixture();
+        let mut opts = options(&fixture, None);
+        opts.target = RpcTarget::Remote {
+            device: "laptop".to_owned(),
+            session: "abc".to_owned(),
+        };
+        opts.target_text = "laptop/abc".to_owned();
+        struct RejectSource;
+        impl crate::rpc_remote_source::RpcRemoteSource for RejectSource {
+            fn open(
+                &self,
+                _target: crate::rpc_remote_source::RpcRemoteTarget,
+                _options: crate::rpc_remote_source::RpcRemoteOpenOptions,
+                _handlers: crate::rpc_remote_source::RpcRemoteHandlers,
+            ) -> crate::rpc_remote_source::RpcRemoteOpenFuture {
+                Box::pin(async { Err("unknown device laptop".to_owned()) })
+            }
+        }
+        opts.remote_source = Some(Arc::new(RejectSource));
+        let err = fixture
+            .source
+            .register(opts)
+            .await
+            .expect_err("remote open should fail");
+        assert!(err.to_string().contains("unknown device laptop"));
+        assert!(fixture.source.snapshots().is_empty());
+        assert!(fixture.events.lock().unwrap().is_empty());
+        assert!(fixture.ended.lock().unwrap().is_empty());
     }
 }

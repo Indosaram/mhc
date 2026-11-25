@@ -1543,6 +1543,7 @@ mod tests {
                 &AgentContext {
                     declared_tools: None,
                     system_prompt: String::new(),
+                    system_prompt_stable_prefix: None,
                     messages,
                     tools: None,
                 },
@@ -1631,6 +1632,7 @@ mod tests {
                 &AgentContext {
                     declared_tools: None,
                     system_prompt: String::new(),
+                    system_prompt_stable_prefix: None,
                     messages,
                     tools: None,
                 },

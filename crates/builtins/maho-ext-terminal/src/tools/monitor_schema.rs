@@ -11,7 +11,7 @@ pub fn monitor_schema() -> Value {
     json!({"type":"object","properties":{
     "action":{"type":"string","enum":["create","rearm"],"description":"Defaults to create. rearm resumes a monitor paused by the wake budget or the runaway guard."},
     "type":{"type":"string","enum":["command","path","rpc"],"description":"Create: which source to watch; inferred when omitted (command -> command, path -> path, target -> rpc)."},
-    "target":{"type":"string","minLength":1,"description":"Create, rpc branch: \"children\" (sessions this one spawned, including ones spawned later), \"all\" (every session on every host and terminal of this user) or one session id, path or st_ task id."},
+    "target":{"type":"string","minLength":1,"description":"Create, rpc branch: \"children\" (sessions this one spawned, including ones spawned later), \"all\" (every session on every host and terminal of this user) or one session id, path or st_ task id; a session on another device is <device>/<session> (e.g. \"laptop/abc123\")."},
     "events":{"anyOf":[{"type":"string","const":"all"},{"type":"array","items":{"type":"string","minLength":1}}],"description":"Rpc branch: record kinds to report, any RPC record type; default [\"session_status\"] (children: plus \"effect_status\"); \"all\" reports every kind, streaming collapsed to one line per 2 s."},
     "exclude":{"type":"array","items":{"type":"string","minLength":1},"description":"Rpc branch with events \"all\": record kinds to drop."},
     "description":{"type":"string","minLength":1,"maxLength":200,"description":"Create (required): specific label shown with every event, e.g. 'errors in deploy.log'."},

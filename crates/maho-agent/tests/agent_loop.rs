@@ -3,10 +3,9 @@ use crate::support;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use maho_agent::agent_loop::{agent_loop, agent_loop_continue, run_agent_loop};
 use maho_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, StreamFn,
-    ToolExecutionMode, identity_convert_to_llm,
+    ToolExecutionMode, agent_loop, agent_loop_continue, identity_convert_to_llm, run_agent_loop,
 };
 use maho_ai::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Message, StopReason, ThinkingContent,
@@ -72,6 +71,7 @@ fn context_with(tools: Vec<AgentTool>) -> AgentContext {
     AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(tools),
     }
@@ -213,6 +213,7 @@ async fn stamps_thinking_timing_on_a_completed_thinking_block() {
         AgentContext {
             declared_tools: None,
             system_prompt: "Test".to_owned(),
+            system_prompt_stable_prefix: None,
             messages: Vec::new(),
             tools: Some(Vec::new()),
         },
@@ -895,6 +896,7 @@ async fn throws_when_context_has_no_messages() {
     let context = AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(Vec::new()),
     };
@@ -1093,7 +1095,8 @@ async fn the_recording_sink_receives_the_same_sequence_as_the_stream() {
         None,
         Some(stream_fn),
     )
-    .await;
+    .await
+    .expect("run_agent_loop succeeds");
     let events = recorded.lock().unwrap().clone();
     assert_eq!(events.first().map(support::event_name), Some("agent_start"));
     assert_eq!(events.last().map(support::event_name), Some("agent_end"));
@@ -1126,7 +1129,8 @@ async fn settled_stop_reason_case(response: AssistantMessage, normalized: StopRe
             assistant(vec![text_block("end")], StopReason::Stop),
         ])),
     )
-    .await;
+    .await
+    .expect("run_agent_loop succeeds");
     let events = recorded.lock().expect("events").clone();
     let ended: Vec<AssistantMessage> = events
         .iter()
@@ -1195,4 +1199,260 @@ async fn marks_only_the_provider_stream_start_as_streaming() {
         })
         .collect();
     assert_eq!(starts, vec![("user", None), ("assistant", Some(true))]);
+}
+
+#[tokio::test]
+async fn runs_every_parallel_call_with_its_declared_array_argument_6265() {
+    let received: Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>> =
+        Arc::default();
+    let received_sink = received.clone();
+    let tool = AgentTool {
+        label: "Generate image".into(),
+        prepare_arguments: None,
+        replay: None,
+        execution_mode: None,
+        tool: maho_ai::types::Tool {
+            name: "generate_image".into(),
+            description: "Image tool".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string" },
+                    "reference_image_paths": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1 },
+                        "minItems": 1,
+                        "maxItems": 5
+                    }
+                },
+                "required": ["prompt"]
+            }),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        },
+        execute: Arc::new(move |id, params, _, _| {
+            let received_sink = received_sink.clone();
+            Box::pin(async move {
+                received_sink
+                    .lock()
+                    .expect("received")
+                    .insert(id, params["reference_image_paths"].clone());
+                AgentToolResult::text("ok")
+            })
+        }),
+    };
+
+    let intended = [
+        vec!["/refs/a.png", "/refs/b.png"],
+        vec!["/refs/c.png"],
+        vec!["/refs/d.png", "/refs/e.png"],
+        vec!["/refs/f.png"],
+    ];
+    let tool_calls: Vec<ContentBlock> = intended
+        .iter()
+        .enumerate()
+        .map(|(index, paths)| {
+            let arg_value = if index == 0 {
+                json!(paths)
+            } else {
+                serde_json::Value::String(
+                    serde_json::to_string(paths).expect("serialize paths array"),
+                )
+            };
+            tool_call(
+                &format!("tool-{}", index + 1),
+                "generate_image",
+                json!({
+                    "prompt": format!("image {}", index + 1),
+                    "reference_image_paths": arg_value,
+                }),
+            )
+        })
+        .collect();
+
+    let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
+    config.tool_execution = Some(ToolExecutionMode::Parallel);
+    let stream = agent_loop(
+        vec![user_message("four images")],
+        context_with(vec![tool]),
+        config,
+        None,
+        Some(scripted_stream_fn(vec![
+            assistant(tool_calls, StopReason::ToolUse),
+            assistant(vec![text_block("done")], StopReason::Stop),
+        ])),
+    );
+    let events = collect_with_timeout(&stream).await;
+    let failed: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                is_error: true,
+                ..
+            } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(failed.is_empty());
+    let actual: Vec<serde_json::Value> = {
+        let guard = received.lock().expect("received");
+        (1..=4)
+            .filter_map(|i| guard.get(&format!("tool-{i}")).cloned())
+            .collect()
+    };
+    let expected: Vec<serde_json::Value> = intended.iter().map(|p| json!(p)).collect();
+    assert_eq!(actual, expected);
+}
+
+async fn run_interleave(
+    tool_execution: Option<ToolExecutionMode>,
+    open_gate_on: std::collections::BTreeMap<&'static str, &'static str>,
+) -> Vec<String> {
+    let trace: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let gates: Arc<std::collections::BTreeMap<&'static str, Arc<tokio::sync::Notify>>> = Arc::new(
+        open_gate_on
+            .values()
+            .map(|id| (*id, Arc::new(tokio::sync::Notify::new())))
+            .collect(),
+    );
+
+    let make_tool = |name: &str, mode: Option<ToolExecutionMode>| {
+        let trace = trace.clone();
+        let gates = gates.clone();
+        AgentTool {
+            label: name.to_owned(),
+            prepare_arguments: None,
+            replay: None,
+            execution_mode: mode,
+            tool: maho_ai::types::Tool {
+                name: name.to_owned(),
+                description: name.to_owned(),
+                parameters: json!({ "type": "object" }),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+            execute: Arc::new(move |tool_call_id, _, _, _| {
+                let trace = trace.clone();
+                let gates = gates.clone();
+                Box::pin(async move {
+                    trace
+                        .lock()
+                        .expect("trace")
+                        .push(format!("run:{tool_call_id}"));
+                    if let Some(gate) = gates.get(tool_call_id.as_str()) {
+                        tokio::time::timeout(std::time::Duration::from_secs(2), gate.notified())
+                            .await
+                            .expect("gate opened");
+                    }
+                    trace
+                        .lock()
+                        .expect("trace")
+                        .push(format!("done:{tool_call_id}"));
+                    AgentToolResult::text(tool_call_id)
+                })
+            }),
+        }
+    };
+
+    let batch = vec![
+        tool_call("a", "par", json!({})),
+        tool_call("b", "par", json!({})),
+        tool_call("s", "seq", json!({})),
+        tool_call("c", "par", json!({})),
+        tool_call("d", "par", json!({})),
+    ];
+    let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
+    config.tool_execution = tool_execution;
+    let trace_sink = trace.clone();
+    let gates_sink = gates.clone();
+    let open_map: std::collections::BTreeMap<String, String> = open_gate_on
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    let emit: maho_agent::AgentEventSink = Arc::new(move |event| {
+        let trace_sink = trace_sink.clone();
+        let gates_sink = gates_sink.clone();
+        let open_map = open_map.clone();
+        Box::pin(async move {
+            let label = match &event {
+                AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
+                    Some(format!("start:{tool_call_id}"))
+                }
+                AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
+                    Some(format!("end:{tool_call_id}"))
+                }
+                AgentEvent::MessageEnd { message } => message
+                    .as_tool_result()
+                    .map(|tr| format!("result:{}", tr.tool_call_id)),
+                _ => None,
+            };
+            if let Some(label) = label {
+                trace_sink.lock().expect("trace").push(label.clone());
+                if let Some(opens) = open_map.get(&label)
+                    && let Some(gate) = gates_sink.get(opens.as_str())
+                {
+                    gate.notify_one();
+                }
+            }
+        })
+    });
+    run_agent_loop(
+        vec![user_message("run the batch")],
+        context_with(vec![
+            make_tool("par", None),
+            make_tool("seq", Some(ToolExecutionMode::Sequential)),
+        ]),
+        config,
+        emit,
+        None,
+        Some(scripted_stream_fn(vec![
+            assistant(batch, StopReason::ToolUse),
+            assistant(vec![text_block("done")], StopReason::Stop),
+        ])),
+    )
+    .await
+    .expect("interleave batch succeeds");
+    trace.lock().expect("trace").clone()
+}
+
+#[tokio::test]
+async fn tool_execution_sequential_finishes_each_call_result_included_before_next_starts() {
+    let trace = run_interleave(
+        Some(ToolExecutionMode::Sequential),
+        std::collections::BTreeMap::new(),
+    )
+    .await;
+    let expected: Vec<String> = ["a", "b", "s", "c", "d"]
+        .into_iter()
+        .flat_map(|id| {
+            [
+                format!("start:{id}"),
+                format!("run:{id}"),
+                format!("done:{id}"),
+                format!("end:{id}"),
+                format!("result:{id}"),
+            ]
+        })
+        .collect();
+    assert_eq!(trace, expected);
+}
+
+#[tokio::test]
+async fn default_parallel_config_runs_waves_around_sequential_call_and_emits_results_in_order() {
+    let trace = run_interleave(
+        None,
+        std::collections::BTreeMap::from([("end:b", "a"), ("end:d", "c")]),
+    )
+    .await;
+    assert_eq!(
+        trace,
+        vec![
+            "start:a", "start:b", "start:s", "start:c", "start:d", "run:a", "run:b", "done:b",
+            "end:b", "done:a", "end:a", "run:s", "done:s", "end:s", "run:c", "run:d", "done:d",
+            "end:d", "done:c", "end:c", "result:a", "result:b", "result:s", "result:c", "result:d",
+        ]
+    );
 }

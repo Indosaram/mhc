@@ -123,6 +123,7 @@ async fn create_fixture(options: FixtureOptions) -> Fixture {
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )

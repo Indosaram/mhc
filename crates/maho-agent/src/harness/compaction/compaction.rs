@@ -211,6 +211,9 @@ pub fn create_summary_request_options(
     context: &Context,
 ) -> SimpleStreamOptions {
     let mut options = options;
+    if options.stream.request.cwd.is_none() {
+        options.stream.request.cwd = crate::harness::context::get_session_cwd(context);
+    }
     options.stream.request.signal = context.abort_signal();
     options.stream.request.telemetry_context =
         crate::harness::context::provider_telemetry_context(context);

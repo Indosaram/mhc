@@ -84,6 +84,7 @@ impl crate::bridges::output_bridge::OutputExecuteTool for RuntimeExecuteTool {
 pub struct RuntimePreparationOptions<'a> {
     pub cwd: &'a std::path::Path,
     pub home_dir: &'a std::path::Path,
+    pub agent_dir: Option<&'a std::path::Path>,
     pub environment: &'a crate::config::settings::Environment,
     pub event: &'a JsonValue,
     pub session_file: Option<&'a std::path::Path>,
@@ -93,6 +94,7 @@ pub struct RuntimePreparationOptions<'a> {
 pub struct PreparedRuntime {
     pub session_id: String,
     pub cwd: std::path::PathBuf,
+    pub agent_dir: std::path::PathBuf,
     pub parallel_pool_width: u64,
     pub enabled_languages: crate::config::settings::Languages,
     pub runtimes: Vec<(
@@ -130,6 +132,7 @@ pub async fn prepare_runtime(
     Ok(PreparedRuntime {
         session_id: session_id_from(options.event),
         cwd: options.cwd.into(),
+        agent_dir: options.agent_dir.unwrap_or(options.home_dir).to_path_buf(),
         parallel_pool_width,
         enabled_languages,
         runtimes,
@@ -189,6 +192,17 @@ where
         .active_tools
         .iter()
         .any(|name| name == &prepared.settings.task_tools.task);
+    let kill_guard = maho_core::kill_guard::host::read_kill_guard_setting(
+        &prepared.cwd,
+        Some(&prepared.agent_dir),
+    ) == maho_core::kill_guard::host::KillGuardSetting::On;
+    let mut session_env = host.session_env;
+    if kill_guard {
+        let base_env: std::collections::BTreeMap<String, String> =
+            maho_ext_api::process_env::vars().into_iter().collect();
+        session_env
+            .extend(maho_core::kill_guard::runtime::active_kill_guard_environment(&base_env));
+    }
     let manager = create(
         super::session_manager::CreateCodemodeSessionManagerOptions {
             session_id: prepared.session_id.clone(),
@@ -197,9 +211,9 @@ where
             settings: prepared.settings.clone(),
             local_roots: None,
             artifacts_dir: Some(prepared.artifacts.dir.clone()),
-            session_env: Some(host.session_env),
+            session_env: Some(session_env),
             inherited_env: None,
-            kill_guard: false,
+            kill_guard,
             executor: host.executor.clone(),
             list_tools: host.list_tools,
             complete: host.complete,

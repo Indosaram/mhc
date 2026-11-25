@@ -121,6 +121,7 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
         RuntimePreparationOptions {
             cwd: &cwd,
             home_dir: &home,
+            agent_dir: None,
             environment: &environment,
             event: &event,
             session_file: Some(&session_file),

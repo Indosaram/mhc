@@ -1,6 +1,11 @@
 use crate::monitor_registry::MonitorSnapshotEntry;
 pub const MONITOR_STATUS_KEY: &str = "monitors";
 const MAX_STATUS_LENGTH: usize = 48;
+/// Static watch glyph (same glyph family as the session selector).
+const WATCH_GLYPH: &str = "\u{25c9}";
+/// Gentle pulse for the watch glyph while the agent idles on monitors: one frame per elapsed
+/// second, so a waiting footer never reads as frozen.
+const WATCH_PULSE_FRAMES: [&str; 4] = ["\u{25c9}", "\u{25ce}", "\u{25cb}", "\u{25ce}"];
 
 fn units(text: &str) -> usize {
     text.encode_utf16().count()
@@ -70,9 +75,26 @@ pub fn monitor_elapsed_seconds(snapshot: &[MonitorSnapshotEntry], now_ms: f64) -
     (((now_ms - oldest) / 1000.0 + 0.5).floor()).max(0.0)
 }
 pub fn format_monitor_status(snapshot: &[MonitorSnapshotEntry], now_ms: f64) -> Option<String> {
+    format_monitor_status_animated(snapshot, now_ms, false)
+}
+
+/// Brief footer text for the active monitors; `None` clears the status. `animate` swaps the
+/// static watch glyph for the pulse frame matching the elapsed second.
+pub fn format_monitor_status_animated(
+    snapshot: &[MonitorSnapshotEntry],
+    now_ms: f64,
+    animate: bool,
+) -> Option<String> {
     if snapshot.is_empty() {
         return None;
     }
+    let elapsed_seconds = monitor_elapsed_seconds(snapshot, now_ms);
+    let glyph = if animate {
+        let idx = (elapsed_seconds as usize) % WATCH_PULSE_FRAMES.len();
+        WATCH_PULSE_FRAMES[idx]
+    } else {
+        WATCH_GLYPH
+    };
     let paused = snapshot.iter().filter(|e| e.paused).count();
     let fully_paused = paused == snapshot.len();
     let paused_part = if paused > 0 && !fully_paused {
@@ -95,13 +117,13 @@ pub fn format_monitor_status(snapshot: &[MonitorSnapshotEntry], now_ms: f64) -> 
     };
     let suffix = format!(
         " ({}{paused_part}){expiry}",
-        format_elapsed_seconds(monitor_elapsed_seconds(snapshot, now_ms))
+        format_elapsed_seconds(elapsed_seconds)
     );
     let head = match (fully_paused, snapshot.len()) {
-        (true, 1) => "\u{25c9} 1 monitor muted ".to_owned(),
-        (true, n) => format!("\u{25c9} {n} monitors muted "),
-        (false, 1) => "\u{25c9} 1 monitor watching ".to_owned(),
-        (false, n) => format!("\u{25c9} {n} monitors watching "),
+        (true, 1) => format!("{glyph} 1 monitor muted "),
+        (true, n) => format!("{glyph} {n} monitors muted "),
+        (false, 1) => format!("{glyph} 1 monitor watching "),
+        (false, n) => format!("{glyph} {n} monitors watching "),
     };
     let budget = MAX_STATUS_LENGTH.saturating_sub(units(&head) + units(&suffix));
     let description = if snapshot.len() == 1 {
@@ -287,6 +309,33 @@ mod tests {
         assert_eq!(
             render_monitor_status("tui", &unthemed, Some("watch")).as_deref(),
             Some("\x1b[49m\x1b[39mwatch\x1b[39m\x1b[49m")
+        );
+    }
+
+    #[test]
+    fn animate_pulses_watch_glyph_by_elapsed_second() {
+        let a = entry("build");
+        let frames: Vec<Option<String>> = (0..5)
+            .map(|sec| {
+                format_monitor_status_animated(
+                    std::slice::from_ref(&a),
+                    1_000_000.0 + (sec as f64) * 1000.0,
+                    true,
+                )
+            })
+            .collect();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|s| s.as_deref().and_then(|t| t.chars().next()))
+                .collect::<Vec<_>>(),
+            vec![
+                Some('\u{25c9}'),
+                Some('\u{25ce}'),
+                Some('\u{25cb}'),
+                Some('\u{25ce}'),
+                Some('\u{25c9}')
+            ]
         );
     }
 }

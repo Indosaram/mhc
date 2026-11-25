@@ -30,6 +30,7 @@ async fn call_once(
     let context = AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(tools),
     };
@@ -42,7 +43,7 @@ async fn call_once(
         ),
         assistant(vec![text_block("done")], StopReason::Stop),
     ];
-    let stream = maho_agent::agent_loop::agent_loop(
+    let stream = maho_agent::agent_loop(
         vec![user_message("call it")],
         context,
         config,
@@ -212,6 +213,7 @@ async fn alias_resolution_rejects_incomplete_calls() {
     let context = AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(vec![tool]),
     };
@@ -330,4 +332,33 @@ async fn a_blocking_hook_prevents_execution_and_reports_the_reason() {
     assert!(seen.lock().unwrap().is_empty());
     assert!(outcome.result.is_error);
     assert!(text_of(&outcome.result).contains("blocked by hook"));
+}
+
+#[tokio::test]
+async fn runs_unique_tool_behind_stray_word_prefix_and_reports_correction() {
+    let (eval_tool, seen_eval) = recording_tool("eval");
+    let (read_tool, _) = recording_tool("read");
+    let outcome = call_once("trophy_eval", vec![eval_tool, read_tool], |_| {}).await;
+    assert_eq!(seen_eval.lock().expect("seen").len(), 1);
+    assert!(!outcome.result.is_error);
+    assert_eq!(outcome.result.tool_name, "eval");
+    assert_eq!(outcome.start_tool_names, vec!["eval".to_owned()]);
+    assert_eq!(
+        outcome.result.content.first(),
+        Some(&ContentBlock::Text(TextContent {
+            text: "[auto-corrected] no tool is named \"trophy_eval\"; ran \"eval\". Call tools by their exact listed name.".to_owned(),
+            text_signature: None,
+            audience: Some(TextAudience::Model),
+        }))
+    );
+}
+
+#[tokio::test]
+async fn refuses_stray_prefix_that_is_a_destructive_verb_instead_of_running_suffix_tool() {
+    let (write_tool, seen_write) = recording_tool("write");
+    let (read_tool, _) = recording_tool("read");
+    let outcome = call_once("delete_write", vec![write_tool, read_tool], |_| {}).await;
+    assert!(seen_write.lock().expect("seen").is_empty());
+    assert!(outcome.result.is_error);
+    assert!(text_of(&outcome.result).contains("Tool delete_write not found"));
 }
