@@ -26,6 +26,12 @@ const NON_RETRYABLE_ERROR_NAMES: &[&str] = &[
 const RETRYABLE_MESSAGE_PATTERNS: &[&str] = &[
     "rate_limit",
     "rate limit",
+    // SAFETY-DIVERGENCE(packages/model-core/src/model-error-classifier.ts): upstream only knows the
+    // underscored/spaced forms. mhc's credential pool reports the hyphenated `temporarily rate-limited`
+    // wording, which no upstream literal matches, so a retryable pool-wide rate limit was classified as
+    // terminal and the reflection run was abandoned instead of trying its next candidate.
+    "rate-limited",
+    "rate-limit",
     "usage_limit_reached",
     "usage limit has been reached",
     "quota",
