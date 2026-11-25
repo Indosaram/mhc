@@ -267,6 +267,10 @@ struct ParkedAction {
     /// Settles on its own, outside park order: a clipboard paste only touches the editor, so it
     /// must not wait behind (or hold up) a slow enqueue, reload, or settings write.
     independent: bool,
+    /// Original submitted text when this action is a `park_prompt_enqueue` targeting the current
+    /// turn; ESC restores and drops it, and `/new` drops stale entries so they cannot block or
+    /// leak into the replacement session.
+    prompt_enqueue_text: Option<String>,
     future: ParkedFuture,
 }
 
@@ -6436,7 +6440,13 @@ impl InteractiveMode {
                 self.session.is_bash_running() || self.pending_bash.is_some(),
             ),
         };
-        if !self.agent_idle || self.host_is_streaming() || retrying {
+        if !self.agent_idle
+            || self.host_is_streaming()
+            || retrying
+            || self.pending_turn.is_some()
+            || self.provisional_working
+            || self.working_started_ms.is_some()
+        {
             self.abort_and_restore_queue();
             return;
         }
@@ -6774,7 +6784,9 @@ impl InteractiveMode {
         options: PromptOptions,
     ) -> Result<PromptDisposition, String> {
         let (text, internal) = split_internal_command(text);
-        self.queue_tool_renderer_refresh();
+        if text.trim() != "/new" {
+            self.queue_tool_renderer_refresh();
+        }
         if !text.trim_start().starts_with('/')
             && !text.trim_start().starts_with('!')
             && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned)
@@ -7351,10 +7363,25 @@ impl InteractiveMode {
         F: Future<Output = T> + 'static,
         A: FnOnce(&mut InteractiveMode, T) + 'static,
     {
+        self.push_parked_action_tagged(work, apply, independent, None);
+    }
+
+    fn push_parked_action_tagged<T, F, A>(
+        &mut self,
+        work: F,
+        apply: A,
+        independent: bool,
+        prompt_enqueue_text: Option<String>,
+    ) where
+        T: 'static,
+        F: Future<Output = T> + 'static,
+        A: FnOnce(&mut InteractiveMode, T) + 'static,
+    {
         let painted = self.applying_parked;
         self.parked_actions.push_back(ParkedAction {
             painted,
             independent,
+            prompt_enqueue_text,
             future: Box::pin(async move {
                 let value = work.await;
                 Box::new(move |mode: &mut InteractiveMode| apply(mode, value)) as ParkedApply
@@ -7385,7 +7412,21 @@ impl InteractiveMode {
         self.request_remote_stats();
     }
 
+    fn clear_turn_ui_after_session_replacement(&mut self) {
+        self.take_provisional_user_echo();
+        self.provisional_working = false;
+        self.working_started_ms = None;
+        self.agent_idle = true;
+        self.keyword_turn_glow = false;
+        self.clear_status_indicator(None);
+        self.frame_dirty = true;
+    }
+
     fn park_new_session(&mut self) {
+        // Stale queued prompts for the old turn must neither block `/new` in the ordered park
+        // chain nor execute against the replacement session.
+        self.parked_actions
+            .retain(|action| action.prompt_enqueue_text.is_none());
         let host = self.session_host.clone();
         let session = self.session.clone();
         self.park_action(
@@ -7424,6 +7465,7 @@ impl InteractiveMode {
         match result {
             Ok(true) => {
                 self.reset_compaction_queue();
+                self.clear_turn_ui_after_session_replacement();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.chat.add_component(Rc::new(RefCell::new(
@@ -7521,6 +7563,7 @@ impl InteractiveMode {
             SwitchTail::Replaced(snapshot) => {
                 self.install_remote_replacement(Some(snapshot));
                 self.reset_compaction_queue();
+                self.clear_turn_ui_after_session_replacement();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -7535,6 +7578,7 @@ impl InteractiveMode {
             }
             SwitchTail::Local => {
                 self.reset_compaction_queue();
+                self.clear_turn_ui_after_session_replacement();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -7700,6 +7744,7 @@ impl InteractiveMode {
             ForkTail::Local(result) => result.editor_text,
         };
         self.reset_compaction_queue();
+        self.clear_turn_ui_after_session_replacement();
         self.rebuild_history();
         self.apply_theme_from_settings();
         if cloned {
@@ -8691,9 +8736,10 @@ impl InteractiveMode {
     /// parked future settles, in park order.
     fn park_prompt_enqueue(&mut self, text: String, options: PromptOptions) {
         let submitted = text.clone();
+        let enqueue_tag = text.clone();
         let host = self.session_host.clone();
         let session = self.session.clone();
-        self.park_action(
+        self.push_parked_action_tagged(
             async move {
                 match host {
                     Some(host) => host.prompt(text, options).await,
@@ -8711,6 +8757,8 @@ impl InteractiveMode {
                     mode.drain_events();
                 }
             },
+            false,
+            Some(enqueue_tag),
         );
     }
 
@@ -8987,11 +9035,23 @@ impl InteractiveMode {
     /// `wait_for_idle` here would deadlock behind a held provider.
     pub fn abort_and_restore_queue(&mut self) -> usize {
         let queued = self.host_clear_queue(true);
+        let mut parked_enqueues = Vec::new();
+        let mut remaining = std::collections::VecDeque::with_capacity(self.parked_actions.len());
+        while let Some(action) = self.parked_actions.pop_front() {
+            if let Some(text) = action.prompt_enqueue_text {
+                parked_enqueues.push(text);
+            } else {
+                remaining.push_back(action);
+            }
+        }
+        self.parked_actions = remaining;
         self.request_abort();
-        if !queued.is_empty() {
+        let restored_count = queued.len() + parked_enqueues.len();
+        if restored_count > 0 {
             let text = queued
                 .iter()
                 .map(|message| message.text.as_str())
+                .chain(parked_enqueues.iter().map(String::as_str))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             let current = self.editor.editor.get_text();
@@ -9003,11 +9063,11 @@ impl InteractiveMode {
                     .join("\n\n"),
             );
         }
-        queued.len()
+        restored_count
     }
 
     /// Queue the abort request for `poll_turn` to drive. No `tokio::spawn`, so the mode keeps its
-    /// non-`Send` shape.
+    /// non-`Send` shape. Joins any still-settling prior abort instead of dropping it mid-flight.
     fn request_abort(&mut self) {
         let abort: AbortFuture = match self.session_host.clone() {
             Some(host) => Box::pin(async move {
@@ -9020,7 +9080,13 @@ impl InteractiveMode {
                 })
             }
         };
-        self.pending_abort = Some(abort);
+        let prior = self.pending_abort.take();
+        self.pending_abort = Some(match prior {
+            Some(prior) => Box::pin(async move {
+                tokio::join!(prior, abort);
+            }),
+            None => abort,
+        });
     }
 
     pub async fn steer(&self, text: &str) -> Result<(), String> {

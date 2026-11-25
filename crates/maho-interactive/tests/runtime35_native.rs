@@ -7191,3 +7191,256 @@ async fn a_queued_unknown_command_is_reported_when_compaction_ends() {
         "the refused command never reached the session"
     );
 }
+
+#[tokio::test]
+async fn escape_cancels_working_prompt_during_before_agent_start_and_clears_working_row() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "faux",
+        "faux-1",
+        false,
+    );
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:hung-before-start-interactive>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![std::sync::Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending::<
+                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                >()
+                .await
+            })
+        })],
+    );
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            session.extension_context(mode.extension_ui.clone()),
+        ))
+        .await;
+
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    mode.enqueue_submission("hello world", None);
+    mode.pump_turn().await;
+    assert!(mode.has_pending_turn(), "turn is in flight");
+    assert!(
+        mode.working_frame(100.0).is_some(),
+        "Working.. row is painted immediately"
+    );
+
+    let waker = std::task::Waker::noop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if futures::poll!(entered_wait.as_mut()).is_ready() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("prompt reached before_agent_start");
+
+    // User presses ESC while `Working..` is visible during pre-agent preparation.
+    mode.handle_filtered_runtime_input("\x1b", 200)
+        .await
+        .expect("escape input");
+    // Repeated ESC must not drop the in-flight abort future either.
+    mode.handle_filtered_runtime_input("\x1b", 210)
+        .await
+        .expect("second escape input");
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if !mode.has_pending_turn() && mode.working_frame(300.0).is_none() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ESC must cancel pre-agent preparation and clear Working..");
+    assert!(
+        session.messages().is_empty(),
+        "cancelled prompt must never start a model turn"
+    );
+}
+
+#[tokio::test]
+async fn new_session_during_working_prompt_with_parked_steer_replaces_session_and_clears_working() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "faux",
+        "faux-1",
+        false,
+    );
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:hung-before-start-new-interactive>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![std::sync::Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending::<
+                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                >()
+                .await
+            })
+        })],
+    );
+    let mut runner = maho_ext_host::ExtensionRunner::new(
+        vec![extension],
+        Default::default(),
+        Default::default(),
+        session.extension_context(mode.extension_ui.clone()),
+    );
+    runner.set_runtime_factory(std::sync::Arc::new(move |context| {
+        Box::pin(async move {
+            Ok(maho_ext_host::ExtensionRunner::new(
+                Vec::new(),
+                Default::default(),
+                Default::default(),
+                context,
+            ))
+        })
+    }));
+    session.set_extension_runner(runner).await;
+
+    let before_id = session.session_id();
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    mode.enqueue_submission("first prompt", None);
+    mode.pump_turn().await;
+    let waker = std::task::Waker::noop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if futures::poll!(entered_wait.as_mut()).is_ready() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first prompt entered preparation");
+
+    // Submit a second message while Working.. (parks a `park_prompt_enqueue`), then `/new`.
+    mode.enqueue_submission("second steer message", None);
+    mode.pump_turn().await;
+    mode.enqueue_submission("/new", None);
+    mode.pump_turn().await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if session.session_id() != before_id
+                && !mode.has_pending_turn()
+                && !mode.has_parked_action_for_test()
+                && mode.working_frame(400.0).is_none()
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("/new must not hang behind parked steer or pre-agent prompt and must clear Working..");
+    assert!(
+        session.messages().is_empty(),
+        "stale steer message must not leak into the new session"
+    );
+}
+
+#[tokio::test]
+async fn escape_restores_unpolled_parked_prompt_enqueue_to_editor() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        "faux",
+        "faux-1",
+        false,
+    );
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:hung-before-start-restore>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![std::sync::Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending::<
+                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                >()
+                .await
+            })
+        })],
+    );
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            session.extension_context(mode.extension_ui.clone()),
+        ))
+        .await;
+
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    mode.enqueue_submission("first", None);
+    mode.pump_turn().await;
+    let waker = std::task::Waker::noop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            mode.poll_after_paint(waker);
+            if futures::poll!(entered_wait.as_mut()).is_ready() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first prompt entered preparation");
+
+    // Queue a second submission (parked, not yet painted/polled), then press ESC before paint.
+    mode.enqueue_submission("queued before escape", None);
+    mode.pump_turn().await;
+    assert!(mode.has_parked_action_for_test());
+
+    mode.handle_filtered_runtime_input("\x1b", 250)
+        .await
+        .expect("escape");
+    assert_eq!(
+        mode.editor.editor.get_text(),
+        "queued before escape",
+        "unpolled parked prompt must be restored to editor on ESC instead of firing after abort"
+    );
+    assert!(
+        !mode.has_parked_action_for_test(),
+        "restored parked prompt enqueue must be removed from parked_actions"
+    );
+}

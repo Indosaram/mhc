@@ -2001,29 +2001,45 @@ async fn drive(
         let headers = sse_headers.clone();
         let body = sse_body.clone();
         let request = client.post(&url).headers(headers).body(body);
-        let send = match http_timeout_ms {
-            Some(timeout_ms) if timeout_ms > 0 => {
-                match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        let message =
-                            format!("Codex SSE response headers timed out after {timeout_ms}ms");
-                        last_error = Some(CodexError::Other(message.clone()));
-                        if attempt < max_retries {
-                            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref())
-                                .await
-                                .is_err()
-                            {
-                                return Err(CodexError::Other(String::from("Request was aborted")));
-                            }
-                            continue;
-                        }
-                        return Err(CodexError::Other(message));
+        let send_fut = async {
+            match http_timeout_ms {
+                Some(timeout_ms) if timeout_ms > 0 => {
+                    match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send())
+                        .await
+                    {
+                        Ok(result) => Ok(result),
+                        Err(_) => Err(timeout_ms),
                     }
                 }
+                _ => Ok(request.send().await),
             }
-            _ => request.send().await,
+        };
+        let send = match if let Some(signal) = signal.as_ref() {
+            tokio::select! {
+                biased;
+                () = signal.cancelled() => {
+                    return Err(CodexError::Other(String::from("Request was aborted")));
+                }
+                result = send_fut => result,
+            }
+        } else {
+            send_fut.await
+        } {
+            Ok(result) => result,
+            Err(timeout_ms) => {
+                let message = format!("Codex SSE response headers timed out after {timeout_ms}ms");
+                last_error = Some(CodexError::Other(message.clone()));
+                if attempt < max_retries {
+                    if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref())
+                        .await
+                        .is_err()
+                    {
+                        return Err(CodexError::Other(String::from("Request was aborted")));
+                    }
+                    continue;
+                }
+                return Err(CodexError::Other(message));
+            }
         };
         let response_value = match send {
             Ok(response) => response,

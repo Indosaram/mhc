@@ -1693,14 +1693,28 @@ impl PreStreamBound {
         work: impl std::future::Future<Output = T>,
         request: &AbortController,
     ) -> Result<T, AgentStreamError> {
+        let signal = request.signal();
+        if signal.aborted() {
+            return Err(abort_error(Some(&signal)));
+        }
         let deadline = match self.start_timeout_ms {
-            Some(ms) => self.started_at + Duration::from_millis(ms),
-            None => match self.idle_timeout_ms {
-                Some(ms) => tokio::time::Instant::now() + Duration::from_millis(ms),
-                None => return Ok(work.await),
-            },
+            Some(ms) => Some(self.started_at + Duration::from_millis(ms)),
+            None => self
+                .idle_timeout_ms
+                .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms)),
         };
-        match tokio::time::timeout_at(deadline, work).await {
+        let raced = async {
+            match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, work).await,
+                None => Ok(work.await),
+            }
+        };
+        let timed = tokio::select! {
+            biased;
+            () = signal.cancelled() => return Err(abort_error(Some(&signal))),
+            result = raced => result,
+        };
+        match timed {
             Ok(value) => Ok(value),
             Err(_) => {
                 let error = match self.start_timeout_ms {
@@ -3640,5 +3654,36 @@ mod idle_rearm_tests {
             outcome.is_err(),
             "silence after the last keepalive still times out"
         );
+    }
+
+    #[tokio::test]
+    async fn pre_stream_bound_aborts_immediately_when_signal_fires() {
+        for (start_timeout, idle_timeout) in [(None, None), (Some(60_000), Some(60_000))] {
+            let bound = PreStreamBound::new(start_timeout, idle_timeout);
+            let controller = AbortController::new();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let entered_clone = entered.clone();
+            let work = async move {
+                entered_clone.notify_one();
+                std::future::pending::<()>().await;
+            };
+            let run = bound.run(work, &controller);
+            tokio::pin!(run);
+            let entered_wait = entered.notified();
+            tokio::pin!(entered_wait);
+            let _ = futures::poll!(run.as_mut());
+            entered_wait.await;
+            controller.abort(None);
+            let err = run
+                .await
+                .expect_err("abort must interrupt hung pre-stream work immediately");
+            assert_eq!(
+                err,
+                AgentStreamError::Other {
+                    message: AbortReason::dom_default().message,
+                },
+                "expected DOM abort error"
+            );
+        }
     }
 }

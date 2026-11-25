@@ -729,6 +729,8 @@ struct AgentSessionState {
     post_compaction_deferred_steering_messages: Vec<AgentMessage>,
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
     prompt_start_pending: bool,
+    prompt_prep_abort: Option<maho_ai::utils::abort::AbortController>,
+    prompt_prep_done: Option<tokio::sync::watch::Sender<bool>>,
     had_cleared_queued_messages: bool,
     /// senpi `_triggerTurnAdmissionAbortGeneration`: the user-abort generation an idle
     /// `triggerTurn` custom message is being admitted under.
@@ -1884,6 +1886,36 @@ impl Drop for MessagePersistenceGuard<'_> {
 impl Drop for PromptStartGuard<'_> {
     fn drop(&mut self) {
         self.0.state().prompt_start_pending = false;
+    }
+}
+
+struct PromptPrepGuard<'a> {
+    session: &'a AgentSession,
+    done: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for PromptPrepGuard<'_> {
+    fn drop(&mut self) {
+        {
+            let mut state = self.session.state();
+            state.prompt_prep_abort = None;
+            state.prompt_prep_done = None;
+        }
+        let _ = self.done.send(true);
+    }
+}
+
+async fn race_prep_abort<T>(
+    signal: &maho_ai::utils::abort::AbortSignal,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if signal.aborted() {
+        return None;
+    }
+    tokio::select! {
+        biased;
+        () = signal.cancelled() => None,
+        value = work => Some(value),
     }
 }
 
@@ -4629,6 +4661,8 @@ impl AgentSession {
             post_compaction_deferred_steering_messages: Vec::new(),
             post_compaction_deferred_follow_up_messages: Vec::new(),
             prompt_start_pending: false,
+            prompt_prep_abort: None,
+            prompt_prep_done: None,
             had_cleared_queued_messages: false,
             trigger_turn_admission_abort_generation: None,
             required_compaction_turn_error: None,
@@ -7101,13 +7135,13 @@ impl AgentSession {
         };
         let work = async {
             self.wait_for_idle().await;
-            let mut guard = self.extension_runner.lock().await;
-            let paths = guard
+            let mut runner = self.extension_runner.lock().await.clone();
+            let paths = runner
                 .as_ref()
                 .map_or_else(Vec::new, |runner| runner.extension_paths());
             let names =
                 crate::prompt_size_extension_names::prompt_size_extension_names(&paths, |_| None);
-            let unsafe_paths = guard.as_ref().map_or_else(Vec::new, |runner| {
+            let unsafe_paths = runner.as_ref().map_or_else(Vec::new, |runner| {
                 runner.preview_unsafe_before_agent_start_paths()
             });
             if !unsafe_paths.is_empty() {
@@ -7134,7 +7168,7 @@ impl AgentSession {
                         names.clone(),
                     ));
                 system_prompt = base.clone();
-                if let Some(runner) = guard.as_mut() {
+                if let Some(runner) = runner.as_mut() {
                     let observe = |path: &str, before: &str, after: &str, parts: Option<&[maho_ext_api::DynamicSystemPromptPart]>| {
                         let parts = parts.map(|parts| parts.iter().map(|part| crate::prompt_size_report::DynamicSystemPromptPart { name: part.name.clone(), source: part.source.clone(), text: part.text.clone() }).collect::<Vec<_>>());
                         current.lock().unwrap_or_else(std::sync::PoisonError::into_inner).observe(path,before,after,parts.as_deref());
@@ -7169,7 +7203,7 @@ impl AgentSession {
                     break;
                 }
             }
-            let third_party = guard
+            let third_party = runner
                 .as_ref()
                 .map_or_else(Vec::new, |runner| runner.third_party_session_start_paths());
             let state = self.agent.state();
@@ -7476,14 +7510,18 @@ impl AgentSession {
         let waits_for_manual_compaction =
             pending_compaction.is_some() || compaction_generation.is_some();
         let streaming = self.is_streaming();
-        let _prompt_start = {
+        let compacting = self.is_compacting();
+        let (had_prompt_start_pending, _prompt_start) = {
             let mut state = self.state();
-            if !streaming && !state.prompt_start_pending && options.streaming_behavior.is_none() {
-                state.prompt_start_pending = true;
-                Some(PromptStartGuard(self))
-            } else {
-                None
-            }
+            let already_pending = state.prompt_start_pending;
+            let guard =
+                if !waits_for_manual_compaction && !streaming && !compacting && !already_pending {
+                    state.prompt_start_pending = true;
+                    Some(PromptStartGuard(self))
+                } else {
+                    None
+                };
+            (already_pending, guard)
         };
         // senpi `prompt()`: a prompt that cannot queue waits for the running turn, auto-compaction and
         // other settled session work instead of failing. Native extension prompts are delivered by a
@@ -7505,7 +7543,7 @@ impl AgentSession {
             }
         }
         let queues_behind_pending_prompt =
-            self.state().prompt_start_pending && options.streaming_behavior.is_some();
+            had_prompt_start_pending && options.streaming_behavior.is_some();
         if !waits_for_manual_compaction
             && (self.is_streaming() || self.is_compacting() || queues_behind_pending_prompt)
         {
@@ -7541,6 +7579,30 @@ impl AgentSession {
         } else {
             self.prompt_admission.lock().await
         };
+        let (prep_signal, prep_guard) = {
+            let controller = maho_ai::utils::abort::AbortController::new();
+            let signal = controller.signal();
+            let (done_tx, _done_rx) = tokio::sync::watch::channel(false);
+            {
+                let mut state = self.state();
+                state.prompt_prep_abort = Some(controller);
+                state.prompt_prep_done = Some(done_tx.clone());
+            }
+            (
+                signal,
+                PromptPrepGuard {
+                    session: self,
+                    done: done_tx,
+                },
+            )
+        };
+        let prep_cancelled_result = |signal: &Option<maho_ai::utils::abort::AbortSignal>| {
+            if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                Err("Prompt cancelled".to_owned())
+            } else {
+                Ok(PromptDisposition::Handled)
+            }
+        };
         let weak = Arc::downgrade(&self.inner);
         let _prompt_signal_bridge = options.signal.clone().map(|signal| {
             AbortSignalBridge(tokio::spawn(async move {
@@ -7553,14 +7615,23 @@ impl AgentSession {
         let _work = self.work_barrier.begin();
         self.state().user_aborted = false;
         // senpi `prompt()` turn boundary: restore the primary model if the fallback cooldown expired.
-        if !self.is_streaming() {
-            self.restore_fallback_primary().await;
+        if !self.is_streaming()
+            && race_prep_abort(&prep_signal, self.restore_fallback_primary())
+                .await
+                .is_none()
+        {
+            return prep_cancelled_result(&options.signal);
         }
         let expand_prompt_templates = options.expand_prompt_templates;
-        let Some((text, images, input_id)) =
-            heap_future(|| self.run_input_handlers(text, options.images, options.source, None))
-                .await?
+        let Some(input_result) = race_prep_abort(
+            &prep_signal,
+            heap_future(|| self.run_input_handlers(text, options.images, options.source, None)),
+        )
+        .await
         else {
+            return prep_cancelled_result(&options.signal);
+        };
+        let Some((text, images, input_id)) = input_result? else {
             return Ok(PromptDisposition::Handled);
         };
         let expanded = self.expand_input(&text, expand_prompt_templates.unwrap_or(true))?;
@@ -7622,8 +7693,18 @@ impl AgentSession {
         }
         // senpi `prompt()`: refuse before any provider work when the model's provider has no auth.
         let model = self.model();
-        let has_configured_auth = self.model_runtime().has_configured_auth(&model.provider)
-            || match self.model_runtime().check_auth(&model.provider, None).await {
+        let has_configured_auth = if self.model_runtime().has_configured_auth(&model.provider) {
+            true
+        } else {
+            let Some(auth_result) = race_prep_abort(
+                &prep_signal,
+                self.model_runtime().check_auth(&model.provider, None),
+            )
+            .await
+            else {
+                return prep_cancelled_result(&options.signal);
+            };
+            match auth_result {
                 Ok(check) => check.is_some(),
                 Err(error) => {
                     heap_future(|| {
@@ -7637,7 +7718,8 @@ impl AgentSession {
                     .await;
                     return Err(error.message);
                 }
-            };
+            }
+        };
         if !has_configured_auth {
             heap_future(|| {
                 self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
@@ -7656,10 +7738,21 @@ impl AgentSession {
                 &model.provider,
             ));
         }
-        if !self.is_compaction_delegated()
-            && self.pending_model_switch().is_none()
-            && heap_future(|| self.check_pre_prompt_overflow()).await?
-        {
+        let pre_prompt_overflow =
+            if !self.is_compaction_delegated() && self.pending_model_switch().is_none() {
+                let Some(overflow_res) = race_prep_abort(
+                    &prep_signal,
+                    heap_future(|| self.check_pre_prompt_overflow()),
+                )
+                .await
+                else {
+                    return prep_cancelled_result(&options.signal);
+                };
+                overflow_res?
+            } else {
+                false
+            };
+        if pre_prompt_overflow {
             // senpi `_checkCompaction` (inline): the overflow route already settled admission.
         } else if self.auto_compaction_enabled()
             && !self.is_compaction_delegated()
@@ -7684,16 +7777,29 @@ impl AgentSession {
                             })
                 })
             {
-                let result =
-                    heap_future(|| self.compact_for_model_splitting_turn(&model, "pre-prompt"))
-                        .await;
+                let Some(result) = race_prep_abort(
+                    &prep_signal,
+                    heap_future(|| self.compact_for_model_splitting_turn(&model, "pre-prompt")),
+                )
+                .await
+                else {
+                    return prep_cancelled_result(&options.signal);
+                };
                 if !self.is_compaction_delegated() {
                     result?;
                 }
             }
         }
         if let Some(pending) = self.pending_model_switch() {
-            heap_future(|| self.compact_for_model(None, &pending.model, "pre-prompt")).await?;
+            let Some(compact_res) = race_prep_abort(
+                &prep_signal,
+                heap_future(|| self.compact_for_model(None, &pending.model, "pre-prompt")),
+            )
+            .await
+            else {
+                return prep_cancelled_result(&options.signal);
+            };
+            compact_res?;
             let measured = self
                 .with_session_manager(|manager| manager.current_context())
                 .messages
@@ -7703,15 +7809,22 @@ impl AgentSession {
             let admitted = self.reduce_for_switch_target(&pending.model, measured)?;
             self.state().pending_model_switch = None;
             self.assert_model_usable(&pending.model, admitted)?;
-            heap_future(|| {
-                self.set_model_internal(
-                    pending.model,
-                    pending.persist_default,
-                    maho_ext_api::ModelSelectSource::Set,
-                    false,
-                )
-            })
-            .await?;
+            let Some(switch_res) = race_prep_abort(
+                &prep_signal,
+                heap_future(|| {
+                    self.set_model_internal(
+                        pending.model,
+                        pending.persist_default,
+                        maho_ext_api::ModelSelectSource::Set,
+                        false,
+                    )
+                }),
+            )
+            .await
+            else {
+                return prep_cancelled_result(&options.signal);
+            };
+            switch_res?;
         }
         if let Some(level) = options.thinking_level {
             self.set_session_thinking_level(match level {
@@ -7727,7 +7840,7 @@ impl AgentSession {
         let consumed = std::mem::take(&mut self.state().pending_next_turn_messages);
         // senpi#2115: a real turn's before_agent_start never runs beside a preview pass.
         self.prompt_cache_prefix_builds.cancel_all();
-        let before = {
+        let Some(before) = race_prep_abort(&prep_signal, async {
             let mut runner = self.extension_runner.lock().await.clone();
             match runner.as_mut() {
                 Some(runner) => runner
@@ -7743,6 +7856,13 @@ impl AgentSession {
                     .map_err(|error| error.to_string()),
                 None => Ok(None),
             }
+        })
+        .await
+        else {
+            self.state()
+                .pending_next_turn_messages
+                .splice(0..0, consumed);
+            return prep_cancelled_result(&options.signal);
         };
         let before = match before {
             Ok(before) => before,
@@ -7772,7 +7892,18 @@ impl AgentSession {
         messages.push(user_message);
         messages.extend(consumed.clone());
         self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
-        if let Err(error) = heap_future(|| self.enforce_final_provider_admission(&messages)).await {
+        let Some(admission_res) = race_prep_abort(
+            &prep_signal,
+            heap_future(|| self.enforce_final_provider_admission(&messages)),
+        )
+        .await
+        else {
+            self.state()
+                .pending_next_turn_messages
+                .splice(0..0, consumed);
+            return prep_cancelled_result(&options.signal);
+        };
+        if let Err(error) = admission_res {
             self.state()
                 .pending_next_turn_messages
                 .splice(0..0, consumed);
@@ -7827,13 +7958,23 @@ impl AgentSession {
             .await;
             return Ok(PromptDisposition::Handled);
         }
-        heap_future(|| {
-            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
-                input_id,
-                disposition: maho_ext_api::InputDisposition::Started,
-            })
-        })
-        .await;
+        if race_prep_abort(
+            &prep_signal,
+            heap_future(|| {
+                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                    input_id,
+                    disposition: maho_ext_api::InputDisposition::Started,
+                })
+            }),
+        )
+        .await
+        .is_none()
+        {
+            self.state()
+                .pending_next_turn_messages
+                .splice(0..0, consumed);
+            return prep_cancelled_result(&options.signal);
+        }
         *disposition_reported = true;
         drop(readiness.take());
         if let Some(admitted) = &options.prompt_admitted {
@@ -7858,11 +7999,6 @@ impl AgentSession {
             }
             return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
         }
-        // senpi `_promptAgent`: a new turn admitted arms the inactivity lease and the hard max-runtime cap,
-        // and owns the held handler waits it starts.
-        if let Some(tracker) = self.deadline_tracker.get() {
-            tracker.arm();
-        }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         lock(&self.transcript_write_failures).start_run();
         // Only a refused write can keep the transcript from being read here: `messages()`
@@ -7876,7 +8012,29 @@ impl AgentSession {
             self.agent.set_messages(kept);
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run_offloaded().await;
+        if race_prep_abort(
+            &prep_signal,
+            self.hydrate_runtime_messages_for_run_offloaded(),
+        )
+        .await
+        .is_none()
+            || prep_signal.aborted()
+        {
+            self.agent_run_active.store(false, Ordering::SeqCst);
+            if let Some(spec) = &options.tool_barrier {
+                self.release_tool_barrier(&spec.id);
+            }
+            self.state()
+                .pending_next_turn_messages
+                .splice(0..0, consumed);
+            return prep_cancelled_result(&options.signal);
+        }
+        // senpi `_promptAgent`: a new turn admitted arms the inactivity lease and the hard max-runtime cap,
+        // and owns the held handler waits it starts.
+        if let Some(tracker) = self.deadline_tracker.get() {
+            tracker.arm();
+        }
+        drop(prep_guard);
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
         self.agent
@@ -8358,7 +8516,15 @@ impl AgentSession {
     ) -> impl std::future::Future<Output = ()> + Send + 'static + use<> {
         let agent = self.agent.clone();
         let session = Arc::downgrade(&self.inner);
+        let prep_done = self
+            .state()
+            .prompt_prep_done
+            .as_ref()
+            .map(tokio::sync::watch::Sender::subscribe);
         async move {
+            if let Some(mut prep_done) = prep_done {
+                let _ = prep_done.wait_for(|done| *done).await;
+            }
             let idle = agent.wait_for_idle();
             tokio::pin!(idle);
             let grace =
@@ -8390,6 +8556,10 @@ impl AgentSession {
         // senpi `_abortActiveAgentAndRetry("system")`.
         self.abort_retry();
         self.abort_branch_summary();
+        self.prompt_cache_prefix_builds.cancel_all();
+        if let Some(controller) = self.state().prompt_prep_abort.clone() {
+            controller.abort(None);
+        }
         let wait = {
             let mut in_flight = lock(&self.user_abort_wait);
             let streaming = self.is_streaming();
@@ -8444,6 +8614,8 @@ impl AgentSession {
         // senpi abort(): streaming aborts are carried by agent_end provenance; only gaps need session_abort.
         let streaming = self.is_streaming();
         let had_retry_backoff = self.state().retry_abort_controller.is_some();
+        let prep_abort = self.state().prompt_prep_abort.clone();
+        let had_prompt_prep = prep_abort.is_some();
         let was_mid_run = streaming && !had_retry_backoff;
         let has_pending_trigger_turn_admission =
             self.state().trigger_turn_admission_abort_generation
@@ -8451,7 +8623,8 @@ impl AgentSession {
         let had_compaction_or_pending = !streaming
             && (self.is_compacting()
                 || self.pending_message_count() > 0
-                || has_pending_trigger_turn_admission);
+                || has_pending_trigger_turn_admission
+                || had_prompt_prep);
         let had_cleared_queues = std::mem::take(&mut self.state().had_cleared_queued_messages);
         let joined_agent_end_boundary = self.state().abort_provenance.has_open_agent_end_boundary();
         let should_emit_abort = !joined_agent_end_boundary
@@ -8468,6 +8641,10 @@ impl AgentSession {
         // senpi _abortActiveAgentAndRetry("user").
         self.abort_retry();
         self.abort_branch_summary();
+        self.prompt_cache_prefix_builds.cancel_all();
+        if let Some(controller) = prep_abort {
+            controller.abort(None);
+        }
         let mut in_flight = lock(&self.user_abort_wait);
         if in_flight.is_none()
             && self
@@ -12285,6 +12462,7 @@ impl AgentSession {
         &self,
         options: Option<crate::session_manager::NewSessionOptions>,
     ) -> Result<bool, String> {
+        self.prompt_cache_prefix_builds.cancel_all();
         if self
             .session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
                 reason: maho_ext_api::SessionReason::New,

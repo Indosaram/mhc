@@ -17782,3 +17782,324 @@ async fn local_bash_records_native_custom_context_and_history() {
     assert_eq!(entry["message"]["command"], "printf native");
     assert_eq!(entry["message"]["excludeFromContext"], true);
 }
+
+#[tokio::test]
+async fn abort_cancels_prompt_stuck_in_before_agent_start_and_emits_session_abort() {
+    let session = retry_session(
+        vec![maho_ai::providers::faux::faux_assistant_message(
+            "should-never-run",
+            Default::default(),
+        )],
+        0,
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:hung-before-agent-start>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending::<
+                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                >()
+                .await
+            })
+        })],
+    );
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            test_extension_context(&session),
+        ))
+        .await;
+
+    let session_abort_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = session_abort_seen.clone();
+    let _sub = session.subscribe(Arc::new(move |event| {
+        if matches!(event, AgentSessionEvent::SessionAbort) {
+            seen.store(true, Ordering::SeqCst);
+        }
+    }));
+
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    let prompt_session = session.clone();
+    let prompt_task = tokio::spawn(async move {
+        prompt_session
+            .prompt(
+                "hello",
+                PromptOptions {
+                    streaming_behavior: Some(StreamingBehavior::Steer),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_wait)
+        .await
+        .expect("before_agent_start entered");
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), session.stop())
+        .await
+        .expect("stop must cancel hung before_agent_start without waiting forever");
+    let disposition = tokio::time::timeout(std::time::Duration::from_secs(5), prompt_task)
+        .await
+        .expect("prompt task must settle after stop")
+        .expect("join")
+        .expect("clean cancellation");
+    assert_eq!(disposition, PromptDisposition::Handled);
+    assert!(
+        session_abort_seen.load(Ordering::SeqCst),
+        "aborting pre-agent prompt preparation must emit SessionAbort"
+    );
+    assert!(
+        session.messages().is_empty(),
+        "provider turn must never start after pre-agent abort"
+    );
+    session.dispose().await;
+}
+
+#[tokio::test]
+async fn new_session_cancels_in_flight_prompt_preparation_without_racing() {
+    let session = retry_session(
+        vec![maho_ai::providers::faux::faux_assistant_message(
+            "should-never-run",
+            Default::default(),
+        )],
+        0,
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:hung-before-agent-start-new>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending::<
+                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                >()
+                .await
+            })
+        })],
+    );
+    let mut runner = maho_ext_host::ExtensionRunner::new(
+        vec![extension],
+        Default::default(),
+        Default::default(),
+        test_extension_context(&session),
+    );
+    runner.set_runtime_factory(Arc::new(move |context| {
+        Box::pin(async move {
+            Ok(maho_ext_host::ExtensionRunner::new(
+                Vec::new(),
+                Default::default(),
+                Default::default(),
+                context,
+            ))
+        })
+    }));
+    session.set_extension_runner(runner).await;
+
+    let before_id = session.session_id();
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    let prompt_session = session.clone();
+    let prompt_task = tokio::spawn(async move {
+        prompt_session
+            .prompt(
+                "old prompt",
+                PromptOptions {
+                    streaming_behavior: Some(StreamingBehavior::Steer),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_wait)
+        .await
+        .expect("before_agent_start entered");
+
+    let replaced =
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.new_session(None))
+            .await
+            .expect("new_session must not hang behind pre-agent prompt preparation")
+            .expect("new_session");
+    assert!(replaced);
+    assert_ne!(session.session_id(), before_id);
+
+    let disposition = tokio::time::timeout(std::time::Duration::from_secs(5), prompt_task)
+        .await
+        .expect("cancelled prompt must finish")
+        .expect("join")
+        .expect("clean cancellation");
+    assert_eq!(disposition, PromptDisposition::Handled);
+    assert!(
+        session.messages().is_empty(),
+        "new session must remain empty after cancelling the old prompt"
+    );
+    session.dispose().await;
+}
+
+#[tokio::test]
+async fn second_interactive_steer_prompt_queues_while_first_prompt_prepares() {
+    let session = retry_session(
+        vec![maho_ai::providers::faux::faux_assistant_message(
+            "ok",
+            Default::default(),
+        )],
+        0,
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let release_hook = release.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:slow-before-agent-start>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            let release = release_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+                Ok(maho_ext_api::EventResult::None)
+            })
+        })],
+    );
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            test_extension_context(&session),
+        ))
+        .await;
+
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    let first_session = session.clone();
+    let first = tokio::spawn(async move {
+        first_session
+            .prompt(
+                "first",
+                PromptOptions {
+                    streaming_behavior: Some(StreamingBehavior::Steer),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_wait)
+        .await
+        .expect("first prompt entered preparation");
+
+    // Second interactive prompt (also passing Steer) must queue immediately instead of
+    // blocking on `prompt_admission.lock().await` for the duration of the first turn.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        session.prompt(
+            "second",
+            PromptOptions {
+                streaming_behavior: Some(StreamingBehavior::Steer),
+                ..Default::default()
+            },
+        ),
+    )
+    .await
+    .expect("second steer prompt must not block behind prompt_admission")
+    .expect("queued");
+    assert_eq!(second, PromptDisposition::Queued);
+
+    session.stop().await;
+    release.notify_waiters();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+        .await
+        .expect("first prompt settles");
+    session.dispose().await;
+}
+
+#[tokio::test]
+async fn prompt_size_prefix_request_does_not_hold_extension_runner_lock_across_await() {
+    let session = test_session();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let entered_hook = entered.clone();
+    let release_hook = release.clone();
+    let mut extension = maho_ext_api::LoadedExtension::new(
+        "<inline:preview-safe-slow>",
+        session.cwd().into(),
+        Default::default(),
+    );
+    extension.handler_options.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![maho_ext_api::ExtensionHandlerOptions {
+            preview_safe: true,
+            mutates_messages: None,
+        }],
+    );
+    extension.handlers.insert(
+        maho_ext_api::EventKind::BeforeAgentStart,
+        vec![Arc::new(move |_event, _| {
+            let entered = entered_hook.clone();
+            let release = release_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+                Ok(maho_ext_api::EventResult::None)
+            })
+        })],
+    );
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            test_extension_context(&session),
+        ))
+        .await;
+
+    let entered_wait = entered.notified();
+    tokio::pin!(entered_wait);
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let prefix_session = session.clone();
+    let signal = controller.signal();
+    let prefix_task =
+        tokio::spawn(async move { prefix_session.prompt_size_prefix_request(signal).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_wait)
+        .await
+        .expect("preview before_agent_start entered");
+
+    // While the preview pass is suspended inside `emit_before_agent_start_observed`,
+    // callers needing `extension_runner.lock()` must not block.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        session.tool_renderers_snapshot(),
+    )
+    .await
+    .expect("tool_renderers_snapshot must not block behind prompt_size_prefix_request");
+
+    controller.abort(None);
+    release.notify_waiters();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), prefix_task)
+        .await
+        .expect("prefix task completes");
+    session.dispose().await;
+}

@@ -136,7 +136,19 @@ where
     let max_retries = options.max_retries.unwrap_or(0);
     let mut remaining = max_retries;
     loop {
-        let error = match request().await {
+        if options.signal.as_ref().is_some_and(AbortSignal::aborted) {
+            return Err(ProviderRetryError::Aborted);
+        }
+        let outcome = if let Some(signal) = options.signal.as_ref() {
+            tokio::select! {
+                biased;
+                () = signal.cancelled() => return Err(ProviderRetryError::Aborted),
+                result = request() => result,
+            }
+        } else {
+            request().await
+        };
+        let error = match outcome {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
@@ -710,5 +722,36 @@ mod tests {
         .expect("stream");
         let items: Vec<u32> = stream.map(|r| r.expect("chunk")).collect().await;
         assert_eq!((items, meta), (vec![1, 2], 1));
+    }
+
+    #[tokio::test]
+    async fn aborts_an_in_flight_provider_request_immediately() {
+        use crate::utils::abort::AbortController;
+        let controller = AbortController::new();
+        let options = ProviderRetryOptions {
+            max_retries: Some(2),
+            max_retry_delay_ms: Some(0),
+            signal: Some(controller.signal()),
+        };
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let entered_clone = entered.clone();
+        let request_future = retry_provider_request::<(), HttpError, _, _>(
+            move || {
+                let entered = entered_clone.clone();
+                async move {
+                    entered.notify_one();
+                    std::future::pending::<Result<(), HttpError>>().await
+                }
+            },
+            &options,
+        );
+        tokio::pin!(request_future);
+        let entered_wait = entered.notified();
+        tokio::pin!(entered_wait);
+        let _ = futures::poll!(request_future.as_mut());
+        entered_wait.await;
+        controller.abort(None);
+        let result = request_future.await;
+        assert!(matches!(result, Err(ProviderRetryError::Aborted)));
     }
 }
