@@ -842,17 +842,27 @@ impl ManagedChildHandle for CloudChildHandle {
 }
 
 fn apply_patch_to_local(local_cwd: &Path, patch_path: &Path) -> Result<(), String> {
-    let output = Command::new("git")
+    let direct = Command::new("git")
+        .arg("-C")
+        .arg(local_cwd)
+        .args(["apply", "--whitespace=nowarn"])
+        .arg(patch_path)
+        .output()
+        .map_err(|error| format!("failed to run git apply: {error}"))?;
+    if direct.status.success() {
+        return Ok(());
+    }
+    let three_way = Command::new("git")
         .arg("-C")
         .arg(local_cwd)
         .args(["apply", "--3way", "--whitespace=nowarn"])
         .arg(patch_path)
         .output()
-        .map_err(|error| format!("failed to run git apply: {error}"))?;
-    if output.status.success() {
+        .map_err(|error| format!("failed to run git apply --3way: {error}"))?;
+    if three_way.status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&direct.stderr);
     Err(stderr.trim().to_string())
 }
 

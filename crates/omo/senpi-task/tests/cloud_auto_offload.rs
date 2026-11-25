@@ -142,7 +142,7 @@ fn auto_offload_routes_isolated_to_cloud_and_keeps_simple_foreground_local() {
         panic!("expected local start");
     };
     let local_done = manager
-        .wait_for(&local_started.task_id, Some(Duration::from_secs(5)), None)
+        .wait_for(&local_started.task_id, None, Some(Duration::from_secs(5)))
         .unwrap();
     assert_eq!(local_done.status, TaskStatus::Completed);
     assert_eq!(local_done.execution_mode, ExecutionMode::InProcess.as_str());
@@ -160,11 +160,11 @@ fn auto_offload_routes_isolated_to_cloud_and_keeps_simple_foreground_local() {
         panic!("expected cloud start");
     };
     let cloud_done = manager
-        .wait_for(&cloud_started.task_id, Some(Duration::from_secs(5)), None)
+        .wait_for(&cloud_started.task_id, None, Some(Duration::from_secs(5)))
         .unwrap();
     assert_eq!(cloud_done.status, TaskStatus::Completed);
     assert_eq!(cloud_done.execution_mode, ExecutionMode::Cloud.as_str());
-    assert_eq!(cloud_done.result.as_deref(), Some("cloud:isolated edit task"));
+    assert_eq!(cloud_done.final_response.as_deref(), Some("cloud:isolated edit task"));
     assert_eq!(cloud_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -195,10 +195,10 @@ fn cloud_start_failure_automatically_falls_back_to_local_runner() {
         panic!("expected fallback start, got {res:?}");
     };
     let done = manager
-        .wait_for(&started.task_id, Some(Duration::from_secs(5)), None)
+        .wait_for(&started.task_id, None, Some(Duration::from_secs(5)))
         .unwrap();
     assert_eq!(done.status, TaskStatus::Completed);
-    assert_eq!(done.result.as_deref(), Some("local:resilient task"));
+    assert_eq!(done.final_response.as_deref(), Some("local:resilient task"));
     assert_eq!(cloud_calls.load(Ordering::SeqCst), 1);
     assert_eq!(local_calls.load(Ordering::SeqCst), 1);
 
