@@ -219,10 +219,9 @@ pub fn build_start_spec(
     }
 }
 
-/// Only `"in-process"` and `"process"` are execution modes.
 fn to_execution_mode(value: Option<&str>) -> Option<ExecutionMode> {
     match value {
-        Some(mode @ ("in-process" | "process")) => ExecutionMode::parse(mode),
+        Some(mode @ ("in-process" | "process" | "cloud")) => ExecutionMode::parse(mode),
         _ => None,
     }
 }
