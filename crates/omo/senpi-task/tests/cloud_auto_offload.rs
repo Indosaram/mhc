@@ -45,7 +45,7 @@ impl ManagedChildHandle for ImmediateHandle {
     }
     fn wait_for_outcome(&self) -> RunnerOutcome {
         RunnerOutcome::Completed {
-            final_text: Some(self.text.clone()),
+            final_response: self.text.clone(),
         }
     }
     fn last_assistant_text(&self) -> Option<String> {
@@ -67,7 +67,7 @@ impl ManagedRunner for CountingRunner {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_on_start {
             return Err(ManagedRunnerError::Runner(RunnerFailure::new(
-                RunnerFailureKind::SpawnError,
+                RunnerFailureKind::SessionCreateFailed,
                 "simulated cloud outage",
             )));
         }

@@ -393,15 +393,7 @@ impl RemoteSocketRpcClient {
                 .and_then(Value::as_str)
                 .unwrap_or("open_session failed")
                 .to_string();
-            return Err(RpcCommandError {
-                command: "open_session".into(),
-                error_code: response
-                    .get("errorCode")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                message: msg,
-            }
-            .into());
+            return Err(RpcCommandError::new("open_session", msg).into());
         }
         let session_id = response
             .pointer("/data/sessionId")
@@ -597,13 +589,12 @@ fn notify_socket_exit(client: &RemoteSocketRpcClient) {
             pid: None,
             code: Some(if state.closed { 0 } else { 1 }),
             signal: None,
-            spawn_error: None,
-            stderr_tail: if state.closed {
+            error: None,
+            stderr: if state.closed {
                 String::new()
             } else {
                 "remote cloud RPC socket disconnected".into()
             },
-            terminated_by_us: state.closed,
         };
         state.exited = Some(exit_input.clone());
         let pending: Vec<PendingSender> = state.pending.drain().map(|(_, tx)| tx).collect();
@@ -742,7 +733,7 @@ impl CloudChildHandle {
         let sync_res = self
             .backend
             .sync_out(&self.acquired.machine, &ctx.task_id, &patch_path, true);
-        let RunnerOutcome::Completed { mut final_text } = outcome else {
+        let RunnerOutcome::Completed { mut final_response } = outcome else {
             return outcome;
         };
         match sync_res {
@@ -757,19 +748,13 @@ impl CloudChildHandle {
                                     self.acquired.machine,
                                     self.acquired.provider
                                 );
-                                final_text = Some(format!(
-                                    "{}{suffix}",
-                                    final_text.unwrap_or_default().trim_end()
-                                ));
+                                final_response = format!("{}{suffix}", final_response.trim_end());
                             }
                             Err(reason) => {
                                 let suffix = format!(
                                     "\n\n[cloud sync] remote changes saved to {path} (not auto-applied: {reason})."
                                 );
-                                final_text = Some(format!(
-                                    "{}{suffix}",
-                                    final_text.unwrap_or_default().trim_end()
-                                ));
+                                final_response = format!("{}{suffix}", final_response.trim_end());
                             }
                         }
                     }
@@ -778,13 +763,10 @@ impl CloudChildHandle {
             Ok(_) => {}
             Err(error) => {
                 let suffix = format!("\n\n[cloud sync] warning: failed to retrieve remote diff: {error}");
-                final_text = Some(format!(
-                    "{}{suffix}",
-                    final_text.unwrap_or_default().trim_end()
-                ));
+                final_response = format!("{}{suffix}", final_response.trim_end());
             }
         }
-        RunnerOutcome::Completed { final_text }
+        RunnerOutcome::Completed { final_response }
     }
 }
 
@@ -905,7 +887,7 @@ impl ManagedRunner for CloudManagedRunner {
             )
             .map_err(|message| {
                 ManagedRunnerError::Runner(RunnerFailure::new(
-                    RunnerFailureKind::SpawnError,
+                    RunnerFailureKind::SessionCreateFailed,
                     format!("cloud box acquire failed: {message}"),
                 ))
             })?;
@@ -932,7 +914,7 @@ impl ManagedRunner for CloudManagedRunner {
                         self.settings.delete_on_release,
                     );
                     return Err(ManagedRunnerError::Runner(RunnerFailure::new(
-                        RunnerFailureKind::SpawnError,
+                        RunnerFailureKind::SessionCreateFailed,
                         format!("cloud workspace sync-in failed: {error}"),
                     )));
                 }
@@ -950,7 +932,7 @@ impl ManagedRunner for CloudManagedRunner {
                     self.settings.delete_on_release,
                 );
                 return Err(ManagedRunnerError::Runner(RunnerFailure::new(
-                    RunnerFailureKind::SpawnError,
+                    RunnerFailureKind::SessionCreateFailed,
                     format!("cloud socket connect failed ({}): {error}", acquired.socket_path),
                 )));
             }
@@ -964,7 +946,7 @@ impl ManagedRunner for CloudManagedRunner {
                 self.settings.delete_on_release,
             );
             return Err(ManagedRunnerError::Runner(RunnerFailure::new(
-                RunnerFailureKind::SpawnError,
+                RunnerFailureKind::SessionCreateFailed,
                 format!("cloud open_session failed: {error}"),
             )));
         }
@@ -1219,10 +1201,12 @@ diff --git a/hello.txt b/hello.txt
         let received = server.join().unwrap();
 
         match outcome {
-            RunnerOutcome::Completed { final_text } => {
-                let text = final_text.unwrap_or_default();
-                assert!(text.contains("REMOTE_SOCKET_OK"), "unexpected text: {text}");
-                assert!(text.contains("[cloud sync] applied 1 file change(s)"), "unexpected text: {text}");
+            RunnerOutcome::Completed { final_response } => {
+                assert!(final_response.contains("REMOTE_SOCKET_OK"), "unexpected text: {final_response}");
+                assert!(
+                    final_response.contains("[cloud sync] applied 1 file change(s)"),
+                    "unexpected text: {final_response}"
+                );
             }
             other => panic!("expected Completed, got {other:?}"),
         }
