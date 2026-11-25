@@ -187,16 +187,16 @@ fn rollback_preserves_partial_cost_and_normalizes_only_for_r0() {
 }
 
 #[test]
-fn parent_fallback_provenance_drops_malformed_or_future_values() {
+fn model_refusals_drop_malformed_or_future_values() {
     let mut value = serde_json::to_value(fixture()).expect("json");
-    let valid = json!({"from_model":"provider/model", "reason":"usage_limit", "at":"now", "detail":"limit", "resets":"later", "interrupted_tools":["read"]});
-    value["parent_model_fallback"] = valid.clone();
+    let valid = json!([{"model":"provider/model", "reason":"usage_limit", "at":"now", "detail":"limit", "resets":"later"}]);
+    value["model_refusals"] = valid.clone();
     assert_eq!(
         serde_json::to_value(
             parse(&value)
                 .expect("record")
-                .parent_model_fallback
-                .expect("fallback")
+                .model_refusals
+                .expect("refusals")
         )
         .expect("json"),
         valid
@@ -205,26 +205,25 @@ fn parent_fallback_provenance_drops_malformed_or_future_values() {
         Value::Null,
         json!(7),
         json!({}),
-        json!({"from_model":"a", "at":"now", "reason":"future"}),
-        json!({"from_model":"a", "at":"now", "reason":"error", "detail":null}),
+        json!([{"model":"a", "at":"now", "reason":"future"}]),
+        json!([{"model":"a", "at":"now", "reason":"error", "detail":null}]),
     ] {
-        value["parent_model_fallback"] = invalid;
+        value["model_refusals"] = invalid;
         assert!(
             parse(&value)
                 .expect("record retained")
-                .parent_model_fallback
+                .model_refusals
                 .is_none()
         );
     }
-    value["parent_model_fallback"] =
-        json!({"from_model":"a", "reason":"error", "at":"now", "interrupted_tools":[]});
-    assert!(
+    value["model_refusals"] = json!([{"model":"a", "reason":"error", "at":"now"}]);
+    assert_eq!(
         parse(&value)
             .expect("record")
-            .parent_model_fallback
-            .expect("fallback")
-            .interrupted_tools
-            .is_none()
+            .model_refusals
+            .expect("refusals")[0]
+            .model,
+        "a"
     );
 }
 

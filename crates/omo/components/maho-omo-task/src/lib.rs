@@ -1,5 +1,7 @@
 //! Native adapter for the pinned omo task component.
+pub mod category_config_generation;
 pub mod category_unavailable_warning;
+pub mod child_parent_wiring;
 pub mod commands;
 pub mod completion_bridge;
 pub mod component;
@@ -38,9 +40,13 @@ pub mod host_prewarm_intent;
 pub mod judge_runner;
 pub mod lead_poller_lifecycle;
 pub mod lifecycle_adapters;
+pub mod live_config_provider;
 pub mod member_extension;
 pub mod member_liveness;
 pub mod memory_reporter;
+pub mod model_error_text;
+pub mod model_routing_rows;
+pub mod model_routing_rpc;
 pub mod own_task_identity;
 pub mod owned_member_liveness;
 pub mod parent_notifier;

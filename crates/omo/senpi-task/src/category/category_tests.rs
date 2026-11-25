@@ -261,16 +261,39 @@ fn exact_gpt_lanes_prefer_subscription_but_not_its_fast_sku() {
 }
 
 #[test]
-fn resolve_reaches_system_default() {
-    let models = registry(vec![model("local", "system-default")]);
+fn resolve_dead_chain_has_no_system_default_last_resort() {
+    let models = registry(vec![model("local", "unrelated")]);
+    let options = ResolveCategoryOptions::default();
+    let unavailable = expect_unavailable(
+        resolve_category("quick", &json!({}), &models, &options).expect("resolve"),
+    );
+    assert_eq!(unavailable.category, "quick");
+    assert!(unavailable.attempted_chain.is_some());
+}
+
+#[test]
+fn resolve_round_robin_rotates_category_models_and_omits_builtin_chain_candidates() {
+    let models = registry(vec![
+        model("openai", "gpt-6-luna-fast"),
+        model("anthropic", "claude-haiku-4-5"),
+    ]);
+    let config = json!({
+        "categories": {
+            "quick": {
+                "models": ["openai/gpt-6-luna-fast", "anthropic/claude-haiku-4-5"],
+                "models_distribution": "round_robin"
+            }
+        }
+    });
     let options = ResolveCategoryOptions {
-        system_default_model: Some("local/system-default".into()),
+        distribute_models: Some(crate::models_distribution::ModelDistributor::new()),
     };
-    let resolved =
-        expect_resolved(resolve_category("quick", &json!({}), &models, &options).expect("resolve"));
-    assert_eq!(resolved.spec.provider, "local");
-    assert_eq!(resolved.spec.model_id, "system-default");
-    assert!(!resolved.selection.matched_fallback);
+    let first = expect_resolved(resolve_category("quick", &config, &models, &options).expect("1"));
+    let second = expect_resolved(resolve_category("quick", &config, &models, &options).expect("2"));
+    assert_eq!(first.spec.provider, "openai");
+    assert_eq!(second.spec.provider, "anthropic");
+    assert_eq!(first.spec.fallback_models.as_ref().map(Vec::len), Some(1));
+    assert_eq!(first.selection.source, ModelSelectionSource::User);
 }
 
 #[test]

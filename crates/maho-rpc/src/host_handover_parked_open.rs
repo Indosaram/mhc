@@ -87,6 +87,9 @@ pub fn parked_entry_from_profile(
             .clone()
             .or_else(|| profile.and_then(|profile| profile.retry_fallback.clone())),
         parked_by: None,
+        session_env: None,
+        resident_writer: None,
+        live: None,
     }
 }
 
@@ -142,6 +145,7 @@ pub fn parked_open_command(entry: &HandoverParkedEntry) -> Value {
     put("context", entry.session_context.clone());
     put("auto_title", entry.auto_title.map(|title| json!(title)));
     put("retryFallback", entry.retry_fallback.clone());
+    put("env", entry.session_env.as_ref().map(|env| json!(env)));
     command.insert(
         "retain_on_disconnect".into(),
         json!(entry.retain_on_disconnect),

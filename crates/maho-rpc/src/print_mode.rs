@@ -292,9 +292,16 @@ pub fn fallback_diagnostic(event: &maho_ext_api::AgentSessionEvent) -> Option<St
         AgentSessionEvent::RetryFallbackExhausted {
             chain_key,
             last_error,
-        } => Some(format!(
-            "Model fallback exhausted: {chain_key} ({last_error})\n"
-        )),
+        } => {
+            let summary = maho_core::retry_fallback::exhaustion::describe_fallback_exhaustion(
+                last_error,
+                &[],
+            )
+            .replace('\n', "; ");
+            Some(format!(
+                "Model fallback exhausted: {chain_key} ({summary})\n"
+            ))
+        }
         AgentSessionEvent::RetryFallbackReverted { from, to, cause } => {
             let cause = if cause.as_deref() == Some("fallback-unusable") {
                 format!(" ({from} cannot serve right now)")

@@ -26,6 +26,11 @@ impl senpi_task::steering::DestructionPort for TaskLifecycleDestruction {
                 message: error.to_string(),
             })
     }
+    fn host_session_cancel(
+        &self,
+    ) -> Option<senpi_task::lifecycle::host_session::HostSessionCancelPort> {
+        Some(self.0.host_session_cancel())
+    }
 }
 impl senpi_task::team::runtime_types::TeamMemberDestructionPort for TaskLifecycleDestruction {
     fn destroy_resident_task(&self, id: &str, cause: DestroyCause) -> Result<(), String> {

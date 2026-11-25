@@ -6,11 +6,11 @@ use serde_json::json;
 
 use super::context::LifecycleContext;
 use super::errors::LifecycleError;
-use super::host_session::{host_session_identity, is_host_session_record};
-use super::host_session_close::close_host_session_confirmed;
+use super::host_session::{HostSessionEnd, is_host_session_record};
+use super::host_session_end::{clear_host_session_end, end_host_session_child};
 use super::port::{DestroyCause, OrphanSignal, ResidentHandle, ResidentKind};
 use crate::host::HostError;
-use crate::state::{HostSessionIdentity, TaskRecord, TaskSpawnSpec, TaskTransition};
+use crate::state::{TaskRecord, TaskSpawnSpec, TaskTransition};
 use crate::store::PersistedTaskEvent;
 
 pub fn destroy_resident_task(
@@ -19,7 +19,9 @@ pub fn destroy_resident_task(
     cause: DestroyCause,
     orphan_pid: Option<i64>,
 ) -> Result<(), LifecycleError> {
-    destroy_current(context, task_id, cause, orphan_pid, None)
+    let outcome = destroy_current(context, task_id, cause, orphan_pid, None);
+    clear_host_session_end(context, task_id);
+    outcome
 }
 
 /// Evicts only the resident that produced this outcome, never a replacement run.
@@ -85,12 +87,14 @@ fn destroy_current(
             context.registry.forget(task_id);
         }
         // A daemon child whose stop could not reach its host (the transport was down) may still hold
-        // its session there: the cancel ends it once the host answers.
+        // its session there: the cancel ends it once the host answers. A close the host answered over
+        // the handle's own connection already ended the session (#11765).
         if handle.kind() != ResidentKind::InProcess
             && matches!(
                 cause,
                 DestroyCause::Cancel | DestroyCause::CancelWithoutAbort
             )
+            && !handle.host_end_answered()
         {
             close_parked_session(context, task_id)?;
         }
@@ -252,13 +256,7 @@ fn terminate_orphan(
     if let Some(record) = record.as_ref()
         && is_host_session_record(record)
     {
-        let Some(host_session) = record.host_session.as_ref() else {
-            return Ok(());
-        };
-        if !context.host_session_probe.session_live(host_session) {
-            return Ok(());
-        }
-        close_orphan_session(context, task_id, host_session, record);
+        let _ = end_host_session_child(context, record);
         return Ok(());
     }
     let pid = match record.as_ref() {
@@ -273,33 +271,17 @@ fn terminate_orphan(
 }
 
 /// A cancelled child this process holds no handle for (it parked, or its connection was let go) may
-/// still run on its host and keep committing: the cancel ends that session there.
+/// still run on its host and keep committing: the cancel ends that session there. An end that is not
+/// confirmed leaves the session on the record, where the TTL sweep retries it.
 fn close_parked_session(context: &LifecycleContext, task_id: &str) -> Result<(), LifecycleError> {
     let Some(record) = context.store.load(task_id)? else {
         return Ok(());
     };
-    let Some(host_session) = host_session_identity(&record) else {
-        return Ok(());
-    };
-    context
-        .host_session_probe
-        .refresh(Some(&host_session.socket));
-    if !context.host_session_probe.session_live(host_session) {
+    if !is_host_session_record(&record) {
         return Ok(());
     }
-    close_orphan_session(context, task_id, host_session, &record);
+    let _: HostSessionEnd = end_host_session_child(context, &record);
     Ok(())
-}
-
-/// An unconfirmed close leaves the session on the record, where the TTL sweep retries it.
-fn close_orphan_session(
-    context: &LifecycleContext,
-    task_id: &str,
-    host_session: &HostSessionIdentity,
-    record: &TaskRecord,
-) {
-    let cwd = spawn_spec_cwd(record);
-    close_host_session_confirmed(context, task_id, host_session, cwd.as_deref());
 }
 
 pub(crate) fn spawn_spec_cwd(record: &TaskRecord) -> Option<String> {

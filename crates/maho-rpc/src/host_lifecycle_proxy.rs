@@ -115,7 +115,7 @@ struct EntryStamp {
 #[cfg(unix)]
 fn stamp_of(socket_path: &str) -> std::io::Result<Option<EntryStamp>> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    match std::fs::metadata(socket_path) {
+    match std::fs::symlink_metadata(socket_path) {
         Ok(entry) => Ok(Some(EntryStamp {
             dev: entry.dev(),
             ino: entry.ino(),
@@ -151,7 +151,7 @@ pub async fn prepare_socket_path(socket_path: &str) -> std::io::Result<()> {
 #[cfg(unix)]
 pub async fn prepare_socket_path_with(
     socket_path: &str,
-    listener_state: impl AsyncFnOnce(&str) -> crate::socket_ownership::ListenerState,
+    mut listener_state: impl AsyncFnMut(&str) -> crate::socket_ownership::ListenerState,
     after_stale_probe: impl AsyncFnOnce(),
 ) -> std::io::Result<()> {
     use crate::socket_ownership::{ListenerVerdict, MAX_SOCKET_PATH_BYTES};
@@ -183,7 +183,12 @@ pub async fn prepare_socket_path_with(
     };
     // Linux refuses a connect to a regular file too; never remove what is not a socket.
     if !probed.socket {
-        return Err(in_use("the entry is not a socket"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!(
+                "{socket_path}: address already in use, occupied by a non-socket entry (a symlink or other file; nothing listens there)."
+            ),
+        ));
     }
     let state = listener_state(socket_path).await;
     match state.verdict {
@@ -192,12 +197,27 @@ pub async fn prepare_socket_path_with(
         ListenerVerdict::Dead => {}
     }
     after_stale_probe().await;
-    // Something may have replaced the entry since the probe; unlink only the entry probed dead.
-    let Some(current) = stamp_of(socket_path)? else {
-        return Ok(());
+    let unchanged = || -> std::io::Result<bool> {
+        let Some(current) = stamp_of(socket_path)? else {
+            return Ok(false);
+        };
+        if (probed.dev, probed.ino, probed.ctime_ns) != (current.dev, current.ino, current.ctime_ns)
+        {
+            return Err(in_use("the entry changed after it was probed"));
+        }
+        Ok(true)
     };
-    if (probed.dev, probed.ino, probed.ctime_ns) != (current.dev, current.ino, current.ctime_ns) {
-        return Err(in_use("the entry changed after it was probed"));
+    if !unchanged()? {
+        return Ok(());
+    }
+    let again = listener_state(socket_path).await;
+    match again.verdict {
+        ListenerVerdict::Gone => return Ok(()),
+        ListenerVerdict::Live => return Err(in_use(&again.evidence)),
+        ListenerVerdict::Dead => {}
+    }
+    if !unchanged()? {
+        return Ok(());
     }
     match std::fs::remove_file(socket_path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
@@ -205,14 +225,23 @@ pub async fn prepare_socket_path_with(
     }
 }
 
+/// senpi `listen` (POSIX): binds the public entry inside a private bind directory and publishes it
+/// via `hard_link` (`#5319`) so a link race can never be followed.
+#[cfg(unix)]
+pub fn listen_owned(
+    socket_path: &str,
+) -> std::io::Result<(
+    tokio::net::UnixListener,
+    Option<crate::socket_ownership::SocketFileIdentity>,
+    crate::host_socket_bind::BindScratchGuard,
+)> {
+    crate::host_socket_bind::listen_owned(socket_path)
+}
+
 /// senpi `listen` (POSIX): binds the public entry and makes it private to this user (0600).
 #[cfg(unix)]
 pub fn listen(socket_path: &str) -> std::io::Result<tokio::net::UnixListener> {
-    let listener = tokio::net::UnixListener::bind(socket_path)?;
-    if !socket_path.starts_with('\0') {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let (listener, _identity, _guard) = crate::host_socket_bind::listen_owned(socket_path)?;
     Ok(listener)
 }
 
@@ -277,6 +306,51 @@ pub async fn probe_internal_listener(
     tokio::time::timeout(std::time::Duration::from_millis(probe_ms), exchange)
         .await
         .unwrap_or(ReadinessProbe::Silent)
+}
+
+/// senpi `waitForListener`: probes the internal listener until ready, failing early on `Unproven`
+/// or (unless `retry_silent` is set, `#4602`) on `Silent`.
+#[cfg(unix)]
+pub async fn wait_for_internal_listener(
+    socket_path: &std::path::Path,
+    internal_key: &[u8; 32],
+    timeout_ms: u64,
+    retry_silent: bool,
+) -> std::io::Result<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let remaining_ms = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .as_millis()
+            .max(1) as u64;
+        let probe_ms = INTERNAL_READINESS_PROBE_MS.min(remaining_ms);
+        match probe_internal_listener(socket_path, internal_key, probe_ms).await {
+            ReadinessProbe::Ready(data) => return Ok(data),
+            ReadinessProbe::Silent if !retry_silent => {
+                return Err(std::io::Error::other(format!(
+                    "{}: host accepted the internal hop but did not answer within {probe_ms}ms",
+                    socket_path.display()
+                )));
+            }
+            ReadinessProbe::Unproven(reason) => {
+                return Err(std::io::Error::other(format!(
+                    "{}: {reason}",
+                    socket_path.display()
+                )));
+            }
+            ReadinessProbe::Refused | ReadinessProbe::Silent => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "{}: host did not start listening within {timeout_ms}ms",
+                    socket_path.display()
+                ),
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -422,7 +496,7 @@ mod tests {
         let path = dir.path().join("rpc.sock");
         std::fs::write(&path, "not a socket").expect("write");
         let error = prepare(&path).await.expect_err("regular file");
-        assert!(error.to_string().contains("not a socket"));
+        assert!(error.to_string().contains("non-socket"));
         assert!(path.exists());
     }
 

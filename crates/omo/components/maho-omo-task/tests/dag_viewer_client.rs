@@ -87,7 +87,6 @@ fn viewer_catchup_recovers_dropped_live_event_without_duplicates() {
             definition,
             parent_session_id: "parent".into(),
             root_session_id: "root".into(),
-            parent_model: None,
         })
         .expect("run");
     let journal = create_dag_journal(DagJournalOptions {

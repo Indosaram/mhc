@@ -6,7 +6,9 @@
 //! ADAPTATION: senpi reads the registry synchronously; the Rust registries sit behind async locks, so the host
 //! pushes each entry's registry half here whenever it changes ([`HostStatusSource::upsert`]) and the runtime half
 //! is read live, only while some subscription exists.
-use crate::session_status::{SessionStatusEntryView, SessionStatusRuntimeView, SessionView};
+use crate::session_status::{
+    SessionStatusEntryView, SessionStatusExtras, SessionStatusRuntimeView, SessionView,
+};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -166,6 +168,153 @@ impl crate::session_status_stream::SessionStatusSource for HostStatusSource {
             }),
         };
         Some(SessionView { entry, runtime })
+    }
+
+    fn extras(&self, session_id: &str) -> SessionStatusExtras {
+        let Some(source) = self.entries.get(session_id) else {
+            return SessionStatusExtras::default();
+        };
+        match &source.runtime {
+            StatusRuntime::None => SessionStatusExtras::default(),
+            StatusRuntime::Session(runtime) => {
+                let session = runtime.session();
+                let (archived, settled_state) = session.with_session_manager(|manager| {
+                    (
+                        maho_core::session_archived::is_session_archived(manager),
+                        maho_core::session_settled::read_session_settled(manager),
+                    )
+                });
+                let fields = maho_core::session_settled::settled_fields(&settled_state);
+                let settled_by = fields
+                    .settled_by
+                    .and_then(|by| serde_json::to_value(by).ok());
+                let waiting = session
+                    .retry_wait()
+                    .and_then(|wait| serde_json::to_value(wait).ok());
+                SessionStatusExtras {
+                    archived,
+                    settled: fields.settled,
+                    settled_by,
+                    waiting,
+                }
+            }
+            StatusRuntime::Worker(worker) => {
+                let Some(snapshot) = worker.snapshot() else {
+                    return SessionStatusExtras::default();
+                };
+                let state = &snapshot.state;
+                let archived = state
+                    .get("archived")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let settled = state
+                    .get("settled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let settled_by = state.get("settledBy").filter(|v| !v.is_null()).cloned();
+                let waiting = state.get("retryWait").filter(|v| !v.is_null()).cloned();
+                SessionStatusExtras {
+                    archived,
+                    settled,
+                    settled_by,
+                    waiting,
+                }
+            }
+        }
+    }
+}
+
+/// The `list_sessions` row status fields (`senpi#7027`), with `waiting` redacted so provider error
+/// text never leaks into session listings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionRowStatusFields {
+    pub archived: bool,
+    pub settled: bool,
+    pub settled_by: Option<Value>,
+    pub activity: &'static str,
+    pub waiting: Option<Value>,
+    pub model: Option<(String, String)>,
+}
+
+pub fn session_row_status_fields(
+    session: Option<&maho_core::agent_session::AgentSession>,
+    worker_state: Option<&Value>,
+) -> SessionRowStatusFields {
+    if let Some(session) = session {
+        let streaming = session.is_streaming();
+        let m = session.model();
+        let model = Some((m.provider.clone(), m.id.clone()));
+        let (archived, settled_state) = session.with_session_manager(|manager| {
+            (
+                maho_core::session_archived::is_session_archived(manager),
+                maho_core::session_settled::read_session_settled(manager),
+            )
+        });
+        let fields = maho_core::session_settled::settled_fields(&settled_state);
+        let settled_by = fields
+            .settled_by
+            .and_then(|by| serde_json::to_value(by).ok());
+        let waiting = if streaming {
+            session.retry_wait().and_then(|w| {
+                let redacted = maho_core::retry_wait::redacted_retry_wait(&w);
+                serde_json::to_value(redacted).ok()
+            })
+        } else {
+            None
+        };
+        return SessionRowStatusFields {
+            archived,
+            settled: fields.settled,
+            settled_by,
+            activity: if streaming { "running" } else { "idle" },
+            waiting,
+            model,
+        };
+    }
+    if let Some(state) = worker_state {
+        let streaming = state["isStreaming"] == true;
+        let model = state["model"]["provider"]
+            .as_str()
+            .zip(state["model"]["id"].as_str())
+            .map(|(p, i)| (p.to_owned(), i.to_owned()));
+        let archived = state
+            .get("archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let settled = state
+            .get("settled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let settled_by = state.get("settledBy").filter(|v| !v.is_null()).cloned();
+        let waiting = if streaming {
+            state
+                .get("retryWait")
+                .and_then(|raw| {
+                    serde_json::from_value::<maho_core::retry_wait::RetryWait>(raw.clone()).ok()
+                })
+                .and_then(|w| {
+                    let redacted = maho_core::retry_wait::redacted_retry_wait(&w);
+                    serde_json::to_value(redacted).ok()
+                })
+        } else {
+            None
+        };
+        return SessionRowStatusFields {
+            archived,
+            settled,
+            settled_by,
+            activity: if streaming { "running" } else { "idle" },
+            waiting,
+            model,
+        };
+    }
+    SessionRowStatusFields {
+        archived: false,
+        settled: false,
+        settled_by: None,
+        activity: "idle",
+        waiting: None,
+        model: None,
     }
 }
 

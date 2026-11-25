@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -50,6 +50,7 @@ pub type UiRequestChanged = Box<dyn Fn(Option<UiRequestChange>) + Send + Sync>;
 pub struct SessionExtensionUiRequests {
     grant_connections: HashMap<String, Option<String>>,
     pending: HashMap<String, oneshot::Sender<UiRequestResult>>,
+    claimed: HashSet<String>,
     frames: HashMap<String, Value>,
     order: Vec<String>,
     changed: Option<UiRequestChanged>,
@@ -175,13 +176,25 @@ impl SessionExtensionUiRequests {
     }
 
     pub fn resolve(&mut self, response: Value) -> bool {
+        self.resolve_with_before(response, || {})
+    }
+
+    /// First answer wins: claims the request before `before_answer` runs so a concurrent answer or
+    /// cancellation inside `before_answer` cannot settle twice.
+    pub fn resolve_with_before(&mut self, response: Value, before_answer: impl FnOnce()) -> bool {
         let Some(id) = response.get("id").and_then(Value::as_str) else {
             return false;
         };
-        let Some(request) = self.pending.remove(id) else {
+        if !self.pending.contains_key(id) || self.claimed.contains(id) {
+            return false;
+        }
+        let id = id.to_owned();
+        self.claimed.insert(id.clone());
+        before_answer();
+        self.claimed.remove(&id);
+        let Some(request) = self.pending.remove(&id) else {
             return false;
         };
-        let id = id.to_owned();
         self.forget(&id);
         let disposition = if response.get("cancelled").is_some() {
             "cancelled"

@@ -146,17 +146,11 @@ pub fn terminal_failure_message(record: Option<&TaskRecord>, failure_message: &s
 pub struct RuntimeFallbackCandidates {
     pub remaining: Vec<ResolvedModelRecord>,
     pub skipped: Vec<ResolvedModelRecord>,
-    pub retained: Vec<ResolvedModelRecord>,
     pub limit: Option<UsageLimitScope>,
 }
 impl RuntimeFallbackCandidates {
     pub fn chain_after_hop(&self) -> Vec<ResolvedModelRecord> {
-        self.remaining
-            .iter()
-            .skip(1)
-            .chain(self.retained.iter())
-            .cloned()
-            .collect()
+        self.remaining.iter().skip(1).cloned().collect()
     }
 }
 pub fn runtime_fallback_candidates(
@@ -175,21 +169,12 @@ pub fn runtime_fallback_candidates(
         .or_else(|| record.model.split_once('/').map(|(_, m)| m));
     let credential = is_credential_failure(message, model_id);
     let limit = usage_limit_scope(message);
-    let is_parent = |m: &ResolvedModelRecord| {
-        record.parent_model.as_deref() == Some(format!("{}/{}", m.provider, m.model_id).as_str())
-    };
     let mut result = RuntimeFallbackCandidates {
         limit,
         ..Default::default()
     };
     for model in record.fallback_models.iter().flatten() {
-        if limit.is_none() && !credential && is_parent(model) {
-            result.retained.push(model.clone());
-        } else if (credential && provider == Some(model.provider.as_str()))
-            || (limit == Some(UsageLimitScope::Account)
-                && provider == Some(model.provider.as_str())
-                && is_parent(model))
-        {
+        if credential && provider == Some(model.provider.as_str()) {
             result.skipped.push(model.clone());
         } else {
             result.remaining.push(model.clone());

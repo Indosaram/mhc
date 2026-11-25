@@ -8,6 +8,7 @@ pub enum TaskTargetErrorCode {
     BothTargets,
     NoTarget,
     CategoryWithModel,
+    AgentWithModel,
 }
 
 impl TaskTargetErrorCode {
@@ -16,6 +17,7 @@ impl TaskTargetErrorCode {
             Self::BothTargets => "both_targets",
             Self::NoTarget => "no_target",
             Self::CategoryWithModel => "category_with_model",
+            Self::AgentWithModel => "agent_with_model",
         }
     }
 }
@@ -142,7 +144,13 @@ impl ResolveSpawnItemsError {
 pub const BOTH_TARGETS_MESSAGE: &str =
     "Provide EITHER category OR subagent_type, not both. Remove one and retry.";
 
-pub const CATEGORY_WITH_MODEL_MESSAGE: &str = "Provide EITHER category OR model, never both. A category-routed task always takes its model from the omo.json category config; a call-site model override would silently bypass that routing. Remove model and retry, or use subagent_type for an explicit-model spawn, or configure categories.<name>.models in omo.json.";
+pub const CATEGORY_WITH_MODEL_MESSAGE: &str = "Provide EITHER category OR model, never both. A category-routed task always takes its model from the omo.json category config; a call-site model override would silently bypass that routing. Remove model and retry, or configure categories.<name>.model or categories.<name>.models in omo.json.";
+
+pub fn agent_with_model_message(agent: &str) -> String {
+    format!(
+        "agent_with_model: \"{agent}\" is a builtin agent that runs on its designated model chain; a call-site model would replace that chain. Change it with agents.{agent}.model or agents.{agent}.models in omo.json. Remove model and retry."
+    )
+}
 
 pub const NO_TARGET_MESSAGE: &str = "You MUST provide EITHER category OR subagent_type. Omitting BOTH will FAIL. Example: task(category=\"quick\", prompt=\"...\") or task(subagent_type=\"plan-reviewer\", prompt=\"...\").";
 
@@ -175,6 +183,18 @@ pub fn validate_task_target(params: TargetInput<'_>) -> TaskTargetSelection {
             TaskTargetErrorCode::CategoryWithModel,
             CATEGORY_WITH_MODEL_MESSAGE,
         ),
+        (None, Some(subagent)) if present(params.model).is_some() => {
+            let trimmed = subagent.trim();
+            let canonical = crate::agents::canonical_agent_name(trimmed);
+            if crate::agents::builtin_agent(&canonical).is_some() {
+                target_error(
+                    TaskTargetErrorCode::AgentWithModel,
+                    &agent_with_model_message(&canonical),
+                )
+            } else {
+                TaskTargetSelection::SubagentType(trimmed.to_string())
+            }
+        }
         (Some(category), None) => {
             TaskTargetSelection::Category(omo_config_core::canonical_category_name(category.trim()))
         }

@@ -291,21 +291,24 @@ fn detects_and_reaps_stale_lock_entries() {
     assert!(fs::read_to_string(&lock_path).is_err());
 }
 
-/// Pin `locks.ts:95-104`: an EPERM probe (pid 1 belongs to root) reads as not alive, so an old
-/// lock held by another user's pid is reclaimable once `stale_after_ms` passes.
+/// `memory-core/process-identity` treats pid 1 (EPERM / `/proc/1`) as `Alive` rather than dead,
+/// while reclaiming a recycled pid lock when its recorded process-start identity conflicts.
 #[cfg(unix)]
 #[test]
-fn detects_a_stale_lock_whose_owner_pid_denies_the_liveness_probe() {
-    use std::os::unix::fs::MetadataExt;
-    let root = temp("locks-eperm-");
-    // The temp dir is owned by this process's uid; root can signal pid 1, so the probe would succeed.
-    if fs::metadata(root.path()).expect("metadata").uid() == 0 {
-        return;
-    }
+fn detects_a_stale_lock_when_owner_pid_is_recycled() {
+    let root = temp("locks-recycled-");
     let lock_path = root.path().join("lock");
+    let pid = std::process::id();
+    let Some(actual) = memory_core::locks::get_process_start_identity(pid) else {
+        return;
+    };
+    let scheme = actual.split(':').next().unwrap_or("linux-proc-start-ticks");
     fs::write(
         &lock_path,
-        format!("other-user-owner\n1\n{}\n", now() - 600_000),
+        format!(
+            "prior-owner\n{pid}\n{}\nprior-instance\n{scheme}:0\n",
+            now()
+        ),
     )
     .expect("lock");
     assert!(detect_stale_lock(&lock_path, 300_000));

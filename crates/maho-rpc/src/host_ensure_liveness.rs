@@ -4,9 +4,9 @@
 //! IS-5). Neither check ever signals anything.
 use crate::host_decision::{HostEnsureRefusedError, HostProtocolInfo, HostRefusalReason};
 pub use crate::host_ensure::{public_endpoint_accepts, read_host_holder, refuse_if_foreign_held};
-use crate::socket_ownership::{
-    ListenerVerdict, lsof_socket_holders, socket_entry_listener_state, stat_socket_identity,
-};
+use crate::socket_ownership::{ListenerVerdict, lsof_socket_holders, socket_entry_listener_state};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 
 /// IS-5: a generation nothing can reach whose loop is measurably stalled is still serving its sessions, so it
@@ -57,16 +57,29 @@ fn node_platform() -> &'static str {
 
 /// Whether something stands behind a public path that no registration names: the gate before an ensure
 /// would start a host there. Unlike [`public_endpoint_accepts`] it also counts a listener that refuses only
-/// because its backlog is full, because a start there could only lose the bind. An entry this process
-/// cannot stat is held.
+/// because its backlog is full, because a start there could only lose the bind.
+///
+/// An entry that is not a socket is held too (`#5280`): `prepare_socket_path` never removes one, so a start
+/// there could only fail. Read with `symlink_metadata` (`lstat`) so symlinks, dangling or not, are held too
+/// (`#5294` class).
 pub async fn unregistered_endpoint_held(socket: &str) -> bool {
     if cfg!(windows) || socket.starts_with('\0') {
         return false;
     }
-    match stat_socket_identity(Path::new(socket)) {
-        Ok(None) => false,
+    match std::fs::symlink_metadata(Path::new(socket)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => true,
-        Ok(Some(_)) => {
+        Ok(meta) => {
+            #[cfg(unix)]
+            let is_socket = meta.file_type().is_socket();
+            #[cfg(not(unix))]
+            let is_socket = {
+                let _ = meta;
+                false
+            };
+            if !is_socket {
+                return true;
+            }
             socket_entry_listener_state(socket, node_platform(), lsof_socket_holders)
                 .await
                 .verdict

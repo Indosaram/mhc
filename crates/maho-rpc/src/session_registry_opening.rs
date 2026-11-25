@@ -33,8 +33,22 @@ pub struct OpeningInput<'a> {
     pub now: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpeningOptions {
+    pub speculative: bool,
+    pub unattached: bool,
+    pub continued: bool,
+}
+
 /// senpi `buildOpeningEntry`.
 pub fn build_opening_entry(input: OpeningInput<'_>) -> OpeningEntry {
+    build_opening_entry_with_options(input, OpeningOptions::default())
+}
+
+pub fn build_opening_entry_with_options(
+    input: OpeningInput<'_>,
+    options: OpeningOptions,
+) -> OpeningEntry {
     let OpeningInput {
         profile,
         session_path,
@@ -51,17 +65,18 @@ pub fn build_opening_entry(input: OpeningInput<'_>) -> OpeningEntry {
     // session starts with reason "startup" and every extension that only rebuilds state on a resume stays
     // unreachable from the RPC restart path. A session created by this open stays "startup".
     let unattended = profile.attended == Some(false);
-    let session_start_event = (is_resume || unattended).then(|| maho_ext_api::SessionStartEvent {
-        sizes_only: false,
-        reason: if is_resume {
-            maho_ext_api::SessionReason::Resume
-        } else {
-            maho_ext_api::SessionReason::Startup
-        },
-        initial_model_provenance: None,
-        previous_session_file: None,
-        attended: unattended.then_some(false),
-    });
+    let session_start_event =
+        (is_resume || unattended || options.continued).then(|| maho_ext_api::SessionStartEvent {
+            sizes_only: false,
+            reason: if is_resume {
+                maho_ext_api::SessionReason::Resume
+            } else {
+                maho_ext_api::SessionReason::Startup
+            },
+            initial_model_provenance: None,
+            previous_session_file: None,
+            attended: unattended.then_some(false),
+        });
     let mut stored_profile = frozen_profile(profile);
     if session_path.is_some() {
         stored_profile.session_path = session_path.clone();
@@ -75,11 +90,17 @@ pub fn build_opening_entry(input: OpeningInput<'_>) -> OpeningEntry {
     let entry = RpcSessionEntry {
         close: SessionCloseState {
             state: RpcSessionState::Opening,
-            attachments: 1,
+            attachments: if options.speculative || options.unattached {
+                0
+            } else {
+                1
+            },
             retain_on_disconnect,
             reservation_key: session_path.clone(),
             writing: false,
         },
+        speculative: options.speculative,
+        recorded_path: None,
         identity: session_identity(&stored_profile),
         profile: stored_profile.clone(),
         scope: maho_ai::node::provider_scope::ProviderScope::new(),

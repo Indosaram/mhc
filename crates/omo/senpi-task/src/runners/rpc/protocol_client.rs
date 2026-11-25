@@ -16,11 +16,11 @@ use std::thread;
 use serde_json::{Map, Value, json};
 
 use crate::manager::child_handle::Unsubscribe;
+use crate::runners::parent_link::ChildParentLink;
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::{ChildExitInput, tail_stderr};
 use crate::runners::rpc::process::{RpcChildProcess, signal_name};
 use crate::runners::rpc::terminate::terminate_rpc_child;
-use crate::runners::rpc::ui_auto_answer::build_auto_ui_response;
 use crate::runners::types::{RpcEntriesResult, RpcSwitchSessionResult, TerminateOptions};
 
 const STDERR_BUFFER_CAP: usize = 16_384;
@@ -109,6 +109,8 @@ pub struct RpcProtocolClientOptions {
     pub on_malformed_line: Option<MalformedLineHandler>,
     /// Defaults to `true`.
     pub auto_answer_ui: Option<bool>,
+    /// Parent link for dialog forwarding and permission-preset tracking (`#12839`).
+    pub parent: Option<Arc<ChildParentLink>>,
 }
 
 type PendingSender = Sender<Result<Value, RpcClientError>>;
@@ -122,6 +124,7 @@ struct ClientState {
     exit_listeners: Vec<(u64, RpcExitListener)>,
     stderr: String,
     exit: Option<ChildExitInput>,
+    detached: bool,
 }
 
 struct ClientShared {
@@ -139,6 +142,7 @@ impl ClientShared {
 pub struct RpcProtocolClient {
     child: Arc<RpcChildProcess>,
     shared: Arc<ClientShared>,
+    parent: Arc<ChildParentLink>,
 }
 
 /// One in-flight request; [`Self::wait`] blocks until the correlated response or the exit.
@@ -159,8 +163,16 @@ impl PendingResponse {
     pub fn wait_until(self, deadline: std::time::Instant) -> Result<Value, RpcClientError> {
         self.receiver
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-            .map_err(|error| RpcClientError::Write {
-                message: format!("RPC configuration deadline: {error}"),
+            .map_err(|error| match error {
+                std::sync::mpsc::RecvTimeoutError::Timeout => RpcClientError::Write {
+                    message: format!(
+                        "{}set_retry_fallback",
+                        crate::manager::start_failure_cause::RPC_RESPONSE_TIMEOUT_PREFIX
+                    ),
+                },
+                std::sync::mpsc::RecvTimeoutError::Disconnected => RpcClientError::Exited {
+                    message: "RPC process exited".to_string(),
+                },
             })?
     }
 
@@ -180,11 +192,16 @@ impl RpcProtocolClient {
             next_request_id: AtomicU64::new(0),
             next_listener_id: AtomicU64::new(0),
         });
+        let parent = options
+            .parent
+            .unwrap_or_else(|| ChildParentLink::new("rpc-child", None, None, None));
         let client = Self {
             child: Arc::clone(&child),
             shared: Arc::clone(&shared),
+            parent: Arc::clone(&parent),
         };
         if let Some(error) = child.spawn_error() {
+            parent.close();
             finalize(
                 &shared,
                 ChildExitInput {
@@ -208,6 +225,9 @@ impl RpcProtocolClient {
         });
         let auto_answer_ui = options.auto_answer_ui.unwrap_or(true);
         let stdout = child.take_stdout();
+        let read_parent = Arc::clone(&parent);
+        let follow_child = Arc::clone(&child);
+        let follow_shared = Arc::clone(&shared);
         thread::spawn(move || {
             if let Some(stdout) = stdout {
                 let mut reader = BufReader::new(stdout);
@@ -217,7 +237,14 @@ impl RpcProtocolClient {
                         let text = String::from_utf8_lossy(&raw);
                         let line = text.trim();
                         if !line.is_empty() {
-                            handle_line(&shared, &child, line, &on_malformed_line, auto_answer_ui);
+                            handle_line(
+                                &shared,
+                                &child,
+                                &read_parent,
+                                line,
+                                &on_malformed_line,
+                                auto_answer_ui,
+                            );
                         }
                     }
                     raw.clear();
@@ -228,6 +255,7 @@ impl RpcProtocolClient {
             }
             let status = child.wait_exit();
             let stderr = shared.lock().stderr.clone();
+            read_parent.close();
             finalize(
                 &shared,
                 ChildExitInput {
@@ -239,6 +267,10 @@ impl RpcProtocolClient {
                 },
             );
         });
+        let follow_parent = Arc::clone(&parent);
+        follow_parent.follow(Arc::new(move |preset| {
+            send_set_permission_preset(&follow_child, &follow_shared, preset)
+        }));
         client
     }
 
@@ -253,6 +285,9 @@ impl RpcProtocolClient {
 
     /// Start a request without waiting, so several can be in flight at once.
     pub fn request(&self, command: Value) -> Result<PendingResponse, RpcClientError> {
+        if command.get("type").and_then(Value::as_str) == Some("abort") {
+            self.parent.turn_aborted();
+        }
         let mut command = match command {
             Value::Object(map) => map,
             _ => Map::new(),
@@ -268,6 +303,11 @@ impl RpcProtocolClient {
         let (sender, receiver) = mpsc::channel();
         {
             let mut state = self.shared.lock();
+            if state.detached {
+                return Err(RpcClientError::Write {
+                    message: "RPC client detached".to_string(),
+                });
+            }
             if state.exit.is_some() {
                 return Err(RpcClientError::NotRunning {
                     stderr_tail: tail_stderr(&state.stderr, STDERR_TAIL_CAP),
@@ -359,10 +399,20 @@ impl RpcClientPort for RpcProtocolClient {
     }
 
     fn detach(&self) {
-        let mut state = self.shared.lock();
-        state.event_listeners.clear();
-        state.durable_listeners.clear();
-        state.exit_listeners.clear();
+        self.parent.close();
+        let pending = {
+            let mut state = self.shared.lock();
+            state.detached = true;
+            state.event_listeners.clear();
+            state.durable_listeners.clear();
+            state.exit_listeners.clear();
+            std::mem::take(&mut state.pending)
+        };
+        for (_, sender) in pending {
+            let _ = sender.send(Err(RpcClientError::Write {
+                message: "RPC client detached".to_string(),
+            }));
+        }
     }
 
     fn terminate(&self, options: TerminateOptions) -> io::Result<()> {
@@ -410,9 +460,63 @@ fn pump_stderr(mut stderr: impl Read, shared: &ClientShared) {
     }
 }
 
+fn send_set_permission_preset(
+    child: &Arc<RpcChildProcess>,
+    shared: &Arc<ClientShared>,
+    permission_preset: &str,
+) -> Result<(), String> {
+    let mut command = Map::new();
+    let id = {
+        let next = shared.next_request_id.fetch_add(1, Ordering::SeqCst) + 1;
+        format!("senpi-task_{next}")
+    };
+    command.insert("id".to_string(), Value::String(id.clone()));
+    command.insert(
+        "type".to_string(),
+        Value::String("set_permission_preset".to_string()),
+    );
+    command.insert(
+        "permissionPreset".to_string(),
+        Value::String(permission_preset.to_string()),
+    );
+    let (sender, receiver) = mpsc::channel();
+    {
+        let mut state = shared.lock();
+        if state.detached {
+            return Err("RPC client detached".to_string());
+        }
+        if state.exit.is_some() {
+            return Err(format!(
+                "RPC process is not running. Stderr: {}",
+                tail_stderr(&state.stderr, STDERR_TAIL_CAP)
+            ));
+        }
+        state.pending.insert(id.clone(), sender);
+    }
+    if let Err(error) = child.write_line(&Value::Object(command).to_string()) {
+        shared.lock().pending.remove(&id);
+        return Err(error.to_string());
+    }
+    let response = receiver
+        .recv()
+        .map_err(|_| "RPC process exited".to_string())?
+        .map_err(|err| err.to_string())?;
+    if is_success_for(&response, "set_permission_preset")
+        && response
+            .pointer("/data/permissionPreset")
+            .and_then(Value::as_str)
+            == Some(permission_preset)
+    {
+        Ok(())
+    } else {
+        Err(command_error(&response, "set_permission_preset").to_string())
+    }
+}
+
 fn handle_line(
-    shared: &ClientShared,
-    child: &RpcChildProcess,
+    shared: &Arc<ClientShared>,
+    child: &Arc<RpcChildProcess>,
+    parent: &Arc<ChildParentLink>,
     line: &str,
     on_malformed_line: &MalformedLineHandler,
     auto_answer_ui: bool,
@@ -435,8 +539,14 @@ fn handle_line(
             }
         }
         Some("extension_ui_request") => {
-            if auto_answer_ui && let Some(answer) = build_auto_ui_response(&parsed) {
-                let _ = child.write_line(&answer.to_string());
+            if auto_answer_ui && !shared.lock().detached {
+                let write_child = Arc::clone(child);
+                let write_shared = Arc::clone(shared);
+                parent.answer(&parsed, move |answer| {
+                    if !write_shared.lock().detached {
+                        let _ = write_child.write_line(&answer.to_string());
+                    }
+                });
             }
         }
         _ => {

@@ -101,6 +101,8 @@ pub struct TaskDagEngine {
     active_session: Mutex<Option<String>>,
     /// The latest session start's gated attach (`wireDagLifecycle().lastAttach`).
     last_attach: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    attach_started: Arc<std::sync::atomic::AtomicU64>,
+    attach_done: tokio::sync::watch::Sender<u64>,
     wake: Mutex<Option<crate::dag_wake::DagWake>>,
     delivered: Mutex<BTreeMap<DagRunId, u64>>,
     /// Event-log (byte length, mtime) at the last successful durable publish per run: a log that
@@ -529,6 +531,8 @@ impl TaskDagEngine {
             surfaces: Mutex::new(None),
             active_session: Mutex::new(None),
             last_attach: Arc::default(),
+            attach_started: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            attach_done: tokio::sync::watch::channel(0).0,
             wake: Mutex::new(None),
             delivered: Mutex::new(BTreeMap::new()),
             published_log_len: Mutex::new(BTreeMap::new()),
@@ -654,14 +658,7 @@ impl TaskDagEngine {
                     ),
                     adopt: Arc::new(move |installed| {
                         if let Some(dag) = adopt.upgrade() {
-                            lock(&dag.schedulers).insert(
-                                installed.run_id.clone(),
-                                DagOwnedScheduler {
-                                    scheduler: installed.scheduler.clone(),
-                                    running: None,
-                                },
-                            );
-                            dag.spawn_running(installed.run_id, installed.scheduler, true);
+                            dag.adopt_installed(installed);
                         }
                     }),
                     cancel_run: Arc::new(move |run| {
@@ -1304,11 +1301,24 @@ impl TaskDagEngine {
         );
     }
 
+    fn adopt_installed(self: &Arc<Self>, installed: senpi_task::dag::recovery::InstalledDagRun) {
+        lock(&self.schedulers).insert(
+            installed.run_id.clone(),
+            DagOwnedScheduler {
+                scheduler: installed.scheduler.clone(),
+                running: None,
+            },
+        );
+        self.spawn_running(installed.run_id, installed.scheduler, true);
+    }
+
     /// TS `recoverPausedRuns(scope)`.
     fn recover_paused_runs(self: &Arc<Self>, scope: &RecoveryScope) {
-        let outcomes = self
-            .recovery
-            .resume_paused_runs_from(&scope.session_id, scope.fork_source_session_id.as_deref());
+        let outcomes = self.recovery.install_paused_runs_from(
+            &scope.session_id,
+            scope.fork_source_session_id.as_deref(),
+            |installed| self.adopt_installed(installed),
+        );
         let subscriptions = std::mem::take(&mut *lock(&self.recovery_task_subscriptions));
         for unsubscribe in subscriptions.into_values() {
             unsubscribe();
@@ -1392,9 +1402,21 @@ impl TaskDagEngine {
 
     /// Settles when the latest session start's gated attach ended (`lastAttach()`).
     pub async fn last_attach(&self) {
+        let target = self
+            .attach_started
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let mut rx = self.attach_done.subscribe();
+        let _ = rx.wait_for(|done| *done >= target).await;
         let handle = lock(&self.last_attach).take();
         if let Some(handle) = handle {
             let _ = handle.await;
+        }
+    }
+
+    /// Restates the current `omo.dag.updated` snapshot for a client that reattached (`#12113`).
+    pub fn resend(&self) {
+        if let Some(bridge) = lock(&self.rpc).as_ref() {
+            bridge.resend();
         }
     }
 
@@ -1792,6 +1814,8 @@ impl TaskDagEngine {
         let attach = Arc::downgrade(self);
         let bridge = component.bridge.clone();
         let last_attach = self.last_attach.clone();
+        let attach_started = self.attach_started.clone();
+        let attach_done = self.attach_done.clone();
         api.on(
             maho_ext_api::EventKind::SessionStart,
             Arc::new(move |event, context| {
@@ -1803,15 +1827,16 @@ impl TaskDagEngine {
                 let coordinator = idle_injection::from_slot(&context.idle_coordinator);
                 let bridge = bridge.clone();
                 let last_attach = last_attach.clone();
+                let seq = attach_started.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                let attach_done = attach_done.clone();
                 Box::pin(async move {
                     // DAG recovery assumes the session-start task reconcile finished (a revivable
                     // child already carries a handle). Admission does not wait for that reconcile, so
                     // the attach waits for it instead; a superseded start never attaches.
                     let latest = tokio::spawn(async move {
-                        if !bridge.after_session_start_reconcile().await {
-                            return;
-                        }
-                        if let Some(dag) = attach.upgrade() {
+                        if bridge.after_session_start_reconcile().await
+                            && let Some(dag) = attach.upgrade()
+                        {
                             let attached = tokio::task::spawn_blocking(move || {
                                 dag.attach(start.as_ref(), coordinator)
                             })
@@ -1822,8 +1847,48 @@ impl TaskDagEngine {
                                 ));
                             }
                         }
+                        attach_done.send_if_modified(|done| {
+                            if *done < seq {
+                                *done = seq;
+                                true
+                            } else {
+                                false
+                            }
+                        });
                     });
                     *lock(&last_attach) = Some(latest);
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+        let turn_wait_started = self.attach_started.clone();
+        let turn_wait_done = self.attach_done.clone();
+        api.on(
+            maho_ext_api::EventKind::BeforeAgentStart,
+            Arc::new(move |event, _| {
+                let maho_ext_api::ExtensionEvent::BeforeAgentStart(start) = event else {
+                    return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
+                };
+                if start.preview {
+                    return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
+                }
+                let target = turn_wait_started.load(std::sync::atomic::Ordering::SeqCst);
+                let mut rx = turn_wait_done.subscribe();
+                Box::pin(async move {
+                    let _ = rx.wait_for(|done| *done >= target).await;
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+        let resume = Arc::downgrade(self);
+        api.on(
+            maho_ext_api::EventKind::SessionResumed,
+            Arc::new(move |_, _| {
+                let resume = resume.clone();
+                Box::pin(async move {
+                    if let Some(dag) = resume.upgrade() {
+                        dag.resend();
+                    }
                     Ok(maho_ext_api::EventResult::None)
                 })
             }),
@@ -1913,7 +1978,11 @@ impl TaskDagEngine {
                 Ok(result)
             })
         });
-        api.register_tool(tool);
+        if let Err(error) =
+            api.try_register_tool_with_runs(tool, Some(maho_ext_api::ExtensionSide::Brain))
+        {
+            maho_ext_api::diagnostic(&format!("workflow tool registration failed: {error}"));
+        }
     }
 }
 

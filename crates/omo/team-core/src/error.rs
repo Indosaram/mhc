@@ -54,6 +54,13 @@ pub enum TeamCoreError {
     GitUnavailable,
     #[error("Timed out acquiring lock: {0}")]
     LockTimeout(String),
+    #[error("Timed out acquiring lock: {lock_path}")]
+    LockWaitTimeout {
+        lock_path: String,
+        holder: Option<crate::team_state_store::lock_record::LockHolder>,
+    },
+    #[error("The lock at {0} changed while it was handed over; the critical section was aborted.")]
+    LockLeaseLost(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     /// A plain `Error` in the TypeScript original.
@@ -100,6 +107,8 @@ impl TeamCoreError {
             Self::InvalidTaskTransition { .. } => "InvalidTaskTransitionError",
             Self::CrossOwnerUpdate => "CrossOwnerUpdateError",
             Self::GitUnavailable => "GitUnavailableError",
+            Self::LockWaitTimeout { .. } => "LockWaitTimeoutError",
+            Self::LockLeaseLost(_) => "LockLeaseLostError",
             Self::LockTimeout(_) | Self::Io(_) | Self::Message(_) => "Error",
         }
     }

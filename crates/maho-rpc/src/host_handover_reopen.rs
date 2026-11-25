@@ -11,6 +11,8 @@ pub const HANDOVER_PARKED_REOPEN_BUDGET_MS: u64 = 120_000;
 pub const HANDOVER_PARKED_REOPEN_POLL_MS: u64 = 250;
 pub const HANDOVER_PARKED_REOPEN_MAX_ATTEMPTS: u32 = 8;
 pub const HANDOVER_PARKED_REOPEN_QUIET_STREAK: u32 = 8;
+/// Past the quiet streak or the budget the watch only waits on a predecessor that is still draining (senpi#6988).
+pub const HANDOVER_PARKED_PREDECESSOR_POLL_MS: u64 = 2_000;
 /// `task_status` values after which a parked session is never reopened.
 pub const TERMINAL_TASK_STATUSES: [&str; 6] = [
     "completed",
@@ -37,7 +39,27 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait HandoverParkedStore: Send + Sync {
     fn read(&self) -> BoxFuture<'_, Vec<HandoverParkedEntry>>;
     fn clear(&self, session_path: &str) -> BoxFuture<'_, ()>;
+    fn clear_inherited(&self, session_path: &str, _holder: Option<&str>) -> BoxFuture<'_, ()> {
+        self.clear(session_path)
+    }
     fn drop_if_file_gone(&self, session_path: &str) -> BoxFuture<'_, ()>;
+    /// Whether any other generation of this endpoint still has a live supervisor or host child.
+    fn predecessor_alive(&self, _self_instance: Option<&str>) -> BoxFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+    /// Whether a stamped resident writer process is still alive.
+    fn writer_alive(
+        &self,
+        _writer: &crate::host_handover_resident_writer::ResidentWriter,
+    ) -> BoxFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+}
+/// A takeover in progress: inherited parks not yet reopened, and whether a predecessor generation still runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InheritedHandover {
+    pub pending: usize,
+    pub predecessor_draining: bool,
 }
 /// Opens one parked session on this host, refusing with a [`ReopenError`].
 pub type ParkedSessionOpener<'a> =
@@ -54,20 +76,28 @@ impl ReopenHolder<'_> {
         self.should_reopen.is_some_and(|should| !should())
     }
 }
-/// Parks a PREVIOUS generation left for this one: a park this host wrote itself is for its successor.
+/// Parks a PREVIOUS generation left for this one: a park this host wrote itself is for its successor,
+/// and a session still resident in its live writer is that process's to park.
 async fn inherited_parks(
     store: &dyn HandoverParkedStore,
     holder: Option<&ReopenHolder<'_>>,
 ) -> Vec<HandoverParkedEntry> {
-    store
-        .read()
-        .await
-        .into_iter()
-        .filter(|entry| {
-            entry.parked_by.is_none()
-                || entry.parked_by.as_deref() != holder.map(|holder| holder.host_instance.as_str())
-        })
-        .collect()
+    let entries = store.read().await;
+    let mut inherited = Vec::new();
+    for entry in entries {
+        if entry.parked_by.is_some()
+            && entry.parked_by.as_deref() == holder.map(|holder| holder.host_instance.as_str())
+        {
+            continue;
+        }
+        if let Some(writer) = &entry.resident_writer
+            && store.writer_alive(writer).await
+        {
+            continue;
+        }
+        inherited.push(entry);
+    }
+    inherited
 }
 /// The terminal `task_status` of an entry: its own overlay key wins, else the session context's.
 pub fn terminal_task_status(entry: &HandoverParkedEntry) -> Option<&str> {
@@ -86,38 +116,85 @@ pub fn terminal_task_status(entry: &HandoverParkedEntry) -> Option<&str> {
     .and_then(Value::as_str)?;
     TERMINAL_TASK_STATUSES.contains(&status).then_some(status)
 }
+pub type HandoverProgressCallback<'a> = &'a (dyn Fn(Option<InheritedHandover>) + Send + Sync);
+
 pub async fn reopen_handover_parked_sessions(
     store: &dyn HandoverParkedStore,
     open: ParkedSessionOpener<'_>,
     holder: Option<&ReopenHolder<'_>>,
-) -> () {
+) {
+    reopen_handover_parked_sessions_with_progress(store, open, holder, None).await;
+}
+
+pub async fn reopen_handover_parked_sessions_with_progress(
+    store: &dyn HandoverParkedStore,
+    open: ParkedSessionOpener<'_>,
+    holder: Option<&ReopenHolder<'_>>,
+    on_progress: Option<HandoverProgressCallback<'_>>,
+) {
     let deadline =
         tokio::time::Instant::now() + Duration::from_millis(HANDOVER_PARKED_REOPEN_BUDGET_MS);
     let mut attempts = HashMap::new();
     let mut held_polls = HashMap::new();
     let mut empty_streak = 0u32;
     let mut saw_any_park = false;
+    let mut waited_on_predecessor = false;
+    let mut final_pass = false;
+    let self_instance = holder.map(|holder| holder.host_instance.as_str());
+    let report = |pending: usize, predecessor_draining: bool| {
+        if let Some(cb) = on_progress {
+            cb(
+                (pending > 0 || predecessor_draining).then_some(InheritedHandover {
+                    pending,
+                    predecessor_draining,
+                }),
+            );
+        }
+    };
+    let done = || {
+        if let Some(cb) = on_progress {
+            cb(None);
+        }
+    };
     loop {
         // A draining predecessor must not reopen into its own registry a session it just parked for its successor.
         if holder.is_some_and(ReopenHolder::reopening_stopped) {
-            return;
+            return done();
         }
-        for entry in inherited_parks(store, holder).await {
+        let parked = inherited_parks(store, holder).await;
+        if on_progress.is_some() {
+            let draining = store.predecessor_alive(self_instance).await;
+            report(parked.len(), draining);
+        }
+        for entry in parked {
             saw_any_park = true;
             reopen_one(store, open, entry, &mut attempts, &mut held_polls, holder).await;
         }
         let remaining = inherited_parks(store, holder).await.len();
+        if on_progress.is_some() {
+            let draining = store.predecessor_alive(self_instance).await;
+            report(remaining, draining);
+        }
         if holder.is_some_and(ReopenHolder::reopening_stopped) {
-            return;
+            return done();
         }
         empty_streak = if remaining == 0 { empty_streak + 1 } else { 0 };
-        if saw_any_park && empty_streak >= HANDOVER_PARKED_REOPEN_QUIET_STREAK {
-            return;
+        let settled = (saw_any_park && empty_streak >= HANDOVER_PARKED_REOPEN_QUIET_STREAK)
+            || tokio::time::Instant::now() >= deadline;
+        if !settled {
+            tokio::time::sleep(Duration::from_millis(HANDOVER_PARKED_REOPEN_POLL_MS)).await;
+            continue;
         }
-        if tokio::time::Instant::now() >= deadline {
-            return;
+        if store.predecessor_alive(self_instance).await {
+            waited_on_predecessor = true;
+            tokio::time::sleep(Duration::from_millis(HANDOVER_PARKED_PREDECESSOR_POLL_MS)).await;
+            continue;
         }
-        tokio::time::sleep(Duration::from_millis(HANDOVER_PARKED_REOPEN_POLL_MS)).await;
+        if waited_on_predecessor && !final_pass {
+            final_pass = true;
+            continue;
+        }
+        return done();
     }
 }
 async fn reopen_one(
@@ -151,7 +228,9 @@ async fn reopen_one(
             if holder.is_some_and(ReopenHolder::reopening_stopped) {
                 return;
             }
-            store.clear(&path).await;
+            store
+                .clear_inherited(&path, holder.map(|holder| holder.host_instance.as_str()))
+                .await;
         }
         Err(cause) => {
             // `session_path_in_use` is the predecessor still holding the path's claim: the park is waiting, not failing,

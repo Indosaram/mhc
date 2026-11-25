@@ -43,6 +43,8 @@ impl HandoverState {
 pub struct HandoverLaunch {
     pub command: String,
     pub args: Vec<String>,
+    /// The requester's supervisor reports its startup phases, so the successor runs the bounded phase policy.
+    pub reports_startup: bool,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdleHandoverRequest {
@@ -60,6 +62,10 @@ pub struct IdleHandoverRequest {
     pub mcp_presenter_enforcement: Option<bool>,
     /// The agent dir of the CLI that asked; absent from CLIs before #3560. Another dir than the host's is refused.
     pub agent_dir: Option<String>,
+    /// The engine of the CLI that asked (senpi#7018). `None` predates the downgrade guard.
+    pub target_engine: Option<maho_core::engine_build_identity::EngineBuildIdentity>,
+    /// Explicit consent to hand this host down to an older engine.
+    pub allow_downgrade: bool,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandoverSuccessor {
@@ -89,6 +95,8 @@ pub struct HostIdentityView {
     pub instance_id: String,
     pub generation: f64,
     pub runtime_build_id: Option<String>,
+    /// This host's own engine; a request for an older one is refused `older_engine` (senpi#7018).
+    pub engine: Option<maho_core::engine_build_identity::EngineBuildIdentity>,
 }
 /// A successor that came up, or the reason it did not.
 pub type HandoverOutcome = Result<HandoverSuccessor, String>;
@@ -100,6 +108,10 @@ pub struct HostIdleHandoverOptions {
     pub identity: Box<dyn Fn() -> HostIdentityView + Send + Sync>,
     pub is_idle: Box<dyn Fn() -> bool + Send + Sync>,
     pub perform: PerformIdleHandover,
+    /// Called synchronously when a switch starts to prevent untracked machine work (senpi#6752).
+    pub hold_new_work: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Called if a switch becomes blocked so this host keeps serving.
+    pub release_new_work: Option<Box<dyn Fn() + Send + Sync>>,
     /// How often a pending operation re-checks for idle between request settlements.
     pub poll_ms: Option<u64>,
     pub log: Option<HandoverLog>,
@@ -108,7 +120,7 @@ pub struct HostIdleHandoverOptions {
 pub type HandoverLog = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Commands that would start, extend or queue model work. Everything else stays admitted.
-pub const NEW_WORK_COMMANDS: [&str; 12] = [
+pub const NEW_WORK_COMMANDS: [&str; 13] = [
     "prompt",
     "steer",
     "follow_up",
@@ -119,6 +131,7 @@ pub const NEW_WORK_COMMANDS: [&str; 12] = [
     "bash",
     "compact",
     "wake",
+    "admit_external_message",
     "edit_assistant_message",
     "edit_user_message",
 ];
@@ -215,6 +228,12 @@ impl HostIdleHandover {
                     detail: this.runtime_build_id,
                 };
             }
+            if let Some(detail) = downgrade_detail(&request, this.engine.as_ref()) {
+                return HandoverAnswer::Refused {
+                    reason: "older_engine",
+                    detail: Some(detail),
+                };
+            }
             let view = HandoverView {
                 operation_id: request.operation_id.clone(),
                 state: HandoverState::Pending,
@@ -300,10 +319,17 @@ impl HostIdleHandover {
             operation.request.clone()
         };
         self.stop_timer();
+        if let Some(hold) = &self.inner.options.hold_new_work {
+            hold();
+        }
         let outcome = (self.inner.options.perform)(request).await;
+        let blocked = outcome.is_err();
         let line = {
             let mut guard = lock(&self.inner.operation);
             let Some(operation) = guard.as_mut() else {
+                if blocked && let Some(release) = &self.inner.options.release_new_work {
+                    release();
+                }
                 return;
             };
             match outcome {
@@ -322,6 +348,9 @@ impl HostIdleHandover {
                 operation.view.state.as_str()
             )
         };
+        if blocked && let Some(release) = &self.inner.options.release_new_work {
+            release();
+        }
         self.log(&line);
     }
     fn stop_timer(&self) {
@@ -330,6 +359,23 @@ impl HostIdleHandover {
         }
     }
 }
+fn downgrade_detail(
+    request: &IdleHandoverRequest,
+    engine: Option<&maho_core::engine_build_identity::EngineBuildIdentity>,
+) -> Option<String> {
+    if request.allow_downgrade {
+        return None;
+    }
+    let engine = engine?;
+    let Some(target) = &request.target_engine else {
+        return Some(format!(
+            "the requesting CLI did not state its engine, so it predates the downgrade guard and is older than this host's {}",
+            engine.text
+        ));
+    };
+    maho_core::engine_build_identity::older_engine_detail(target, engine)
+}
+
 fn same_terms(a: &IdleHandoverRequest, b: &IdleHandoverRequest) -> bool {
     a.target_runtime_build_id == b.target_runtime_build_id
         && a.mcp_presenter_enforcement.unwrap_or(false)
@@ -351,12 +397,15 @@ mod tests {
             launch: HandoverLaunch {
                 command: "senpi".into(),
                 args: vec![],
+                reports_startup: true,
             },
             host_args: vec![],
             env: BTreeMap::new(),
             policy: None,
             mcp_presenter_enforcement: None,
             agent_dir: None,
+            target_engine: None,
+            allow_downgrade: false,
         }
     }
     fn successor() -> HandoverSuccessor {
@@ -373,12 +422,15 @@ mod tests {
                 instance_id: "i".into(),
                 generation: 1.,
                 runtime_build_id: Some("old".into()),
+                engine: None,
             }),
             is_idle: Box::new(move || idle.load(Ordering::SeqCst)),
             perform: Box::new(move |_| {
                 let outcome = outcome.clone();
                 Box::pin(async move { outcome })
             }),
+            hold_new_work: None,
+            release_new_work: None,
             poll_ms: Some(3_600_000),
             log: None,
         })

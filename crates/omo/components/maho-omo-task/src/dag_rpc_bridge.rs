@@ -75,6 +75,16 @@ impl DagRpcBridge {
             .unwrap_or_else(PoisonError::into_inner)
             .attached = true;
         self.sync();
+        self.publish_snapshot_now();
+    }
+    pub fn resend(self: &Arc<Self>) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !state.attached || state.disposed {
+            return;
+        }
+        state.fingerprint = None;
+        drop(state);
+        self.publish_snapshot_now();
     }
     pub fn forward(&self, event: &Value) {
         let Some(run) = event.get("runId").and_then(Value::as_str) else {
@@ -257,6 +267,16 @@ impl DagRpcBridge {
                     .unwrap_or(DAG_SNAPSHOT_DEBOUNCE_MS),
             ),
         );
+    }
+    fn publish_snapshot_now(&self) {
+        let pending = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.snapshot_flush.take()
+        };
+        if let Some(handle) = pending {
+            self.deps.timers.clear(handle);
+        }
+        self.flush_snapshot();
     }
     fn flush_snapshot(&self) {
         {

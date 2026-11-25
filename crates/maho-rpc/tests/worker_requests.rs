@@ -123,3 +123,79 @@ async fn failed_send_rejects_its_promise_and_retires_debt() {
     assert_eq!(reply.await.unwrap(), Err("channel closed".into()));
     assert_eq!(requests.active_count(), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn does_not_start_open_already_expired_when_queue_built_long_ago() {
+    let mut requests = SessionWorkerRequests::default();
+    let now_late = maho_rpc::session_worker_protocol::SESSION_WORKER_LIMITS.open_ms + 5_000;
+    tokio::time::advance(std::time::Duration::from_millis(now_late)).await;
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let _reply = requests
+        .submit_with_timeout(
+            &serde_json::json!({"type":"commit"}),
+            now_late,
+            |_| Ok(()),
+            move || {
+                let _ = tx.send(());
+            },
+        )
+        .unwrap();
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn does_not_start_request_already_expired_after_quiet_gap() {
+    let mut requests = SessionWorkerRequests::default();
+    let open_ms = maho_rpc::session_worker_protocol::SESSION_WORKER_LIMITS.open_ms;
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let reply = requests
+        .submit_with_timeout(
+            &serde_json::json!({"type":"commit"}),
+            0,
+            move |msg| send_tx.send(msg).map_err(|e| e.to_string()),
+            || {},
+        )
+        .unwrap();
+    let sent = send_rx.recv().await.unwrap();
+    requests.note_progress(0);
+    requests.receive(&serde_json::json!({"type":"result","request":sent["request"]}));
+    assert!(reply.await.unwrap().is_ok());
+
+    let later = open_ms + 5_000;
+    tokio::time::advance(std::time::Duration::from_millis(later)).await;
+    let _reply2 = requests
+        .submit_with_timeout(
+            &serde_json::json!({"type":"prompt_surface","surface":"app"}),
+            later,
+            |_| Ok(()),
+            move || {
+                let _ = tx.send(());
+            },
+        )
+        .unwrap();
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    assert!(rx.try_recv().is_err());
+    tokio::time::advance(std::time::Duration::from_millis(open_ms)).await;
+    rx.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn still_bounds_open_that_genuinely_stalls() {
+    let mut requests = SessionWorkerRequests::default();
+    let open_ms = maho_rpc::session_worker_protocol::SESSION_WORKER_LIMITS.open_ms;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _reply = requests
+        .submit_with_timeout(
+            &serde_json::json!({"type":"commit"}),
+            0,
+            |_| Ok(()),
+            move || {
+                let _ = tx.send(());
+            },
+        )
+        .unwrap();
+    tokio::time::advance(std::time::Duration::from_millis(open_ms + 1)).await;
+    rx.await.unwrap();
+}

@@ -9,6 +9,8 @@ use std::thread::JoinHandle;
 
 use serde_json::json;
 
+use crate::runners::child_dialogs::ChildDialogForwarder;
+use crate::runners::parent_link::{ChildParentLink, ParentPermissionMode, WarningCallback};
 use crate::runners::rpc::handle::{Clock, RpcChildHandle, RpcChildHandleOptions};
 use crate::runners::rpc::model_admission::{
     RpcModelAdmission, RpcModelAdmissionOptions, create_rpc_model_admission,
@@ -37,11 +39,13 @@ pub struct RpcProcessRunnerOptions {
     pub now: Option<Clock>,
     pub model_admission: Option<RpcModelAdmission>,
     pub inherited_extensions: Vec<String>,
+    pub dialogs: Option<Arc<dyn ChildDialogForwarder>>,
+    pub parent_permission: Option<Arc<dyn ParentPermissionMode>>,
+    pub on_warning: Option<WarningCallback>,
 }
 
 pub struct RpcProcessRunner {
     fallback_chain_deadline_ms: u64,
-    unsupported_noticed: std::sync::atomic::AtomicBool,
     exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pending_teardowns: Mutex<Vec<JoinHandle<()>>>,
     spawn_child: SpawnChild,
@@ -51,14 +55,23 @@ pub struct RpcProcessRunner {
     now: Clock,
     model_admission: RpcModelAdmission,
     inherited_extensions: Vec<String>,
+    dialogs: Option<Arc<dyn ChildDialogForwarder>>,
+    parent_permission: Option<Arc<dyn ParentPermissionMode>>,
+    on_warning: Option<WarningCallback>,
 }
 
 impl RpcProcessRunner {
     pub fn new(options: RpcProcessRunnerOptions) -> Self {
+        let exclude_models = options.exclude_models;
+        let default_admission = || {
+            create_rpc_model_admission(RpcModelAdmissionOptions {
+                exclude_models_provider: exclude_models.clone(),
+                ..RpcModelAdmissionOptions::default()
+            })
+        };
         Self {
             fallback_chain_deadline_ms: options.fallback_chain_deadline_ms.unwrap_or(10_000),
-            unsupported_noticed: std::sync::atomic::AtomicBool::new(false),
-            exclude_models: options.exclude_models,
+            exclude_models: exclude_models.clone(),
             pending_teardowns: Mutex::new(Vec::new()),
             spawn_child: options.spawn_child.unwrap_or_else(|| {
                 Arc::new(|descriptor| Arc::new(RpcChildProcess::spawn(descriptor)))
@@ -74,10 +87,11 @@ impl RpcProcessRunner {
             now: options
                 .now
                 .unwrap_or_else(|| Arc::new(|| chrono::Utc::now().timestamp_millis())),
-            model_admission: options
-                .model_admission
-                .unwrap_or_else(|| create_rpc_model_admission(RpcModelAdmissionOptions::default())),
+            model_admission: options.model_admission.unwrap_or_else(default_admission),
             inherited_extensions: options.inherited_extensions,
+            dialogs: options.dialogs,
+            parent_permission: options.parent_permission,
+            on_warning: options.on_warning,
         }
     }
 
@@ -114,13 +128,20 @@ impl RpcProcessRunner {
             spec.extensions = Some(self.inherited_extensions.clone());
         }
         (self.model_admission)(&spec)?;
-        let descriptor = (self.build_spawn)(&spec);
+        let parent = ChildParentLink::new(
+            spec.task_id.clone(),
+            self.dialogs.clone(),
+            self.parent_permission.clone(),
+            self.on_warning.clone(),
+        );
+        let descriptor = (self.build_spawn)(&parent.named(spec.clone()));
         let child = (self.spawn_child)(&descriptor);
         let protocol = Arc::new(RpcProtocolClient::new(
             child,
             RpcProtocolClientOptions {
                 on_malformed_line: self.on_malformed_line.clone(),
                 auto_answer_ui: None,
+                parent: Some(parent),
             },
         ));
         let client: Arc<dyn RpcClientPort> = protocol.clone();
@@ -136,33 +157,181 @@ impl RpcProcessRunner {
                 })
             }),
         });
-        if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
-            && !chain.is_empty()
-        {
+        if let (Some(profile), Some(model)) = (
+            crate::runners::retry_fallback_profile::child_retry_fallback_profile(&spec),
+            spec.model.as_deref(),
+        ) {
+            let chain = crate::runners::designated_fallback_profile::designated_chain_text(
+                model,
+                spec.fallback_models.as_deref().unwrap_or(&[]),
+            );
+            let models: Vec<String> = std::iter::once(model.to_string())
+                .chain(spec.fallback_models.iter().flatten().cloned())
+                .collect();
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
-            let configured = protocol.request(json!({"type":"get_protocol_info"}))
-                    .and_then(|pending| pending.wait_until(deadline))
-                    .and_then(|response| {
-                        let supported = response["success"] == true && response["command"] == "get_protocol_info" && response["data"]["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
-                        if !supported {
-                            if !self.unsupported_noticed.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                                utils::logger::log("senpi-task engine lacks retry_fallback_command; retaining manager fallback", None);
+            enum ChainOutcome {
+                Applied,
+                Unsupported,
+                Timeout,
+                Refused(String),
+                Transport(String),
+            }
+            let outcome = match protocol
+                .request(json!({"type":"get_protocol_info"}))
+                .and_then(|pending| pending.wait_until(deadline))
+            {
+                Ok(response) => {
+                    let supported = response["success"] == true
+                        && response["command"] == "get_protocol_info"
+                        && response["data"]["capabilities"]
+                            .as_array()
+                            .is_some_and(|items| {
+                                items.iter().any(|item| item == "retry_fallback_command")
+                            });
+                    if !supported {
+                        ChainOutcome::Unsupported
+                    } else if std::time::Instant::now() >= deadline {
+                        ChainOutcome::Timeout
+                    } else {
+                        match protocol
+                            .request(json!({
+                                "type": "set_retry_fallback",
+                                "retryFallback": profile
+                            }))
+                            .and_then(|pending| pending.wait_until(deadline))
+                        {
+                            Ok(resp) if resp["success"] == true => ChainOutcome::Applied,
+                            Ok(resp) => ChainOutcome::Refused(
+                                resp["error"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or("set_retry_fallback refused")
+                                    .to_string(),
+                            ),
+                            Err(err) => {
+                                let msg = err.to_string();
+                                if msg.starts_with(
+                                    crate::manager::start_failure_cause::RPC_RESPONSE_TIMEOUT_PREFIX,
+                                ) {
+                                    ChainOutcome::Timeout
+                                } else {
+                                    ChainOutcome::Transport(msg)
+                                }
                             }
-                            return Ok(());
                         }
-                        if std::time::Instant::now() >= deadline {
-                            return Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: "fallback configuration deadline passed".into() });
+                    }
+                }
+                Err(err) => {
+                    let msg = err.to_string();
+                    if msg.starts_with(
+                        crate::manager::start_failure_cause::RPC_RESPONSE_TIMEOUT_PREFIX,
+                    ) {
+                        ChainOutcome::Timeout
+                    } else {
+                        ChainOutcome::Transport(msg)
+                    }
+                }
+            };
+            match outcome {
+                ChainOutcome::Applied => {}
+                other => {
+                    let exit_outcome = handle.exit_outcome();
+                    let unresolved = match &exit_outcome {
+                        Some(ChildExitOutcome::Crashed { facts }) => {
+                            child_unresolved_model_error(&facts.stderr_tail)
                         }
-                        protocol.request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))?.wait_until(deadline).and_then(|response| {
-                            if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: format!("fallback configuration refused: {}", response["error"]) }) }
-                        })
-                    });
-            if let Err(error) = configured {
-                utils::logger::log(
-                    "senpi-task child fallback configuration unavailable; retaining manager fallback",
-                    Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
-                );
+                        _ => None,
+                    };
+                    let failure = if let Some(detail) = unresolved {
+                        RunnerFailure::new(
+                            RunnerFailureKind::ModelUnavailable,
+                            format!("the child could not resolve its model: {detail}"),
+                        )
+                    } else if exit_outcome.is_some() {
+                        RunnerFailure::new(
+                            RunnerFailureKind::ChildPromptFailed,
+                            format!(
+                                "task {}: its designated model chain ({chain}) was not applied because the child exited while it was being sent",
+                                spec.task_id
+                            ),
+                        )
+                    } else {
+                        use crate::runners::designated_chain_error::{
+                            DesignatedChainNotHeldError, DesignatedChainNotHeldReason,
+                        };
+                        match other {
+                            ChainOutcome::Transport(msg) => RunnerFailure::new(
+                                RunnerFailureKind::ChildPromptFailed,
+                                format!(
+                                    "task {}: its designated model chain ({chain}) was not applied ({msg})",
+                                    spec.task_id
+                                ),
+                            ),
+                            ChainOutcome::Unsupported => {
+                                let err = DesignatedChainNotHeldError {
+                                    reason: DesignatedChainNotHeldReason::Unsupported,
+                                    models,
+                                    message: format!(
+                                        "task {}: its designated model chain ({chain}) was not applied (this senpi engine cannot take a task child's model chain (no retry_fallback_command); upgrade it), and a child never runs outside its designated models, so it was not started",
+                                        spec.task_id
+                                    ),
+                                };
+                                let cause =
+                                    crate::manager::start_failure_cause::chain_not_held_cause(&err);
+                                RunnerFailure::new(
+                                    RunnerFailureKind::ChildPromptFailed,
+                                    err.message,
+                                )
+                                .with_cause(Some(cause))
+                            }
+                            ChainOutcome::Timeout => {
+                                let err = DesignatedChainNotHeldError {
+                                    reason: DesignatedChainNotHeldReason::Timeout,
+                                    models,
+                                    message: format!(
+                                        "task {}: its designated model chain ({chain}) was not applied (no answer within {} ms), and a child never runs outside its designated models, so it was not started",
+                                        spec.task_id, self.fallback_chain_deadline_ms
+                                    ),
+                                };
+                                let cause =
+                                    crate::manager::start_failure_cause::chain_not_held_cause(&err);
+                                RunnerFailure::new(
+                                    RunnerFailureKind::ChildPromptFailed,
+                                    err.message,
+                                )
+                                .with_cause(Some(cause))
+                            }
+                            ChainOutcome::Refused(reason) => {
+                                let err = DesignatedChainNotHeldError {
+                                    reason: DesignatedChainNotHeldReason::Refused,
+                                    models,
+                                    message: format!(
+                                        "task {}: its designated model chain ({chain}) was not applied ({reason}), and a child never runs outside its designated models, so it was not started",
+                                        spec.task_id
+                                    ),
+                                };
+                                let cause =
+                                    crate::manager::start_failure_cause::chain_not_held_cause(&err);
+                                RunnerFailure::new(
+                                    RunnerFailureKind::ChildPromptFailed,
+                                    err.message,
+                                )
+                                .with_cause(Some(cause))
+                            }
+                            ChainOutcome::Applied => unreachable!(),
+                        }
+                    };
+                    if let Err(error) =
+                        crate::runners::rpc::start_cleanup::discard_unstarted_rpc_handle(handle)
+                    {
+                        utils::logger::log(
+                            "senpi-task rpc start cleanup failed",
+                            Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
+                        );
+                    }
+                    return Err(failure);
+                }
             }
         }
         let started = match &spec.resume_session_path {

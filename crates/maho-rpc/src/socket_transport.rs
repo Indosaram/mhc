@@ -98,39 +98,136 @@ pub fn read_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> 
         )
     })
 }
+/// Creates (without replacing an existing valid secret on POSIX) a 32-byte RPC socket secret (senpi#4199).
 pub fn create_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut secret = [0; SOCKET_SECRET_BYTES];
-    getrandom::fill(&mut secret).map_err(|error| io::Error::other(error.to_string()))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        if let Some(parent) = path.parent() {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
+        }
+        if let Ok(existing) = read_socket_secret(path) {
+            return Ok(existing);
+        }
+        let mut candidate = [0; SOCKET_SECRET_BYTES];
+        getrandom::fill(&mut candidate).map_err(|error| io::Error::other(error.to_string()))?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "rpc.secret".into());
+        let staging = parent.join(format!(
+            ".{name}.stage-{}-{}",
+            std::process::id(),
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        ));
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true).mode(0o600);
+            let mut file = opts.open(&staging)?;
+            if let Err(err) = file
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .and_then(|()| file.write_all(&candidate))
+                .and_then(|()| file.sync_all())
+            {
+                let _ = std::fs::remove_file(&staging);
+                return Err(err);
+            }
+        }
+        let link_res = std::fs::hard_link(&staging, path);
+        let _ = std::fs::remove_file(&staging);
+        match link_res {
+            Ok(()) => {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+                Ok(candidate)
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => read_socket_secret(path)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "RPC socket secret is invalid and was not replaced: {}",
+                            path.display()
+                        ),
+                    )
+                }),
+            Err(err) => Err(err),
+        }
     }
-    let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, &secret)?;
-    #[cfg(unix)]
+    #[cfg(not(unix))]
     {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut secret = [0; SOCKET_SECRET_BYTES];
+        getrandom::fill(&mut secret).map_err(|error| io::Error::other(error.to_string()))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        let mut file = options.open(path)?;
+        std::io::Write::write_all(&mut file, &secret)?;
+        Ok(secret)
     }
-    Ok(secret)
 }
+fn replace_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> {
+    let mut candidate = [0; SOCKET_SECRET_BYTES];
+    getrandom::fill(&mut candidate).map_err(|error| io::Error::other(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "rpc.secret".into());
+        let staging = parent.join(format!(
+            ".{name}.replace-{}-{}",
+            std::process::id(),
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        ));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true).mode(0o600);
+        let mut file = opts.open(&staging)?;
+        if let Err(err) = file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .and_then(|()| file.write_all(&candidate))
+            .and_then(|()| file.sync_all())
+        {
+            let _ = std::fs::remove_file(&staging);
+            return Err(err);
+        }
+        drop(file);
+        if let Err(err) = std::fs::rename(&staging, path) {
+            let _ = std::fs::remove_file(&staging);
+            return Err(err);
+        }
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(candidate)
+    }
+    #[cfg(not(unix))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        let mut file = options.open(path)?;
+        std::io::Write::write_all(&mut file, &candidate)?;
+        Ok(candidate)
+    }
+}
+
 pub fn ensure_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> {
     match read_socket_secret(path) {
         Ok(secret) => Ok(secret),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
-            ) =>
-        {
-            create_socket_secret(path)
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => create_socket_secret(path),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => replace_socket_secret(path),
         Err(error) => Err(error),
     }
 }

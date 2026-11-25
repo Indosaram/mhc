@@ -119,6 +119,17 @@ impl PublicRpcConnection {
             .as_ref()
             .and_then(|request| request.get("type"))
             .and_then(Value::as_str);
+        if kind == Some(crate::rpc_auth_proof::RPC_LAUNCH_PROOF_RECORD) {
+            if !self.active && self.require_token {
+                return self.refuse(request.as_ref(), "auth_required");
+            }
+            self.first = false;
+            return PublicLine::Reply(line_of(
+                &crate::rpc_auth_proof::launch_proof_record_refusal(
+                    request.as_ref().and_then(|r| r.get("id")),
+                ),
+            ));
+        }
         if !self.active {
             if self.first && kind == Some("get_protocol_info") {
                 self.first = false;
@@ -179,6 +190,7 @@ impl PublicRpcConnection {
                     .and_then(|request| request.get("id"))
                     .cloned()
                     .unwrap_or(Value::Null);
+                // Note: in `PublicRpcConnection` the host core receives `launch_proven` when the stream layer forwards it.
                 return PublicLine::Reply(line_of(
                     &json!({"id":id,"type":"response","command":"authenticate","success":true}),
                 ));

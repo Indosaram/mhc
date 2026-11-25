@@ -371,6 +371,10 @@ fn omo_agent_definition(name: &str, def: &Value) -> AgentDefinition {
             .get("models")
             .and_then(Value::as_array)
             .map(|entries| entries.iter().filter_map(parse_model_entry).collect()),
+        models_distribution: def
+            .get("models_distribution")
+            .and_then(Value::as_str)
+            .and_then(crate::models_distribution::ModelsDistribution::parse),
         categories: strings("categories"),
         variant: text("variant"),
         reasoning_effort: text("reasoning").or_else(|| text("reasoningEffort")),

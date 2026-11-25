@@ -91,7 +91,25 @@ pub fn rpc_command_payload_error(command: &Value) -> Option<&'static str> {
     if let Some(error) = crate::pause_command_validation::validate_pause_command(command) {
         return Some(error);
     }
-    match command.get("type").and_then(Value::as_str) {
+    let kind = command.get("type").and_then(Value::as_str);
+    if matches!(kind, Some("prompt" | "steer" | "follow_up")) {
+        if let Some(expected_turn_id) = command.get("expectedTurnId") {
+            if !id_string(Some(expected_turn_id)) {
+                return Some(
+                    "expectedTurnId must be a non-empty string of at most 256 characters; read it from get_state.currentTurnId.",
+                );
+            }
+            if kind == Some("prompt") && command.get("streamingBehavior").is_none() {
+                return Some(
+                    "expectedTurnId on a prompt needs streamingBehavior \"steer\" or \"followUp\".",
+                );
+            }
+        }
+        if !command.get("message").is_some_and(Value::is_string) {
+            return Some("message must be a string.");
+        }
+    }
+    match kind {
         Some("edit_user_message")
             if command
                 .get("entryId")
@@ -191,16 +209,49 @@ fn unload_session_error(command: &Value) -> Option<&'static str> {
     {
         return Some("children must be \"refuse\" or \"detach\".");
     }
-    [
+    if command
+        .get("deliveries")
+        .is_some_and(|deliveries| deliveries != "refuse")
+    {
+        return Some(
+            "deliveries must be \"refuse\"; omit it to hand unwritten deliveries back on an interrupt.",
+        );
+    }
+    for (flag, message) in [
         ("interrupt", "interrupt must be a boolean."),
         ("clearQueue", "clearQueue must be a boolean."),
         ("force", "force must be a boolean."),
-    ]
-    .into_iter()
-    .find(|(flag, _)| command.get(*flag).is_some_and(|value| !value.is_boolean()))
-    .map(|(_, error)| error)
+        ("graceful", "graceful must be a boolean."),
+    ] {
+        if command.get(flag).is_some_and(|value| !value.is_boolean()) {
+            return Some(message);
+        }
+    }
+    if let Some(wait_ms) = command.get("waitMs")
+        && !wait_ms
+            .as_u64()
+            .is_some_and(|v| (1..=9_007_199_254_740_991).contains(&v))
+    {
+        return Some("waitMs must be a positive integer of milliseconds.");
+    }
+    if command.get("graceful") == Some(&Value::Bool(true))
+        && command.get("interrupt") == Some(&Value::Bool(true))
+    {
+        return Some(
+            "graceful and interrupt exclude each other: a graceful close never interrupts the turn.",
+        );
+    }
+    None
 }
 pub fn rpc_message_length_error(command: &Value) -> Option<String> {
+    if let Some(obj) = command.as_object()
+        && let Some(error) = crate::admit_external_message_wire::admit_external_message_field_error(
+            obj,
+            MAX_RPC_MESSAGE_CHARACTERS,
+        )
+    {
+        return Some(error);
+    }
     let kind = command.get("type")?.as_str()?;
     if !matches!(kind, "prompt" | "steer" | "follow_up") {
         return None;

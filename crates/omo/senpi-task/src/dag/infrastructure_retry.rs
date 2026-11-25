@@ -34,6 +34,7 @@ pub fn is_infrastructure_failure(task: &TaskRecord) -> bool {
     }
     match task.failure_kind.as_deref() {
         Some("child-unresponsive" | "host_unavailable" | "suspended_unresumable") => true,
+        Some("model_chain_exhausted") => false,
         Some("session_unavailable") => matches!(
             task.failure_reason.as_deref(),
             Some("host_draining" | "host_memory_pressure")

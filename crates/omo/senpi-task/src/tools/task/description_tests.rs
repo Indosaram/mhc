@@ -114,3 +114,37 @@ fn given_prompt_guidelines_when_read_then_they_carry_category_model_exclusivity_
     assert!(joined.contains("category"));
     assert!(joined.contains("omo.json"));
 }
+
+#[test]
+fn given_many_agents_and_a_long_custom_category_when_built_then_only_category_catalogue_lies_past_4096_chars()
+ {
+    let mut agents = BTreeMap::new();
+    for index in 0..40 {
+        let name = format!("agent-{index}");
+        let mut def = AgentDefinition::named(&name);
+        def.description = Some("Plain agent".to_string());
+        agents.insert(name, def);
+    }
+    for (name, desc) in [
+        ("plan-consultant", "Pre-planning consultant"),
+        ("plan-reviewer", "Plan reviewer"),
+    ] {
+        let mut def = AgentDefinition::named(name);
+        def.description = Some(desc.to_string());
+        agents.insert(name.to_string(), def);
+    }
+    let config = json!({
+        "categories": { "release-crew": { "description": "Ships the release train. ".repeat(80) } },
+        "agents": {}
+    });
+    let categories = crate::tools::task::categories::list_task_categories(&config);
+    let description = build_task_tool_description(&DescriptionInput {
+        omo_config: &config,
+        agents: &agents,
+    });
+    assert!(description.len() > 4096);
+    let first_cat = format!("\n  - {}", categories[0].name);
+    let catalogue_start = description.find(&first_cat).expect("catalogue start");
+    assert!(catalogue_start > 0);
+    assert!(catalogue_start <= 4096);
+}

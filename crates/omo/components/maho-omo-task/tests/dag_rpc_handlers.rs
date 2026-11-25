@@ -39,7 +39,6 @@ fn fixture() -> (tempfile::TempDir, DagManager, String) {
             definition,
             parent_session_id: "parent".into(),
             root_session_id: "root".into(),
-            parent_model: None,
         })
         .expect("DAG run start");
     (root, manager, started.snapshot.run_id)

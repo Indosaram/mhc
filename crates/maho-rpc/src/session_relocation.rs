@@ -92,6 +92,7 @@ pub struct RelocationRequest {
 pub enum RelocationRunEvent {
     AgentEnd,
     AgentSettled,
+    AgentIdle,
     Other,
 }
 
@@ -249,6 +250,7 @@ pub struct RpcSessionRelocation {
     pending: Mutex<BTreeMap<String, Pending>>,
     scheduled: Mutex<Option<Scheduled>>,
     requesting: AtomicBool,
+    disposed: AtomicBool,
     timeout: std::time::Duration,
     unsubscribe: Mutex<Option<SubscriptionGuard>>,
 }
@@ -261,6 +263,7 @@ impl RpcSessionRelocation {
             pending: Mutex::new(BTreeMap::new()),
             scheduled: Mutex::new(None),
             requesting: AtomicBool::new(false),
+            disposed: AtomicBool::new(false),
             timeout: std::time::Duration::from_millis(HOST_ANSWER_TIMEOUT_MS),
             unsubscribe: Mutex::new(None),
         });
@@ -282,6 +285,12 @@ impl RpcSessionRelocation {
 
     /// The computers the offering connection offers, or why there are none.
     pub async fn targets(&self, cancel: Option<CancelSignal>) -> RelocationTargetsResult {
+        if self.disposed.load(Ordering::SeqCst) {
+            return RelocationTargetsResult::Refused(refused(
+                "session_closed",
+                "this session was closed",
+            ));
+        }
         let Some(connection) = self.deps.channel.offerer() else {
             return RelocationTargetsResult::Unavailable(RELOCATION_NOT_OFFERED);
         };
@@ -314,6 +323,12 @@ impl RpcSessionRelocation {
         request: RelocationRequest,
         cancel: Option<CancelSignal>,
     ) -> RelocationRequestResult {
+        if self.disposed.load(Ordering::SeqCst) {
+            return RelocationRequestResult::Refused(refused(
+                "session_closed",
+                "this session was closed",
+            ));
+        }
         let Some(connection) = self.deps.channel.offerer() else {
             return RelocationRequestResult::Unavailable(RELOCATION_NOT_OFFERED);
         };
@@ -398,6 +413,7 @@ impl RpcSessionRelocation {
 
     /// Drops the subscription and refuses everything still waiting: the session is gone.
     pub fn dispose(&self) {
+        self.disposed.store(true, Ordering::SeqCst);
         drop(lock(&self.unsubscribe).take());
         *lock(&self.scheduled) = None;
         let waiting: Vec<Pending> = std::mem::take(&mut *lock(&self.pending))
@@ -423,14 +439,21 @@ impl RpcSessionRelocation {
                 }
             }
             RelocationRunEvent::AgentSettled => {
-                let due = lock(&self.scheduled).clone();
-                let Some(due) = due else {
-                    return;
-                };
-                match due.drop_reason {
-                    // agent_end still streams: wait until settlement so the correction is appended, not parked.
-                    Some(reason) => self.drop_scheduled(reason),
-                    None => {
+                if self.deps.session.stopped_by_user()
+                    && let Some(due) = lock(&self.scheduled).as_mut()
+                {
+                    due.drop_reason = Some(DropReason::Aborted);
+                }
+                let drop_reason = lock(&self.scheduled).as_ref().and_then(|d| d.drop_reason);
+                if let Some(reason) = drop_reason {
+                    self.drop_scheduled(reason);
+                }
+            }
+            RelocationRunEvent::AgentIdle => {
+                if let Some(due) = lock(&self.scheduled).clone() {
+                    if let Some(reason) = due.drop_reason {
+                        self.drop_scheduled(reason);
+                    } else {
                         let host = Arc::clone(self);
                         tokio::spawn(async move { host.announce_when_releasable().await });
                     }
@@ -654,6 +677,7 @@ impl RelocationSession for AgentSessionRelocation {
                         maho_ext_api::AgentSessionEvent::AgentSettled => {
                             RelocationRunEvent::AgentSettled
                         }
+                        maho_ext_api::AgentSessionEvent::AgentIdle => RelocationRunEvent::AgentIdle,
                         _ => RelocationRunEvent::Other,
                     };
                     if run != RelocationRunEvent::Other {
@@ -935,6 +959,8 @@ mod tests {
         session.publish(RelocationRunEvent::AgentEnd);
         assert!(wire.events.lock().unwrap().is_empty());
         session.publish(RelocationRunEvent::AgentSettled);
+        assert!(wire.events.lock().unwrap().is_empty());
+        session.publish(RelocationRunEvent::AgentIdle);
         tokio::time::timeout(std::time::Duration::from_secs(5), wire.announced.notified())
             .await
             .expect("the settlement announces the move");
@@ -1181,6 +1207,7 @@ mod tests {
         ));
         *offered.lock().unwrap() = None;
         session.publish(RelocationRunEvent::AgentSettled);
+        session.publish(RelocationRunEvent::AgentIdle);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             session.messaged.notified(),

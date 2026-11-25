@@ -4,7 +4,7 @@
 mod claim;
 mod event_log;
 pub(crate) mod input_effects_parse;
-mod parent_model_fallback_parse;
+mod model_refusals_parse;
 mod provisional_exit_parse;
 mod record_lock;
 mod record_parse;

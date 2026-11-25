@@ -594,11 +594,28 @@ pub async fn prepare_ensure_host(
     let socket = normalize_socket_path(socket);
     let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);
     crate::host_daemon_paths::create_daemon_directories(&paths).map_err(|error| error.source)?;
-    let lock = crate::ownership_safe_lock::acquire_ownership_safe_lock(
-        &paths.lock_file,
-        Default::default(),
-    )
-    .await?;
+    crate::host_bind_alias_reaper::reap_orphaned_bind_aliases();
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let lock_wait = crate::host_startup_policy::startup_envelope(Some(
+        crate::host_stalled_evidence::child_stalled_stop_max_ms(&env),
+    ))
+    .lock_wait;
+    let retries = crate::ownership_safe_lock::LockRetries {
+        retries: (lock_wait / 100).max(1) as u32,
+        min_timeout: std::time::Duration::from_millis(20),
+        max_timeout: std::time::Duration::from_millis(100),
+    };
+    let lock = crate::ownership_safe_lock::acquire_ownership_safe_lock(&paths.lock_file, retries)
+        .await
+        .map_err(|error| match error {
+            crate::ownership_safe_lock::LockError::Sqlite(_) => {
+                crate::ownership_safe_lock::LockError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    crate::host_startup_policy::ensure_lock_wait_detail(lock_wait),
+                ))
+            }
+            other => other,
+        })?;
     let policy = if policy == crate::host_decision::HostDecisionPolicy::Upgrade {
         policy
     } else {

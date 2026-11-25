@@ -24,6 +24,14 @@ use crate::state::ResolvedModelRecord;
 
 pub const DEFAULT_MAX_CHILD_DEPTH: u32 = 4;
 
+/// Engine-owned worker approval opt-in (`ChildSpec.ownApprovalMode`, `#12853` / `1e2deb382d`):
+/// opens without `spawned_by` so its preset comes from its own settings, while allowing only
+/// its own task tools without asking.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnApprovalMode {
+    pub allow_tools: Vec<String>,
+}
+
 /// How a child's `prompt` is delivered (`ChildSpec.promptEnvelope` in `runners/in-process.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildPromptEnvelope {
@@ -80,6 +88,8 @@ pub struct ChildSpec {
     /// `Turn` accepts any normally settled turn, even with no assistant text
     /// (`ChildSpec.completion` in `runners/in-process.ts`).
     pub completion: Option<ChildCompletionPolicy>,
+    /// Engine-owned worker approval override (`#12853`); opens without `spawned_by`.
+    pub own_approval_mode: Option<OwnApprovalMode>,
 }
 
 /// The host's `createAgentSession`; senpi-task never links the host, so the caller supplies it.
@@ -108,6 +118,7 @@ pub struct InProcessRunner {
     ui_only_tool_names: Vec<String>,
     max_depth: u32,
     create_session: CreateChildSession,
+    dialogs: Option<Arc<dyn crate::runners::child_dialogs::ChildDialogForwarder>>,
 }
 
 impl InProcessRunner {
@@ -117,7 +128,22 @@ impl InProcessRunner {
             ui_only_tool_names: options.ui_only_tool_names,
             max_depth: options.max_depth.unwrap_or(DEFAULT_MAX_CHILD_DEPTH),
             create_session: options.create_session,
+            dialogs: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_dialogs(
+        mut self,
+        dialogs: Arc<dyn crate::runners::child_dialogs::ChildDialogForwarder>,
+    ) -> Self {
+        self.dialogs = Some(dialogs);
+        self
+    }
+
+    #[must_use]
+    pub fn dialogs(&self) -> Option<&Arc<dyn crate::runners::child_dialogs::ChildDialogForwarder>> {
+        self.dialogs.as_ref()
     }
 
     pub fn start_staged(&self, spec: &ChildSpec) -> Result<StagedChild, RunnerError> {
@@ -169,18 +195,21 @@ impl InProcessRunner {
                 error,
             )
         };
-        let spawned_by = crate::runners::child_ancestry::SpawnedBy {
-            parent_session_id: spec.parent_session_id.clone(),
-            root_session_id: spec.root_session_id.clone(),
-            task_id: spec.task_id.clone(),
-        };
+        let spawned_by =
+            spec.own_approval_mode
+                .is_none()
+                .then(|| crate::runners::child_ancestry::SpawnedBy {
+                    parent_session_id: spec.parent_session_id.clone(),
+                    root_session_id: spec.root_session_id.clone(),
+                    task_id: spec.task_id.clone(),
+                });
         let session_manager =
-            ChildSessionManager::create_with_spawned_by(&spec.cwd, session_dir, Some(spawned_by))
+            ChildSessionManager::create_with_spawned_by(&spec.cwd, session_dir, spawned_by)
                 .map_err(|error| {
-                create_failed(HostError {
-                    message: error.to_string(),
-                })
-            })?;
+                    create_failed(HostError {
+                        message: error.to_string(),
+                    })
+                })?;
         let options = build_child_session_options(
             spec,
             session_manager,

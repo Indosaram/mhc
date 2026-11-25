@@ -109,6 +109,11 @@ pub const RPC_ERROR_HOST_STOPPING: &str = "host_stopping";
 pub const RPC_ERROR_SESSION_OUTPUT_OVERFLOW: &str = "session_output_overflow";
 /// `open_session.spawnedBy` must name non-empty `parentSessionId`, `rootSessionId` and `taskId`.
 pub const RPC_ERROR_INVALID_SPAWNED_BY: &str = "invalid_spawned_by";
+pub const RPC_ERROR_INVALID_SESSION_ENV: &str = "invalid_session_env";
+pub const RPC_ERROR_NO_MODEL_SELECTED: &str = "no_model_selected";
+pub const RPC_ERROR_TURN_CONFLICT: &str = "turn_conflict";
+pub const RPC_ERROR_PROVIDER_CREDENTIALS_EXPIRED: &str = "provider_credentials_expired";
+pub const RPC_ERROR_PROVIDER_CREDENTIALS_MISSING: &str = "provider_credentials_missing";
 
 /// Capability: `steer_when_idle` (rpc-types.ts `STEER_WHEN_IDLE_CAPABILITY`).
 pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
@@ -154,6 +159,10 @@ pub enum RpcCommandBody {
         /// a message rather than refused again.
         #[serde(skip_serializing_if = "Option::is_none")]
         unknown_command_as_text: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain_count: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_leaf_id: Option<String>,
     },
     SendCustomMessage {
         custom_type: String,
@@ -185,6 +194,8 @@ pub enum RpcCommandBody {
         images: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         enqueue_order: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain_count: Option<Value>,
     },
     FollowUp {
         message: String,
@@ -192,6 +203,8 @@ pub enum RpcCommandBody {
         images: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         enqueue_order: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain_count: Option<Value>,
     },
     HoldInput {
         input_id: String,
@@ -363,6 +376,8 @@ pub enum RpcCommandBody {
         turn_id: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         intent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<Value>,
     },
     RequestSelfSettle,
     GetModelThinkingLevel {

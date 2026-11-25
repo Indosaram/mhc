@@ -19,11 +19,20 @@ use crate::model_chain::{
     available_chain_candidates, build_runtime_model_chain, chain_rung_candidates,
 };
 use crate::model_exclusion::without_excluded_models;
+use crate::models_distribution::{ModelDistributor, ModelsDistribution};
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSelectionSource {
+    User,
+    #[default]
+    Builtin,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolveCategoryOptions {
-    pub system_default_model: Option<String>,
+    pub distribute_models: Option<ModelDistributor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +41,7 @@ pub struct CategoryModelSelection {
     pub variant: Option<String>,
     pub matched_fallback: bool,
     pub fallback_entry: Option<DelegateFallbackEntry>,
+    pub source: ModelSelectionSource,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -282,7 +292,7 @@ fn provider_of(model: &str) -> &str {
         .map_or(model, |(provider, _)| provider)
 }
 
-fn missing_chain_providers(
+pub(crate) fn missing_chain_providers(
     chain: &[DelegateFallbackEntry],
     available_models: &[String],
 ) -> Vec<String> {
@@ -376,10 +386,32 @@ pub fn resolve_category(
         });
     }
     let builtin_model = builtin.map(|definition| definition.config.model.to_string());
-    let config = merge_config(
+    let mut config = merge_config(
         builtin.map(|definition| definition.config.to_value()),
         user_config,
     );
+    let models_distribution =
+        string_field(&config, "models_distribution").and_then(|v| ModelsDistribution::parse(&v));
+    if let (Some(distributor), Some(models)) = (
+        options.distribute_models.as_ref(),
+        config.get("models").and_then(Value::as_array),
+    ) && !models.is_empty()
+    {
+        let distributed = distributor.distribute(
+            &format!("category:{category_name}"),
+            models,
+            models_distribution,
+            |entry| {
+                entry
+                    .as_str()
+                    .or_else(|| entry.get("model").and_then(Value::as_str))
+                    .unwrap_or("")
+            },
+        );
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("models".to_string(), Value::Array(distributed));
+        }
+    }
     let unavailable = |attempted_model: Option<String>,
                        available_models: &[String],
                        available_categories: Vec<String>| ModelUnavailable {
@@ -432,15 +464,14 @@ pub fn resolve_category(
         )));
     }
 
-    // A dead builtin chain can never produce a model; an explicit user model or fallback list and a
-    // caller-supplied system default opt out.
+    // A dead builtin chain can never produce a model; an explicit user model or fallback list opts out.
+    // There is no last resort: a category never resolves to a model outside its own chain.
     let user_has_canonical_models = user_config.and_then(canonical_models).is_some();
     let user_has = |key: &str| user_config.and_then(|user| user.get(key)).is_some();
     if dead_chain.is_some()
         && !user_has_canonical_models
         && !user_has("model")
         && !user_has("fallback_models")
-        && options.system_default_model.is_none()
     {
         return Ok(CategoryResolutionResult::ModelUnavailable(Box::new(
             with_dead_chain(unavailable(
@@ -487,6 +518,7 @@ pub fn resolve_category(
         }
         rungs
     });
+    let user_has_model = user_model.is_some();
     let resolution = resolve_model_for_delegate_task(
         &DelegateModelResolutionInput {
             user_model,
@@ -497,7 +529,7 @@ pub fn resolve_category(
             fallback_chain: resolution_chain,
             allow_unlisted_providers: false,
             available_models: available_models.iter().cloned().collect(),
-            system_default_model: options.system_default_model.clone(),
+            system_default_model: None,
         },
         &warm_cache_deps(),
     );
@@ -511,10 +543,17 @@ pub fn resolve_category(
         )));
     };
 
+    let selection_source =
+        if user_has_model || (resolution.matched_fallback && resolution.fallback_entry.is_none()) {
+            ModelSelectionSource::User
+        } else {
+            ModelSelectionSource::Builtin
+        };
     let selection = CategoryModelSelection {
         selected_model: resolution.model,
         variant: resolution.variant,
         matched_fallback: resolution.matched_fallback,
+        source: selection_source,
         fallback_entry: resolution.fallback_entry.map(|selected| {
             if exact {
                 fallback_chain
@@ -571,15 +610,22 @@ pub fn resolve_category(
         .flatten()
         .or_else(|| string_field(&config, "reasoning"))
         .or_else(|| string_field(&config, "reasoningEffort"));
-    // Remaining builtin rungs extend the runtime retry chain after any user fallback_models.
-    let chain_candidates = fallback_chain.map_or_else(Vec::new, |chain| {
-        chain_rung_candidates(&ChainRungCandidateOptions {
-            chain,
-            selected_model: &selection.selected_model,
-            selected_rung_entry: selection.fallback_entry.as_ref(),
-            available_models: &available_set,
+    // Remaining builtin rungs extend the runtime retry chain after any user fallback_models,
+    // except when round_robin rotation explicitly defines the canonical list order.
+    let chain_candidates = if canonical_chain.is_some()
+        && models_distribution == Some(ModelsDistribution::RoundRobin)
+    {
+        Vec::new()
+    } else {
+        fallback_chain.map_or_else(Vec::new, |chain| {
+            chain_rung_candidates(&ChainRungCandidateOptions {
+                chain,
+                selected_model: &selection.selected_model,
+                selected_rung_entry: selection.fallback_entry.as_ref(),
+                available_models: &available_set,
+            })
         })
-    });
+    };
     let mut candidates = category_model_candidates(&config);
     candidates.extend(chain_candidates);
     let runtime_chain = build_runtime_model_chain(&BuildModelChainOptions {

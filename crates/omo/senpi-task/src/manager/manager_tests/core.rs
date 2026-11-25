@@ -713,7 +713,6 @@ fn fallback_walk_retains_parent_for_later_and_drops_spent_parent() {
         .expect("record");
     let category = model_record("other", "category", "other/category", None, None);
     let sibling = model_record("current", "sibling", "current/sibling", None, None);
-    let parent = model_record("current", "parent", "current/parent", None, None);
     record.model = "current/first".into();
     record.resolved_model = Some(model_record(
         "current",
@@ -722,20 +721,16 @@ fn fallback_walk_retains_parent_for_later_and_drops_spent_parent() {
         None,
         None,
     ));
-    record.parent_model = Some("current/parent".into());
-    record.fallback_models = Some(vec![sibling.clone(), category.clone(), parent.clone()]);
+    record.fallback_models = Some(vec![sibling.clone(), category.clone()]);
     let ordinary = runtime_fallback_candidates(&record, "temporary unavailable");
     assert_eq!(ordinary.remaining, vec![sibling.clone(), category.clone()]);
-    assert_eq!(
-        ordinary.chain_after_hop(),
-        vec![category.clone(), parent.clone()]
-    );
+    assert_eq!(ordinary.chain_after_hop(), vec![category.clone()]);
     let spent = runtime_fallback_candidates(&record, "weekly limit exhausted; switch with /model");
     assert_eq!(spent.remaining, vec![category.clone(), sibling.clone()]);
-    assert_eq!(spent.skipped, vec![parent.clone()]);
+    assert!(spent.skipped.is_empty());
     let rejected = runtime_fallback_candidates(&record, "401 unauthorized");
     assert_eq!(rejected.remaining, vec![category]);
-    assert_eq!(rejected.skipped, vec![sibling, parent]);
+    assert_eq!(rejected.skipped, vec![sibling]);
 }
 
 #[test]

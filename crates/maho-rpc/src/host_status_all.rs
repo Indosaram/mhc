@@ -93,7 +93,7 @@ async fn endpoint_status(
             let claims_live =
                 crate::host_reservations::read_session_path_claims(&paths.reservations_dir).len();
             (
-                json!({"reachable":false,"socket":null,"pid":null,"processStartTime":null,"instanceId":null,"generation":null,"engineVersion":null,"capabilities":[],"launchProfile":null,"sessions":{"total":0,"interactive":0,"worker":0,"retained":0,"foreign_attached":0,"foreign_retained":0},"zombies":null,"rss_mb":null,"host_rss_mb":null,"host_footprint_mb":null,"open_fds":null,"env_keys":[],"generations":generations,"pointer":pointer,"claims_live":claims_live}),
+                json!({"reachable":false,"socket":null,"pid":null,"processStartTime":null,"instanceId":null,"generation":null,"engineVersion":null,"capabilities":[],"launchProfile":null,"sessions":{"total":0,"interactive":0,"worker":0,"retained":0,"foreign_attached":0,"foreign_retained":0},"zombies":null,"rss_mb":null,"host_rss_mb":null,"host_footprint_mb":null,"open_fds":null,"memory_pressure":null,"path_identity_resolver":null,"env_keys":[],"generations":generations,"pointer":pointer,"claims_live":claims_live}),
                 None,
             )
         }

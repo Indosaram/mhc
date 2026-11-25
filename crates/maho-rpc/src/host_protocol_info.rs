@@ -1,3 +1,6 @@
+use crate::path_identity_status::{
+    PathIdentityResolverStatus, parse_path_identity_resolver_status,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,6 +37,7 @@ pub struct HostProtocolInfo {
     pub engine_ordinal: Option<[f64; 5]>,
     pub launch_profile: Option<RpcLaunchProfile>,
     pub memory_pressure: Option<bool>,
+    pub path_identity_resolver: Option<PathIdentityResolverStatus>,
     /// The agent directory the host reads and writes; absent on older hosts. Only a client of the same dir may
     /// replace it (#3560).
     pub agent_dir: Option<String>,
@@ -46,6 +50,15 @@ pub enum HostLifecycle {
     Stopping,
 }
 
+/// Parses `[y, m, d, n, epoch]` engine ordinals (`parseEngineOrdinal` in senpi `host-protocol-info.ts`).
+pub fn parse_engine_ordinal_value(value: Option<&Value>) -> Option<[f64; 5]> {
+    value?
+        .as_array()
+        .filter(|parts| parts.len() == 5)
+        .and_then(|parts| parts.iter().map(Value::as_f64).collect::<Option<Vec<_>>>())
+        .and_then(|parts| parts.try_into().ok())
+}
+
 pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
     let object = data.as_object()?;
     let server_version = object.get("serverVersion")?.as_str()?.to_owned();
@@ -55,12 +68,7 @@ pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
         .iter()
         .map(|value| value.as_str().map(str::to_owned))
         .collect::<Option<Vec<_>>>()?;
-    let engine_ordinal = object
-        .get("engineOrdinal")
-        .and_then(Value::as_array)
-        .filter(|parts| parts.len() == 5)
-        .and_then(|parts| parts.iter().map(Value::as_f64).collect::<Option<Vec<_>>>())
-        .and_then(|parts| parts.try_into().ok());
+    let engine_ordinal = parse_engine_ordinal_value(object.get("engineOrdinal"));
     let launch_profile = object.get("launch_profile").and_then(|value| {
         let profile_id = value.get("profile_id")?.as_str()?.to_owned();
         let core = value.get("core")?.as_object()?;
@@ -112,6 +120,9 @@ pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
         engine_ordinal,
         launch_profile,
         memory_pressure: object.get("memory_pressure").and_then(Value::as_bool),
+        path_identity_resolver: object
+            .get("path_identity_resolver")
+            .and_then(parse_path_identity_resolver_status),
         agent_dir: object
             .get("agentDir")
             .and_then(Value::as_str)

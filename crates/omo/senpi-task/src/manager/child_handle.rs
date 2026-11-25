@@ -125,6 +125,10 @@ pub trait ManagedChildHandle: Send + Sync {
     }
     /// From here no transport recovery may bring the child back (TS `markStopping`).
     fn mark_stopping(&self) {}
+    /// Host-session: the host answered this child's end of its session (`#11765`).
+    fn host_end_answered(&self) -> bool {
+        false
+    }
     fn is_host_session(&self) -> bool {
         false
     }

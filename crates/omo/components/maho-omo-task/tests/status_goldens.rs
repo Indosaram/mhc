@@ -46,32 +46,22 @@ fn task_rows_match_pinned_upstream_status_goldens() {
 fn parent_fallback_status_distinguishes_selected_from_observed() {
     use senpi_task::state::*;
     let mut record = create_task_record(TaskRecordInput::default(), Some(1)).unwrap();
-    record.parent_model = Some("provider/parent".into());
-    record.parent_model_fallback = Some(ParentModelFallback {
-        phase: None,
-        from_model: "provider/child".into(),
-        reason: ParentModelFallbackReason::UsageLimit,
-        at: "now".into(),
-        detail: None,
-        resets: Some("2 days".into()),
-        interrupted_tools: None,
-    });
     record.resolved_model = Some(ResolvedModelRecord {
         provider: "provider".into(),
-        model_id: "parent".into(),
-        display: "provider/parent".into(),
+        model_id: "selected".into(),
+        display: "provider/selected".into(),
         source: ResolvedModelSource::Category,
         variant: None,
         reasoning_effort: None,
         reasoning: None,
         service_tier: None,
     });
-    let switching = format_task_row(&record, None);
-    assert!(switching.contains("parent-model:switching, usage limit, resets 2 days"));
+    let initial = format_task_row(&record, None);
+    assert!(initial.contains("provider/selected"));
     record.effective_model = Some(EffectiveModelRecord {
         provider: "provider".into(),
-        model_id: "parent".into(),
-        display: "provider/parent".into(),
+        model_id: "fallback".into(),
+        display: "provider/fallback".into(),
         source: EffectiveModelSource::Fallback,
         switched_by_operator: None,
         variant: None,
@@ -80,6 +70,5 @@ fn parent_fallback_status_distinguishes_selected_from_observed() {
         service_tier: None,
     });
     let observed = format_task_row(&record, None);
-    assert!(observed.contains("parent-model:usage limit, resets 2 days"));
-    assert!(!observed.contains("switching"));
+    assert!(observed.contains("provider/selected"));
 }

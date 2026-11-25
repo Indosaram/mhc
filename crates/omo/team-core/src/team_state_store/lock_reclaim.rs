@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 
 use super::lock_publish::publish_lock_record;
 use super::lock_record::{
-    build_lock_record, is_lock_record_stale, is_path_absence_error, mark_lock_record_released,
-    read_lock_record,
+    build_lock_record, forget_lock_record, is_lock_record_stale, is_path_absence_error,
+    mark_lock_record_released, read_lock_record,
 };
 
 type DelayFn<'a> = Box<dyn Fn(u64) + 'a>;
@@ -69,12 +69,16 @@ fn unlink_with_retry(path: &Path, deps: &LockReclaimDeps<'_>) -> LockReclaimOutc
     LockReclaimOutcome::Stuck
 }
 
-pub fn remove_lock_record_if_unchanged(
+/// Runs `act` while holding the guard named after `expected_record`, the same guard every reclaimer
+/// of that record takes. Returns `Ok(None)` when another holder has the guard ("busy"), after first
+/// reclaiming a stale guard left by a crash.
+pub fn with_record_guard<T>(
     lock_path: &Path,
     expected_record: &str,
     stale_after_ms: i64,
     deps: &LockReclaimDeps<'_>,
-) -> io::Result<LockReclaimOutcome> {
+    act: impl FnOnce() -> io::Result<T>,
+) -> io::Result<Option<T>> {
     let guard_path = reclaim_guard_path(lock_path, expected_record);
     let guard_record = build_lock_record("lock-reclaim");
     if !publish_lock_record(&guard_path, &guard_record)? {
@@ -83,21 +87,42 @@ pub fn remove_lock_record_if_unchanged(
         {
             remove_lock_record_if_unchanged(&guard_path, &guard.content, stale_after_ms, deps)?;
         }
-        return Ok(LockReclaimOutcome::Busy);
+        return Ok(None);
     }
-    let outcome = match read_lock_record(lock_path) {
-        None => LockReclaimOutcome::Absent,
-        Some(current)
-            if current.content != expected_record
-                || !is_lock_record_stale(&current, stale_after_ms) =>
-        {
-            LockReclaimOutcome::Changed
-        }
-        Some(_) => unlink_with_retry(lock_path, deps),
-    };
+    let result = act();
     mark_lock_record_released(&guard_record);
-    unlink_with_retry(&guard_path, deps);
-    Ok(outcome)
+    if unlink_with_retry(&guard_path, deps) != LockReclaimOutcome::Stuck {
+        forget_lock_record(&guard_record);
+    }
+    result.map(Some)
+}
+
+pub fn remove_lock_record_if_unchanged(
+    lock_path: &Path,
+    expected_record: &str,
+    stale_after_ms: i64,
+    deps: &LockReclaimDeps<'_>,
+) -> io::Result<LockReclaimOutcome> {
+    let outcome = with_record_guard(lock_path, expected_record, stale_after_ms, deps, || {
+        let outcome = match read_lock_record(lock_path) {
+            None => LockReclaimOutcome::Absent,
+            Some(current)
+                if current.content != expected_record
+                    || !is_lock_record_stale(&current, stale_after_ms) =>
+            {
+                LockReclaimOutcome::Changed
+            }
+            Some(_) => {
+                let unlinked = unlink_with_retry(lock_path, deps);
+                if unlinked != LockReclaimOutcome::Stuck {
+                    forget_lock_record(expected_record);
+                }
+                unlinked
+            }
+        };
+        Ok(outcome)
+    })?;
+    Ok(outcome.unwrap_or(LockReclaimOutcome::Busy))
 }
 
 #[cfg(test)]

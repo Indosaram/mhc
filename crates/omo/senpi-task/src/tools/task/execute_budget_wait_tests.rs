@@ -45,6 +45,7 @@ fn fired_deadline() -> ForegroundWaitOptions {
     ForegroundWaitOptions {
         env: Some(HashMap::new()),
         deadline: Some(Duration::ZERO),
+        dialog_origins: None,
     }
 }
 
@@ -53,6 +54,7 @@ fn pending_deadline() -> ForegroundWaitOptions {
     ForegroundWaitOptions {
         env: Some(HashMap::new()),
         deadline: Some(Duration::from_secs(30)),
+        dialog_origins: None,
     }
 }
 

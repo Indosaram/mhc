@@ -29,6 +29,10 @@ pub struct SessionEffectStatusRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<EffectActor>,
     pub at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
 }
 
 pub fn effect_status_record(
@@ -37,6 +41,17 @@ pub fn effect_status_record(
     session_id: &str,
     status: &EffectStatus,
     at: &str,
+) -> SessionEffectStatusRecord {
+    effect_status_record_with_admission(subscription_id, seq, session_id, status, at, None)
+}
+
+pub fn effect_status_record_with_admission(
+    subscription_id: &str,
+    seq: u64,
+    session_id: &str,
+    status: &EffectStatus,
+    at: &str,
+    admission_id: Option<&str>,
 ) -> SessionEffectStatusRecord {
     SessionEffectStatusRecord {
         r#type: "effect_status",
@@ -50,6 +65,8 @@ pub fn effect_status_record(
         outcome: status.outcome.clone(),
         by: status.by.clone(),
         at: at.to_owned(),
+        admission_id: admission_id.map(str::to_owned),
+        generation: admission_id.map(|_| 0),
     }
 }
 
@@ -168,6 +185,8 @@ mod tests {
             disposition: None,
             outcome: None,
             answer: None,
+            dropped: None,
+            pending: None,
             by: None,
             accepted_at: None,
             updated_at: None,

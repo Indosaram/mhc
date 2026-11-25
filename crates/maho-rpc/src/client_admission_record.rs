@@ -108,6 +108,9 @@ pub struct ClientAdmissionRecord {
     pub durable_session_id: String,
     pub fingerprint: String,
     pub disposition: AdmissionDisposition,
+    /// The engine turn this admission started; older, queued, and handled admissions omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// The host minted `clientMessageId` for input sent without one (`host:<durableSessionId>:<uuid>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_minted: Option<bool>,

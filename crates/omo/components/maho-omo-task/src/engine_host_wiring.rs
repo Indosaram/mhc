@@ -77,6 +77,16 @@ pub fn runner_build_options(
     }
 }
 
+pub fn runner_build_options_with_parent_link(
+    context: &RunnerBuildContext,
+    mut rpc_options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions,
+    wiring: &crate::child_parent_wiring::ChildParentWiring,
+) -> crate::engine_runners::TaskRunnerBuildOptions {
+    rpc_options.dialogs = Some(Arc::clone(&wiring.dialog_forwarder));
+    rpc_options.parent_permission = Some(Arc::clone(&wiring.parent_permission));
+    runner_build_options(context, rpc_options)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

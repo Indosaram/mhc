@@ -11,7 +11,9 @@
 //! ADAPTATION: upstream subscribes to each `Duplex`'s `data` event and destroys the streams itself. Here a client is
 //! any hashable key; the transport feeds every chunk it reads through [`ClientOccupancy::data`] until the client is
 //! classified, and [`ClientOccupancy::destroy_all`] hands back the clients the caller must close.
-use crate::host_observe_request::{is_observing_request, request_origin_host_instance};
+use crate::host_observe_request::{
+    hold_host_change, is_observing_request, request_origin_host_instance,
+};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -23,6 +25,8 @@ pub struct ClientOccupancy<K> {
     clients: HashMap<K, Vec<u8>>,
     observers: HashSet<K>,
     attached: HashSet<K>,
+    /// Observers currently holding the host open (`hold_host: true`, senpi#5626).
+    held: HashSet<K>,
     dependents: HashSet<K>,
     on_attach: Box<dyn FnMut() + Send>,
     own_instance: Option<String>,
@@ -35,6 +39,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
             clients: HashMap::new(),
             observers: HashSet::new(),
             attached: HashSet::new(),
+            held: HashSet::new(),
             dependents: HashSet::new(),
             on_attach: Box::new(on_attach),
             own_instance,
@@ -42,8 +47,9 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
         }
     }
 
+    /// Occupancy: attached clients plus observers holding the host.
     pub fn attached_count(&self) -> usize {
-        self.attached.len()
+        self.attached.len() + self.held.len()
     }
 
     pub fn unclassified_count(&self) -> usize {
@@ -82,6 +88,15 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
                 return;
             }
             self.observers.insert(client.clone());
+            match hold_host_change(&line) {
+                Some(true) if self.held.insert(client.clone()) => {
+                    (self.on_attach)();
+                }
+                Some(false) => {
+                    self.held.remove(client);
+                }
+                _ => {}
+            }
         }
         if self
             .clients
@@ -95,6 +110,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
     fn attach(&mut self, client: &K) {
         self.clients.remove(client);
         self.observers.remove(client);
+        self.held.remove(client);
         self.attached.insert(client.clone());
         (self.on_attach)();
     }
@@ -102,6 +118,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
     fn depend(&mut self, client: &K) {
         self.clients.remove(client);
         self.observers.remove(client);
+        self.held.remove(client);
         self.dependents.insert(client.clone());
     }
 
@@ -111,6 +128,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
         self.clients.remove(client);
         self.observers.remove(client);
         self.attached.remove(client);
+        self.held.remove(client);
         self.dependents.remove(client);
         unclassified
     }
@@ -122,6 +140,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
             .keys()
             .chain(&self.observers)
             .chain(&self.attached)
+            .chain(&self.held)
             .chain(&self.dependents)
             .cloned()
             .collect::<HashSet<_>>()
@@ -312,5 +331,103 @@ mod tests {
         held.sort();
         assert_eq!(held, [2, 3]);
         assert!(!occupancy.admit(4));
+    }
+
+    #[test]
+    fn observer_hold_keeps_host_past_idle_exit_ms_while_held_and_exits_after_release() {
+        let (mut occupancy, resets) = counting(None);
+        let mut decider = crate::host_lifecycle::IdleExitDecider::new(1_000.);
+        let mut now = 0.;
+        let daemon = 1u32;
+        occupancy.admit(daemon);
+        send(
+            &mut occupancy,
+            daemon,
+            json!({"type":"get_protocol_info","observe":true,"hold_host":true}),
+        );
+        assert_eq!(occupancy.attached_count(), 1);
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+        for _ in 0..6 {
+            now += 1_000.;
+            send(
+                &mut occupancy,
+                daemon,
+                json!({"type":"get_state","sessionId":"s1","observe":true}),
+            );
+            assert_eq!(
+                decider.update(occupancy.attached_count() as u64, 0, now),
+                crate::host_lifecycle::IdleExitDecision::Active
+            );
+        }
+
+        send(
+            &mut occupancy,
+            daemon,
+            json!({"type":"get_protocol_info","observe":true,"hold_host":false}),
+        );
+        assert_eq!(occupancy.attached_count(), 0);
+        assert_eq!(
+            decider.update(occupancy.attached_count() as u64, 0, now),
+            crate::host_lifecycle::IdleExitDecision::Idle
+        );
+        now += 999.;
+        assert_eq!(
+            decider.update(occupancy.attached_count() as u64, 0, now),
+            crate::host_lifecycle::IdleExitDecision::Idle
+        );
+        now += 1.;
+        assert_eq!(
+            decider.update(occupancy.attached_count() as u64, 0, now),
+            crate::host_lifecycle::IdleExitDecision::Exit
+        );
+    }
+
+    #[test]
+    fn held_observer_that_disconnects_stops_holding_host() {
+        let (mut occupancy, _) = counting(None);
+        let mut decider = crate::host_lifecycle::IdleExitDecider::new(1_000.);
+        let mut now = 0.;
+        let daemon = 1u32;
+        occupancy.admit(daemon);
+        send(
+            &mut occupancy,
+            daemon,
+            json!({"type":"get_protocol_info","observe":true,"hold_host":true}),
+        );
+        occupancy.release(&daemon);
+        assert_eq!(occupancy.attached_count(), 0);
+        assert_eq!(
+            decider.update(occupancy.attached_count() as u64, 0, now),
+            crate::host_lifecycle::IdleExitDecision::Idle
+        );
+        now += 1_000.;
+        assert_eq!(
+            decider.update(occupancy.attached_count() as u64, 0, now),
+            crate::host_lifecycle::IdleExitDecision::Exit
+        );
+    }
+
+    #[test]
+    fn plain_observe_only_client_and_warm_hold_do_not_hold_host() {
+        let (mut occupancy, resets) = counting(None);
+        let viewer = 1u32;
+        occupancy.admit(viewer);
+        send(
+            &mut occupancy,
+            viewer,
+            json!({"type":"get_protocol_info","observe":true}),
+        );
+        send(
+            &mut occupancy,
+            viewer,
+            json!({"type":"get_state","sessionId":"s1","observe":true,"hold_host":"yes"}),
+        );
+        send(
+            &mut occupancy,
+            viewer,
+            json!({"type":"warm","hold_host":true}),
+        );
+        assert_eq!(occupancy.attached_count(), 0);
+        assert_eq!(resets.load(Ordering::SeqCst), 0);
     }
 }

@@ -1,7 +1,6 @@
 //! The task manager (`manager/manager.ts`). Manager state sits behind one mutex that is never held
 //! across a handle, runner, store-transition or steering call, so child listeners may re-enter.
 
-pub type FailedTurnsState = HashMap<String, Arc<Mutex<(Option<String>, Vec<String>)>>>;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
@@ -133,7 +132,6 @@ struct State {
     next_resume_attempt: u64,
     initial_turns: HashMap<String, crate::manager::child_handle::ExactTurnOutcome>,
     started_contexts: HashMap<String, LaunchContext>,
-    failed_turns: FailedTurnsState,
     resume_receipts: HashMap<(String, i64, String), bool>,
     tracking_generations: HashMap<String, u64>,
     queued_launches: HashMap<String, LaunchContext>,
@@ -1861,6 +1859,72 @@ impl TaskManager {
         }
     }
 
+    /// End a paused child whose run's Resume could not restore it (#12249).
+    /// A paused child a live foreign host still holds is never ended here.
+    pub fn end_lost_paused_task(&self, task_id: &str, reason: &str) -> bool {
+        if self.inner.live_handle(task_id).is_some() {
+            return false;
+        }
+        let host_pid = self.inner.host_pid;
+        let timestamp = self.inner.now_iso();
+        let error_message = format!(
+            "The run's Resume could not restore this paused child ({reason}), so its run ended. Its transcript is kept for task_output."
+        );
+        let mut applied_audit: Option<crate::state::TaskTransitionAudit> = None;
+        let mut released_model: Option<(String, i64)> = None;
+        let mutated = self.inner.store.mutate(task_id, |fresh| {
+            if fresh.status != TaskStatus::Paused {
+                return fresh.clone();
+            }
+            let foreign_live = fresh.host_pid.is_some_and(|pid| {
+                pid != host_pid
+                    && u32::try_from(pid).is_ok_and(utils::process_sweep::default_is_process_alive)
+            });
+            if foreign_live {
+                return fresh.clone();
+            }
+            let mut unpaused = fresh.clone();
+            unpaused.run_pause = None;
+            let transitioned = crate::state::transition_task_record(
+                &unpaused,
+                &TaskTransition::FailSessionUnavailable {
+                    timestamp: timestamp.clone(),
+                    error_message: error_message.clone(),
+                    killed: false,
+                    run_stats: None,
+                },
+            );
+            if !transitioned.applied {
+                return fresh.clone();
+            }
+            let mut ended = transitioned.record;
+            ended.failure_kind = Some("session_unavailable".to_string());
+            applied_audit = Some(transitioned.audit);
+            released_model = Some((fresh.model.clone(), fresh.notification.run_epoch));
+            ended
+        });
+        if mutated.is_err() {
+            return false;
+        }
+        let Some(audit) = applied_audit else {
+            return false;
+        };
+        if let Ok(payload) = serde_json::to_value(&audit) {
+            let _ = self.inner.store.append_event(
+                task_id,
+                &PersistedTaskEvent {
+                    event_type: audit.type_name().to_string(),
+                    payload,
+                },
+            );
+        }
+        if let Some((model, epoch)) = released_model {
+            self.inner.release_slot(task_id, &model, epoch);
+        }
+        self.inner.settle_waiters(task_id);
+        true
+    }
+
     pub fn hold_task_input(
         &self,
         task_id: &str,
@@ -2209,43 +2273,6 @@ impl TaskManager {
 
     pub fn released_key_count(&self) -> usize {
         lock(&self.inner.state).released.len()
-    }
-
-    pub fn active_parent_model_fallback(
-        &self,
-        task_id: &str,
-    ) -> Option<(crate::state::ParentModelFallback, &'static str)> {
-        let record = self.inner.try_load(task_id)?;
-        let note = record.parent_model_fallback.clone()?;
-        let parent = record.parent_model.as_deref()?;
-        if let Some(observed) = &record.effective_model {
-            if format!("{}/{}", observed.provider, observed.model_id) == parent {
-                return Some((note, "observed"));
-            }
-            if observed.switched_by_operator == Some(true)
-                || matches!(
-                    observed.source,
-                    crate::state::EffectiveModelSource::Set
-                        | crate::state::EffectiveModelSource::Cycle
-                        | crate::state::EffectiveModelSource::Restore
-                        | crate::state::EffectiveModelSource::FallbackRevert
-                )
-            {
-                return None;
-            }
-        }
-        let selected = record.resolved_model.as_ref()?;
-        if format!("{}/{}", selected.provider, selected.model_id) != parent {
-            return None;
-        }
-        Some((
-            note,
-            if matches!(record.status, TaskStatus::Running | TaskStatus::Pending) {
-                "switching"
-            } else {
-                "unconfirmed"
-            },
-        ))
     }
 
     pub fn live_run_stats(&self, task_id: &str) -> Option<(i64, TaskRunStats)> {
@@ -3298,38 +3325,6 @@ impl Inner {
         owner: Option<&DagTaskOwner>,
         admission_lease: Option<Arc<dyn SessionAdmissionLease>>,
     ) -> StartResult {
-        let mut parent_plan = plan.clone();
-        let parent = spec
-            .parent_model
-            .as_deref()
-            .filter(|_| spec.category.is_some() && spec.model.is_none())
-            .and_then(|value| {
-                let (provider, model) = value.split_once('/')?;
-                if provider.is_empty() || model.is_empty() {
-                    return None;
-                }
-                Some(crate::state::ResolvedModelRecord::new(
-                    crate::state::ResolvedModelSource::Category,
-                    provider,
-                    model,
-                ))
-            })
-            .filter(|parent| {
-                plan.model != parent.display
-                    && !plan
-                        .resolved_model
-                        .iter()
-                        .chain(plan.requested_model.iter())
-                        .chain(plan.fallback_models.iter().flatten())
-                        .any(|m| m.provider == parent.provider && m.model_id == parent.model_id)
-            });
-        if let Some(parent) = &parent {
-            parent_plan
-                .fallback_models
-                .get_or_insert_with(Vec::new)
-                .push(parent.clone());
-        }
-        let plan = &parent_plan;
         let max_depth = plan.max_depth.unwrap_or(self.config.max_depth);
         let allowed_subagents: Vec<String> = spec
             .allowed_subagents
@@ -3420,19 +3415,7 @@ impl Inner {
             owner,
             requested_registration.as_ref(),
         ) {
-            Ok(mut record) => {
-                if let Some(parent) = &parent {
-                    record.parent_model = Some(parent.display.clone());
-                    if let Err(error) = self.store.replace(&record) {
-                        log(
-                            "senpi-task parent rung persistence failed",
-                            &record.task_id,
-                            &error,
-                        );
-                    }
-                }
-                record
-            }
+            Ok(record) => record,
             Err(error) => {
                 if !matches!(
                     error,
@@ -3816,23 +3799,46 @@ impl Inner {
         let handle = match started {
             Ok(handle) => handle,
             Err(error) => {
-                let message = public_start_failure_message(&error);
+                let (message, failure_kind, refusals) =
+                    self.start_failure_details(&record.task_id, &error);
                 self.release_slot(&record.task_id, &context.model, epoch);
                 self.isolation.discard(&record.task_id);
                 self.transition(
                     &record.task_id,
                     &TaskTransition::Fail {
                         timestamp: self.now_iso(),
-                        error_message: message.to_string(),
+                        error_message: message.clone(),
                         killed: false,
                         run_stats: None,
                     },
                 );
+                if (failure_kind.is_some() || refusals.is_some())
+                    && let Err(mutate_err) = self.store.mutate(&record.task_id, |fresh| {
+                        let mut next = fresh.clone();
+                        if let Some(kind) = &failure_kind {
+                            next.failure_kind = Some(kind.clone());
+                        }
+                        if let Some(refusals) = &refusals {
+                            next.model_refusals = Some(refusals.clone());
+                        }
+                        next
+                    })
+                {
+                    log(
+                        "senpi-task manager start failure_kind persistence failed",
+                        &record.task_id,
+                        &mutate_err,
+                    );
+                }
+                let mut payload = json!({ "error_message": message });
+                if let Some(kind) = &failure_kind {
+                    payload["failure_kind"] = json!(kind);
+                }
                 if let Err(error) = self.store.append_event(
                     &record.task_id,
                     &PersistedTaskEvent {
                         event_type: "task_start_failed".to_string(),
-                        payload: json!({ "error_message": message }),
+                        payload,
                     },
                 ) {
                     log(
@@ -3843,7 +3849,7 @@ impl Inner {
                 }
                 self.drop_pending(&record.task_id);
                 self.settle_waiters(&record.task_id);
-                return Err(message.to_string());
+                return Err(message);
             }
         };
         let current = self.try_load(&record.task_id);
@@ -4092,37 +4098,16 @@ impl Inner {
             .clone()
             .unwrap_or_else(|| record.resolved_model.iter().cloned().collect());
         attempts.push(next.clone());
-        let note = (record.parent_model.as_deref() == Some(next.display.as_str())).then(|| {
-            let reason = if credentials.is_some() {
-                crate::state::ParentModelFallbackReason::NotSignedIn
-            } else {
-                crate::manager::parent_model_fallback::reason_of_failure(
-                    &failure.message,
-                    record
-                        .resolved_model
-                        .as_ref()
-                        .map(|model| model.model_id.as_str()),
-                )
-            };
-            let reason = if reason == crate::state::ParentModelFallbackReason::Error {
-                crate::state::ParentModelFallbackReason::Unavailable
-            } else {
-                reason
-            };
-            crate::manager::parent_model_fallback::build(
-                record.model.clone(),
-                reason,
-                credentials.is_none().then_some(failure.message.as_str()),
-                &[],
-                self.now_iso(),
-            )
-        });
+        let refused = crate::manager::model_refusals::with_refusal(
+            record.clone(),
+            crate::manager::model_refusals::refusal_of(&record, &failure.message, &self.now_iso()),
+        );
         let updated = TaskRecord {
             model: next.display.clone(),
             resolved_model: Some(next.clone()),
             fallback_models: Some(remaining.clone()),
             fallback_attempts: Some(attempts),
-            parent_model_fallback: note.or(record.parent_model_fallback.clone()),
+            model_refusals: refused.model_refusals.clone(),
             ..record.clone()
         };
         let mut committed = false;
@@ -4142,7 +4127,7 @@ impl Inner {
                     resolved_model: updated.resolved_model.clone(),
                     fallback_models: updated.fallback_models.clone(),
                     fallback_attempts: updated.fallback_attempts.clone(),
-                    parent_model_fallback: updated.parent_model_fallback.clone(),
+                    model_refusals: updated.model_refusals.clone(),
                     ..fresh.clone()
                 }
             });
@@ -4328,33 +4313,73 @@ impl Inner {
         }
     }
 
-    fn record_spawn_facts(&self, task_id: &str, handle: &dyn ManagedChildHandle) {
-        let Some(current) = self.try_load(task_id) else {
-            return;
+    fn start_failure_details(
+        &self,
+        task_id: &str,
+        error: &ManagedRunnerError,
+    ) -> (
+        String,
+        Option<String>,
+        Option<Vec<crate::state::ModelRefusal>>,
+    ) {
+        let base_message = public_start_failure_message(error);
+        let Some(fresh) = self.try_load(task_id) else {
+            return (base_message.to_string(), None, None);
         };
-        if is_terminal_record(&current) {
-            return;
-        }
-        let with_pid =
-            record_spawned_pid(&current, handle.pid()).unwrap_or_else(|| current.clone());
-        let keeps_v1 = current
-            .spawn_spec
-            .as_ref()
-            .is_some_and(|spec| spec.as_v1().is_some());
-        let updated = match handle.spawn_spec() {
-            Some(spawn) if !keeps_v1 => TaskRecord {
-                spawn_spec: Some(TaskSpawnSpec::LegacyProcess {
-                    cwd: spawn.cwd,
-                    extensions: spawn.extensions,
-                    member_env: spawn.member_env.map(|env| env.into_iter().collect()),
-                }),
-                ..with_pid
-            },
-            _ => with_pid,
+        let walked = fresh.model_refusals.as_deref().unwrap_or(&[]);
+        let ManagedRunnerError::Runner(failure) = error else {
+            return (base_message.to_string(), None, None);
         };
-        if updated != current
-            && let Err(error) = self.store.replace(&updated)
+        if failure.kind != RunnerFailureKind::ModelUnavailable
+            && crate::manager::start_credentials_refusal::start_credentials_refusal(failure)
+                .is_none()
         {
+            return (base_message.to_string(), None, None);
+        }
+        let final_refusal =
+            crate::manager::model_refusals::refusal_of(&fresh, &failure.message, &self.now_iso());
+        if walked.is_empty() && final_refusal.reason == crate::state::ModelRefusalReason::Error {
+            return (base_message.to_string(), None, None);
+        }
+        let mut refusals = walked.to_vec();
+        refusals.push(final_refusal);
+        (
+            format!(
+                "{base_message}\n{}",
+                crate::manager::model_refusals::describe_exhausted_chain(&fresh, &refusals)
+            ),
+            Some(crate::manager::model_refusals::MODEL_CHAIN_EXHAUSTED.to_string()),
+            Some(refusals),
+        )
+    }
+
+    fn record_spawn_facts(&self, task_id: &str, handle: &dyn ManagedChildHandle) {
+        let pid = handle.pid();
+        let spawn = handle.spawn_spec();
+        if let Err(error) = self.store.mutate(task_id, |current| {
+            if is_terminal_record(current) {
+                return current.clone();
+            }
+            let with_pid = record_spawned_pid(current, pid).unwrap_or_else(|| current.clone());
+            let keeps_v1 = with_pid
+                .spawn_spec
+                .as_ref()
+                .is_some_and(|spec| spec.as_v1().is_some());
+            match spawn.as_ref() {
+                Some(spawn) if !keeps_v1 => TaskRecord {
+                    spawn_spec: Some(TaskSpawnSpec::LegacyProcess {
+                        cwd: spawn.cwd.clone(),
+                        extensions: spawn.extensions.clone(),
+                        member_env: spawn
+                            .member_env
+                            .as_ref()
+                            .map(|env| env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+                    }),
+                    ..with_pid
+                },
+                _ => with_pid,
+            }
+        }) {
             log("senpi-task manager spawn facts failed", task_id, &error);
         }
     }
@@ -4493,119 +4518,13 @@ impl Inner {
                 );
             }
         }));
-        let fallback_store = self.store.clone();
-        let fallback_id = task_id.to_string();
-        let failed: Arc<Mutex<(Option<String>, Vec<String>)>> =
-            Arc::new(Mutex::new((None, Vec::new())));
-        lock(&self.state)
-            .failed_turns
-            .insert(task_id.into(), Arc::clone(&failed));
-        let streamed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let fallback_observer = crate::manager::model_refusals::observe_model_refusals(
+            self.store.clone(),
+            task_id.to_string(),
+            self.now.clone(),
+        );
         let fallback = handle.subscribe(Arc::new(move |event| {
-            if event.event_type == "message_start" {
-                lock(&streamed).clear();
-            }
-            if matches!(event.event_type.as_str(), "message_update" | "message_end")
-                && let Some(message) = event.message.as_ref().filter(|m| {
-                    m.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
-                })
-            {
-                let tools = message
-                    .get("content")
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|part| part["type"] == "toolCall")
-                    .filter_map(|part| part["name"].as_str())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                if event.event_type == "message_update" {
-                    *lock(&streamed) = tools;
-                } else {
-                    let mut facts = lock(&failed);
-                    if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) {
-                        let mut names = Vec::new();
-                        for name in tools.iter().chain(lock(&streamed).iter()) {
-                            if !names.contains(name) {
-                                names.push(name.clone());
-                            }
-                        }
-                        let message_text = message["errorMessage"]
-                            .as_str()
-                            .filter(|text| !text.is_empty())
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "stopped with {}",
-                                    message["stopReason"].as_str().unwrap_or_default()
-                                )
-                            });
-                        *facts = (Some(message_text), names);
-                    } else {
-                        *facts = (None, Vec::new());
-                    }
-                    return;
-                }
-            }
-            if event.event_type != "retry_fallback_applied" {
-                return;
-            }
-            let Ok(Some(mut record)) = fallback_store.load(&fallback_id) else {
-                return;
-            };
-            if !event.to.as_deref().is_some_and(|to| {
-                record.parent_model.as_deref().is_some_and(|parent| {
-                    to == parent
-                        || crate::manager::parent_model_fallback::base_selector(to) == parent
-                })
-            }) {
-                return;
-            }
-            let mut facts = lock(&failed);
-            let detail = facts.0.as_deref();
-            let classified = crate::manager::parent_model_fallback::reason_of_failure(
-                detail.unwrap_or_default(),
-                record
-                    .resolved_model
-                    .as_ref()
-                    .map(|model| model.model_id.as_str()),
-            );
-            let reason = if event.limit.is_some() {
-                crate::state::ParentModelFallbackReason::UsageLimit
-            } else if classified != crate::state::ParentModelFallbackReason::Error {
-                classified
-            } else {
-                match event.reason.as_deref() {
-                    Some("billing") => crate::state::ParentModelFallbackReason::UsageLimit,
-                    Some("refusal") => crate::state::ParentModelFallbackReason::Refused,
-                    Some("transient") => crate::state::ParentModelFallbackReason::Unavailable,
-                    _ => crate::state::ParentModelFallbackReason::Error,
-                }
-            };
-            record.parent_model_fallback = Some(crate::manager::parent_model_fallback::build(
-                crate::manager::parent_model_fallback::base_selector(
-                    event.from.as_deref().unwrap_or(&record.model),
-                )
-                .into(),
-                reason,
-                detail,
-                &facts.1,
-                chrono::Utc::now().to_rfc3339(),
-            ));
-            *facts = (None, Vec::new());
-            let note = record.parent_model_fallback.clone();
-            if let Err(error) =
-                fallback_store.mutate(&fallback_id, |fresh: &TaskRecord| TaskRecord {
-                    parent_model_fallback: note.clone(),
-                    ..fresh.clone()
-                })
-            {
-                log(
-                    "senpi-task parent fallback fact persistence failed",
-                    &fallback_id,
-                    &error,
-                );
-            }
+            fallback_observer(event);
         }));
         let resumed_manager = self.this.clone();
         let resumed_id = task_id.to_string();
@@ -4865,32 +4784,14 @@ impl Inner {
         attempts.push(next_model.clone());
         let mut notification = record.notification.clone();
         notification.run_epoch += 1;
-        let failed = lock(&self.state).failed_turns.get(&input.task_id).cloned();
-        let facts = failed.as_ref().map(|facts| lock(facts));
-        let message = facts
-            .as_ref()
-            .and_then(|facts| facts.0.as_deref())
-            .unwrap_or(&input.failure.message);
-        let tools = facts.as_ref().map_or(&[][..], |facts| facts.1.as_slice());
-        let parent_note = (record.parent_model.as_deref() == Some(next_model.display.as_str()))
-            .then(|| {
-                let reason = crate::manager::parent_model_fallback::reason_of_failure(
-                    message,
-                    record
-                        .resolved_model
-                        .as_ref()
-                        .map(|model| model.model_id.as_str()),
-                );
-                crate::manager::parent_model_fallback::build(
-                    record.model.clone(),
-                    reason,
-                    Some(message),
-                    tools,
-                    input.timestamp.clone(),
-                )
-            });
+        let refusal = crate::manager::model_refusals::refusal_of(
+            &record,
+            &input.failure.message,
+            &input.timestamp,
+        );
+        let refused = crate::manager::model_refusals::with_refusal(record.clone(), refusal);
         let next_record = TaskRecord {
-            parent_model_fallback: parent_note.or(record.parent_model_fallback.clone()),
+            model_refusals: refused.model_refusals,
             model: next_model.display.clone(),
             resolved_model: Some(next_model.clone()),
             fallback_models: Some(remaining.clone()),
@@ -4994,17 +4895,35 @@ impl Inner {
                 self.end_launch(task_id);
             }
             Err(error) => {
-                let message = public_start_failure_message(&error);
+                let (message, failure_kind, refusals) = self.start_failure_details(task_id, &error);
                 self.release_slot(task_id, &context.model, epoch);
                 self.transition(
                     task_id,
                     &TaskTransition::Fail {
                         timestamp: self.now_iso(),
-                        error_message: message.to_string(),
+                        error_message: message,
                         killed: false,
                         run_stats: None,
                     },
                 );
+                if (failure_kind.is_some() || refusals.is_some())
+                    && let Err(mutate_err) = self.store.mutate(task_id, |fresh| {
+                        let mut next = fresh.clone();
+                        if let Some(kind) = &failure_kind {
+                            next.failure_kind = Some(kind.clone());
+                        }
+                        if let Some(refusals) = &refusals {
+                            next.model_refusals = Some(refusals.clone());
+                        }
+                        next
+                    })
+                {
+                    log(
+                        "senpi-task manager respawn failure_kind persistence failed",
+                        task_id,
+                        &mutate_err,
+                    );
+                }
                 self.settle_waiters(task_id);
             }
         }

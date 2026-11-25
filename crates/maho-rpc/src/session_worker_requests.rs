@@ -20,7 +20,7 @@ pub struct SessionWorkerRequests {
     pending: BTreeMap<u64, Pending>,
     serial: u64,
     closed: bool,
-    opening_deadline: Option<u64>,
+    progress_deadline: Option<u64>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WorkerRequestError {
@@ -35,22 +35,52 @@ impl SessionWorkerRequests {
     pub fn active_count(&self) -> usize {
         self.pending.len()
     }
+    /// Any inbound worker message shows the request pipeline is alive (senpi#6452): restarts the
+    /// no-progress deadline for non-control requests without extending `control_ms` timers.
+    pub fn note_progress(&mut self, now: u64) {
+        if self.closed {
+            return;
+        }
+        let next_deadline = now + SESSION_WORKER_LIMITS.open_ms;
+        self.progress_deadline = Some(next_deadline);
+        for pending in self.pending.values_mut() {
+            if !pending.control && pending.deadline.is_some() {
+                pending.deadline = Some(next_deadline);
+            }
+        }
+    }
+    fn progress_budget_deadline(&mut self, now: u64) -> u64 {
+        let owed = self
+            .pending
+            .values()
+            .any(|pending| !pending.control && pending.deadline.is_some());
+        if !owed || self.progress_deadline.is_none() {
+            self.progress_deadline = Some(now + SESSION_WORKER_LIMITS.open_ms);
+        }
+        self.progress_deadline
+            .unwrap_or(now + SESSION_WORKER_LIMITS.open_ms)
+    }
     pub fn request(&mut self, message: &Value, now: u64) -> Result<Value, WorkerRequestError> {
         if self.closed {
             return Err(WorkerRequestError::SessionClosing);
         }
-        let command = message.get("type").and_then(Value::as_str) == Some("command");
-        let control = command
-            && message
-                .get("command")
-                .and_then(|command| command.get("type"))
-                .and_then(Value::as_str)
-                .is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        "abort" | "abort_bash" | "extension_ui_response" | "extension_ui_progress"
-                    )
-                });
+        let kind_str = message.get("type").and_then(Value::as_str);
+        let command = kind_str == Some("command");
+        let control = kind_str == Some("secret_sealed_answer")
+            || (command
+                && message
+                    .get("command")
+                    .and_then(|command| command.get("type"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind,
+                            "abort"
+                                | "abort_bash"
+                                | "extension_ui_response"
+                                | "extension_ui_progress"
+                        )
+                    }));
         let bytes = serde_json::to_vec(message)
             .map_err(|error| WorkerRequestError::Serialization(error.to_string()))?
             .len();
@@ -81,11 +111,7 @@ impl SessionWorkerRequests {
         } else if control {
             Some(now + SESSION_WORKER_LIMITS.control_ms)
         } else {
-            Some(
-                *self
-                    .opening_deadline
-                    .get_or_insert(now + SESSION_WORKER_LIMITS.open_ms),
-            )
+            Some(self.progress_budget_deadline(now))
         };
         self.pending.insert(
             self.serial,
@@ -215,19 +241,32 @@ impl SessionWorkerRequests {
 mod tests {
     use super::*;
     #[test]
-    fn opening_budget_starts_on_use_and_does_not_reset() {
+    fn opening_budget_starts_on_use_and_shares_while_owed() {
         let mut requests = SessionWorkerRequests::default();
         let first = requests
             .request(&serde_json::json!({"type":"commit"}), 100000)
             .unwrap();
         assert!(requests.timed_out_requests(129999).is_empty());
-        requests.receive(&serde_json::json!({"type":"ready","request":first["request"]}));
-        let next = requests
+        // A second request behind an still-owed first shares that deadline; once settled, a new one starts afresh.
+        let queued = requests
             .request(&serde_json::json!({"type":"bind"}), 129000)
             .unwrap();
         assert_eq!(
             requests.timed_out_requests(130000),
-            vec![next["request"].as_u64().unwrap()]
+            vec![
+                first["request"].as_u64().unwrap(),
+                queued["request"].as_u64().unwrap(),
+            ]
+        );
+        requests.receive(&serde_json::json!({"type":"ready","request":first["request"]}));
+        requests.receive(&serde_json::json!({"type":"ready","request":queued["request"]}));
+        let fresh = requests
+            .request(&serde_json::json!({"type":"bind"}), 140000)
+            .unwrap();
+        assert!(requests.timed_out_requests(169999).is_empty());
+        assert_eq!(
+            requests.timed_out_requests(170000),
+            vec![fresh["request"].as_u64().unwrap()]
         );
     }
     #[test]

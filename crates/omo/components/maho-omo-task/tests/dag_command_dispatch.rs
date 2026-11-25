@@ -68,7 +68,6 @@ fn start(runs: &Runs, session: &str, name: &str) -> String {
             },
             parent_session_id: session.into(),
             root_session_id: session.into(),
-            parent_model: None,
         })
         .expect("start")
         .snapshot

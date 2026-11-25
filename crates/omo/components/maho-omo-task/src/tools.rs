@@ -42,8 +42,8 @@ use senpi_task::{
         },
         output::{
             output::{
-                TASK_OUTPUT_DESCRIPTION, TaskOutputInput, run_task_output,
-                task_output_params_schema,
+                TASK_OUTPUT_DESCRIPTION, TaskOutputInput, TaskOutputStatusCache,
+                run_task_output_cached, task_output_params_schema,
             },
             types::TaskOutputDeps,
         },
@@ -161,6 +161,15 @@ pub fn register_task_tools_with_sync(
     api: &mut ExtensionApi,
     deps: TaskToolsDeps,
     sync: Arc<dyn Fn() + Send + Sync>,
+) {
+    let cache = Arc::new(TaskOutputStatusCache::new());
+    register_task_tools_with_sync_and_cache(api, deps, sync, cache);
+}
+pub fn register_task_tools_with_sync_and_cache(
+    api: &mut ExtensionApi,
+    deps: TaskToolsDeps,
+    sync: Arc<dyn Fn() + Send + Sync>,
+    output_cache: Arc<TaskOutputStatusCache>,
 ) {
     let deps = Arc::new(deps);
     let task_deps = deps.clone();
@@ -316,6 +325,7 @@ pub fn register_task_tools_with_sync(
         task_output_params_schema(),
         Arc::new(move |call| {
             let deps = deps.clone();
+            let output_cache = output_cache.clone();
             Box::pin(async move {
                 let params: TaskOutputInput = serde_json::from_value(call.params)?;
                 let session = call
@@ -328,7 +338,12 @@ pub fn register_task_tools_with_sync(
                     resolve_caller_session_id: None,
                     now: None,
                 };
-                native_result(run_task_output(&output_deps, &params, session)?)
+                native_result(run_task_output_cached(
+                    &output_deps,
+                    &params,
+                    session,
+                    Some(&output_cache),
+                )?)
             })
         }),
     );
@@ -351,6 +366,10 @@ fn register_synced_tool(
             result
         })
     });
+    if api.profile.side == Some(maho_ext_api::ExtensionSide::Hand) {
+        let _ = api.try_register_tool_with_runs(tool, Some(maho_ext_api::ExtensionSide::Brain));
+        return;
+    }
     if let Err(error) = api.register_tool_with_renderers(tool, renderers) {
         std::panic::panic_any(error);
     }
@@ -599,7 +618,11 @@ pub fn register_lead_team_tools(
             }),
         );
         definition.label = label.into();
-        api.register_tool(definition);
+        if let Err(error) =
+            api.try_register_tool_with_runs(definition, Some(maho_ext_api::ExtensionSide::Brain))
+        {
+            maho_ext_api::diagnostic(&format!("lead team tool registration failed: {error}"));
+        }
     }
 }
 struct MutexTeamTool(std::sync::Mutex<senpi_task::tools::team::index::LeadTeamTool>);

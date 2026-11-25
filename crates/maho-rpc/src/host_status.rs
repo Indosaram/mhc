@@ -58,7 +58,16 @@ pub fn host_summary(host: Option<&HostProtocolInfo>) -> Value {
     match host {
         None => Value::Null,
         Some(host) => {
-            serde_json::json!({"protocolVersion":host.protocol_version,"serverVersion":host.server_version,"capabilities":host.capabilities,"instanceId":host.instance_id,"generation":host.generation,"engineVersion":host.engine_version,"launchProfileId":host.launch_profile.as_ref().map(|profile|&profile.profile_id)})
+            serde_json::json!({
+                "protocolVersion": host.protocol_version,
+                "serverVersion": host.server_version,
+                "capabilities": host.capabilities,
+                "instanceId": host.instance_id,
+                "generation": host.generation,
+                "engineVersion": host.engine_version,
+                "launchProfileId": host.launch_profile.as_ref().map(|profile| &profile.profile_id),
+                "pathIdentityResolver": host.path_identity_resolver,
+            })
         }
     }
 }
@@ -158,6 +167,11 @@ async fn read_host_status_in_key_root(
         .and_then(|host| host.handover.clone())
         .unwrap_or(Value::Null);
     report["memory_pressure"] = host.as_ref().and_then(|host| host.memory_pressure).into();
+    report["path_identity_resolver"] = host
+        .as_ref()
+        .and_then(|host| host.path_identity_resolver.clone())
+        .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+        .unwrap_or(Value::Null);
     // senpi: supervised host children that DIED (not stopped), the owner-keyed shard the socket names, and the
     // session-path claims; the per-row listings only when workers were asked for.
     report["crashes"] = crate::host_crash_record::read_host_crash_records(&paths.dir)

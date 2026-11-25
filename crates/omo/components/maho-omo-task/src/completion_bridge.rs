@@ -43,6 +43,7 @@ impl CompletionObservingStore {
                 transition,
                 TaskTransition::Complete { .. }
                     | TaskTransition::Fail { .. }
+                    | TaskTransition::FailSessionUnavailable { .. }
                     | TaskTransition::Cancel { .. }
                     | TaskTransition::Interrupt { .. }
                     | TaskTransition::Lose { .. }

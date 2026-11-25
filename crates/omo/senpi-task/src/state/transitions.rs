@@ -90,7 +90,9 @@ fn transition_status(transition: &TaskTransition, current: TaskStatus) -> TaskSt
         TaskTransition::Unpause { .. } => TaskStatus::Running,
         TaskTransition::Start { .. } => TaskStatus::Running,
         TaskTransition::Complete { .. } => TaskStatus::Completed,
-        TaskTransition::Fail { .. } => TaskStatus::Error,
+        TaskTransition::Fail { .. } | TaskTransition::FailSessionUnavailable { .. } => {
+            TaskStatus::Error
+        }
         TaskTransition::Cancel { .. } => TaskStatus::Cancelled,
         TaskTransition::Interrupt { .. } => TaskStatus::Interrupted,
         TaskTransition::Lose { .. } => TaskStatus::Lost,
@@ -114,6 +116,7 @@ fn transition_residency(transition: &TaskTransition, current: ResidencyState) ->
         | TaskTransition::Start { .. }
         | TaskTransition::Complete { .. }
         | TaskTransition::Fail { .. }
+        | TaskTransition::FailSessionUnavailable { .. }
         | TaskTransition::Cancel { .. }
         | TaskTransition::Interrupt { .. }
         | TaskTransition::Lose { .. } => current,
@@ -132,6 +135,7 @@ fn changes_only_residency(transition: &TaskTransition) -> bool {
         | TaskTransition::Start { .. }
         | TaskTransition::Complete { .. }
         | TaskTransition::Fail { .. }
+        | TaskTransition::FailSessionUnavailable { .. }
         | TaskTransition::Cancel { .. }
         | TaskTransition::Interrupt { .. }
         | TaskTransition::Lose { .. } => false,
@@ -149,9 +153,13 @@ fn is_status_transition_allowed(current: TaskStatus, transition: &TaskTransition
                 TaskStatus::Running | TaskStatus::Pending | TaskStatus::Paused
             )
         }
-        TaskTransition::Complete { .. }
-        | TaskTransition::Fail { .. }
-        | TaskTransition::Interrupt { .. } => current == TaskStatus::Running,
+        TaskTransition::Complete { .. } | TaskTransition::Interrupt { .. } => {
+            current == TaskStatus::Running
+        }
+        TaskTransition::Fail { .. } => current == TaskStatus::Running,
+        TaskTransition::FailSessionUnavailable { .. } => {
+            matches!(current, TaskStatus::Running | TaskStatus::Paused)
+        }
         TaskTransition::Lose { .. } => false,
         TaskTransition::Evict { .. }
         | TaskTransition::Dispose { .. }
@@ -194,6 +202,21 @@ fn apply_transition_fields(record: &TaskRecord, transition: &TaskTransition) -> 
             ..
         } => {
             next.error_message = Some(error_message.clone());
+            if *killed {
+                next.killed = Some(true);
+            }
+            if run_stats.is_some() {
+                next.run_stats.clone_from(run_stats);
+            }
+        }
+        TaskTransition::FailSessionUnavailable {
+            error_message,
+            killed,
+            run_stats,
+            ..
+        } => {
+            next.error_message = Some(error_message.clone());
+            next.failure_kind = Some("session_unavailable".to_string());
             if *killed {
                 next.killed = Some(true);
             }

@@ -76,7 +76,6 @@ pub struct StopHostOptions {
     /// Refuse rather than signal a generation other than the one the operator confirmed.
     pub expected_generation: Option<crate::host_stop_generation::HostStopGeneration>,
 }
-const BOUND_STOP_LOCK_WAIT_MS: u64 = 30_000;
 /// Legacy entry: the pre-`StopHostOptions` shape, kept for callers that pass positional flags.
 pub async fn stop_host(
     socket: &str,
@@ -124,8 +123,13 @@ pub async fn stop_host_with(options: StopHostOptions) -> std::io::Result<StopHos
         .unwrap_or_else(|| maho_core::config::get_agent_dir().into());
     let paths = crate::host_daemon_paths::create_host_daemon_paths(&options.socket, &agent_dir);
     crate::host_daemon_paths::create_daemon_directories(&paths).map_err(|error| error.source)?;
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let lock_wait = crate::host_startup_policy::startup_envelope(Some(
+        crate::host_stalled_evidence::child_stalled_stop_max_ms(&env),
+    ))
+    .lock_wait;
     let retries = crate::ownership_safe_lock::LockRetries {
-        retries: u32::try_from(BOUND_STOP_LOCK_WAIT_MS / 100).unwrap_or(300),
+        retries: u32::try_from(lock_wait / 100).unwrap_or(300),
         ..Default::default()
     };
     let mut lock =

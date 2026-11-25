@@ -1,6 +1,7 @@
 //! Which public-socket connections count as host activity (senpi `host-observe-request.ts`).
 //! A read marks itself with `observe: true` so the supervisor does not count it as an attachment.
 pub const OBSERVE_REQUEST_FIELD: &str = "observe";
+pub const HOLD_HOST_FIELD: &str = "hold_host";
 pub const ORIGIN_HOST_INSTANCE_FIELD: &str = "origin_host_instance";
 const OBSERVING_COMMANDS: &[&str] = &[
     "get_protocol_info",
@@ -11,7 +12,7 @@ const OBSERVING_COMMANDS: &[&str] = &[
     "get_effect_status",
     "get_pending_inputs",
     "get_subscription_limits",
-    // Side-effect-free reads of a session's state and history (senpi#4267).
+    "find_session",
     "get_state",
     "get_entries",
 ];
@@ -21,12 +22,30 @@ pub fn is_observing_request(line: &str) -> bool {
         return false;
     };
     let kind = record.get("type").and_then(serde_json::Value::as_str);
-    // `warm` opens nothing and `authenticate` only proves the endpoint: neither attaches.
-    if kind == Some("warm") || kind == Some("authenticate") {
+    // `warm` / `park_session` / `authenticate` never attach.
+    if matches!(kind, Some("warm" | "park_session" | "authenticate")) {
         return true;
     }
     record.get(OBSERVE_REQUEST_FIELD) == Some(&serde_json::Value::Bool(true))
         && kind.is_some_and(|kind| OBSERVING_COMMANDS.contains(&kind))
+}
+
+/// senpi#5626: `Some(true)` holds the host on an observing read, `Some(false)` releases it, `None` unchanged.
+pub fn hold_host_change(line: &str) -> Option<bool> {
+    if !is_observing_request(line) {
+        return None;
+    }
+    let Ok(serde_json::Value::Object(record)) = serde_json::from_str::<serde_json::Value>(line)
+    else {
+        return None;
+    };
+    let kind = record.get("type").and_then(serde_json::Value::as_str);
+    if matches!(kind, Some("warm" | "park_session" | "authenticate")) {
+        return None;
+    }
+    record
+        .get(HOLD_HOST_FIELD)
+        .and_then(serde_json::Value::as_bool)
 }
 /// The host generation this process runs in (`SENPI_RPC_HOST_INSTANCE_ID`, trimmed), or `None` outside any host.
 pub fn origin_host_instance(env: &std::collections::HashMap<String, String>) -> Option<String> {

@@ -9,6 +9,14 @@ pub enum WorkerCreditError {
     PathInUse,
     #[error("session_reservation_limit")]
     ReservationLimit,
+    #[error("stale")]
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclareOnHostOutcome {
+    Declared,
+    Stale,
 }
 pub fn exchange(
     send: impl FnOnce(&WorkerSignal),
@@ -86,6 +94,25 @@ impl WorkerCredit {
             1 => Ok(()),
             2 => Err(WorkerCreditError::PathInUse),
             3 => Err(WorkerCreditError::ReservationLimit),
+            _ => Err(WorkerCreditError::Timeout),
+        }
+    }
+    /// Declares a connection's capabilities on the host (omo-relay-daemon#307): `Stale` is the host's
+    /// command-local refusal of a declaration from a retired incarnation; a conflict still fails.
+    pub fn declare_on_host(
+        &self,
+        build: impl Fn(&WorkerSignal) -> crate::session_worker_protocol::SessionWorkerToHost,
+    ) -> Result<DeclareOnHostOutcome, WorkerCreditError> {
+        let signal = WorkerSignal::default();
+        (self.send)(build(&signal));
+        match signal.wait(std::time::Duration::from_millis(
+            SESSION_WORKER_LIMITS.control_ms,
+        )) {
+            1 => Ok(DeclareOnHostOutcome::Declared),
+            4 => Ok(DeclareOnHostOutcome::Stale),
+            2 => Err(WorkerCreditError::Denied(
+                "session_worker_capabilities_denied".into(),
+            )),
             _ => Err(WorkerCreditError::Timeout),
         }
     }

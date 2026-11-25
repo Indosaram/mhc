@@ -340,3 +340,16 @@ fn snapshots_preserve_full_durable_stats_and_prefer_live_stats_when_supplied() {
         "failed"
     );
 }
+
+#[test]
+fn bounded_task_output_preserves_no_progress_details() {
+    let value = bounded_task_output(&TaskOutputDetails::NoProgress {
+        task_id: "st_1".into(),
+        status: senpi_task::state::TaskStatus::Running,
+        reason: "Task st_1 has not changed since the last status read.".into(),
+    })
+    .expect("no_progress");
+    assert_eq!(value["kind"], "no_progress");
+    assert_eq!(value["task_id"], "st_1");
+    assert_eq!(value["status"], "running");
+}

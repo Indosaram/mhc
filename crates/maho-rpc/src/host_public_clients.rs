@@ -16,12 +16,79 @@ struct PublicDescriptors {
     listeners: usize,
 }
 
-pub async fn count_public_clients(supervisor_pid: u32, socket: &str) -> Option<usize> {
-    let mut names = HashSet::from([socket.to_owned()]);
-    if let Ok(real) = std::fs::canonicalize(socket) {
-        names.insert(real.to_string_lossy().into_owned());
+#[derive(Clone, Copy)]
+struct SocketDevIno {
+    dev: u64,
+    ino: u64,
+}
+
+#[cfg(unix)]
+fn socket_dev_ino(meta: &std::fs::Metadata) -> SocketDevIno {
+    use std::os::unix::fs::MetadataExt;
+    SocketDevIno {
+        dev: meta.dev(),
+        ino: meta.ino(),
     }
-    let descriptors = platform_descriptors(supervisor_pid, &names).await?;
+}
+
+/// Whether a reported socket path is the public socket: by name, or by resolving to the public entry's inode
+/// (`<socket>.bind-*` scratch aliases share the same inode, senpi#5319).
+struct PublicNameMatcher {
+    names: HashSet<String>,
+    published: Option<SocketDevIno>,
+    seen: std::collections::HashMap<String, bool>,
+}
+
+impl PublicNameMatcher {
+    fn new(socket: &str) -> Self {
+        let mut names = HashSet::from([socket.to_owned()]);
+        if let Ok(real) = std::fs::canonicalize(socket) {
+            names.insert(real.to_string_lossy().into_owned());
+        }
+        #[cfg(unix)]
+        let published = std::fs::symlink_metadata(socket)
+            .ok()
+            .map(|meta| socket_dev_ino(&meta));
+        #[cfg(not(unix))]
+        let published = None;
+        Self {
+            names,
+            published,
+            seen: std::collections::HashMap::new(),
+        }
+    }
+
+    fn matches(&mut self, path: &str) -> bool {
+        if self.names.contains(path) {
+            return true;
+        }
+        let Some(published) = self.published else {
+            return false;
+        };
+        if !path.starts_with('/') {
+            return false;
+        }
+        if let Some(&known) = self.seen.get(path) {
+            return known;
+        }
+        #[cfg(unix)]
+        let same = std::fs::metadata(path).ok().is_some_and(|meta| {
+            let entry = socket_dev_ino(&meta);
+            entry.dev == published.dev && entry.ino == published.ino
+        });
+        #[cfg(not(unix))]
+        let same = {
+            let _ = published;
+            false
+        };
+        self.seen.insert(path.to_owned(), same);
+        same
+    }
+}
+
+pub async fn count_public_clients(supervisor_pid: u32, socket: &str) -> Option<usize> {
+    let mut matcher = PublicNameMatcher::new(socket);
+    let descriptors = platform_descriptors(supervisor_pid, &mut matcher).await?;
     if descriptors.listeners == 0 {
         return None;
     }
@@ -29,7 +96,10 @@ pub async fn count_public_clients(supervisor_pid: u32, socket: &str) -> Option<u
 }
 
 #[cfg(target_os = "linux")]
-async fn platform_descriptors(pid: u32, names: &HashSet<String>) -> Option<PublicDescriptors> {
+async fn platform_descriptors(
+    pid: u32,
+    matcher: &mut PublicNameMatcher,
+) -> Option<PublicDescriptors> {
     let mut inodes = HashSet::new();
     for entry in std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?.flatten() {
         let Ok(target) = std::fs::read_link(entry.path()) else {
@@ -44,14 +114,30 @@ async fn platform_descriptors(pid: u32, names: &HashSet<String>) -> Option<Publi
         }
     }
     let table = std::fs::read_to_string("/proc/net/unix").ok()?;
-    Some(count_linux_descriptors(&table, &inodes, names))
+    Some(count_linux_descriptors_with_matcher(
+        &table, &inodes, matcher,
+    ))
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(test)]
 fn count_linux_descriptors(
     table: &str,
     inodes: &HashSet<String>,
     names: &HashSet<String>,
+) -> PublicDescriptors {
+    let mut matcher = PublicNameMatcher {
+        names: names.clone(),
+        published: None,
+        seen: std::collections::HashMap::new(),
+    };
+    count_linux_descriptors_with_matcher(table, inodes, &mut matcher)
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn count_linux_descriptors_with_matcher(
+    table: &str,
+    inodes: &HashSet<String>,
+    matcher: &mut PublicNameMatcher,
 ) -> PublicDescriptors {
     let mut descriptors = PublicDescriptors {
         total: 0,
@@ -63,7 +149,7 @@ fn count_linux_descriptors(
         else {
             continue;
         };
-        if !inodes.contains(*inode) || !names.contains(*path) {
+        if !inodes.contains(*inode) || !matcher.matches(path) {
             continue;
         }
         descriptors.total += 1;
@@ -75,7 +161,10 @@ fn count_linux_descriptors(
 }
 
 #[cfg(target_os = "macos")]
-async fn platform_descriptors(pid: u32, names: &HashSet<String>) -> Option<PublicDescriptors> {
+async fn platform_descriptors(
+    pid: u32,
+    matcher: &mut PublicNameMatcher,
+) -> Option<PublicDescriptors> {
     let output = tokio::time::timeout(
         std::time::Duration::from_millis(LSOF_TIMEOUT_MS),
         tokio::process::Command::new("lsof")
@@ -93,7 +182,7 @@ async fn platform_descriptors(pid: u32, names: &HashSet<String>) -> Option<Publi
         .lines()
         .filter(|line| {
             line.strip_prefix('n')
-                .is_some_and(|name| names.contains(name))
+                .is_some_and(|name| matcher.matches(name))
         })
         .count();
     // lsof does not mark the listening entry; a supervisor owns exactly one listener on its path.

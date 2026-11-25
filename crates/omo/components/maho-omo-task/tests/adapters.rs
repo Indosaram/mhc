@@ -93,7 +93,7 @@ fn dag() -> (tempfile::TempDir, DagToolDeps) {
     )
 }
 fn start(deps: &DagToolDeps) -> String {
-    let result = run_dag_tool(deps, serde_json::from_value(json!({"action":"start","definition":{"key":"plan","name":"release plan","nodes":[{"id":"a","prompt":"draft plan","category":"quick"},{"id":"b","prompt":"build it","subagent_type":"explore","model":"faux/faux-1","dependsOn":["a"]}]}})).expect("start input")).expect("start result");
+    let result = run_dag_tool(deps, serde_json::from_value(json!({"action":"start","definition":{"key":"plan","name":"release plan","nodes":[{"id":"a","prompt":"draft plan","category":"quick"},{"id":"b","prompt":"build it","subagent_type":"explore","dependsOn":["a"]}]}})).expect("start input")).expect("start result");
     result.details.expect("start details")["run_id"]
         .as_str()
         .expect("run id")

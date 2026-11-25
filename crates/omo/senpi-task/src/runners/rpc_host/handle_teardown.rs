@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 pub struct HandleTeardown {
     port: Arc<Mutex<Arc<dyn HostSessionPort>>>,
     state: Mutex<(bool, Option<TaskStatus>, bool, u8)>,
+    host_end_answered: std::sync::atomic::AtomicBool,
 }
 pub fn create_handle_teardown(
     port: Arc<Mutex<Arc<dyn HostSessionPort>>>,
@@ -13,9 +14,14 @@ pub fn create_handle_teardown(
     HandleTeardown {
         port,
         state: Mutex::new((opened_attached, None, false, 0)),
+        host_end_answered: std::sync::atomic::AtomicBool::new(false),
     }
 }
 impl HandleTeardown {
+    pub fn host_end_answered(&self) -> bool {
+        self.host_end_answered
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
     pub fn publish_task_status(&self, status: TaskStatus) -> Result<(), HostError> {
         let mut state = self.state.lock().expect("hosted child state lock poisoned");
         if state.2 {
@@ -85,7 +91,12 @@ impl HandleTeardown {
         {
             eprintln!("host abort failed: {error}");
         }
-        port.close()
+        let answered = port.close_answered()?;
+        if answered {
+            self.host_end_answered
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
     }
 }
 

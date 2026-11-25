@@ -63,6 +63,23 @@ impl TaskLifecycle {
         &self.context
     }
 
+    pub fn host_session_cancel(&self) -> super::host_session::HostSessionCancelPort {
+        let end_ctx = self.context.clone();
+        let drive_ctx = self.context.clone();
+        super::host_session::HostSessionCancelPort {
+            end: Arc::new(move |record| {
+                super::host_session_end::end_host_session_child(&end_ctx, record)
+            }),
+            drive: Arc::new(move |record, sink| {
+                super::host_session_cancel_driver::drive_host_session_cancel(
+                    drive_ctx.clone(),
+                    record,
+                    sink,
+                );
+            }),
+        }
+    }
+
     pub fn destroy_resident_task(
         &self,
         task_id: &str,

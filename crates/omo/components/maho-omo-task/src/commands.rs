@@ -115,7 +115,10 @@ pub async fn run_task_kill(
         .filter(|record| {
             matches!(
                 record.status,
-                TaskStatus::Running | TaskStatus::Pending | TaskStatus::Interrupted
+                TaskStatus::Running
+                    | TaskStatus::Pending
+                    | TaskStatus::Interrupted
+                    | TaskStatus::Paused
             )
         })
         .collect();

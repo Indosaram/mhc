@@ -67,7 +67,6 @@ fn given_skipped_descendant_chain_when_ancestor_is_selected_then_dependents_rest
         name: "test".into(),
         parent_session_id: "parent".into(),
         root_session_id: "root".into(),
-        parent_model: None,
         definition_fingerprint: "fingerprint".into(),
         definition: crate::dag::manager::DagPersistedDefinition {
             key: "test".into(),
@@ -150,7 +149,6 @@ fn retry_record() -> DagRunRecordV1 {
         name: "test".into(),
         parent_session_id: "parent".into(),
         root_session_id: "root".into(),
-        parent_model: None,
         definition_fingerprint: "fingerprint".into(),
         definition: crate::dag::manager::DagPersistedDefinition {
             key: "test".into(),

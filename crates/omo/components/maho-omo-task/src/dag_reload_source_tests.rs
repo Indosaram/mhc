@@ -72,7 +72,6 @@ fn given_paused_run_when_live_runs_are_read_then_it_is_reported_with_its_name() 
         .start(senpi_task::dag::manager::DagStartParams {
             parent_session_id: "parent".into(),
             root_session_id: "parent".into(),
-            parent_model: None,
             definition: senpi_task::dag::graph::DagDefinition {
                 key: "key".into(),
                 name: "release".into(),

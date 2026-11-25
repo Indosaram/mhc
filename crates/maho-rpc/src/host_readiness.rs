@@ -54,12 +54,13 @@ where
         let (held, exited) = match child_exit.as_mut() {
             None => (attempt.await, None),
             Some(exit) => tokio::select! {
-                held = &mut attempt => (held, None),
+                biased;
                 exited = exit => {
                     // A supervisor exit can be triggered by the Windows identity watchdog while a named-pipe
                     // client is still composing its protocol reply: let this probe deliver its answer first.
                     (attempt.await, Some(exited))
                 }
+                held = &mut attempt => (held, None),
             },
         };
         match (held, exited) {
@@ -70,14 +71,17 @@ where
                 };
             }
             (Some((info, mut hold)), exited) => {
-                if exited.is_some() {
-                    // The exit future is spent; later rounds poll without it.
-                    child_exit = None;
-                }
                 if is_compatible(Some(&info)) {
                     return ProtocolPollResult::Ready {
                         protocol: info,
                         hold,
+                    };
+                }
+                if exited.is_some() {
+                    hold.release();
+                    return ProtocolPollResult::NotReady {
+                        protocol: Some(info),
+                        exited,
                     };
                 }
                 last_protocol = Some(info);

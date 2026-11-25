@@ -1396,50 +1396,41 @@ fn legacy_run_start_is_fixed_across_notification_epoch_moves() {
 }
 
 #[test]
-fn fallback_provenance_round_trips_but_derived_phase_is_not_persisted() {
+fn model_refusals_round_trip_and_drop_malformed_entries() {
     let mut record = pending_record();
-    record.parent_model = Some("parent/model".into());
-    record.parent_model_fallback = Some(ParentModelFallback {
-        from_model: "category/model".into(),
-        reason: ParentModelFallbackReason::UsageLimit,
+    record.model_refusals = Some(vec![ModelRefusal {
+        model: "anthropic/fable".into(),
+        reason: ModelRefusalReason::UsageLimit,
         detail: Some("limit".into()),
         resets: Some("tomorrow".into()),
-        interrupted_tools: Some(vec!["bash".into()]),
         at: "now".into(),
-        phase: Some(ParentModelFallbackPhase::Switching),
-    });
+    }]);
     let value = crate::store::to_storable_task_record(&record).expect("json");
-    assert!(value["parent_model_fallback"].get("phase").is_none());
-    let parsed = parse_task_record(&value, "fallback.json", &mut Vec::new()).expect("parse");
-    record
-        .parent_model_fallback
-        .as_mut()
-        .expect("fallback")
-        .phase = None;
+    let parsed = parse_task_record(&value, "refusal.json", &mut Vec::new()).expect("parse");
     assert_eq!(parsed, record);
-    for reason in PARENT_MODEL_FALLBACK_REASONS {
+    for reason in MODEL_REFUSAL_REASONS {
         let mut value = value.clone();
-        value["parent_model_fallback"]["reason"] = serde_json::to_value(reason).expect("json");
+        value["model_refusals"][0]["reason"] = serde_json::to_value(reason).expect("json");
         assert_eq!(
-            parse_task_record(&value, "fallback.json", &mut Vec::new())
+            parse_task_record(&value, "refusal.json", &mut Vec::new())
                 .expect("parse")
-                .parent_model_fallback
-                .expect("fallback")
+                .model_refusals
+                .expect("refusals")[0]
                 .reason,
             reason
         );
     }
     for malformed in [
         json!(false),
-        json!({"reason":"future"}),
-        json!({"from_model":"x", "reason":"error", "at":3}),
+        json!([{"reason":"future"}]),
+        json!([{"model":"x", "reason":"error", "at":3}]),
     ] {
         let mut value = value.clone();
-        value["parent_model_fallback"] = malformed;
+        value["model_refusals"] = malformed;
         assert!(
-            parse_task_record(&value, "fallback.json", &mut Vec::new())
+            parse_task_record(&value, "refusal.json", &mut Vec::new())
                 .expect("task survives")
-                .parent_model_fallback
+                .model_refusals
                 .is_none()
         );
     }

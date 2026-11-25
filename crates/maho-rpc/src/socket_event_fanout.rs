@@ -73,6 +73,7 @@ pub struct SocketEventQueue {
     recovery_enabled: bool,
     raw: std::sync::Arc<std::sync::Mutex<VecDeque<String>>>,
 }
+#[derive(Clone)]
 pub struct SocketEventSinkActor {
     queue: std::sync::Arc<std::sync::Mutex<SocketEventQueue>>,
     changed: std::sync::Arc<tokio::sync::Notify>,

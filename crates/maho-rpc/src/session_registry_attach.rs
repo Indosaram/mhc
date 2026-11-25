@@ -80,6 +80,26 @@ pub fn attach_to_open_session(
     path_reservations: Option<&mut BoundPathReservations>,
     now: f64,
 ) -> Result<AttachDecision, RpcSessionRegistryError> {
+    attach_to_open_session_with_options(
+        entries,
+        session_path,
+        profile,
+        retain_on_disconnect,
+        path_reservations,
+        now,
+        false,
+    )
+}
+
+pub fn attach_to_open_session_with_options(
+    entries: Vec<AttachCandidate<'_>>,
+    session_path: &str,
+    profile: &RpcSessionLaunchProfile,
+    retain_on_disconnect: bool,
+    path_reservations: Option<&mut BoundPathReservations>,
+    now: f64,
+    unattached: bool,
+) -> Result<AttachDecision, RpcSessionRegistryError> {
     let mut opening = None;
     let mut open = None;
     for candidate in entries {
@@ -109,6 +129,21 @@ pub fn attach_to_open_session(
             })),
         ));
     };
+    if unattached {
+        let Some(durable_session_id) = entry.durable_session_id.clone() else {
+            return Err(RpcSessionRegistryError::new(
+                "session_path_in_use",
+                None,
+                None,
+            ));
+        };
+        return Ok(AttachDecision::Attached {
+            session_id: handle.to_owned(),
+            durable_session_id,
+            session_path: entry.session_path.clone(),
+            resumed: false,
+        });
+    }
     let was_parked = entry.close.retain_on_disconnect && entry.close.attachments == 0;
     entry.close.attachments += 1;
     // The claim carries the attachment state another generation decides on: a path this host is actively serving a
@@ -128,6 +163,18 @@ pub fn attach_to_open_session(
             None,
         ));
     };
+    apply_attached_profile(entry, profile);
+    entry.last_command_at = now;
+    Ok(AttachDecision::Attached {
+        session_id: handle.to_owned(),
+        durable_session_id,
+        session_path: entry.session_path.clone(),
+        resumed: was_parked,
+    })
+}
+
+/// The live launch choices shared by attach-on-open and claiming a parked session.
+pub fn apply_attached_profile(entry: &mut RpcSessionEntry, profile: &RpcSessionLaunchProfile) {
     // The surface, browser engine and permission preset follow the client: an attach that names one moves the
     // live session to it; an attach without one keeps what the session has.
     if let Some(surface) = profile
@@ -158,13 +205,6 @@ pub fn attach_to_open_session(
     if let Some(preset) = &profile.runtime.permission_preset {
         entry.profile.runtime.permission_preset = Some(preset.clone());
     }
-    entry.last_command_at = now;
-    Ok(AttachDecision::Attached {
-        session_id: handle.to_owned(),
-        durable_session_id,
-        session_path: entry.session_path.clone(),
-        resumed: was_parked,
-    })
 }
 
 fn prompt_surface(surface: &str) -> Option<maho_ext_api::PromptSurface> {
