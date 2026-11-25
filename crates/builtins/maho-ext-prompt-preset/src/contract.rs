@@ -1,4 +1,4 @@
-//! Port of `prompt-preset/contract.ts` (senpi 59d58cee59): the shared model-to-preset contract.
+//! Port of `prompt-preset/contract.ts` (senpi v2026.11.19-5): the shared model-to-preset contract.
 //!
 //! The runtime resolver (`presets::resolve_preset_name`) handles the explicit setting and the
 //! model's `promptPreset` metadata, then delegates here, so the runtime and the contract cannot
@@ -6,6 +6,7 @@
 //! family substring.
 
 use crate::settings::PromptPresetName;
+use maho_core::dynamic_prompt::SharedSections;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 /// `{ providerID, modelID, name? }`.
@@ -85,13 +86,6 @@ pub const KIMI_CODE_K27_MODEL_ID: &str = "kimi-for-coding-highspeed";
 pub const KIMI_CODE_K28_MODEL_ID: &str = "kimi-for-coding";
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek";
 
-pub fn is_fable55_model_id(model_id: &str) -> bool {
-    matches(
-        model_id,
-        r"(?:^|[/@:._-])(?:fable|mythos)-5[.-]5(?:$|[/@:._-])",
-    )
-}
-
 fn gpt5_version(model_id: &str) -> Option<PromptPresetName> {
     let normalized = normalize_model_id(model_id);
     [
@@ -138,6 +132,10 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
     use PromptPresetName as P;
     let id = model.model_id;
     let signal = |pattern: &'static str| id_or_name(model, |value| matches(value, pattern));
+    // The point release must resolve before the GPT-6 family signal, which accepts any point release.
+    if id_or_name(model, crate::matchers::has_gpt62_signal) {
+        return Some(P::Gpt62);
+    }
     if signal(GPT6_FAMILY) {
         return Some(P::Gpt6Astra);
     }
@@ -160,8 +158,8 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
         return Some(P::KimiK26);
     }
     // The dotted release must resolve before the generic fable-5 substring.
-    if is_fable55_model_id(id) {
-        return Some(P::ClaudeFable55);
+    if crate::matchers::is_claude_fable52_model(id) {
+        return Some(P::ClaudeFable52);
     }
     if any_marker(id, &["fable-5-1", "fable-5.1", "mythos-5-1", "mythos-5.1"]) {
         return Some(P::ClaudeFable51);
@@ -222,6 +220,51 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
     None
 }
 
+/// Presets that render the shared prompt generators' full wording (senpi#5665): after the senpi#5335 diet
+/// shipped, Opus and Fable got slower and worse, so these keep the pre-diet text and every other preset,
+/// gpt-6-astra included, keeps the diet.
+const FULL_SHARED_SECTION_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[
+        P::ClaudeFable5,
+        P::ClaudeFable51,
+        P::ClaudeFable52,
+        P::ClaudeOpus55,
+        P::ClaudeOpus5,
+        P::ClaudeOpus48,
+        P::ClaudeOpus47,
+        P::ClaudeOpus46,
+        P::ClaudeOpus45,
+    ]
+};
+
+/// The shared-section wording a preset declares; no preset (the default prompt) renders `Diet`.
+pub fn preset_shared_sections(name: Option<PromptPresetName>) -> SharedSections {
+    match name {
+        Some(name) if FULL_SHARED_SECTION_PRESETS.contains(&name) => SharedSections::Full,
+        _ => SharedSections::Diet,
+    }
+}
+
+/// The handoff block a preset's prompt defines, so the todo tool's cue can name that block in the prompt's own
+/// words (senpi#6977): the GPT block presets render the outcome-first block, gpt-6.2 renders no handoff block on
+/// any surface, and every other preset (and the default dynamic prompt) renders the Ask / For you / Now / Next block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffCueKind {
+    Default,
+    GptBlock,
+    None,
+}
+
+pub fn preset_handoff_cue_kind(name: Option<PromptPresetName>) -> HandoffCueKind {
+    use PromptPresetName as P;
+    match name {
+        Some(P::Gpt55 | P::Gpt56 | P::Gpt6Astra) => HandoffCueKind::GptBlock,
+        Some(P::Gpt62) => HandoffCueKind::None,
+        _ => HandoffCueKind::Default,
+    }
+}
+
 /// `PromptPresetModelCase`.
 #[derive(Clone, Copy, Debug)]
 pub struct PromptPresetModelCase {
@@ -245,6 +288,7 @@ const fn case(
 pub const PROMPT_PRESET_MODEL_CASES: &[PromptPresetModelCase] = {
     use PromptPresetName as P;
     &[
+        case("openai", "gpt-6.2-sol", P::Gpt62),
         case("openai", "gpt-6-astra", P::Gpt6Astra),
         case("openai", "gpt-5.6", P::Gpt56),
         case("openai", "gpt-5.5", P::Gpt55),
@@ -268,7 +312,7 @@ pub const PROMPT_PRESET_MODEL_CASES: &[PromptPresetModelCase] = {
         case("deepseek", "deepseek-v4-pro", P::DeepseekV4Pro),
         case("anthropic", "claude-fable-5", P::ClaudeFable5),
         case("anthropic", "claude-fable-5.1", P::ClaudeFable51),
-        case("anthropic", "claude-fable-5-5", P::ClaudeFable55),
+        case("anthropic", "claude-fable-5.2", P::ClaudeFable52),
         case("anthropic", "claude-opus-5.5", P::ClaudeOpus55),
         case("anthropic", "claude-opus-5", P::ClaudeOpus5),
         case("anthropic", "claude-sonnet-5.5", P::ClaudeSonnet55),
@@ -288,6 +332,7 @@ pub const PROMPT_PRESET_MODEL_CASES: &[PromptPresetModelCase] = {
 pub const AUTO_RESOLVED_PRESET_NAMES: &[PromptPresetName] = {
     use PromptPresetName as P;
     &[
+        P::Gpt62,
         P::Gpt6Astra,
         P::Gpt56,
         P::Gpt55,
@@ -310,7 +355,7 @@ pub const AUTO_RESOLVED_PRESET_NAMES: &[PromptPresetName] = {
         P::Grok45,
         P::ClaudeFable5,
         P::ClaudeFable51,
-        P::ClaudeFable55,
+        P::ClaudeFable52,
         P::ClaudeOpus55,
         P::ClaudeOpus5,
         P::ClaudeSonnet55,
@@ -430,19 +475,80 @@ mod tests {
     }
 
     #[test]
-    fn fable55_ids_resolve_to_launch_baseline() {
+    fn fable52_ids_resolve_ahead_of_fable5_but_dated_fable5_ids_do_not() {
         for id in [
-            "claude-fable-5-5",
-            "claude-fable-5.5",
-            "anthropic/claude-mythos-5-5",
+            "claude-fable-5-2",
+            "claude-fable-5.2",
+            "anthropic/claude-mythos-5-2",
+            "claude-fable-5-2-20261110",
         ] {
             assert_eq!(
                 runtime("anthropic", id),
-                Some(PromptPresetName::ClaudeFable55)
+                Some(PromptPresetName::ClaudeFable52),
+                "{id}"
             );
         }
-        assert!(!is_fable55_model_id("claude-fable-5-50"));
-        assert!(!is_fable55_model_id("claude-fable-5"));
+        for id in ["claude-fable-5-20260601", "claude-fable-5-25"] {
+            assert_eq!(
+                runtime("anthropic", id),
+                Some(PromptPresetName::ClaudeFable5),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpt62_astra_and_sol_resolve_ahead_of_the_gpt6_family() {
+        for id in [
+            "gpt-6.2-sol",
+            "gpt-6.2-astra-fast",
+            "openai/gpt-6.2-sol",
+            "openai-gpt-62-astra",
+        ] {
+            assert_eq!(
+                contract("openai", id),
+                Some(PromptPresetName::Gpt62),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            resolve_preset_name(ContractModel {
+                provider_id: "custom",
+                model_id: "custom-id",
+                name: Some("GPT-6.2 Sol"),
+            }),
+            Some(PromptPresetName::Gpt62)
+        );
+        assert_eq!(
+            contract("openai", "gpt-6.2-luna"),
+            Some(PromptPresetName::Gpt6Astra)
+        );
+    }
+
+    #[test]
+    fn opus_and_fable_declare_full_shared_sections_and_others_keep_the_diet() {
+        use PromptPresetName as P;
+        assert_eq!(
+            preset_shared_sections(Some(P::ClaudeFable52)),
+            SharedSections::Full
+        );
+        assert_eq!(
+            preset_shared_sections(Some(P::ClaudeOpus45)),
+            SharedSections::Full
+        );
+        for name in [P::Gpt6Astra, P::ClaudeSonnet55, P::ClaudeHaiku55] {
+            assert_eq!(preset_shared_sections(Some(name)), SharedSections::Diet);
+        }
+        assert_eq!(preset_shared_sections(None), SharedSections::Diet);
+        assert_eq!(
+            preset_handoff_cue_kind(Some(P::Gpt56)),
+            HandoffCueKind::GptBlock
+        );
+        assert_eq!(
+            preset_handoff_cue_kind(Some(P::Gpt62)),
+            HandoffCueKind::None
+        );
+        assert_eq!(preset_handoff_cue_kind(None), HandoffCueKind::Default);
     }
 
     #[test]
@@ -493,7 +599,7 @@ mod tests {
         use maho_core::dynamic_prompt::{PromptSurface, build::BuildDynamicSystemPromptOptions};
         let preset = crate::presets::resolve_preset(
             ModelMetadata {
-                id: "claude-fable-5-5",
+                id: "claude-fable-5.2",
                 provider: "anthropic",
                 name: None,
                 prompt_preset: None,
@@ -507,6 +613,9 @@ mod tests {
                 selected_tools: vec![],
                 tool_snippets: Default::default(),
                 prompt_guidelines: vec![],
+                full_tool_prompt: None,
+                shared_sections: Default::default(),
+                native_search_available: false,
                 context_files: vec![maho_core::system_prompt::ContextFile {
                     path: "/work/AGENTS.md".into(),
                     content: "rules".into(),
@@ -536,7 +645,7 @@ mod tests {
         );
         assert_eq!(
             preset.parts[0].source.as_deref(),
-            Some("prompt-preset:claude-fable-5-5")
+            Some("prompt-preset:claude-fable-5-2")
         );
     }
 }

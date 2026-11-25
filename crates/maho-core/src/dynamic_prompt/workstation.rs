@@ -370,16 +370,16 @@ fn instruction(dialect: WorkstationDialect, executors: &str) -> String {
             "<execution_context>\n{executors} on THIS workstation. Match commands, paths, package managers, and parallel pool sizes to it. Code you write may target any machine; code you run always runs here.\n</execution_context>"
         ),
         WorkstationDialect::Codex => format!(
-            "{executors} on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms — executed code runs here."
+            "{executors} on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms: executed code runs here."
         ),
         WorkstationDialect::Kimi => format!(
-            "{executors} on this workstation — choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."
+            "{executors} on this workstation: choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."
         ),
         WorkstationDialect::Gemini => format!(
             "{executors} on this workstation; match commands, paths, package managers, and parallel pool sizes to it. Code you write may target another machine; code you run always runs here."
         ),
         WorkstationDialect::Default => format!(
-            "**EXECUTION HAPPENS HERE.** {executors} on THIS machine: match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target another machine; anything you RUN executes HERE."
+            "**EXECUTION HAPPENS HERE.** {executors} on THIS machine: match commands, paths, package managers, parallel pool sizes to the workstation above. Code you WRITE may target another machine; anything you RUN executes HERE."
         ),
     }
 }
@@ -475,16 +475,16 @@ mod tests {
     fn every_dialect_keeps_its_own_wording() {
         let default_section =
             build_workstation_section(&options(WorkstationDialect::Default, &["bash", "eval"]));
-        assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `eval` executes on THIS machine: match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target another machine; anything you RUN executes HERE."));
+        assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `eval` executes on THIS machine: match commands, paths, package managers, parallel pool sizes to the workstation above. Code you WRITE may target another machine; anything you RUN executes HERE."));
 
         let claude = build_workstation_section(&options(WorkstationDialect::Claude, &["bash"]));
         assert!(claude.ends_with("<execution_context>\n`bash` executes on THIS workstation. Match commands, paths, package managers, and parallel pool sizes to it. Code you write may target any machine; code you run always runs here.\n</execution_context>"));
 
         let codex = build_workstation_section(&options(WorkstationDialect::Codex, &["bash"]));
-        assert!(codex.ends_with("`bash` executes on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms — executed code runs here."));
+        assert!(codex.ends_with("`bash` executes on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms: executed code runs here."));
 
         let kimi = build_workstation_section(&options(WorkstationDialect::Kimi, &["eval"]));
-        assert!(kimi.ends_with("`eval` executes on this workstation — choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."));
+        assert!(kimi.ends_with("`eval` executes on this workstation: choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."));
     }
 
     #[test]

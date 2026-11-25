@@ -4693,13 +4693,16 @@ dependencies = [
 name = "maho-ext-prompt-preset"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "maho-ai",
  "maho-core",
+ "maho-ext-anthropic-web-search",
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
  "regex",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]

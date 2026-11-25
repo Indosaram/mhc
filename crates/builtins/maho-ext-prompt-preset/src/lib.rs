@@ -1,6 +1,7 @@
+pub mod active_preset;
 pub mod claude_fable_5;
 pub mod claude_fable_5_1;
-pub mod claude_fable_5_5;
+pub mod claude_fable_5_2;
 pub mod claude_haiku_5_5;
 pub mod claude_opus_4_5;
 pub mod claude_opus_4_6;
@@ -26,6 +27,7 @@ pub mod gpt_5_3_codex;
 pub mod gpt_5_4;
 pub mod gpt_5_5;
 pub mod gpt_5_6;
+pub mod gpt_6_2;
 pub mod gpt_6_astra;
 pub mod gpt_eval_routing;
 pub mod grok_4_5;

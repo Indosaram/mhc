@@ -42,6 +42,25 @@ signal!(
     r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]\d+|\d)?[._-](?:astra|sol|luna)(?:$|[/@:._-])"
 );
 
+// GPT-6.2 Astra and Sol (2026-11-17) have their own guide and codex template, so they resolve to the
+// gpt-6.2 preset ahead of the family signal: gpt-6.2-sol, gpt-6.2-astra-fast, openai/gpt-6.2-sol,
+// Venice's dotless openai-gpt-62-astra, and the display names "GPT-6.2 Astra" / "GPT-6.2 Sol".
+signal!(
+    has_gpt62_signal,
+    is_gpt62_model,
+    r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]2|2)[._-](?:astra|sol)(?:$|[/@:._-])"
+);
+
+/// The Astra tier of any GPT-6 point release (senpi#6975): gpt-6-astra, gpt-6-astra-fast, gpt-6.2-astra,
+/// gpt-6.2-astra-ultrafast, Venice's dotless openai-gpt-62-astra, and an effort decorator after a colon. Sol and
+/// Luna stay out, and so do unknown Astra siblings (previews, dated snapshots).
+pub fn has_gpt6_astra_signal(value: &str) -> bool {
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        re(r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]\d+|\d)*[._-]astra(?:[._-](?:fast|ultrafast))?(?:$|:)")
+    });
+    PATTERN.is_match(&normalize_model_id(value))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gpt5Version {
     Gpt52,
@@ -188,6 +207,10 @@ signal!(
 );
 
 // Claude Mythos shares each Fable release's prompting guide, so Mythos ids route to the matching Fable preset.
+// The minor version must end at the 2: a dated Fable 5 id (claude-fable-5-20260601) also starts with "fable-5-2";
+// upstream's `(?!\d)` lookahead is spelled as a non-digit or the end.
+static CLAUDE_FABLE_52_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?:fable|mythos)-5[.-]2(?:[^0-9]|$)"));
 pub const CLAUDE_FABLE_51_MARKERS: &[&str] =
     &["fable-5-1", "fable-5.1", "mythos-5-1", "mythos-5.1"];
 pub const CLAUDE_FABLE_5_MARKERS: &[&str] = &["fable-5", "mythos-5"];
@@ -200,6 +223,9 @@ fn has_marker(model_id: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| normalized.contains(marker))
 }
 
+pub fn is_claude_fable52_model(model_id: &str) -> bool {
+    CLAUDE_FABLE_52_PATTERN.is_match(&normalize_model_id(model_id))
+}
 pub fn is_claude_fable51_model(model_id: &str) -> bool {
     has_marker(model_id, CLAUDE_FABLE_51_MARKERS)
 }

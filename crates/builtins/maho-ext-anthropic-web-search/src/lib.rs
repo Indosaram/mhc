@@ -16,6 +16,11 @@ pub fn parse_enabled(value: Option<&str>) -> bool {
     })
 }
 
+/// `isAnthropicWebSearchEnabled`: the `PI_ANTHROPIC_WEB_SEARCH` switch.
+pub fn is_anthropic_web_search_enabled() -> bool {
+    SearchOptions::from_env().enabled
+}
+
 pub fn supports_native_anthropic_web_search(model: Option<&Model>) -> bool {
     let Some(model) = model.filter(|model| model.api == "anthropic-messages") else {
         return false;
@@ -257,7 +262,7 @@ impl Extension for AnthropicWebSearch {
                         return Ok(EventResult::None);
                     };
                     if !supports_native_anthropic_web_search(ctx.model.as_ref())
-                        || !SearchOptions::from_env().enabled
+                        || !is_anthropic_web_search_enabled()
                     {
                         return Ok(EventResult::None);
                     }
