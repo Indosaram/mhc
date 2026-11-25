@@ -10,7 +10,7 @@ autotests = false
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ai = { path = "../../maho-ai" }
 serde_json.workspace = true
-url = "=2.5.8"
+url = "=2.5.9"
 
 [dev-dependencies]
 maho-ext-host = { path = "../../maho-ext-host" }
