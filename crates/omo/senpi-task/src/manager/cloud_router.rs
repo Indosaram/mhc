@@ -56,10 +56,10 @@ impl Default for CloudOffloadConfig {
 impl CloudOffloadConfig {
     pub fn from_config(task_settings: &Value) -> Self {
         let mut cfg = Self::default();
-        if let Ok(env_mode) = std::env::var("MAHO_CLOUD_OFFLOAD") {
-            if let Some(parsed) = CloudOffloadMode::parse(env_mode.trim()) {
-                cfg.mode = parsed;
-            }
+        if let Ok(env_mode) = std::env::var("MAHO_CLOUD_OFFLOAD")
+            && let Some(parsed) = CloudOffloadMode::parse(env_mode.trim())
+        {
+            cfg.mode = parsed;
         }
         let Some(cloud) = task_settings.get("cloud").and_then(Value::as_object) else {
             return cfg;

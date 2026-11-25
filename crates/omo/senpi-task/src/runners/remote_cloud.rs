@@ -132,10 +132,10 @@ impl FerryxCliCloudBackend {
     }
 
     pub fn resolve_binary(&self) -> Option<PathBuf> {
-        if let Some(bin) = &self.explicit_bin {
-            if bin.is_file() {
-                return Some(bin.clone());
-            }
+        if let Some(bin) = &self.explicit_bin
+            && bin.is_file()
+        {
+            return Some(bin.clone());
         }
         if let Ok(env_bin) = std::env::var("FERRYX_CLI_PATH") {
             let trimmed = env_bin.trim();
@@ -204,10 +204,10 @@ impl CloudPoolBackend for FerryxCliCloudBackend {
                 .availability_cache
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some((at, ready)) = *cache {
-                if at.elapsed() < AVAILABILITY_CACHE_TTL {
-                    return ready;
-                }
+            if let Some((at, ready)) = *cache
+                && at.elapsed() < AVAILABILITY_CACHE_TTL
+            {
+                return ready;
             }
         }
         let ready = self
@@ -378,13 +378,12 @@ impl RemoteSocketRpcClient {
             "kind": "worker",
             "retainOnDisconnect": false,
         });
-        if let Some(reference) = model.filter(|m| !m.trim().is_empty()) {
-            if let Some((provider, model_id)) = reference.split_once('/') {
-                if let Some(obj) = command.as_object_mut() {
-                    obj.insert("provider".into(), Value::String(provider.to_string()));
-                    obj.insert("modelId".into(), Value::String(model_id.to_string()));
-                }
-            }
+        if let Some(reference) = model.filter(|m| !m.trim().is_empty())
+            && let Some((provider, model_id)) = reference.split_once('/')
+            && let Some(obj) = command.as_object_mut()
+        {
+            obj.insert("provider".into(), Value::String(provider.to_string()));
+            obj.insert("modelId".into(), Value::String(model_id.to_string()));
         }
         let response = self.send_raw(command, false)?;
         if response.get("success").and_then(Value::as_bool) != Some(true) {
@@ -427,11 +426,11 @@ impl RemoteSocketRpcClient {
 
         if let Some(obj) = command.as_object_mut() {
             obj.insert("id".into(), Value::String(req_id.clone()));
-            if attach_session {
-                if let Some(sid) = session_id {
-                    obj.entry("sessionId".to_string())
-                        .or_insert_with(|| Value::String(sid));
-                }
+            if attach_session
+                && let Some(sid) = session_id
+            {
+                obj.entry("sessionId".to_string())
+                    .or_insert_with(|| Value::String(sid));
             }
         }
         if let Err(error) = self.write_line(&command) {
@@ -568,10 +567,9 @@ fn handle_socket_frame(client: &RemoteSocketRpcClient, parsed: Value) {
     if let (Some(expected), Some(frame_sid)) = (
         expected_sid.as_deref(),
         parsed.get("sessionId").and_then(Value::as_str),
-    ) {
-        if frame_sid != expected {
-            return;
-        }
+    ) && frame_sid != expected
+    {
+        return;
     }
     for listener in listeners {
         listener(&parsed);
@@ -738,24 +736,24 @@ impl CloudChildHandle {
         };
         match sync_res {
             Ok(out) if out.has_changes => {
-                if ctx.apply_patch {
-                    if let Some(path) = out.patch_path.as_deref() {
-                        match apply_patch_to_local(&ctx.local_cwd, Path::new(path)) {
-                            Ok(()) => {
-                                let suffix = format!(
-                                    "\n\n[cloud sync] applied {} file change(s) from {} ({}).",
-                                    out.changed_files.len(),
-                                    self.acquired.machine,
-                                    self.acquired.provider
-                                );
-                                final_response = format!("{}{suffix}", final_response.trim_end());
-                            }
-                            Err(reason) => {
-                                let suffix = format!(
-                                    "\n\n[cloud sync] remote changes saved to {path} (not auto-applied: {reason})."
-                                );
-                                final_response = format!("{}{suffix}", final_response.trim_end());
-                            }
+                if ctx.apply_patch
+                    && let Some(path) = out.patch_path.as_deref()
+                {
+                    match apply_patch_to_local(&ctx.local_cwd, Path::new(path)) {
+                        Ok(()) => {
+                            let suffix = format!(
+                                "\n\n[cloud sync] applied {} file change(s) from {} ({}).",
+                                out.changed_files.len(),
+                                self.acquired.machine,
+                                self.acquired.provider
+                            );
+                            final_response = format!("{}{suffix}", final_response.trim_end());
+                        }
+                        Err(reason) => {
+                            let suffix = format!(
+                                "\n\n[cloud sync] remote changes saved to {path} (not auto-applied: {reason})."
+                            );
+                            final_response = format!("{}{suffix}", final_response.trim_end());
                         }
                     }
                 }

@@ -1620,14 +1620,14 @@ impl Inner {
         mode: ExecutionMode,
         local_fallback_mode: ExecutionMode,
     ) -> (Arc<dyn ManagedRunner>, Option<Arc<dyn ManagedRunner>>) {
-        if mode == ExecutionMode::Cloud {
-            if let Some(cloud_runner) = &self.cloud_runner {
-                let fallback = self
-                    .cloud_offload
-                    .fallback_to_local
-                    .then(|| Arc::clone(self.runners.get(local_fallback_mode)));
-                return (Arc::clone(cloud_runner), fallback);
-            }
+        if mode == ExecutionMode::Cloud
+            && let Some(cloud_runner) = &self.cloud_runner
+        {
+            let fallback = self
+                .cloud_offload
+                .fallback_to_local
+                .then(|| Arc::clone(self.runners.get(local_fallback_mode)));
+            return (Arc::clone(cloud_runner), fallback);
         }
         (Arc::clone(self.runners.get(local_fallback_mode)), None)
     }
