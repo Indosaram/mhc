@@ -41,6 +41,13 @@ fn live_registry_gate_and_explicit_disable() -> Result<(), Box<dyn std::error::E
         Some(env.clone()),
         Some(&registry)
     ));
+    let mut legacy = registry.0[0].clone();
+    legacy.id = "claude-fable-5".into();
+    assert!(!has_active_architect_category_with_env(
+        &project,
+        Some(env.clone()),
+        Some(&Registry(vec![legacy]))
+    ));
     assert!(!has_active_architect_category_with_env(
         &project,
         Some(env.clone()),

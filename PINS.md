@@ -4,8 +4,8 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 
 | Source | Short | Full commit | Location |
 | --- | --- | --- | --- |
-| senpi | 59d58cee5 | 59d58cee59d76bbecc83be828b59ff5420eb74df | code-yeongyu/senpi |
-| oh-my-openagent | 354bcf9fc4 | 354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9 | code-yeongyu/oh-my-openagent |
+| senpi | 99a26322f | 99a26322f4a81d5ed95f0fd9f292938a6afbd8ff | code-yeongyu/senpi |
+| oh-my-openagent | 5835a98e88 | 5835a98e88438f28a8ae0ee18039fad4d5fd415b | code-yeongyu/oh-my-openagent |
 | oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task, mnemopi memory engine in crates/maho-memory, Chromium discovery and browser/computer tool surface in crates/maho-browser, telemetry export and usage stats in crates/maho-telemetry, pi-iso rcopy backend and task worktree isolation in crates/maho-isolation, agentic-commit git tools in crates/maho-git, terminal launch and multiplexer detection in crates/maho-team, setup wizard step model in crates/maho-onboarding, `/init` context-file scope in crates/maho-context-files) |
 | omowright | a019fdf | a019fdfbc337bd917d10b8f3d64026b3549e0b2c | code-yeongyu/omowright (MIT; CDP transport, page model and snapshot world in crates/maho-browser) |
 | pi-cua-integration | 9ba0c9e | 9ba0c9e23f13a7fc834c28c65e8733b40a162163 | code-yeongyu/pi-cua-integration (MIT; desktop computer-use daemon in crates/maho-browser) |
@@ -18,7 +18,7 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 
 - `PINS.md` senpi row: latest upstream commit whose behavior has been ported (parity baseline).
 - `tools/golden/pin.mjs` `SENPI_PIN`: commit the golden fixtures were generated from.
-- `tools/golden/pin.mjs` `SENPI_CATALOG_PIN`: senpi commit `crates/maho-ai/data/models.json` is generated from (currently v2026.11.19-5, `99a26322f4`); it may lead the parity pin, see docs/divergences.md CAT-1.
+- `tools/golden/pin.mjs` `SENPI_CATALOG_PIN`: senpi commit `crates/maho-ai/data/models.json` is generated from (v2026.11.19-5, `99a26322f4`, matching `SENPI_PIN`).
 - `.github/workflows/ci.yml` `SENPI_PIN`: must equal pin.mjs (fixtures checkout).
 
 ## User extensions

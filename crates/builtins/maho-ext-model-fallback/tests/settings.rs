@@ -23,7 +23,7 @@ impl maho_ext_api::ExtensionSessionSettings for Settings {
             model_fallback: true,
             chains: std::collections::BTreeMap::from([(
                 "target/main".into(),
-                vec!["family".into()],
+                vec!["kimi-k3".into()],
             )]),
             revert_policy: maho_ext_api::FallbackRevertPolicy::Never,
         }
@@ -88,9 +88,9 @@ fn display_expansion_uses_effective_model_oauth_and_selectable_models() {
         serde_json::from_value::<maho_ext_api::Model>(serde_json::json!({"provider":provider,"id":id,"name":id,"api":"openai-completions","baseUrl":"https://example.invalid/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100})).expect("model")
     };
     let target = model("target", "main");
-    let subscription = model("z-oauth", "family");
-    let api_key = model("anthropic", "family");
-    let unavailable = model("anthropic-subscription", "family");
+    let subscription = model("moonshotai-cn", "kimi-k3");
+    let api_key = model("moonshotai", "kimi-k3");
+    let unavailable = model("kimi-coding", "kimi-k3");
     let registry = Models {
         all: vec![
             target.clone(),
@@ -105,24 +105,24 @@ fn display_expansion_uses_effective_model_oauth_and_selectable_models() {
         queries
             .borrow_mut()
             .push((model.provider.clone(), model.id.clone()));
-        model.provider == "z-oauth" && model.id == "family"
+        model.provider == "moonshotai-cn" && model.id == "kimi-k3"
     };
     let loaded = load_fallback_settings(&Settings, &registry, &oauth);
     assert_eq!(
         loaded.chains["target/main"],
-        ["z-oauth/family", "anthropic/family"]
+        ["moonshotai-cn/kimi-k3", "moonshotai/kimi-k3"]
     );
     assert!(
         queries
             .borrow()
             .iter()
-            .any(|(provider, id)| provider == "z-oauth" && id == "family")
+            .any(|(provider, id)| provider == "moonshotai-cn" && id == "kimi-k3")
     );
     assert!(
         !queries
             .borrow()
             .iter()
-            .any(|(provider, _)| provider == "anthropic-subscription")
+            .any(|(provider, _)| provider == "kimi-coding")
     );
     assert_eq!(
         loaded.revert_policy,
@@ -133,9 +133,6 @@ fn display_expansion_uses_effective_model_oauth_and_selectable_models() {
         ..registry
     };
     let loaded = load_fallback_settings(&Settings, &registry, &oauth);
-    assert_eq!(loaded.chains["target/main"][0], "z-oauth/family");
-    assert_eq!(
-        loaded.chains["target/main"][1],
-        "anthropic-subscription/family"
-    );
+    assert_eq!(loaded.chains["target/main"][0], "moonshotai-cn/kimi-k3");
+    assert_eq!(loaded.chains["target/main"][1], "kimi-coding/kimi-k3");
 }

@@ -196,6 +196,7 @@ pub(crate) fn run_git_with_input(
     let mut command = Command::new(&git_program);
     command.args(args);
     command.current_dir(&options.cwd);
+    command.env("LC_ALL", "C");
     for (key, value) in &options.env {
         command.env(key, value);
         #[cfg(windows)]

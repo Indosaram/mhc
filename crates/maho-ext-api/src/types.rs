@@ -4599,6 +4599,73 @@ pub trait ExtensionSessionActions: Send + Sync {
         cwd: &'a Path,
         options: ExecOptions,
     ) -> ExtensionFuture<'a, ExecResult>;
+    fn register_control_endpoint(
+        &self,
+        _options: ControlEndpointRegisterOptions,
+    ) -> UiFuture<'_, ControlEndpointRegistrationOutcome> {
+        Box::pin(async {
+            ControlEndpointRegistrationOutcome::Unsupported {
+                reason: "unsupported_mode".into(),
+            }
+        })
+    }
+    fn defer_control_endpoint_registration(
+        &self,
+        options: ControlEndpointRegisterOptions,
+        on_registered: Arc<dyn Fn(ControlEndpointRegistrationOutcome) + Send + Sync>,
+    ) -> UiFuture<'_, Option<ControlEndpointRegistrationOutcome>> {
+        Box::pin(async move {
+            let outcome = self.register_control_endpoint(options).await;
+            on_registered(outcome.clone());
+            Some(outcome)
+        })
+    }
+    fn session_control_admission_gate(&self) -> JsonValue {
+        serde_json::json!({
+            "can_admit": true,
+            "editor_revision": 0,
+            "turn_epoch": 0
+        })
+    }
+    fn session_control_admit_external_message(
+        &self,
+        _input: JsonValue,
+    ) -> Result<JsonValue, String> {
+        Err("session control unavailable".into())
+    }
+    fn session_control_list_admitted_deliveries(&self) -> JsonValue {
+        serde_json::json!({ "pending": [], "emitted": [] })
+    }
+    fn session_control_persist_header_now(&self) -> UiFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+pub type SessionControlDrainFn =
+    Arc<dyn Fn(JsonValue) -> UiFuture<'static, Result<Option<JsonValue>, String>> + Send + Sync>;
+pub type SessionControlReferencedFn = Arc<dyn Fn() -> UiFuture<'static, bool> + Send + Sync>;
+pub type SessionControlDisposeFn =
+    Arc<dyn Fn() -> UiFuture<'static, Result<(), String>> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ControlEndpointRegisterOptions {
+    pub inbox_dir: String,
+    pub drain: SessionControlDrainFn,
+    pub is_session_referenced: Option<SessionControlReferencedFn>,
+}
+
+#[derive(Clone)]
+pub enum ControlEndpointRegistrationOutcome {
+    Registered {
+        socket: String,
+        dispose: SessionControlDisposeFn,
+    },
+    Unsupported {
+        reason: String,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 /// Typed companion to the upstream `config-watch:register` in-process protocol.

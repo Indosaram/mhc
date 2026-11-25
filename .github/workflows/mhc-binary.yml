@@ -17,7 +17,7 @@ env:
   CARGO_NET_RETRY: "10"
   PROTOC_VERSION: "29.3"
   AST_GREP_VERSION: "0.45.0"
-  SENPI_PIN: 59d58cee59d76bbecc83be828b59ff5420eb74df
+  SENPI_PIN: 99a26322f4a81d5ed95f0fd9f292938a6afbd8ff
 
 jobs:
   release:

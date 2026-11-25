@@ -107,7 +107,7 @@ try {
 		assert.equal(typeof persisted.goals[0].successCriteria[0][field], typeof pinnedFixture.goals[0].successCriteria[0][field], `pinned criterion field ${field}`);
 	}
 	assert.equal(persisted.goals[0].successCriteria[0].capturedEvidence, null);
-	record(JSON.stringify({ label: "pinned-fixture-shape", fixturePath, fixtureSha256: sha256(fixturePath), upstreamPin: "77f3067f157a4f88e6d8ed48b3a6c338654402ed", matched: true }));
+	record(JSON.stringify({ label: "pinned-fixture-shape", fixturePath, fixtureSha256: sha256(fixturePath), upstreamPin: "5835a98e88438f28a8ae0ee18039fad4d5fd415b", matched: true }));
 	const record1 = JSON.parse(readFileSync(revisionPath, "utf8"));
 	assert.equal(persisted.revision, 1);
 	assert.equal(persisted.goals[0].id, goal.id);

@@ -2357,6 +2357,7 @@ impl RpcConnectionHandler {
                 }),
             ));
         session.set_control_endpoint_host(Some(session_control.clone()));
+        session.flush_pending_control_endpoints().await;
         let pending: std::sync::Arc<
             std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
         > = Default::default();
@@ -4645,6 +4646,85 @@ mod connection_events_tests {
                 reason: maho_core::extensions::session_control_types::ControlEndpointUnsupported::UnsupportedMode
             }
         ));
+        handler.release().await;
+    }
+
+    #[tokio::test]
+    async fn deferred_control_endpoint_registration_flushes_on_handler_attach_and_wakes() {
+        let session = session();
+        let inbox = tempfile::tempdir().expect("tempdir");
+        let registered_socket = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let reg_sock_cb = registered_socket.clone();
+        // Simulate bind_extensions -> SessionStart running before RpcConnectionHandler attaches.
+        session.bind_extensions(Default::default()).await;
+        let actions = session.extension_session_actions();
+        let deferred = maho_ext_api::ExtensionSessionActions::defer_control_endpoint_registration(
+            &*actions,
+            maho_ext_api::ControlEndpointRegisterOptions {
+                inbox_dir: inbox.path().to_string_lossy().into_owned(),
+                drain: std::sync::Arc::new(|ev| {
+                    Box::pin(async move {
+                        let ids = ev
+                            .get("delivery_ids")
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let admitted: Vec<serde_json::Value> = ids
+                            .iter()
+                            .filter_map(|id| id.as_str())
+                            .map(|id| serde_json::json!({"delivery_id": id, "kind": "started"}))
+                            .collect();
+                        Ok(Some(serde_json::json!({ "admitted": admitted })))
+                    })
+                }),
+                is_session_referenced: None,
+            },
+            std::sync::Arc::new(move |outcome| {
+                if let maho_ext_api::ControlEndpointRegistrationOutcome::Registered {
+                    socket, ..
+                } = outcome
+                {
+                    *reg_sock_cb.lock().unwrap() = Some(socket);
+                }
+            }),
+        )
+        .await;
+        assert!(deferred.is_none(), "expected deferred before host attaches");
+
+        let socket_path = inbox
+            .path()
+            .join("host.sock")
+            .to_string_lossy()
+            .into_owned();
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rec = records.clone();
+        let handler = RpcConnectionHandler::create_with_shutdown_handler(
+            session.clone(),
+            std::sync::Arc::new(move |value| rec.lock().unwrap().push(value)),
+            vec![],
+            None,
+            Some(socket_path.clone()),
+        )
+        .await;
+        assert_eq!(
+            registered_socket.lock().unwrap().as_deref(),
+            Some(socket_path.as_str())
+        );
+
+        let response: serde_json::Value = serde_json::from_str(
+            &handler
+                .handle_input_line(r#"{"id":"w","type":"wake","delivery_ids":["d1"]}"#)
+                .await
+                .expect("line")
+                .expect("response"),
+        )
+        .expect("json");
+        assert_eq!(response["command"], "wake");
+        assert_eq!(response["success"], true);
+        assert_eq!(
+            response["data"]["admitted"],
+            serde_json::json!([{"delivery_id": "d1", "kind": "started"}])
+        );
         handler.release().await;
     }
 

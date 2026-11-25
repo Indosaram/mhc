@@ -804,7 +804,12 @@ impl LiveThreadSurface {
                         )
                         .await
                     {
-                        Ok(frame) => wake_reply(&frame),
+                        Ok(frame) => match data_record(&frame, "wake") {
+                            Ok(data) => wake_reply(&Value::Object(data)),
+                            Err(_) => {
+                                super::adapter::GatewayWakeReply::unroutable_no_live_session()
+                            }
+                        },
                         Err(_) => super::adapter::GatewayWakeReply::unroutable_no_live_session(),
                     }
                 })
@@ -963,6 +968,10 @@ impl LiveThreadSurface {
                 object.insert("type".into(), Value::String("open_session".into()));
                 object.insert("retain_on_disconnect".into(), Value::Bool(true));
             }
+            let requested_durable_id = command
+                .get("durableSessionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             let frame = transport.request(&socket, command, None).await?;
             let mut opened = data_record(&frame, "open_session")?;
             let routing_id = opened
@@ -970,19 +979,6 @@ impl LiveThreadSurface {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let durable_id = opened
-                .get("durableSessionId")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
-                let _ = transport
-                    .request(
-                        &socket,
-                        json!({ "type": "set_session_name", "sessionId": routing_id, "name": name }),
-                        durable_id,
-                    )
-                    .await;
-            }
             let listing = transport
                 .request(
                     &socket,
@@ -1002,6 +998,23 @@ impl LiveThreadSurface {
             {
                 for (key, value) in object {
                     opened.insert(key.clone(), value.clone());
+                }
+            }
+            let durable_id = opened
+                .get("durableSessionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or(requested_durable_id);
+            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+                let renamed = transport
+                    .request(
+                        &socket,
+                        json!({ "type": "set_session_name", "sessionId": routing_id, "name": name }),
+                        durable_id,
+                    )
+                    .await;
+                if renamed.is_ok_and(|f| f.get("success").and_then(Value::as_bool) == Some(true)) {
+                    opened.insert("name".into(), Value::String(name));
                 }
             }
             opened.insert("sessionId".into(), Value::String(routing_id));
@@ -2242,7 +2255,10 @@ impl SurfaceHandle {
             let send_command = command.clone();
             let send_transport = transport.clone();
             let send_socket = socket.clone();
-            let send = move || send_transport.request(&send_socket, send_command.clone(), None);
+            let send_durable = durable.clone();
+            let send = move || {
+                send_transport.request(&send_socket, send_command.clone(), send_durable.clone())
+            };
             match fenced_command(
                 transport.as_ref(),
                 &socket,
