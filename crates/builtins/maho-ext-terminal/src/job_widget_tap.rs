@@ -1,6 +1,6 @@
 //! Port stub of `job-widget-tap.ts`:
-//! Upstream offers each background session to `job-widgets`. `job-widgets` is LOW out-of-scope
-//! per `docs/dori-sync/backlog.md`, so this module provides a clean no-op seam preserving the
+//! Upstream offers each background session to `job-widgets`. `job-widgets` is a low-priority
+//! group outside this port, so this module provides a clean no-op seam preserving the
 //! exact call boundaries in `extension_state.rs`.
 
 use crate::runtime_session::TerminalRuntimeSession;
