@@ -84,7 +84,7 @@ const OPENAI_REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", 
 const HIGH_MAX: &[&str] = &["high", "max"];
 const HIGH_MAX_ALIASES: &[(&str, &str)] = &[("low", "high"), ("medium", "high"), ("xhigh", "max")];
 
-pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 19] = [
+pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 20] = [
     HeuristicModelFamilyDefinition {
         pattern: Some(claude_opus_pattern),
         variants: Some(LOW_TO_MAX),
@@ -126,6 +126,16 @@ pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 19]
         reasoning_effort_aliases: Some(&[("none", "low"), ("minimal", "low")]),
         supports_temperature: Some(false),
         ..HeuristicModelFamilyDefinition::named("gpt-6.1-sol")
+    },
+    HeuristicModelFamilyDefinition {
+        pattern: Some(|model_id| {
+            model_id.contains("gpt-6-2-astra") || model_id.contains("gpt-6-2-sol")
+        }),
+        variants: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_efforts: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_effort_aliases: Some(&[("none", "low"), ("minimal", "low")]),
+        supports_temperature: Some(false),
+        ..HeuristicModelFamilyDefinition::named("gpt-6.2")
     },
     HeuristicModelFamilyDefinition {
         includes: Some(&["gpt-6"]),

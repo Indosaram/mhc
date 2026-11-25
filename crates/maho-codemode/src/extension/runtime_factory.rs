@@ -211,12 +211,7 @@ pub fn runtime_host_from_api(
             .map(|tools| {
                 tools
                     .into_iter()
-                    .map(|tool| crate::bridges::schema_bridge::EvalSchemaToolInfo {
-                        name: tool.name,
-                        description: Some(tool.description),
-                        parameters: Some(tool.parameters),
-                        kernel_prelude: tool.kernel_prelude,
-                    })
+                    .map(crate::bridges::schema_bridge::EvalSchemaToolInfo::from)
                     .collect()
             })
             .map_err(|error| error.to_string())

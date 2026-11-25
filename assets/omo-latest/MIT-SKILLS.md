@@ -15,7 +15,7 @@ These skill directories were replaced with the MIT-licensed copies published in
 | remove-ai-slops | same; restored a top-level heading |
 | git-master | same; frontmatter `description` rewritten by mhc |
 | ast-grep | same |
-| ultrawork | rewritten clean-room (todo 15, MIT) as the contract loaded on `/skill:ultrawork`, with on-demand `references/*.md`; the injected directive is `crates/maho-ultrawork/contract/core.md` |
+| ultrawork | The default is the MIT contract from todo 15 (`crates/maho-ultrawork/contract/core.md`), with on-demand references. `references/gpt.md` is a separately authored, complete MIT directive based on that local contract, not an adaptation of upstream prose. O06 embeds both. |
 | ulw-execute | same; Codex harness compatibility table replaced by mhc delegation notes |
 | ulw-loop | same; driven through `mhc ulw-loop` (the `--codex-goal-json` flag keeps its historical name) |
 | ulw-plan | same; planning delegated to `task` children |

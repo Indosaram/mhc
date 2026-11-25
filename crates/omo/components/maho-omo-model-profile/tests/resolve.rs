@@ -11,6 +11,7 @@ const OPUS_SUBSCRIPTION: &str = "anthropic-subscription/claude-opus-5-5";
 const OPUS_ZEN: &str = "opencode/claude-opus-5-5";
 const OPUS_API: &str = "anthropic-api/claude-opus-5-5";
 const FABLE: &str = "anthropic-subscription/claude-fable-5-1";
+const FABLE_52: &str = "anthropic-subscription/claude-fable-5-2";
 const FABLE_ZEN: &str = "opencode/claude-fable-5-1";
 const KIMI: &str = "moonshotai/kimi-k3.1-pro";
 const FLASH: &str = "deepseek/deepseek-flash";
@@ -131,7 +132,10 @@ fn picks_the_first_rung_the_registry_can_serve_and_names_the_skipped_ones() {
     assert_eq!(resolved.provider, "moonshotai");
     assert_eq!(resolved.model_id, "kimi-k3.1-pro");
     assert_eq!(resolved.reasoning, Some("max"));
-    assert_eq!(resolved.skipped, [OPUS_SUBSCRIPTION.to_owned()]);
+    assert_eq!(
+        resolved.skipped,
+        [OPUS_SUBSCRIPTION.to_owned(), FABLE_52.to_owned()]
+    );
     assert_eq!(profile_of(&result).id, "daily-normal");
     assert_eq!(profile_of(&result).source, ModelProfileSource::Builtin);
 }
@@ -254,8 +258,8 @@ fn reports_an_empty_registry_as_unavailable_and_lists_the_chain() {
         chain_of(&result),
         [
             OPUS_SUBSCRIPTION.to_owned(),
-            "kimi-coding/kimi-k3.1-pro".to_owned(),
-            "zai/glm-5.3".to_owned()
+            FABLE_52.to_owned(),
+            "kimi-coding/kimi-k3.1-pro".to_owned()
         ]
     );
 }
@@ -540,12 +544,9 @@ fn recommended_is_no_longer_a_builtin_but_can_be_user_defined() {
 }
 
 #[test]
-fn picks_zai_glm_53_on_daily_normal_when_only_a_zai_key_serves_glm() {
+fn glm_is_not_a_daily_normal_rung() {
     let result = resolve("daily-normal", &["zai/glm-5.3"], None);
-    let resolved = resolved(&result);
-    assert_eq!(resolved.provider, "zai");
-    assert_eq!(resolved.model_id, "glm-5.3");
-    assert_eq!(resolved.reasoning, Some("max"));
+    assert!(matches!(result, ModelProfileResolution::Unavailable { .. }));
 }
 
 #[test]
@@ -567,7 +568,10 @@ fn a_profile_whose_registry_serves_nothing_reports_the_whole_chain() {
     let result = resolve("geeky-heavy", &["example/nothing"], None);
     assert_eq!(
         chain_of(&result),
-        ["chatgpt-subscription/gpt-6-astra".to_owned()]
+        [
+            "chatgpt-subscription/gpt-6.2-astra".to_owned(),
+            ASTRA.to_owned()
+        ]
     );
 }
 
@@ -706,4 +710,15 @@ fn resolves_geeky_normal_to_gpt_6_astra_medium_when_the_subscription_serves_it_b
     assert_eq!(resolved.provider, "chatgpt-subscription");
     assert_eq!(resolved.model_id, "gpt-6-astra");
     assert_eq!(resolved.reasoning, Some("medium"));
+}
+
+#[test]
+fn copilot_never_supplies_astra_62_even_when_its_registry_lists_it() {
+    let available = ["github-copilot/gpt-6.2-astra", "github-copilot/gpt-6-astra"];
+    let result = resolve("geeky-heavy", &available, None);
+    let found = resolved(&result);
+    assert_eq!(
+        (found.provider, found.model_id, found.reasoning),
+        ("github-copilot", "gpt-6-astra", Some("high"))
+    );
 }

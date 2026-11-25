@@ -352,11 +352,14 @@ fn workflow_tool_registration() {
 #[test]
 fn start_action_roundtrips_through_manager() {
     let f = fixture();
+    let mut definition = default_definition();
+    definition.nodes[0].category = Some("deep".into());
+    definition.nodes[1].category = Some("deep-high".into());
     let result = run_dag_tool(
         &deps(&f.manager),
         DagToolInput {
             action: "start".into(),
-            definition: Some(default_definition()),
+            definition: Some(definition),
             run_id: None,
             reason: None,
             detach: None,
@@ -380,6 +383,14 @@ fn start_action_roundtrips_through_manager() {
         .iter()
         .map(|n| n["id"].as_str().unwrap())
         .collect();
+    assert_eq!(
+        details["snapshot"]["nodes"][0]["route"]["category"],
+        "deep-low"
+    );
+    assert_eq!(
+        details["snapshot"]["nodes"][1]["route"]["category"],
+        "deep-high"
+    );
     assert_eq!(node_ids, vec!["plan", "build"]);
     assert_eq!(f.run_file_count(), 1);
     assert_eq!(

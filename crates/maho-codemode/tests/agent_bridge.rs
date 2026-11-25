@@ -187,6 +187,7 @@ async fn advertised_isolation_and_progress_forwarded() {
     );
     let tools = vec![EvalSchemaToolInfo {
         name: "task".into(),
+        exposure: None,
         description: None,
         parameters: Some(json!({"properties":{"isolated":{}}})),
         kernel_prelude: None,

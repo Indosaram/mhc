@@ -1,5 +1,5 @@
 use crate::bridges::schema_bridge::EvalSchemaToolInfo;
-use maho_tools::definition::KernelPrelude;
+use maho_tools::definition::{KernelPrelude, ToolExposure};
 use std::collections::HashSet;
 
 pub type ActiveToolsSource = std::sync::Arc<dyn Fn() -> Result<Vec<String>, String> + Send + Sync>;
@@ -61,13 +61,11 @@ pub fn active_kernel_preludes(
     let active_set: HashSet<&str> = active_tools.iter().map(|s| s.as_str()).collect();
     all_tools
         .iter()
-        .filter_map(|tool| {
-            if active_set.contains(tool.name.as_str()) {
-                tool.kernel_prelude.clone()
-            } else {
-                None
-            }
+        // Eval-only tools contribute to the kernel even when withheld from the model.
+        .filter(|tool| {
+            tool.exposure == Some(ToolExposure::Eval) || active_set.contains(tool.name.as_str())
         })
+        .filter_map(|tool| tool.kernel_prelude.clone())
         .collect()
 }
 
@@ -145,18 +143,21 @@ mod tests {
         let all = vec![
             EvalSchemaToolInfo {
                 name: "t1".into(),
+                exposure: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p1.clone()),
             },
             EvalSchemaToolInfo {
                 name: "t2".into(),
+                exposure: Some(ToolExposure::Search),
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p2.clone()),
             },
             EvalSchemaToolInfo {
                 name: "t3".into(),
+                exposure: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: None,

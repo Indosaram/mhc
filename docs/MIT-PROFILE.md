@@ -261,7 +261,9 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
     registry.
 - MCP: the client is the senpi port `maho-ext-mcp`, mounted in every build (stdio and streamable
   HTTP, `<agent dir>/mcp.json` and trusted-project `.omo/mcp.json`, tools named
-  `mcp_<server>_<tool>`, `/mcp enable|disable`). `<builtin:mcp-builtins>` (`maho-mcp-builtins`,
+  `mcp_<server>_<tool>`, `/mcp enable|disable`). Skill declarations can also select legacy
+  HTTP+SSE explicitly with `type: "sse"`; this does not change the global `mcp.json` transport.
+  `<builtin:mcp-builtins>` (`maho-mcp-builtins`,
   from `docs/cleanroom/specs/mcp.md`) declares two remote servers on it, `context7`
   (`https://mcp.context7.com/mcp`, bearer token from `CONTEXT7_API_KEY` when set) and `grep_app`
   (`https://mcp.grep.app`), lazy and without OAuth. They are not declared with

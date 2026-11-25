@@ -223,7 +223,7 @@ pub(crate) fn category_model_candidates(config: &Value) -> Vec<ModelChainCandida
 
 fn available_category_names(
     config: &Value,
-    available_model_ids: Option<&HashSet<String>>,
+    available_keys: Option<&HashSet<String>>,
 ) -> Vec<String> {
     let user = user_categories(config);
     let names: BTreeSet<String> = BUILTIN_CATEGORY_DEFAULTS
@@ -231,15 +231,15 @@ fn available_category_names(
         .map(|definition| definition.name.to_string())
         .chain(user.into_iter().flat_map(|user| user.keys().cloned()))
         .collect();
-    let Some(available_model_ids) = available_model_ids else {
+    let Some(available_keys) = available_keys else {
         return names.into_iter().collect();
     };
     names
         .into_iter()
         .filter(|name| {
             let explicit = user.is_some_and(|user| user.contains_key(name));
-            is_category_gate_satisfied(name, explicit, available_model_ids)
-                && is_category_chain_viable(name, explicit, available_model_ids)
+            is_category_gate_satisfied(name, explicit, available_keys)
+                && is_category_chain_viable(name, explicit, available_keys)
         })
         .collect()
 }
@@ -264,7 +264,7 @@ fn gated_available_categories(config: &Value, registry: &dyn SenpiModelRegistry)
         .ok()
         .and_then(|available| parse_available_models(&available));
     match parsed {
-        Some(models) => available_category_names(config, Some(&model_ids_of(&models))),
+        Some(models) => available_category_names(config, Some(&models.into_iter().collect())),
         None => available_category_names(config, None),
     }
 }
@@ -297,26 +297,6 @@ fn missing_chain_providers(
         }
     }
     missing
-}
-
-/// Only these upstream vendor prefixes are unwrapped from `<gateway>/<vendor>/<model-id>`, so an
-/// unrelated model that merely ends in a gate model's name cannot open that gate.
-const GATEWAY_UPSTREAM_VENDOR_PREFIXES: [&str; 3] = ["openai", "anthropic", "google"];
-
-fn model_ids_of(models: &[String]) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for entry in models {
-        let model_id = entry.split_once('/').map_or(entry.as_str(), |(_, id)| id);
-        ids.insert(model_id.to_string());
-        if let Some((vendor, upstream_id)) = model_id.split_once('/')
-            && !vendor.is_empty()
-            && !upstream_id.contains('/')
-            && GATEWAY_UPSTREAM_VENDOR_PREFIXES.contains(&vendor)
-        {
-            ids.insert(upstream_id.to_string());
-        }
-    }
-    ids
 }
 
 fn prompt_append_for_category(
@@ -416,15 +396,15 @@ pub fn resolve_category(
         )));
     };
 
-    let available_model_ids = model_ids_of(&available_models);
-    let gated_categories = available_category_names(omo_config, Some(&available_model_ids));
+    let available_keys: HashSet<_> = available_models.iter().cloned().collect();
+    let gated_categories = available_category_names(omo_config, Some(&available_keys));
     let fallback_chain = category_fallback_chain(category_name);
     let dead_chain = fallback_chain
         .filter(|chain| {
             !chain.is_empty()
                 && !chain
                     .iter()
-                    .any(|rung| is_category_chain_rung_resolvable(rung, &available_model_ids))
+                    .any(|rung| is_category_chain_rung_resolvable(rung, &available_keys))
         })
         .map(|chain| {
             (
@@ -442,7 +422,7 @@ pub fn resolve_category(
     let attempted_default = builtin_model
         .clone()
         .or_else(|| string_field(&config, "model"));
-    if !is_category_gate_satisfied(category_name, user_config.is_some(), &available_model_ids) {
+    if !is_category_gate_satisfied(category_name, user_config.is_some(), &available_keys) {
         return Ok(CategoryResolutionResult::ModelUnavailable(Box::new(
             with_dead_chain(unavailable(
                 attempted_default,
@@ -492,13 +472,29 @@ pub fn resolve_category(
         None => flatten_fallback_models(config.get("fallback_models")),
     };
     let available_set: BTreeSet<String> = available_models.iter().cloned().collect();
+    // Delegate-core also matches model substrings. The three exact lanes must not
+    // select a Fast SKU on the preferred provider when another serves the exact ID.
+    let exact = matches!(category_name, "ultrabrain" | "deep-low" | "deep-high");
+    let resolution_chain = fallback_chain.map(|chain| {
+        let mut rungs = chain.to_vec();
+        if exact {
+            for rung in &mut rungs {
+                rung.providers.retain(|provider| {
+                    available_keys.contains(&format!("{provider}/{}", rung.model))
+                });
+            }
+            rungs.retain(|rung| !rung.providers.is_empty());
+        }
+        rungs
+    });
     let resolution = resolve_model_for_delegate_task(
         &DelegateModelResolutionInput {
             user_model,
             user_fallback_models,
-            category_default_model: builtin_model.clone(),
+            category_default_model: builtin_model
+                .filter(|model| !exact || available_keys.contains(model)),
             is_user_configured_category_model: false,
-            fallback_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+            fallback_chain: resolution_chain,
             allow_unlisted_providers: false,
             available_models: available_models.iter().cloned().collect(),
             system_default_model: options.system_default_model.clone(),
@@ -519,7 +515,18 @@ pub fn resolve_category(
         selected_model: resolution.model,
         variant: resolution.variant,
         matched_fallback: resolution.matched_fallback,
-        fallback_entry: resolution.fallback_entry,
+        fallback_entry: resolution.fallback_entry.map(|selected| {
+            if exact {
+                fallback_chain
+                    .into_iter()
+                    .flatten()
+                    .find(|rung| rung.model == selected.model && rung.variant == selected.variant)
+                    .cloned()
+                    .unwrap_or(selected)
+            } else {
+                selected
+            }
+        }),
     };
     let parsed_model = parse_model(&selection.selected_model);
     let found_model = parsed_model.as_ref().and_then(|parsed| {

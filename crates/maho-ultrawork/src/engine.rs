@@ -3,6 +3,7 @@
 use crate::classify::{Classification, ClassifyInput, Stage, classify_with_session_role};
 use crate::state::{PendingDirective, Sessions};
 use crate::texts::{directive_message, inline_block, reminder_message, todo_advisory};
+use crate::variant::Variant;
 use maho_ext_api::{CustomMessage, InputSource};
 use serde_json::Value;
 use std::sync::Arc;
@@ -62,6 +63,16 @@ impl Engine {
         disabled: bool,
         session_role: Option<&str>,
     ) -> InputOutcome {
+        self.on_input_for_variant(request, disabled, session_role, Variant::Default)
+    }
+
+    pub(crate) fn on_input_for_variant(
+        &self,
+        request: InputRequest<'_>,
+        disabled: bool,
+        session_role: Option<&str>,
+        variant: Variant,
+    ) -> InputOutcome {
         let snapshot = self.sessions.snapshot(request.session);
         let classification = classify_with_session_role(
             ClassifyInput {
@@ -89,7 +100,7 @@ impl Engine {
         let full = matches!(classification.stage, Stage::Initial | Stage::CompactRearm);
         self.sessions.mark_armed(request.session);
         if request.streaming {
-            let block = inline_block(full, classification.mass);
+            let block = inline_block(variant, full, classification.mass);
             outcome.transformed_text = Some(format!("{}\n\n{block}", request.text));
         } else {
             self.sessions.set_pending(
@@ -105,6 +116,15 @@ impl Engine {
 
     /// The hidden message for the turn that is about to start. A preview leaves the state alone.
     pub fn on_turn_start(&self, session: &str, preview: bool) -> Option<CustomMessage> {
+        self.on_turn_start_for_variant(session, preview, Variant::Default)
+    }
+
+    pub(crate) fn on_turn_start_for_variant(
+        &self,
+        session: &str,
+        preview: bool,
+        variant: Variant,
+    ) -> Option<CustomMessage> {
         let found = if preview {
             self.sessions.pending(session)
         } else {
@@ -112,7 +132,7 @@ impl Engine {
         };
         let pending = found?;
         Some(if pending.full {
-            directive_message(crate::contract_revision(), pending.mass)
+            directive_message(variant, crate::contract_revision(), pending.mass)
         } else {
             reminder_message(pending.mass)
         })

@@ -253,9 +253,8 @@ pub fn omo_components(
             telemetry.register(api);
         },
     ));
-    components.push(component(
-        "ultrawork",
-        maho_ultrawork::UltraworkExtension::default(),
+    components.push(crate::keyword_detector_settings::component(
+        options.env.clone(),
     ));
     components.push(component(
         "skill-pointers",
@@ -277,6 +276,10 @@ pub fn omo_components(
             };
             component.register(api);
         },
+    ));
+    components.push(component(
+        "js-kernel-guard",
+        crate::js_kernel_guard::JsKernelGuardComponent,
     ));
     components.push(component(
         "question-gates",
@@ -442,6 +445,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "skill-pointers",
         "ulw-execute-continuation",
         "ulw-loop",
+        "js-kernel-guard",
         "question-gates",
         "claim-receipt",
         "git-master",

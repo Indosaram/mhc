@@ -129,6 +129,15 @@ fn skill_keywords_paint_without_arming_ultrawork() {
 }
 
 #[test]
+fn advice_leaves_only_the_requested_keyword_painted() {
+    let text = "규칙: Skip ulw-plan, ulw-loop and mass-ulw; run ultrawork instead.";
+    let spans = find_reserved_keyword_spans(text);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].keyword, ReservedKeyword::Ultrawork);
+    assert_eq!(&text[spans[0].start..spans[0].end], "ultrawork");
+}
+
+#[test]
 fn explicit_negatives_neither_arm_nor_paint() {
     for text in [
         "methane",

@@ -4,7 +4,6 @@ use indexmap::IndexSet;
 use serde_json::Value;
 use serde_json::json;
 
-use crate::fable_55_launch::is_launch_gated_model;
 use crate::model_availability::fuzzy_match_model;
 use crate::model_normalization::normalize_model;
 use crate::model_requirement_types::FallbackEntry;
@@ -253,10 +252,8 @@ pub fn resolve_model_pipeline_with(
                     );
                 }
                 Some(connected) => {
-                    // A launch-gated id has no availability proof here, so it falls through to the chain.
-                    if let Some(transformed_model) = (!is_launch_gated_model(&category_default))
-                        .then(|| connected_transformed_model(&category_default, &connected, deps))
-                        .flatten()
+                    if let Some(transformed_model) =
+                        connected_transformed_model(&category_default, &connected, deps)
                     {
                         log(
                             "Model resolved via category default (connected provider)",
@@ -359,9 +356,6 @@ pub fn resolve_model_pipeline_with(
                 ),
                 Some(connected) => {
                     for entry in fallback_chain {
-                        if is_launch_gated_model(&entry.model) {
-                            continue;
-                        }
                         for provider in &entry.providers {
                             if !connected.contains(provider) {
                                 continue;

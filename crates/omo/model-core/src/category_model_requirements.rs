@@ -4,8 +4,7 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
-use crate::fable_55_launch::FABLE_55_LAUNCH_ID;
-use crate::fable_55_launch::launch_rungs;
+use crate::latest_models as latest;
 use crate::model_requirement_types::FallbackEntry;
 use crate::model_requirement_types::ModelRequirement;
 
@@ -29,15 +28,15 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
             (
                 "visual-engineering",
                 ModelRequirement {
-                    fallback_chain: launch_rungs(vec![
+                    fallback_chain: vec![
                         entry(
                             &["google", "google-vertex", "opencode"],
-                            "gemini-4-argon",
+                            latest::GEMINI_PRO,
                             Some("low"),
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            FABLE_55_LAUNCH_ID,
+                            latest::CLAUDE_FABLE,
                             Some("max"),
                         ),
                         entry(
@@ -47,79 +46,40 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-opus-5-5",
+                            latest::CLAUDE_OPUS,
                             Some("max"),
                         ),
                         entry(
                             &["kimi-for-coding", "moonshotai", "opencode-go"],
-                            "kimi-k3.1-pro",
+                            latest::KIMI,
                             Some("max"),
                         ),
-                        entry(&["opencode"], "kimi-k3", Some("max")),
-                    ]),
+                        entry(&["opencode"], latest::KIMI_K3, Some("max")),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "ultrabrain",
                 ModelRequirement {
-                    fallback_chain: vec![
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6-astra",
-                            Some("max"),
-                        ),
-                        entry(&["github-copilot"], "gpt-6-astra", Some("max")),
-                        entry(
-                            &["openai", "chatgpt-subscription", "opencode"],
-                            "gpt-6-astra",
-                            Some("max"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-5.6-sol",
-                            Some("max"),
-                        ),
-                        entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-                        entry(
-                            &["openai", "chatgpt-subscription", "opencode"],
-                            "gpt-5.6-sol",
-                            Some("max"),
-                        ),
-                    ],
+                    fallback_chain: vec![entry(
+                        &["openai", "chatgpt-subscription", "opencode"],
+                        latest::GPT_ASTRA,
+                        Some("max"),
+                    )],
+                    requires_any_model: Some(true),
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "deep-low",
                 ModelRequirement {
-                    fallback_chain: vec![
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.1-sol",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.1-sol-fast",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &[
-                                "openai",
-                                "chatgpt-subscription",
-                                "github-copilot",
-                                "opencode",
-                            ],
-                            "gpt-5.6-sol",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-5.6-sol-fast",
-                            Some("medium"),
-                        ),
-                    ],
+                    fallback_chain: vec![entry(
+                        &["openai", "chatgpt-subscription"],
+                        latest::GPT_SOL,
+                        Some("medium"),
+                    )],
+                    requires_any_model: Some(true),
                     ..ModelRequirement::default()
                 },
             ),
@@ -127,25 +87,21 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                 "deep-high",
                 ModelRequirement {
                     fallback_chain: vec![entry(
-                        &[
-                            "openai",
-                            "chatgpt-subscription",
-                            "github-copilot",
-                            "opencode",
-                        ],
-                        "gpt-6-astra",
+                        &["openai", "chatgpt-subscription", "opencode"],
+                        latest::GPT_ASTRA,
                         Some("high"),
                     )],
+                    requires_any_model: Some(true),
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "artistry",
                 ModelRequirement {
-                    fallback_chain: launch_rungs(vec![
+                    fallback_chain: vec![
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            FABLE_55_LAUNCH_ID,
+                            latest::CLAUDE_FABLE,
                             Some("max"),
                         ),
                         entry(
@@ -155,16 +111,16 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-opus-5-5",
+                            latest::CLAUDE_OPUS,
                             Some("max"),
                         ),
                         entry(
                             &["kimi-for-coding", "moonshotai", "opencode-go"],
-                            "kimi-k3.1-pro",
+                            latest::KIMI,
                             Some("max"),
                         ),
-                        entry(&["opencode"], "kimi-k3", Some("max")),
-                    ]),
+                        entry(&["opencode"], latest::KIMI_K3, Some("max")),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
@@ -174,12 +130,12 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                     fallback_chain: vec![
                         entry(
                             &["openai", "chatgpt-subscription"],
-                            "gpt-6-luna-fast",
+                            latest::GPT_LUNA_FAST,
                             Some("low"),
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot"],
-                            "claude-haiku-5-5",
+                            latest::CLAUDE_HAIKU,
                             Some("medium"),
                         ),
                         entry(&["deepseek"], "deepseek-flash", Some("off")),
@@ -195,7 +151,7 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                         entry(&["opencode-go"], "minimax-m3", Some("max")),
                         entry(&["opencode-go"], "minimax-m2.7", Some("max")),
                         entry(&["xai"], "grok-4.20-0309-non-reasoning", None),
-                        entry(&["zai-coding-plan"], "glm-5.3-flash", Some("low")),
+                        entry(&["zai-coding-plan"], latest::GLM_FLASH, Some("low")),
                         entry(&["xiaomi"], "mimo-v2.6-flash", Some("low")),
                     ],
                     ..ModelRequirement::default()
@@ -207,7 +163,7 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                     fallback_chain: vec![
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-sonnet-5-5",
+                            latest::CLAUDE_SONNET,
                             Some("medium"),
                         ),
                         entry(&["xiaomi", "opencode-go"], "mimo-v2.6-pro", Some("max")),
@@ -216,7 +172,16 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             "grok-4.7",
                             Some("xhigh"),
                         ),
-                        entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")),
+                        entry(
+                            &["zai-coding-plan", "opencode-go"],
+                            latest::GLM,
+                            Some("high"),
+                        ),
+                        entry(
+                            &["openai", "chatgpt-subscription"],
+                            latest::GPT_SOL,
+                            Some("medium"),
+                        ),
                         entry(
                             &["openai", "chatgpt-subscription"],
                             "gpt-6.1-sol",
@@ -259,16 +224,20 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                     fallback_chain: vec![
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-opus-5-5",
+                            latest::CLAUDE_OPUS,
                             Some("medium"),
                         ),
-                        entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("max")),
                         entry(
-                            &["kimi-for-coding", "moonshotai", "opencode-go"],
-                            "kimi-k3.1-pro",
+                            &["zai-coding-plan", "opencode-go"],
+                            latest::GLM,
                             Some("max"),
                         ),
-                        entry(&["opencode"], "kimi-k3", Some("max")),
+                        entry(
+                            &["kimi-for-coding", "moonshotai", "opencode-go"],
+                            latest::KIMI,
+                            Some("max"),
+                        ),
+                        entry(&["opencode"], latest::KIMI_K3, Some("max")),
                     ],
                     ..ModelRequirement::default()
                 },
@@ -279,12 +248,12 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                     fallback_chain: vec![
                         entry(
                             &["google", "google-vertex", "opencode"],
-                            "gemini-4-argon",
+                            latest::GEMINI_PRO,
                             Some("low"),
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-opus-5-5",
+                            latest::CLAUDE_OPUS,
                             Some("low"),
                         ),
                         entry(
@@ -342,9 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn unspecified_low_places_glm_before_both_sol_fallbacks() {
+    fn unspecified_low_places_glm_before_current_and_older_sol_fallbacks() {
         let chain = &CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain;
-        assert_eq!(chain.len(), 10);
+        assert_eq!(chain.len(), 11);
         assert_eq!(
             chain[3],
             entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high"))
@@ -353,12 +322,20 @@ mod tests {
             chain[4],
             entry(
                 &["openai", "chatgpt-subscription"],
-                "gpt-6.1-sol",
+                "gpt-6.2-sol",
                 Some("medium")
             )
         );
         assert_eq!(
             chain[5],
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.1-sol",
+                Some("medium")
+            )
+        );
+        assert_eq!(
+            chain[6],
             entry(
                 &[
                     "openai",

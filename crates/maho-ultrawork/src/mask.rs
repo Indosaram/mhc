@@ -45,6 +45,9 @@ pub fn mask(input: &str, directive_tag: &str) -> Masked {
         text = blank(&text, &header_spans(&text));
     }
     let before_prohibitive = text.clone();
+    if let std::borrow::Cow::Owned(masked) = crate::mask_keyword_advice(&text) {
+        text = masked;
+    }
     if negates(&text) {
         text = blank(&text, &prohibitive_spans(&text));
     }

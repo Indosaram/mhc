@@ -144,7 +144,7 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         factory("telemetry", super::usage_stats::extension()),
         factory("git", super::git_tools::extension()),
         factory("skills", super::skill_library::extension()),
-        factory("ultrawork", maho_ultrawork::UltraworkExtension::default()),
+        mit_keyword_factory(maho_config::process_env()),
         factory("mcp-builtins", super::builtin_mcp::extension()),
         factory("git-bash", maho_git_bash::GitBashMcpExtension),
         factory("ast-grep", maho_ast_grep::AstGrepExtension),
@@ -163,6 +163,24 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
             maho_x_search::XSearchExtension::new(maho_core::config::get_agent_dir()),
         ),
     ]
+}
+
+#[cfg(not(feature = "omo"))]
+fn mit_keyword_factory(env: maho_config::Env) -> NativeExtensionFactory {
+    let legacy_child = env.contains_key("SENPI_TASK_MEMBER")
+        || env
+            .get("OMO_SENPI_TASK_RPC_CHILD")
+            .is_some_and(|value| value == "1");
+    factory(
+        "ultrawork",
+        maho_ultrawork::UltraworkExtension::default().with_keyword_policy(
+            move |cwd| {
+                let options = maho_config::LoadOptions::new(cwd).with_env(env.clone());
+                maho_ultrawork::keyword_activation_allowed(&maho_config::load(&options).view)
+            },
+            legacy_child,
+        ),
+    )
 }
 
 pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyncExtensionFactory> {
@@ -1340,6 +1358,51 @@ impl Extension for Todo {
 
 #[cfg(all(test, not(feature = "omo")))]
 mod mit_tests {
+    #[tokio::test]
+    async fn mit_keyword_config_controls_directive_in_a_native_prompt() {
+        use maho_test_support::faux::{FauxResponse, FauxScript};
+        use maho_test_support::faux_session::FauxSession;
+        use std::fs;
+
+        let home = tempfile::tempdir().expect("isolated config home");
+        let dir = home.path().join(".omo");
+        fs::create_dir(&dir).expect("create config directory");
+        let env: maho_config::Env =
+            [("HOME".into(), home.path().to_string_lossy().into_owned())].into();
+        for (list, expected) in [("[\"ultrawork\"]", true), ("[]", false)] {
+            fs::write(
+                dir.join("omo.jsonc"),
+                format!(r#"{{"[native]":{{"keyword_detector":{{"enabled_expansions":{list}}}}}}}"#),
+            )
+            .expect("write native keyword policy");
+            let result = FauxSession::new(FauxScript {
+                name: "keyword-policy".into(),
+                prompt: "ulw review the session export".into(),
+                responses: vec![FauxResponse {
+                    content: "Done.".into(),
+                    stop_reason: "stop".into(),
+                }],
+            })
+            .with_native_extension(super::mit_keyword_factory(env.clone()))
+            .run_native()
+            .await
+            .expect("run the native keyword prompt");
+            let messages = result["messages"].as_array().expect("session messages");
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message["role"] == "assistant")
+            );
+            assert_eq!(
+                messages.iter().any(|message| {
+                    message["customType"] == maho_ultrawork::DIRECTIVE_MESSAGE_TYPE
+                }),
+                expected,
+                "allowlist {list}"
+            );
+        }
+    }
+
     #[test]
     fn mit_profile_mounts_the_mit_extensions_in_order() {
         let paths: Vec<String> = super::mit_config_factories()

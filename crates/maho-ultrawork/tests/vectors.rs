@@ -104,6 +104,32 @@ fn masked_regions_and_negations_never_arm() {
 }
 
 #[test]
+fn advice_masks_the_named_modes_but_leaves_an_independent_request() {
+    for text in [
+        "Avoid ultrawork for answers.",
+        "No ULW, ulw-loop, or mass_ulw.",
+        "Skip the ulw-plan / ulw.",
+        "Don’t ulw this. Work without mulw.",
+        "Avoiding use of ulw and skipping meth saves time.",
+    ] {
+        let got = run(text, InputSource::Rpc);
+        assert!(!got.effective, "{text}");
+        assert_eq!(got.visible_mentions, 0, "{text}");
+    }
+    for text in [
+        "No ulw-loop, just ulw this.",
+        "Avoid using mass-ulw, please ulw this.",
+        "Avoid regressions, ulw the fix.",
+        "No ulw or ulw-plan; use ulw here.",
+    ] {
+        let got = run(text, InputSource::Rpc);
+        assert!(got.effective, "{text}");
+        assert_eq!(got.visible_mentions, 1, "{text}");
+        assert!(!got.mass, "{text}");
+    }
+}
+
+#[test]
 fn negation_separated_by_punctuation_does_not_mask_a_real_request() {
     for text in [
         "This is not working, please use ulw to fix it",

@@ -544,12 +544,7 @@ fn install_eval(
             .map(|tools| {
                 tools
                     .into_iter()
-                    .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-                        name: tool.name,
-                        description: Some(tool.description),
-                        parameters: Some(tool.parameters),
-                        kernel_prelude: None,
-                    })
+                    .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
                     .collect()
             })
             .map_err(|error| error.to_string())
@@ -620,12 +615,7 @@ fn install_eval(
             .get_all_tools()
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-                name: tool.name,
-                description: Some(tool.description),
-                parameters: Some(tool.parameters),
-                kernel_prelude: tool.kernel_prelude,
-            })
+            .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
             .collect::<Vec<_>>();
         Ok(extension::kernel_preludes::active_kernel_preludes(
             &active, &all,
@@ -636,12 +626,7 @@ fn install_eval(
         .get_all_tools()
         .unwrap_or_default()
         .into_iter()
-        .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-            name: tool.name,
-            description: Some(tool.description),
-            parameters: Some(tool.parameters),
-            kernel_prelude: tool.kernel_prelude,
-        })
+        .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
         .collect::<Vec<_>>();
     let prompt_preludes =
         extension::kernel_preludes::active_kernel_preludes(&prompt_active, &prompt_tools);

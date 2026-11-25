@@ -326,8 +326,8 @@ fn given_running_category_child_when_host_applies_fallback_then_record_exposes_a
 fn given_builtin_category_child_on_chain_rung_when_fallback_to_next_rung_then_record_advances() {
     let runner = FakeRunner::new();
     let host = registry(vec![
-        model("openai-codex", "gpt-5.6-luna-fast"),
-        model("opencode-go", "minimax-m3"),
+        model("openai", "gpt-6-luna-fast"),
+        model("deepseek", "deepseek-flash"),
     ]);
     let resolution = resolve_category(
         "quick",
@@ -357,25 +357,25 @@ fn given_builtin_category_child_on_chain_rung_when_fallback_to_next_rung_then_re
     let task_id = start_in(&harness, ExecutionMode::InProcess);
     let handle = launched(&runner, &task_id, 1);
     let initial = load(&harness, &task_id);
-    assert_eq!(initial.model, "openai-codex/gpt-5.6-luna-fast");
+    assert_eq!(initial.model, "openai/gpt-6-luna-fast");
     let chain = initial.fallback_models.expect("fallback chain");
     assert_eq!(chain.len(), 1);
     assert_eq!(chain[0].source, ResolvedModelSource::Category);
-    assert_eq!(chain[0].provider, "opencode-go");
-    assert_eq!(chain[0].model_id, "minimax-m3");
-    assert_eq!(chain[0].variant.as_deref(), Some("max"));
+    assert_eq!(chain[0].provider, "deepseek");
+    assert_eq!(chain[0].model_id, "deepseek-flash");
+    assert_eq!(chain[0].variant.as_deref(), Some("off"));
 
     handle.emit(&fallback_event(
-        "openai-codex/gpt-5.6-luna-fast",
-        "opencode-go/minimax-m3:max",
+        "openai/gpt-6-luna-fast",
+        "deepseek/deepseek-flash:off",
     ));
 
     let record = load(&harness, &task_id);
-    assert_eq!(record.model, "opencode-go/minimax-m3");
+    assert_eq!(record.model, "deepseek/deepseek-flash");
     let resolved = record.resolved_model.clone().expect("resolved model");
-    assert_eq!(resolved.provider, "opencode-go");
-    assert_eq!(resolved.model_id, "minimax-m3");
-    assert_eq!(resolved.reasoning_effort.as_deref(), Some("max"));
+    assert_eq!(resolved.provider, "deepseek");
+    assert_eq!(resolved.model_id, "deepseek-flash");
+    assert_eq!(resolved.reasoning_effort.as_deref(), Some("off"));
     assert_eq!(record.fallback_models, Some(Vec::new()));
     let attempts: Vec<String> = record
         .fallback_attempts
@@ -385,7 +385,7 @@ fn given_builtin_category_child_on_chain_rung_when_fallback_to_next_rung_then_re
         .collect();
     assert_eq!(
         attempts,
-        vec!["openai-codex/gpt-5.6-luna-fast", "opencode-go/minimax-m3"]
+        vec!["openai/gpt-6-luna-fast", "deepseek/deepseek-flash"]
     );
     handle.settle(RunnerOutcome::completed("done"));
     wait_terminal(&harness.manager, &task_id);

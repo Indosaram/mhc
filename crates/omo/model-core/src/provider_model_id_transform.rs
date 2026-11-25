@@ -60,7 +60,12 @@ fn replace_unsuffixed(
 }
 
 fn gemini_31_pro_preview(model: &str) -> String {
-    replace_unsuffixed(model, "gemini-3.1-pro", None, "gemini-3.1-pro-preview")
+    replace_unsuffixed(
+        model,
+        "gemini-3.1-pro",
+        Some("antigravity-"),
+        "gemini-3.1-pro-preview",
+    )
 }
 
 fn gemini_3_flash_preview(model: &str) -> String {

@@ -94,6 +94,8 @@ pub mod service_connection;
 pub mod service_lifecycle;
 #[path = "service_register.rs"]
 pub mod service_register;
+#[path = "service_skill_sse.rs"]
+pub mod service_skill_sse;
 #[path = "service_snapshot.rs"]
 pub mod service_snapshot;
 #[path = "session_exposure.rs"]

@@ -550,8 +550,8 @@ fn fallback_chain_lengths_match_transcription() {
         vec![
             ("explore", 6),
             ("librarian", 6),
-            ("plan-consultant", 4),
-            ("plan-reviewer", 8)
+            ("plan-consultant", 5),
+            ("plan-reviewer", 9)
         ]
     );
 }
@@ -594,6 +594,7 @@ fn fallback_chain_table_is_pinned() {
         (
             "plan-consultant",
             vec![
+                entry(&claude, "claude-fable-5-2", Some("max")),
                 entry(&claude, "claude-fable-5-1", Some("max")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
                 entry(
@@ -609,16 +610,25 @@ fn fallback_chain_table_is_pinned() {
             vec![
                 entry(
                     &["chatgpt-subscription", "openai"],
+                    "gpt-6.2-astra",
+                    Some("xhigh"),
+                ),
+                entry(
+                    &["chatgpt-subscription", "openai"],
                     "gpt-6-astra",
                     Some("xhigh"),
                 ),
                 entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                 entry(
                     &["chatgpt-subscription", "openai", "opencode"],
+                    "gpt-6.2-astra",
+                    Some("high"),
+                ),
+                entry(
+                    &["chatgpt-subscription", "openai", "opencode"],
                     "gpt-6-astra",
                     Some("high"),
                 ),
-                entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
                 entry(
                     &["google", "google-vertex", "opencode"],
@@ -643,10 +653,24 @@ fn fallback_chain_table_is_pinned() {
 fn quick_places_non_reasoning_deepseek_after_luna() {
     let quick = crate::category::category_fallback_chain("quick").expect("quick chain");
     assert_eq!(
-        quick[1..3].to_vec(),
+        quick[..3].to_vec(),
         vec![
-            entry(&["openai-codex"], "gpt-5.6-luna-fast", Some("low")),
-            entry(&["deepseek"], "deepseek-v4-flash", Some("off")),
+            entry(
+                &["chatgpt-subscription", "openai"],
+                "gpt-6-luna-fast",
+                Some("low")
+            ),
+            entry(
+                &[
+                    "anthropic-subscription",
+                    "anthropic",
+                    "anthropic-api",
+                    "github-copilot"
+                ],
+                "claude-haiku-5-5",
+                Some("medium")
+            ),
+            entry(&["deepseek"], "deepseek-flash", Some("off")),
         ]
     );
 }

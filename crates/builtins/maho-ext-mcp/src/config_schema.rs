@@ -80,6 +80,12 @@ pub enum DirectTools {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerConfigWire {
+    /// Set only by the skill resolver; `sse` elsewhere remains the native HTTP alias.
+    #[serde(skip)]
+    pub skill_sse: bool,
+    /// A skill supplied an explicit effective request deadline before defaults were applied.
+    #[serde(skip)]
+    pub skill_timeout_explicit: bool,
     #[serde(skip)]
     pub project_authority: Option<crate::project_skill_policy::ProjectPolicyHandle>,
     #[serde(skip)]
@@ -143,6 +149,9 @@ impl ServerConfigWire {
     /// The upstream declared shape: each reference object back at the slot it was declared in.
     pub fn declared_json(&self) -> serde_json::Result<serde_json::Value> {
         let mut value = serde_json::to_value(self)?;
+        if self.skill_sse {
+            value["type"] = "sse".into();
+        }
         for (field, reference) in &self.references {
             let mut parts = field.splitn(2, '.');
             let (Some(slot), Some(key)) = (parts.next(), parts.next()) else {
@@ -168,6 +177,8 @@ impl From<&maho_ext_api::McpServerDeclaration> for ServerConfigWire {
             McpAuth, McpDirectTools, McpExposure, McpLifecycle, McpLogLevel, McpTransport,
         };
         Self {
+            skill_sse: false,
+            skill_timeout_explicit: false,
             project_authority: None,
             session_dependent: false,
             references: BTreeMap::new(),

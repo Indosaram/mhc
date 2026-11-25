@@ -5,12 +5,14 @@ fn tools() -> Vec<EvalSchemaToolInfo> {
     vec![
         EvalSchemaToolInfo {
             name: "mcp_computer_use_batch".into(),
+            exposure: None,
             description: Some("Run steps.".into()),
             parameters: Some(json!({"type":"object", "required":["steps"]})),
             kernel_prelude: None,
         },
         EvalSchemaToolInfo {
             name: "grep".into(),
+            exposure: None,
             description: None,
             parameters: None,
             kernel_prelude: None,

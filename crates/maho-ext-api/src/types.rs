@@ -4,7 +4,8 @@ use crate::offload::{
     AccountLimits, ChildModuleRegistration, InputOrigin, OffloadOptions, RegisteredChildModule,
     SubscriptionLimitsListener, UploadRedaction, validate_child_module_registration,
 };
-pub use maho_agent::types::{AgentEvent, AgentMessage};
+pub use maho_agent::harness::messages::CustomMessageContent;
+pub use maho_agent::types::{AgentEvent, AgentMessage, CustomAgentMessage};
 pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_ai::types::{AssistantMessage, ContentBlock, Message, UserContent, UserMessage};
 pub use maho_ai::{

@@ -187,7 +187,7 @@ fn builtin_agent_fails_closed_without_registry() {
 #[test]
 fn variant_bearing_builtin_category_fallback_applies_variant() {
     let registry = Arc::new(Registry(
-        json!({"provider":"zai-coding-plan","id":"glm-5.2"}),
+        json!({"provider":"anthropic-subscription","id":"claude-fable-5-2"}),
     ));
     let planner =
         create_task_child_planner(json!({}), vec![], Arc::new(move || Some(registry.clone())));
@@ -263,7 +263,7 @@ fn explicit_model_cannot_bypass_disabled_agent() {
 }
 #[test]
 fn unknown_target_and_dead_agent_chain_preserve_available_target_metadata() {
-    let registry = Arc::new(Registry(json!({"provider":"google","id":"gemini-3.1-pro"})));
+    let registry = Arc::new(Registry(json!({"provider":"google","id":"gemini-4-argon"})));
     let agents = maho_omo_task::engine_runners::resolve_task_agents(&json!({}))
         .into_iter()
         .collect();
@@ -314,4 +314,24 @@ fn unknown_target_and_dead_agent_chain_preserve_available_target_metadata() {
             "plan-reviewer".into()
         ])
     );
+}
+
+#[test]
+fn builtin_gpt_categories_reach_child_plans_with_distinct_efforts() {
+    for (category, id, effort) in [
+        ("ultrabrain", "gpt-6.2-astra", "max"),
+        ("deep-high", "gpt-6.2-astra", "high"),
+        ("deep-low", "gpt-6.2-sol", "medium"),
+    ] {
+        let registry = Arc::new(Registry(json!({"provider":"openai","id":id})));
+        let planner =
+            create_task_child_planner(json!({}), vec![], Arc::new(move || Some(registry.clone())));
+        let plan = planner(&ManagerStartSpec {
+            category: Some(category.into()),
+            ..Default::default()
+        })
+        .expect("builtin plan");
+        assert_eq!(plan.variant.as_deref(), Some(effort));
+        assert_eq!(plan.resolved_model.expect("model").model_id, id);
+    }
 }

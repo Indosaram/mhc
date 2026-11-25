@@ -89,6 +89,13 @@ pub fn shared_mcp_key(
         "headers":config.headers,"auth":config.auth,"oauth":config.oauth,"bearer":bearer,"connectTimeoutMs":config.connect_timeout_ms,"logLevel":config.log_level,
         "credentialIdentity":credential_identity});
     let mut identity = identity;
+    if config.skill_sse {
+        identity["type"] = "sse".into();
+    }
+    // The pooled catalog uses the creating owner's deadline, not the calling lease's.
+    if config.skill_timeout_explicit {
+        identity["skillRequestTimeoutMs"] = json!(config.request_timeout_ms);
+    }
     if let (Some(authority), Some(identity)) = (
         crate::project_skill_policy::get_project_mcp_authority(config),
         identity.as_object_mut(),

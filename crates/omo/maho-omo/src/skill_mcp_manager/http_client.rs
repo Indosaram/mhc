@@ -30,9 +30,13 @@ pub async fn create_http_client(
         None,
     )
     .map_err(|e| e.to_string())?;
-    let client = McpClient::materialize(&info.server_name, &spec, Arc::new(Mutex::new(logger)))
-        .await
-        .map_err(|e| e.to_string())?;
+    let logger = Arc::new(Mutex::new(logger));
+    let client = if config["type"] == "sse" {
+        McpClient::materialize_sse(&info.server_name, &spec, logger).await
+    } else {
+        McpClient::materialize(&info.server_name, &spec, logger).await
+    }
+    .map_err(|e| e.to_string())?;
     if config.get("oauth").is_some() {
         use maho_ext_mcp::auth::{
             oauth_provider::McpOAuthProvider, oauth_refresh::McpRefreshManager,

@@ -7,8 +7,8 @@ mod resolver;
 
 pub use builtins::{
     BUILTIN_CATEGORY_DEFAULTS, BuiltinCategoryConfig, BuiltinCategoryDefinition, builtin_category,
-    builtin_category_requires_model, category_gate_model, is_category_chain_rung_resolvable,
-    is_category_chain_viable, is_category_gate_satisfied, resolve_deep_category_prompt_append,
+    category_gate_models, is_category_chain_rung_resolvable, is_category_chain_viable,
+    is_category_gate_satisfied, resolve_deep_category_prompt_append,
 };
 pub use fallback_chains::{CATEGORY_FALLBACK_CHAINS, category_fallback_chain};
 pub use resolver::{

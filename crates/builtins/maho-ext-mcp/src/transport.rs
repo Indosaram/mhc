@@ -122,6 +122,7 @@ pub struct McpTransportConnection {
     pub resolve_project_policy: Option<ProjectPolicyResolver>,
     pub server_name: String,
     pub spec: McpTransportSpec,
+    skill_sse: bool,
     pub connect_timeout: Duration,
     logger: Arc<Mutex<McpLogger>>,
     client: tokio::sync::OnceCell<Arc<McpClient>>,
@@ -148,6 +149,7 @@ pub fn create_mcp_transport(
         resolve_project_policy: None,
         server_name: server.into(),
         spec,
+        skill_sse: config.skill_sse,
         connect_timeout: Duration::from_secs_f64(timeout.max(0.0) / 1000.0),
         logger,
         client: tokio::sync::OnceCell::new(),
@@ -195,13 +197,18 @@ impl McpTransportConnection {
                     env.insert("OAUTH_ACCESS_TOKEN".into(), tokens.access_token);
                 }
                 let spawn = || async {
-                    let client = McpClient::materialize_with_policy(
-                        &self.server_name,
-                        &spec,
-                        self.logger.clone(),
-                        self.project_policy,
-                    )
-                    .await?;
+                    let client = if self.skill_sse {
+                        McpClient::materialize_sse(&self.server_name, &spec, self.logger.clone())
+                            .await?
+                    } else {
+                        McpClient::materialize_with_policy(
+                            &self.server_name,
+                            &spec,
+                            self.logger.clone(),
+                            self.project_policy,
+                        )
+                        .await?
+                    };
                     if let Some(auth) = &self.auth {
                         client.set_auth(auth.clone()).await;
                     }
@@ -214,6 +221,7 @@ impl McpTransportConnection {
                 let client = crate::modern::dispatch::materialize_negotiated_transport(
                     crate::modern::dispatch::NegotiationInputs {
                         spec: &spec,
+                        skill_sse: self.skill_sse,
                         logger: self.logger.clone(),
                         auth: self.auth.clone(),
                         ui: self.elicitation_ui.clone(),

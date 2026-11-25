@@ -69,5 +69,6 @@ tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros", "fs",
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+maho-codemode = { path = "../../maho-codemode" }
 tokio = { version = "=1.52.3", features = ["macros", "rt", "rt-multi-thread", "time"] }
 tempfile = "=3.27.0"

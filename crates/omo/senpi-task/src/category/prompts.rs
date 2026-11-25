@@ -135,8 +135,6 @@ Response format:
 - Risks and mitigations (if relevant)
 </Category_Context>"#;
 
-pub(crate) const DEEP_DESCRIPTION: &str = r#"Goal-oriented autonomous problem-solving on hairy problems requiring deep research. ONE goal + ONE deliverable per call — multiple goals must fan out as parallel `deep` calls, never bundled into one."#;
-
 pub(crate) const DEEP_PROMPT_APPEND: &str = r#"<Category_Context>
 You are working on GOAL-ORIENTED AUTONOMOUS tasks.
 

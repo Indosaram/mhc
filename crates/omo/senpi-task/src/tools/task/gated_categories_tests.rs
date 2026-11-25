@@ -19,18 +19,21 @@ fn description_of(name: &str, config: &Value) -> String {
 #[test]
 fn given_builtin_only_gated_category_when_listed_then_architect_carries_required_model_annotation()
 {
-    assert!(description_of("architect", &json!({})).contains("(requires claude-fable-5)"));
+    assert!(
+        description_of("architect", &json!({}))
+            .contains("(requires claude-fable-5-2 or claude-fable-5-1)")
+    );
 }
 
 #[test]
 fn given_builtin_only_gated_category_when_listed_then_ultrabrain_carries_required_model_annotation()
 {
-    assert!(description_of("ultrabrain", &json!({})).contains("(requires gpt-5.6-sol)"));
+    assert!(description_of("ultrabrain", &json!({})).contains("(requires gpt-6.2-astra)"));
 }
 
 #[test]
 fn given_builtin_only_gated_category_when_listed_then_deep_carries_required_model_annotation() {
-    assert!(description_of("deep", &json!({})).contains("(requires gpt-5.6-sol)"));
+    assert!(description_of("deep-low", &json!({})).contains("(requires gpt-6.2-sol)"));
 }
 
 #[test]

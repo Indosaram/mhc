@@ -4,6 +4,8 @@ mod compose;
 mod compose_reload;
 mod coordinator;
 mod entry;
+mod js_kernel_guard;
+mod keyword_detector;
 mod provisioning;
 mod reconciliation_9471;
 mod scheduler;

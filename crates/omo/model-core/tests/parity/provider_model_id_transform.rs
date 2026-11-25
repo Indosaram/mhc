@@ -46,3 +46,48 @@ fn passes_through_unrelated_models_unchanged() {
         "gpt-5.6-luna-fast"
     );
 }
+
+#[test]
+fn plain_gemini_pro_gets_preview_but_antigravity_and_preview_ids_are_preserved() {
+    for (provider, model, expected) in [
+        (
+            "google",
+            "antigravity-gemini-3.1-pro",
+            "antigravity-gemini-3.1-pro",
+        ),
+        (
+            "google",
+            "google/antigravity-gemini-3.1-pro",
+            "google/antigravity-gemini-3.1-pro",
+        ),
+        (
+            "github-copilot",
+            "antigravity-gemini-3.1-pro",
+            "antigravity-gemini-3.1-pro",
+        ),
+        (
+            "vercel",
+            "google/antigravity-gemini-3.1-pro",
+            "google/antigravity-gemini-3.1-pro",
+        ),
+        ("google", "gemini-3.1-pro", "gemini-3.1-pro-preview"),
+        ("github-copilot", "gemini-3.1-pro", "gemini-3.1-pro-preview"),
+        (
+            "vercel",
+            "google/gemini-3.1-pro",
+            "google/gemini-3.1-pro-preview",
+        ),
+        ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview"),
+    ] {
+        assert_eq!(
+            transform_model_for_provider(provider, model),
+            expected,
+            "{provider}/{model}"
+        );
+        assert_eq!(
+            transform_model_for_provider_display(provider, model),
+            expected,
+            "{provider}/{model}"
+        );
+    }
+}

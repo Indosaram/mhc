@@ -254,3 +254,22 @@ fn excluded_model_pattern_returns_the_first_matching_entry_verbatim() {
         Some("gpt-*".to_string())
     );
 }
+
+#[test]
+fn a_profile_chain_inherits_catalog_reasoning_unless_the_rung_overrides_it() {
+    let result = resolve_model_references(&view(json!({
+        "models": {"fable": {"model": "anthropic/claude-fable-5-2", "reasoning": "medium"}},
+        "model_profiles": {"daily-heavy": {"models": [
+            {"model": "fable", "variant": "high"}, "fable", "openai/gpt-6.2-astra"
+        ]}}
+    })));
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.view["model_profiles"]["daily-heavy"]["models"],
+        json!([
+            {"model": "anthropic/claude-fable-5-2", "reasoning": "high"},
+            {"model": "anthropic/claude-fable-5-2", "reasoning": "medium"},
+            "openai/gpt-6.2-astra"
+        ])
+    );
+}

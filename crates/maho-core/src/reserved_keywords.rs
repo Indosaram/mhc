@@ -258,6 +258,10 @@ fn mask_quoted_regions(text: &str) -> String {
     } else {
         visible
     };
+    let visible = match maho_ultrawork::mask_keyword_advice(&visible) {
+        std::borrow::Cow::Borrowed(_) => visible,
+        std::borrow::Cow::Owned(masked) => masked,
+    };
     if NEGATION_GATE.is_match(text) {
         mask_fancy(visible, &NEGATED_INVOCATION)
     } else {

@@ -50,8 +50,8 @@
     "AGENTS.md": {
       "path": "skills/AGENTS.md",
       "source": "packages/omo-senpi/skills/AGENTS.md",
-      "sha256": "0a73e7dec0db5a0e3f04cf3dd04a00e4d17124d56239395b46b52bdd70919416",
-      "note": "Pool-root developer doc; mirrored in the overlay, not a staged skill."
+      "sha256": "c69b3f5b7d0d00f1b8d5955396066325b5641bef419be931a0c3a6ada6b0dad0",
+      "note": "Pool-root developer doc with mhc-specific routing notes; not a staged skill."
     }
   },
   "browserRuntime": {
@@ -4206,9 +4206,9 @@
     "ultrawork": [
       {
         "path": "SKILL.md",
-        "bytes": 15183,
-        "sha256": "aa3ca5f10dc7d2ce61c3077ecdaea56e9d272952a3fb4e3ae2fb0fac1971f139",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ultrawork/SKILL.md (MIT)"
+        "bytes": 15160,
+        "sha256": "2bb3c8fb12b1cbe5b13af132ba04e3112ad5e677608f015ea9431f803270f03e",
+        "source": "mhc MIT contract/core.md (todo 15); skill metadata based on lazycodex@75b01747, adapted for O06"
       },
       {
         "path": "references/commits.md",
@@ -4221,6 +4221,12 @@
         "bytes": 3915,
         "sha256": "44f139f7482cb6ffd236785038938f1dc666cda0114015952bcf10fab0e34b19",
         "source": null
+      },
+      {
+        "path": "references/gpt.md",
+        "bytes": 2243,
+        "sha256": "0fefc08727f3378a1e23dd918a691fb840dcdcb6b58b51c4704952219292395e",
+        "source": "mhc-authored (MIT): independent whole directive based on the local ultrawork contract (O06)"
       },
       {
         "path": "references/qa-channels.md",
@@ -8114,8 +8120,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 815,
-    "declaredSha256": 815,
+    "files": 825,
+    "declaredSha256": 825,
     "unbound": 0,
     "mechanism": "The skills map declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every declared sha256 is checked against the overlay bytes before staging."
   }
