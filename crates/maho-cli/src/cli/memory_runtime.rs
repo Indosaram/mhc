@@ -188,35 +188,43 @@ impl MemoryRuntime {
                             &settings,
                             Some(&identity.identity),
                         )?;
-                    let runtime =
-                        maho_omo_memory::identity_runtime::MemoryIdentityRuntime::with_store(
-                            identity,
-                            worker.store.clone(),
-                        );
-                    let mut launch = |run| this.launch(worker.clone(), run, false);
-                    let aborted = || {
-                        signal
-                            .as_ref()
-                            .is_some_and(maho_ext_api::AbortSignal::is_aborted)
-                    };
-                    let mut session = maho_omo_memory::wiring_runtime::RuntimeDreamSession {
-                        session_id: session,
-                        runtime: &runtime,
-                        launch: &mut launch,
-                        aborted: &aborted,
-                    };
-                    maho_omo_memory::dream_trigger_fire::fire_dream(
-                        &mut session,
-                        origin,
-                        &policy,
-                        &request,
-                        &|| memory_core::support::time::now_millis() as f64,
-                        &aborted,
-                        &mut |error| {
-                            (this.host.warn)(&format!("memory dream launch failed: {error:?}"))
-                        },
-                    )
-                    .map_err(|error| format!("{error:?}"))
+                    // Choosing and capturing conversations reads every journal of the identity. It runs on
+                    // the blocking pool so the session's runtime thread keeps accepting input, and a
+                    // caller that stops waiting (the shutdown drain deadline) drops this future, aborts
+                    // `signal`, and the scan stops at its next conversation without reserving.
+                    tokio::task::spawn_blocking(move || {
+                        let runtime =
+                            maho_omo_memory::identity_runtime::MemoryIdentityRuntime::with_store(
+                                identity,
+                                worker.store.clone(),
+                            );
+                        let mut launch = |run| this.launch(worker.clone(), run, false);
+                        let aborted = || {
+                            signal
+                                .as_ref()
+                                .is_some_and(maho_ext_api::AbortSignal::is_aborted)
+                        };
+                        let mut session = maho_omo_memory::wiring_runtime::RuntimeDreamSession {
+                            session_id: session,
+                            runtime: &runtime,
+                            launch: &mut launch,
+                            aborted: &aborted,
+                        };
+                        maho_omo_memory::dream_trigger_fire::fire_dream(
+                            &mut session,
+                            origin,
+                            &policy,
+                            &request,
+                            &|| memory_core::support::time::now_millis() as f64,
+                            &aborted,
+                            &mut |error| {
+                                (this.host.warn)(&format!("memory dream launch failed: {error:?}"))
+                            },
+                        )
+                        .map_err(|error| format!("{error:?}"))
+                    })
+                    .await
+                    .map_err(|error| format!("memory dream task failed: {error}"))?
                 })
             });
         let dream = Arc::new(maho_omo_memory::dream_trigger::DreamTriggerWiring::new(

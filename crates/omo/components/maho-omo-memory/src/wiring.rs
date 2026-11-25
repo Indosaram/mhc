@@ -21,7 +21,9 @@ pub struct MemoryWiring {
     footer_ticker: bool,
     pub provenance_by_session: std::collections::HashMap<String, maho_ext_api::ForkProvenance>,
     /// Which sessions this run accepted input from and which finished their initial reconciliation.
-    pub user_activity: crate::user_activity::MemoryUserActivity,
+    /// Shared via `Arc` so `Input` and `InputDisposition` hooks record activity without waiting on
+    /// `MemoryWiring`'s async mutex while shutdown or settle work is running.
+    pub user_activity: std::sync::Arc<crate::user_activity::MemoryUserActivity>,
     /// Stuck-holder notices already shown, keyed `<session>:<run>`: a holder that stays held is reported once.
     stale_lock_notices_shown: std::collections::BTreeSet<String>,
     /// Holders this session already asked reconciliation to settle, keyed `<session>:<run>`.
@@ -256,11 +258,16 @@ impl MemoryWiring {
         options: crate::wiring_types::NativeMemoryWiringOptions,
         register_static: impl FnOnce(&mut maho_ext_api::ExtensionApi),
     ) -> Result<bool, String> {
-        let activity_wiring = wiring.clone();
+        let user_activity = wiring
+            .try_lock()
+            .map_err(|_| "memory wiring is busy during registration".to_string())?
+            .user_activity
+            .clone();
+        let input_activity = user_activity.clone();
         api.on(
             maho_ext_api::EventKind::Input,
             std::sync::Arc::new(move |event, ctx| {
-                let wiring = activity_wiring.clone();
+                let user_activity = input_activity.clone();
                 let input = match event {
                     maho_ext_api::ExtensionEvent::Input(input)
                         if input.source != maho_ext_api::InputSource::Extension
@@ -273,21 +280,16 @@ impl MemoryWiring {
                 let session = ctx.session_manager.session_id().to_string();
                 Box::pin(async move {
                     if let Some(input) = input {
-                        wiring
-                            .lock()
-                            .await
-                            .user_activity
-                            .record_input(&input, &session);
+                        user_activity.record_input(&input, &session);
                     }
                     Ok(maho_ext_api::EventResult::None)
                 })
             }),
         );
-        let activity_wiring = wiring.clone();
         api.on(
             maho_ext_api::EventKind::InputDisposition,
             std::sync::Arc::new(move |event, _| {
-                let wiring = activity_wiring.clone();
+                let user_activity = user_activity.clone();
                 let input = match event {
                     maho_ext_api::ExtensionEvent::InputDisposition {
                         input_id,
@@ -304,7 +306,7 @@ impl MemoryWiring {
                 };
                 Box::pin(async move {
                     if let Some((id, state)) = input {
-                        wiring.lock().await.user_activity.disposition(&id, state);
+                        user_activity.disposition(&id, state);
                     }
                     Ok(maho_ext_api::EventResult::None)
                 })
@@ -1645,5 +1647,79 @@ mod tests {
                 .is_none()
         );
         assert!(wiring.runtime.resolve_context("session").is_none());
+    }
+
+    #[tokio::test]
+    async fn input_and_disposition_do_not_wait_on_wiring_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let component = crate::index::MemoryComponent::new(crate::index::MemoryComponentOptions {
+            cwd: root.path().to_path_buf(),
+            env: Default::default(),
+            load_config: std::sync::Arc::new(|| Ok(serde_json::json!({"memory":{"enabled":true}}))),
+            now: std::sync::Arc::new(|| 0.0),
+            disabled: std::sync::Arc::new(|| false),
+            sync_runner: None,
+        });
+        let wiring = std::sync::Arc::new(tokio::sync::Mutex::new(create_memory_wiring(
+            MemoryWiringOptions {
+                runtime: Default::default(),
+                skills_usage: Default::default(),
+            },
+        )));
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let registered = MemoryWiring::register_native(
+            wiring.clone(),
+            &component,
+            &mut api,
+            crate::wiring_types::NativeMemoryWiringOptions {
+                facts: std::sync::Arc::new(|_, _| Err("unused".into())),
+                reconcile: std::sync::Arc::new(|_| Box::pin(async { Ok(()) })),
+                initial_status: std::sync::Arc::new(|_, _| {}),
+                now: std::sync::Arc::new(|| 0.0),
+                warn: std::sync::Arc::new(|_| {}),
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert!(registered);
+        let context = crate::commands::test_support::extension_context(Default::default());
+        let session_id = context.session_manager.session_id().to_owned();
+        let input_handler = api.registered.handlers[&maho_ext_api::EventKind::Input][0].clone();
+        let disp_handler =
+            api.registered.handlers[&maho_ext_api::EventKind::InputDisposition][0].clone();
+
+        // Hold the wiring mutex (as shutdown drain or AgentSettled does) across input delivery.
+        let held = wiring.lock().await;
+        let mut input_event = maho_ext_api::ExtensionEvent::Input(maho_ext_api::InputEvent {
+            input_id: "in-1".into(),
+            text: "hello".into(),
+            images: None,
+            source: maho_ext_api::InputSource::Interactive,
+            streaming_behavior: None,
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            input_handler(&mut input_event, &context),
+        )
+        .await
+        .expect("input handler must not block on wiring lock")
+        .unwrap();
+        let mut disp_event = maho_ext_api::ExtensionEvent::InputDisposition {
+            input_id: "in-1".into(),
+            disposition: maho_ext_api::InputDisposition::Started,
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            disp_handler(&mut disp_event, &context),
+        )
+        .await
+        .expect("input disposition handler must not block on wiring lock")
+        .unwrap();
+        assert!(held.user_activity.has(&session_id));
     }
 }

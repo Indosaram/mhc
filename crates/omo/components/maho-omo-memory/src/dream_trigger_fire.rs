@@ -1,7 +1,5 @@
 use crate::{
-    dream_selector::{
-        DreamSelectorOptions, compute_unreflected_volume, select_dream_conversations,
-    },
+    dream_selector::{DreamCandidates, DreamSelectorOptions},
     dream_trigger_gates::{
         DreamGateRejection, DreamTriggerSettings, evaluate_dream_gates, read_last_dream_at_ms,
     },
@@ -78,6 +76,10 @@ pub fn fire_dream<S: DreamTriggerSession>(
         auto_select_max_bytes: settings.auto_select_max_chars,
         now_ms: now(),
     };
+    // One unlocked scan serves both the volume gate and the selection; it stops between conversations
+    // once the caller aborts or the deadline passes.
+    let mut candidates: Option<DreamCandidates> = None;
+    let mut scan_stopped = false;
     let decision = evaluate_dream_gates(
         origin,
         settings,
@@ -85,19 +87,28 @@ pub fn fire_dream<S: DreamTriggerSession>(
         || read_last_dream_at_ms(&paths.runtime).map_err(S::Error::from),
         || {
             if origin == DreamOrigin::Pressure {
-                Ok(0)
-            } else {
-                compute_unreflected_volume(&options).map_err(S::Error::from)
+                return Ok(0);
+            }
+            match DreamCandidates::load(&paths.transcripts, request.focus.as_deref(), &stopped)? {
+                Some(loaded) => {
+                    let volume = loaded.unreflected_volume();
+                    candidates = Some(loaded);
+                    Ok(volume)
+                }
+                None => {
+                    scan_stopped = true;
+                    Ok(0)
+                }
             }
         },
     )?;
+    if scan_stopped || stopped() {
+        return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));
+    }
     if let Err(rejection) = decision {
         return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Gate(
             rejection,
         )));
-    }
-    if stopped() {
-        return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));
     }
     let selected = if origin == DreamOrigin::Pressure {
         Vec::new()
@@ -105,8 +116,21 @@ pub fn fire_dream<S: DreamTriggerSession>(
         match &request.conversation_ids {
             Some(ids) => ids.clone(),
             None => {
-                select_dream_conversations(&options, request.focus.as_deref())
-                    .map_err(S::Error::from)?
+                let loaded = match candidates.take() {
+                    Some(loaded) => loaded,
+                    None => match DreamCandidates::load(
+                        &paths.transcripts,
+                        request.focus.as_deref(),
+                        &stopped,
+                    )? {
+                        Some(loaded) => loaded,
+                        None => {
+                            return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));
+                        }
+                    },
+                };
+                loaded
+                    .select(&options, request.focus.as_deref())
                     .conversation_ids
             }
         }
