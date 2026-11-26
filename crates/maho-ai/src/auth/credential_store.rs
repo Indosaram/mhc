@@ -157,10 +157,13 @@ pub async fn revoke_stored_oauth(
     Ok(Some(result))
 }
 
+type RefreshLocks = Mutex<HashMap<(String, String), std::sync::Arc<AsyncMutex<()>>>>;
+
 #[derive(Default)]
 pub struct InMemoryCredentialStore {
     credentials: Mutex<HashMap<String, Credential>>,
     locks: Mutex<HashMap<String, std::sync::Arc<AsyncMutex<()>>>>,
+    refresh_locks: RefreshLocks,
 }
 
 impl InMemoryCredentialStore {
@@ -197,6 +200,29 @@ impl InMemoryCredentialStore {
 
 #[async_trait]
 impl CredentialStore for InMemoryCredentialStore {
+    async fn with_refresh_lock(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        operation: crate::auth::types::RefreshLockOperation,
+        options: Option<AuthOperationOptions>,
+    ) -> Result<Option<Credential>, crate::auth::oauth_refresh::RefreshError> {
+        let signal = operation_signal(options.and_then(|options| options.signal));
+        let lock = {
+            let mut locks = self.refresh_locks.lock().unwrap_or_else(|p| p.into_inner());
+            locks
+                .entry((provider_id.to_owned(), slot_name.to_owned()))
+                .or_insert_with(|| std::sync::Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _guard = race_with_abort_signal(lock.lock(), &signal)
+            .await
+            .map_err(|reason| {
+                crate::auth::oauth_refresh::RefreshError::Aborted(reason.to_string())
+            })?;
+        operation(signal).await
+    }
+
     async fn read(
         &self,
         provider_id: &str,
@@ -316,6 +342,77 @@ mod tests {
         ApiKeyCredential, ModelAuth, OAuthCredential, ProviderAuthInteraction,
     };
     use crate::utils::abort::{AbortController, AbortSignal};
+
+    #[tokio::test]
+    async fn refresh_lock_serializes_operations_for_the_same_slot() {
+        let store = InMemoryCredentialStore::new();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered.send(()).expect("first observer");
+                    released.await.expect("release first");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        started.await.expect("first entered");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.with_refresh_lock(
+                "fixture",
+                "other",
+                Box::new(|_| Box::pin(async { Ok(None) })),
+                None,
+            ),
+        )
+        .await
+        .expect("different slot must not wait")
+        .expect("different slot operation");
+        let controller = AbortController::new();
+        let cancelled = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(|_| Box::pin(async { panic!("cancelled operation must not execute") })),
+            Some(AuthOperationOptions {
+                signal: Some(controller.signal()),
+            }),
+        );
+        tokio::pin!(cancelled);
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        controller.abort(None);
+        assert!(matches!(
+            cancelled.await,
+            Err(crate::auth::oauth_refresh::RefreshError::Aborted(_))
+        ));
+        let (second_entered, second_started) = tokio::sync::oneshot::channel();
+        let second = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    second_entered.send(()).expect("second observer");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "second operation must wait"
+        );
+        release.send(()).expect("release first");
+        first.await.expect("first operation");
+        second.await.expect("second operation");
+        second_started.await.expect("second entered");
+    }
 
     #[derive(Default)]
     struct RecordingRevocation(Mutex<Vec<OAuthCredential>>);

@@ -151,7 +151,9 @@ async fn sign_in(
     }
     match outcome {
         ClaudeCliLoginResult::Success => Ok(()),
-        ClaudeCliLoginResult::Cancelled => anyhow::bail!("Login cancelled"),
+        ClaudeCliLoginResult::Cancelled => {
+            Err(maho_ext_builtin_loose::oauth_login_interaction::LoginCancelled.into())
+        }
         ClaudeCliLoginResult::Timeout => anyhow::bail!(
             "Claude sign-in timed out without a browser callback or a pasted code. Run the login again."
         ),
@@ -163,7 +165,10 @@ async fn sign_in(
                     "your organization does not allow this provider",
                 ClaudeCliLoginFailure::OAuthFailed => "OAuth login failed",
                 ClaudeCliLoginFailure::UnexpectedExit => "the Claude Code CLI exited unexpectedly",
-                ClaudeCliLoginFailure::SpawnFailed => "the Claude Code CLI could not start",
+                ClaudeCliLoginFailure::SpawnFailed { .. } => "the Claude Code CLI could not start",
+                ClaudeCliLoginFailure::IoFailed { .. } => "the Claude Code CLI I/O failed",
+                ClaudeCliLoginFailure::CleanupFailed { .. } =>
+                    "the Claude Code CLI could not be stopped",
             }
         ),
     }

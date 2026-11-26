@@ -227,6 +227,21 @@ fn broker_target(path: &str, config: &FactsLockBrokerConfig) -> Option<&'static 
 }
 
 #[cfg(unix)]
+fn broker_refresh_target(path: &str, config: &FactsLockBrokerConfig) -> Option<String> {
+    let auth = config.auth_path.to_str()?;
+    let identity = path.strip_prefix(&format!("{auth}.refresh-"))?;
+    if identity.len() == 64
+        && identity
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Some(format!("refresh:{identity}"))
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
 fn acquire_broker_lease(
     path: &str,
     budget_ms: u64,
@@ -234,9 +249,13 @@ fn acquire_broker_lease(
     let Some(config) = broker_config() else {
         return Ok(None);
     };
-    let key = broker_target(path, &config).ok_or_else(|| {
-        CredentialStoreBusyError::new(format!("{path}: unsupported facts lock target"), 0)
-    })?;
+    let write_key = broker_target(path, &config);
+    let key = write_key
+        .map(str::to_owned)
+        .or_else(|| broker_refresh_target(path, &config))
+        .ok_or_else(|| {
+            CredentialStoreBusyError::new(format!("{path}: unsupported facts lock target"), 0)
+        })?;
     let started = Instant::now();
     let mut stream = UnixStream::connect(config.endpoint)
         .map_err(|error| CredentialStoreBusyError::new(format!("{path}: {error}"), 0))?;
@@ -282,8 +301,18 @@ fn acquire_broker_lease(
         dir: lock_dir(path),
         held: None,
         broker: Some(stream),
-        broker_key: Some(key),
+        broker_key: write_key,
     }))
+}
+
+/// A refresh lock is distinct from the auth-file write lock and scoped to one provider and slot.
+pub fn refresh_lock_path(auth_path: &str, provider_id: &str, slot_name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update((provider_id.len() as u64).to_be_bytes());
+    hash.update(provider_id.as_bytes());
+    hash.update(slot_name.as_bytes());
+    format!("{auth_path}.refresh-{:x}", hash.finalize())
 }
 
 fn try_acquire(dir: &Path) -> std::io::Result<()> {
@@ -448,6 +477,72 @@ pub async fn acquire_lock_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_lock_child_process() {
+        use std::io::{BufRead, Write};
+        let Some(path) = std::env::var_os("MAHO_TEST_REFRESH_LOCK_CHILD") else {
+            return;
+        };
+        let path = path.to_string_lossy();
+        let _guard = acquire_host_lock_sync(&path, 0).expect("child lock");
+        println!("CHILD_REFRESH_LOCK_READY");
+        std::io::stdout().flush().expect("flush child event");
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .expect("release");
+    }
+
+    #[tokio::test]
+    async fn refresh_lock_excludes_another_process() {
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let auth = tmp.path().join("auth.json");
+        let path = refresh_lock_path(&auth.to_string_lossy(), "fixture", "work");
+        let mut child =
+            tokio::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "lockfile_policy::tests::refresh_lock_child_process",
+                    "--nocapture",
+                ])
+                .env("MAHO_TEST_REFRESH_LOCK_CHILD", &path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn child test");
+        let mut output = BufReader::new(child.stdout.take().expect("child output")).lines();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(line) = output.next_line().await.expect("child output line") {
+                if line.contains("CHILD_REFRESH_LOCK_READY") {
+                    return;
+                }
+            }
+            panic!("child exited before acquiring lock");
+        })
+        .await
+        .expect("child lock deadline");
+        assert!(acquire_host_lock_sync(&path, 0).is_err());
+        child
+            .stdin
+            .take()
+            .expect("child input")
+            .write_all(b"release\n")
+            .await
+            .expect("release child");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                .await
+                .expect("child exit deadline")
+                .expect("child exit")
+                .success()
+        );
+        assert!(acquire_host_lock_sync(&path, 0).is_ok());
+    }
 
     #[test]
     fn acquires_and_releases_a_lock() {

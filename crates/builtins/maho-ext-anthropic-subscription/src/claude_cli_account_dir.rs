@@ -207,7 +207,16 @@ pub async fn remove_account_dir(
         }
         None => false,
     };
-    if let Some(signal) = options.signal {
+    finish_account_dir_removal(account_dir, before, signed_out, options.signal)
+}
+
+fn finish_account_dir_removal(
+    account_dir: PathBuf,
+    before: std::fs::Metadata,
+    signed_out: bool,
+    signal: Option<&AbortSignal>,
+) -> anyhow::Result<RemoveAccountDirOutcome> {
+    if !signed_out && let Some(signal) = signal {
         signal.throw_if_aborted()?;
     }
     match std::fs::symlink_metadata(&account_dir) {
@@ -242,6 +251,31 @@ mod tests {
     use super::*;
 
     const DIR_ID: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn completed_logout_is_committed_despite_a_late_abort() {
+        let temp = tempfile::tempdir().expect("temp");
+        let completed = temp.path().join("completed");
+        std::fs::create_dir(&completed).expect("completed account directory");
+        let before = std::fs::symlink_metadata(&completed).expect("metadata");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        assert_eq!(
+            finish_account_dir_removal(completed.clone(), before, true, Some(&controller.signal()))
+                .expect("completed logout is committed"),
+            RemoveAccountDirOutcome::Removed
+        );
+        assert!(!completed.exists());
+
+        let pending = temp.path().join("pending");
+        std::fs::create_dir(&pending).expect("pending account directory");
+        let before = std::fs::symlink_metadata(&pending).expect("metadata");
+        assert!(
+            finish_account_dir_removal(pending.clone(), before, false, Some(&controller.signal()))
+                .is_err()
+        );
+        assert!(pending.exists());
+    }
 
     #[test]
     fn dir_ids_are_32_lowercase_hex() {

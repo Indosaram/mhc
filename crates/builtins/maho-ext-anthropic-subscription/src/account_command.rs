@@ -18,8 +18,12 @@ pub fn session_pin(session: Option<&str>) -> Option<String> {
         .get(session?)
         .cloned()
 }
-
 const ARGUMENT_HINT: &str = "[add | remove <id> | pin <id> | unpin | unblock <id> | rename <id> <display name...> | clear-name <id>]";
+
+fn is_login_cancelled(error: &anyhow::Error) -> bool {
+    error.is::<maho_ext_builtin_loose::oauth_login_interaction::LoginCancelled>()
+        || error.is::<maho_ai::utils::abort::AbortReason>()
+}
 
 fn resolve_pin<'a>(
     cli: Option<&'a str>,
@@ -212,7 +216,7 @@ pub fn register(
                         runtime.assert_active()?;
                         match add_provider_account(oauth.as_ref(), &interaction, &ctx.agent_dir).await {
                             Ok(_) => {}
-                            Err(error) if error.to_string() == maho_ext_builtin_loose::oauth_login_interaction::LOGIN_CANCELLED_MESSAGE => return Ok(()),
+                            Err(error) if is_login_cancelled(&error) => return Ok(()),
                             Err(error) => return Err(error.context("Failed to add Anthropic Subscription account")),
                         }
                         runtime.assert_active()?;
@@ -470,5 +474,23 @@ mod tests {
             slot_status(&slot, 2_000.0),
             "blocked for opus until 1970-01-01T00:01:00.000Z"
         );
+    }
+}
+#[cfg(test)]
+mod cancellation_tests {
+    use super::is_login_cancelled;
+    use maho_ext_builtin_loose::oauth_login_interaction::{
+        LOGIN_CANCELLED_MESSAGE, LoginCancelled,
+    };
+
+    #[test]
+    fn cancellation_is_classified_by_type_not_matching_error_text() {
+        assert!(is_login_cancelled(&anyhow::Error::new(LoginCancelled)));
+        assert!(!is_login_cancelled(&anyhow::anyhow!(
+            LOGIN_CANCELLED_MESSAGE
+        )));
+        assert!(is_login_cancelled(&anyhow::Error::new(
+            maho_ai::utils::abort::AbortReason::dom_default(),
+        )));
     }
 }

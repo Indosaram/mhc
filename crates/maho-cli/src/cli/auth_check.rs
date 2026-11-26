@@ -30,6 +30,17 @@ pub struct AuthCheckResult {
     pub auth_type: Option<String>,
 }
 
+pub fn mark_registration_failure(result: &mut AuthCheckResult, failures: &[(String, String)]) {
+    if failures
+        .iter()
+        .any(|(provider, _)| provider == &result.provider)
+    {
+        result.status = AuthCheckStatus::Invalid;
+        result.reason = Some(AuthCheckReason::InvalidState);
+        result.auth_type = None;
+    }
+}
+
 fn resolve_provider(args: &Args, runtime: &ModelRuntime) -> Result<String, String> {
     let (provider, model) =
         super::auth_command::validate_auth_command_args(args, AuthCommandKind::Check)?;
@@ -260,6 +271,21 @@ fn _kind_is_check(kind: AuthCommandKind) -> bool {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn provider_registration_failure_is_an_invalid_auth_state() {
+        let mut result = AuthCheckResult {
+            status: AuthCheckStatus::NotReady,
+            provider: "fixture".into(),
+            reason: Some(AuthCheckReason::ProviderNotFound),
+            auth_type: None,
+        };
+        mark_registration_failure(&mut result, &[("other".into(), "error".into())]);
+        assert_eq!(result.status, AuthCheckStatus::NotReady);
+        mark_registration_failure(&mut result, &[("fixture".into(), "error".into())]);
+        assert_eq!(result.status, AuthCheckStatus::Invalid);
+        assert_eq!(result.reason, Some(AuthCheckReason::InvalidState));
+    }
 
     struct FixtureOAuth(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     #[async_trait::async_trait]

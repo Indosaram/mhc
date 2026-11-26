@@ -60,7 +60,13 @@ struct InflightRefresh {
     result: Mutex<Option<Result<Option<Credential>, RefreshError>>>,
     done: Notify,
     controller: AbortController,
-    waiters: Mutex<(usize, bool)>,
+    waiters: Mutex<RefreshWaiters>,
+}
+
+struct RefreshWaiters {
+    count: usize,
+    owned: bool,
+    aborting: bool,
 }
 
 type CapturedRefreshes = Arc<Mutex<Vec<Arc<InflightRefresh>>>>;
@@ -68,12 +74,13 @@ type CapturedRefreshes = Arc<Mutex<Vec<Arc<InflightRefresh>>>>;
 #[derive(Default)]
 struct StoreRegistry {
     inflight: HashMap<(String, Option<String>, String), Arc<InflightRefresh>>,
+    retiring: Vec<(String, Arc<InflightRefresh>)>,
     captures: HashMap<String, Vec<CapturedRefreshes>>,
 }
 
 impl StoreRegistry {
     fn is_empty(&self) -> bool {
-        self.inflight.is_empty() && self.captures.is_empty()
+        self.inflight.is_empty() && self.retiring.is_empty() && self.captures.is_empty()
     }
 }
 
@@ -143,6 +150,13 @@ pub(crate) fn capture_oauth_refreshes(
             .iter()
             .filter(|((id, _, _), _)| id == provider_id)
             .map(|(_, refresh)| refresh.clone())
+            .chain(
+                store
+                    .retiring
+                    .iter()
+                    .filter(|(id, _)| id == provider_id)
+                    .map(|(_, refresh)| refresh.clone()),
+            )
             .collect(),
     ));
     store
@@ -179,9 +193,14 @@ struct RefreshWaiter(Arc<InflightRefresh>);
 
 impl Drop for RefreshWaiter {
     fn drop(&mut self) {
-        let (count, owned) = &mut *self.0.waiters.lock().unwrap_or_else(|p| p.into_inner());
-        *count -= 1;
-        if *count == 0 && *owned {
+        let abort = {
+            let mut waiters = self.0.waiters.lock().unwrap_or_else(|p| p.into_inner());
+            waiters.count -= 1;
+            let abort = waiters.count == 0 && waiters.owned;
+            waiters.aborting |= abort;
+            abort
+        };
+        if abort {
             self.0.controller.abort(None);
         }
     }
@@ -210,16 +229,31 @@ pub async fn refresh_oauth_credential(
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let store = registry.entry(store_id).or_default();
-        let (inflight, started) = if let Some(inflight) = store.inflight.get(&key) {
-            (inflight.clone(), false)
+        let existing = store.inflight.get(&key).cloned().filter(|inflight| {
+            let mut waiters = inflight.waiters.lock().unwrap_or_else(|p| p.into_inner());
+            if waiters.aborting {
+                return false;
+            }
+            waiters.count += 1;
+            waiters.owned |= request.owning;
+            true
+        });
+        if let Some(inflight) = existing {
+            (inflight, false)
         } else {
             let inflight = Arc::new(InflightRefresh {
                 result: Mutex::new(None),
                 done: Notify::new(),
                 controller: AbortController::new(),
-                waiters: Mutex::new((0, false)),
+                waiters: Mutex::new(RefreshWaiters {
+                    count: 1,
+                    owned: request.owning,
+                    aborting: false,
+                }),
             });
-            store.inflight.insert(key.clone(), inflight.clone());
+            if let Some(previous) = store.inflight.insert(key.clone(), inflight.clone()) {
+                store.retiring.push((request.provider_id.clone(), previous));
+            }
             if let Some(captures) = store.captures.get(&request.provider_id) {
                 for capture in captures {
                     capture
@@ -229,13 +263,7 @@ pub async fn refresh_oauth_credential(
                 }
             }
             (inflight, true)
-        };
-        {
-            let (count, owned) = &mut *inflight.waiters.lock().unwrap_or_else(|p| p.into_inner());
-            *count += 1;
-            *owned |= request.owning;
         }
-        (inflight, started)
     };
     let _waiter = RefreshWaiter(inflight.clone());
 
@@ -254,7 +282,16 @@ pub async fn refresh_oauth_credential(
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             if let Some(store_registry) = registry.get_mut(&store_id) {
-                store_registry.inflight.remove(&key);
+                if store_registry
+                    .inflight
+                    .get(&key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &inflight_clone))
+                {
+                    store_registry.inflight.remove(&key);
+                }
+                store_registry
+                    .retiring
+                    .retain(|(_, refresh)| !Arc::ptr_eq(refresh, &inflight_clone));
                 if store_registry.is_empty() {
                     registry.remove(&store_id);
                 }
@@ -1082,6 +1119,60 @@ mod tests {
             1,
             "concurrent refreshes of the same slot must join one exchange"
         );
+    }
+
+    #[tokio::test]
+    async fn new_owner_does_not_join_an_aborted_exchange() {
+        let store = Arc::new(GateStore::default());
+        seed(
+            store.as_ref(),
+            serde_json::json!({"type":"oauth","access":"old","refresh":"r1","expires":0.0}),
+        )
+        .await;
+        let oauth = Arc::new(ControlledOAuth {
+            release: Some(Notify::new()),
+            ..Default::default()
+        });
+        let controller = AbortController::new();
+        let mut first = request(
+            store.clone(),
+            oauth.clone(),
+            OAuthCredential::new("old", "r1", 0.0),
+            None,
+        );
+        first.signal = controller.signal();
+        let first = tokio::spawn(refresh_oauth_credential(first));
+        bounded(store.attempted.notified()).await;
+        bounded(oauth.started.notified()).await;
+        controller.abort(None);
+        assert!(bounded(first).await.unwrap().is_err());
+
+        let second_attempt = store.attempted.notified();
+        tokio::pin!(second_attempt);
+        second_attempt.as_mut().enable();
+        let second = tokio::spawn(refresh_oauth_credential(request(
+            store.clone(),
+            oauth.clone(),
+            OAuthCredential::new("old", "r1", 0.0),
+            None,
+        )));
+        let attempt = tokio::time::timeout(Duration::from_secs(5), &mut second_attempt).await;
+        let capture = capture_oauth_refreshes(store.as_ref(), "p");
+        let captured = capture.pending.lock().unwrap().len();
+        drop(capture);
+        oauth.release.as_ref().unwrap().notify_one();
+        if attempt.is_ok() {
+            bounded(oauth.started.notified()).await;
+            oauth.release.as_ref().unwrap().notify_one();
+        }
+        let result = bounded(second).await.unwrap();
+        assert!(attempt.is_ok(), "a new exchange was admitted");
+        assert_eq!(
+            captured, 2,
+            "logout captures both old and replacement exchanges"
+        );
+        assert!(result.is_ok());
+        assert_eq!(oauth.seen.lock().unwrap().len(), 2);
     }
 
     #[test]

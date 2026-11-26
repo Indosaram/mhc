@@ -316,12 +316,30 @@ async fn remove_stored_account(
     signal: Option<AbortSignal>,
 ) -> anyhow::Result<RemoveProviderAccountResult> {
     assert_managed_provider(provider)?;
+    if let Some(runtime) = &runtime {
+        runtime.assert_active()?;
+    }
+    if let Some(signal) = &signal {
+        signal.throw_if_aborted()?;
+    }
+    let credential = credential_from(store.read(provider, None).await?)?;
+    let account = list_accounts(&credential, Some(&|key| environment.get(key).cloned()))?
+        .into_iter()
+        .find(|account| account.name == name)
+        .ok_or_else(|| anyhow::anyhow!("Provider account not found: {name}"))?;
+    if account.source == AccountSource::Env {
+        anyhow::bail!("Environment provider account cannot be removed: {name}");
+    }
+    let is_cli = account.is_claude_cli();
+    let (result, sign_out_error) = if is_cli {
+        let cli = cli.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Claude account removal requires the Claude CLI account context")
+        })?;
+        sign_out_cli_account(cli, name, account.dir_id.as_deref(), signal.as_ref()).await?
+    } else {
+        (RemoveProviderAccountResult::default(), None)
+    };
     let slot_name = name.to_owned();
-    let receipt = Arc::new(std::sync::Mutex::new((
-        RemoveProviderAccountResult::default(),
-        None,
-    )));
-    let mutation_receipt = receipt.clone();
     let mutation_runtime = runtime.clone();
     let state_path = cli.as_ref().map(|cli| {
         cli.agent_dir
@@ -333,19 +351,26 @@ async fn remove_stored_account(
             Box::new(move |current| {
                 Box::pin(async move {
                     let name = slot_name;
-                    if let Some(runtime) = mutation_runtime {
+                    if !is_cli && let Some(runtime) = mutation_runtime {
                         runtime.assert_active()?;
                     }
                     let credential = credential_from(current)?;
-                    let account =
+                    let current =
                         list_accounts(&credential, Some(&|key| environment.get(key).cloned()))?
                             .into_iter()
                             .find(|account| account.name == name)
                             .ok_or_else(|| anyhow::anyhow!("Provider account not found: {name}"))?;
-                    if account.source == AccountSource::Env {
-                        anyhow::bail!("Environment provider account cannot be removed: {name}");
+                    let same_identity = current.source == account.source
+                        && current.store == account.store
+                        && if is_cli {
+                            current.dir_id == account.dir_id
+                        } else {
+                            current.access == account.access && current.refresh == account.refresh
+                        };
+                    if !same_identity {
+                        anyhow::bail!("Provider account changed during removal: {name}");
                     }
-                    if let Some(signal) = &signal {
+                    if !is_cli && let Some(signal) = &signal {
                         signal.throw_if_aborted()?;
                     }
                     let mut next = remove_account(&credential, &name)?;
@@ -356,24 +381,7 @@ async fn remove_stored_account(
                     {
                         states.remove(&name);
                     }
-                    if account.is_claude_cli() {
-                        let cli = cli.as_ref().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Claude account removal requires the Claude CLI account context"
-                            )
-                        })?;
-                        let result = sign_out_cli_account(
-                            cli,
-                            &name,
-                            account.dir_id.as_deref(),
-                            signal.as_ref(),
-                        )
-                        .await?;
-                        *mutation_receipt
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = result;
-                    }
-                    if account.is_claude_cli()
+                    if is_cli
                         && next
                             .extra
                             .get("accounts")
@@ -402,11 +410,6 @@ async fn remove_stored_account(
         }
     }
     crate::account_events::emit_provider_accounts_changed(provider);
-    let (result, sign_out_error) = std::mem::take(
-        &mut *receipt
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
     if let Some(error) = sign_out_error {
         return Err(error);
     }

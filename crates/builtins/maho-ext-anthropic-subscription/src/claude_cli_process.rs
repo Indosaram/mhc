@@ -83,7 +83,7 @@ pub(crate) fn spawn_claude_cli(
 }
 
 /// Ask only this child to exit, then force termination and reap it if it ignores SIGTERM.
-pub(crate) async fn stop_claude_cli(child: &mut Child, grace: Duration) {
+pub(crate) async fn stop_claude_cli(child: &mut Child, grace: Duration) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use nix::{
@@ -91,19 +91,29 @@ pub(crate) async fn stop_claude_cli(child: &mut Child, grace: Duration) {
             unistd::Pid,
         };
 
-        if matches!(child.try_wait(), Ok(None))
-            && let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok())
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        let mut signal_error = None;
+        if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok())
+            && let Err(error) = kill(Pid::from_raw(pid), Signal::SIGTERM)
+            && error != nix::errno::Errno::ESRCH
         {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            signal_error = Some(std::io::Error::from_raw_os_error(error as i32));
         }
-        if let Ok(Ok(_)) = tokio::time::timeout(grace, child.wait()).await {
-            return;
+        match tokio::time::timeout(grace, child.wait()).await {
+            Ok(Ok(_)) => return signal_error.map_or(Ok(()), Err),
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {}
         }
+        child.kill().await?;
+        signal_error.map_or(Ok(()), Err)
     }
     #[cfg(not(unix))]
-    let _ = grace; // Win32 has no graceful SIGTERM for a hidden CLI process.
-    // Tokio's kill also waits for the child.
-    let _ = child.kill().await;
+    {
+        let _ = grace; // Win32 has no graceful SIGTERM for a hidden CLI process.
+        child.kill().await
+    }
 }
 
 /// Writes complete stdin lines and returns only at the idle deadline; a paste renews that deadline.
@@ -111,20 +121,25 @@ pub(crate) async fn write_codes(
     stdin: &mut ChildStdin,
     codes: &mut mpsc::Receiver<String>,
     idle: Duration,
-) {
+) -> std::io::Result<()> {
     let mut deadline = Instant::now() + idle;
     while let Ok(Some(mut code)) = timeout_at(deadline, codes.recv()).await {
         deadline = Instant::now() + idle;
         code.push('\n');
-        if !matches!(
-            timeout_at(deadline, stdin.write_all(code.as_bytes())).await,
-            Ok(Ok(()))
-        ) {
-            codes.close();
-            break;
+        match timeout_at(deadline, stdin.write_all(code.as_bytes())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                codes.close();
+                return Err(error);
+            }
+            Err(_) => {
+                codes.close();
+                return Ok(());
+            }
         }
     }
     sleep_until(deadline).await;
+    Ok(())
 }
 
 /// Runs a short command (`auth status`, `auth logout`) to exit, killing it at the deadline or when `signal` aborts

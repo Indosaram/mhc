@@ -904,6 +904,8 @@ impl ReadOnlyAuthStorage {
     }
 }
 
+type RefreshLocks = std::sync::Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
+
 pub struct AuthStorage {
     storage: AuthStorageBackend,
     auth_path: Option<String>,
@@ -916,6 +918,7 @@ pub struct AuthStorage {
     taken_notices: std::sync::Mutex<std::collections::HashSet<String>>,
     replacements: std::sync::Mutex<HashMap<String, CredentialReplacement>>,
     pub(crate) account_mutation: tokio::sync::Mutex<()>,
+    refresh_locks: RefreshLocks,
 }
 
 enum AuthStorageBackend {
@@ -938,6 +941,7 @@ impl AuthStorage {
             taken_notices: std::sync::Mutex::new(std::collections::HashSet::new()),
             replacements: std::sync::Mutex::new(HashMap::new()),
             account_mutation: tokio::sync::Mutex::new(()),
+            refresh_locks: std::sync::Mutex::new(HashMap::new()),
         };
         storage.reload();
         storage
@@ -974,6 +978,7 @@ impl AuthStorage {
             taken_notices: std::sync::Mutex::new(std::collections::HashSet::new()),
             replacements: std::sync::Mutex::new(HashMap::new()),
             account_mutation: tokio::sync::Mutex::new(()),
+            refresh_locks: std::sync::Mutex::new(HashMap::new()),
         };
         storage.reload();
         storage
@@ -981,6 +986,19 @@ impl AuthStorage {
 
     pub fn storage_path(&self) -> Option<&str> {
         self.auth_path.as_deref()
+    }
+
+    pub(crate) fn refresh_lock(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        self.refresh_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry((provider_id.to_owned(), slot_name.to_owned()))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn errors(&self) -> Vec<String> {

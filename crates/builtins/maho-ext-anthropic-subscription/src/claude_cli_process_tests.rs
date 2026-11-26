@@ -191,6 +191,39 @@ async fn maps_failure_without_treating_exit_zero_or_stdout_as_sufficient() {
 }
 
 #[tokio::test]
+async fn reports_the_spawn_error_kind() {
+    let mut fixture = Fixture::new("silent");
+    fixture.executable = fixture.root.path().join("missing-claude");
+    let login = start_claude_cli_login(fixture.options(ClaudeCliLoginMethod::CopyCode));
+    assert!(matches!(
+        timeout(TEST_TIMEOUT, login.result).await.unwrap(),
+        ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::SpawnFailed {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn stdin_failure_reports_the_error_and_reaps_the_child() {
+    let fixture = Fixture::new("closed-stdin");
+    let mut login = start_claude_cli_login(fixture.options(ClaudeCliLoginMethod::CopyCode));
+    assert!(matches!(
+        next_event(&mut login).await,
+        Some(ClaudeCliLoginEvent::ManualUrl(_))
+    ));
+    assert!(login.codes.submit_code("fixture"));
+    assert!(matches!(
+        timeout(TEST_TIMEOUT, login.result).await.unwrap(),
+        ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::IoFailed {
+            kind: std::io::ErrorKind::BrokenPipe,
+            ..
+        })
+    ));
+    assert_reaped(&fixture);
+}
+
+#[tokio::test]
 async fn cancels_and_reaps_a_cli_which_ignores_sigterm() {
     let fixture = Fixture::new("hang");
     let controller = AbortController::new();

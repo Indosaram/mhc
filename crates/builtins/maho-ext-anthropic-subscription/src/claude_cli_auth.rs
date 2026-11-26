@@ -27,7 +27,34 @@ pub enum ClaudeCliLoginFailure {
     ProviderNotAllowed,
     OAuthFailed,
     UnexpectedExit,
-    SpawnFailed,
+    SpawnFailed {
+        kind: io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+    IoFailed {
+        kind: io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+    CleanupFailed {
+        kind: io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+}
+
+impl ClaudeCliLoginFailure {
+    fn io(error: &io::Error) -> Self {
+        Self::IoFailed {
+            kind: error.kind(),
+            raw_os_error: error.raw_os_error(),
+        }
+    }
+
+    fn cleanup(error: &io::Error) -> Self {
+        Self::CleanupFailed {
+            kind: error.kind(),
+            raw_os_error: error.raw_os_error(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,7 +165,12 @@ pub fn start_claude_cli_login(options: ClaudeCliLoginOptions<'_>) -> ClaudeCliLo
             )?;
             Ok::<_, io::Error>((child, capture))
         })()
-        .map_err(|_| ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::SpawnFailed))
+        .map_err(|error| {
+            ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::SpawnFailed {
+                kind: error.kind(),
+                raw_os_error: error.raw_os_error(),
+            })
+        })
     };
     let result = tokio::spawn(async move {
         let (mut child, mut capture) = match started {
@@ -148,7 +180,16 @@ pub fn start_claude_cli_login(options: ClaudeCliLoginOptions<'_>) -> ClaudeCliLo
         let (Some(mut stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
-            return ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::SpawnFailed);
+            let error = io::Error::other("CLI pipes unavailable");
+            return match stop_claude_cli(
+                &mut child,
+                Duration::from_millis(kill_grace_ms.unwrap_or(KILL_GRACE_MS)),
+            )
+            .await
+            {
+                Ok(()) => ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::io(&error)),
+                Err(error) => ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::cleanup(&error)),
+            };
         };
         let idle = Duration::from_millis(idle_timeout_ms.unwrap_or(LOGIN_IDLE_TIMEOUT_MS));
         let mut recv_codes = recv_codes;
@@ -165,20 +206,27 @@ pub fn start_claude_cli_login(options: ClaudeCliLoginOptions<'_>) -> ClaudeCliLo
             } => match result {
                 Ok((status, output)) if !status.success() => ClaudeCliLoginResult::Failed(output.failure),
                 Ok((_, output)) if output.success => ClaudeCliLoginResult::Success,
-                Ok(_) | Err(_) => ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::UnexpectedExit),
+                Ok(_) => ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::UnexpectedExit),
+                Err(error) => ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::io(&error)),
             },
-            () = write_codes(&mut stdin, &mut recv_codes, idle) => ClaudeCliLoginResult::Timeout,
+            result = write_codes(&mut stdin, &mut recv_codes, idle) => match result {
+                Ok(()) => ClaudeCliLoginResult::Timeout,
+                Err(error) => ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::io(&error)),
+            },
         };
         recv_codes.close();
         if matches!(
             result,
-            ClaudeCliLoginResult::Cancelled | ClaudeCliLoginResult::Timeout
-        ) {
-            stop_claude_cli(
-                &mut child,
-                Duration::from_millis(kill_grace_ms.unwrap_or(KILL_GRACE_MS)),
-            )
-            .await;
+            ClaudeCliLoginResult::Cancelled
+                | ClaudeCliLoginResult::Timeout
+                | ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::IoFailed { .. })
+        ) && let Err(error) = stop_claude_cli(
+            &mut child,
+            Duration::from_millis(kill_grace_ms.unwrap_or(KILL_GRACE_MS)),
+        )
+        .await
+        {
+            return ClaudeCliLoginResult::Failed(ClaudeCliLoginFailure::cleanup(&error));
         }
         capture.flush(|url| {
             let _ = send_events.send(ClaudeCliLoginEvent::AutomaticUrl(url));

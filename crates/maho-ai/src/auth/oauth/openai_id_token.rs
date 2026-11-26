@@ -12,6 +12,7 @@ use url::Url;
 const ISSUER: &str = "https://auth.openai.com";
 pub(super) const DISCOVERY_URL: &str = "https://auth.openai.com/.well-known/openid-configuration";
 const CACHE_MS: f64 = 300_000.0;
+const REQUEST_TIMEOUT_MS: u64 = 15_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct OpenAIIdentity {
@@ -60,7 +61,7 @@ async fn fetch_json<T: DeserializeOwned>(
                 url: url.into(),
                 headers: Vec::new(),
                 body: None,
-                timeout_ms: None,
+                timeout_ms: Some(REQUEST_TIMEOUT_MS),
             },
             signal,
         )
@@ -80,18 +81,24 @@ pub(super) fn https_endpoint(endpoint: &str) -> Option<Url> {
         .then_some(url)
 }
 
-impl Cache {
+impl OpenAIIdTokenVerifier {
     async fn load_keys(
-        &mut self,
+        &self,
         transport: &dyn OAuthTransport,
         signal: &AbortSignal,
         force: bool,
-    ) -> Validation<&[Map<String, Value>]> {
-        if self
-            .discovery
-            .as_ref()
-            .is_none_or(|(_, expires)| *expires <= transport.now_ms())
-        {
+    ) -> Validation<Vec<Map<String, Value>>> {
+        let cached_uri = {
+            let cache = self.cache.lock().await;
+            cache
+                .discovery
+                .as_ref()
+                .filter(|(_, expires)| *expires > transport.now_ms())
+                .map(|(uri, _)| uri.clone())
+        };
+        let uri = if let Some(uri) = cached_uri {
+            uri
+        } else {
             let config: Map<String, Value> =
                 fetch_json(transport, DISCOVERY_URL, signal, "discovery request failed").await?;
             let uri = config
@@ -99,31 +106,56 @@ impl Cache {
                 .and_then(Value::as_str)
                 .and_then(https_endpoint)
                 .ok_or(OpenAIIdTokenValidationError("invalid discovery JWKS URI"))?;
-            self.jwks = None;
-            self.discovery = Some((uri, transport.now_ms() + CACHE_MS));
-        }
-        if force
-            || self
-                .jwks
-                .as_ref()
-                .is_none_or(|(_, expires)| *expires <= transport.now_ms())
-        {
-            #[derive(serde::Deserialize)]
-            struct Jwks {
-                keys: Vec<Map<String, Value>>,
-            }
-            let (uri, _) = self
+            let mut cache = self.cache.lock().await;
+            if let Some((current, _)) = cache
                 .discovery
                 .as_ref()
-                .ok_or(OpenAIIdTokenValidationError("invalid discovery JWKS URI"))?;
-            let data: Jwks =
-                fetch_json(transport, uri.as_str(), signal, "JWKS request failed").await?;
-            self.jwks = Some((data.keys, transport.now_ms() + CACHE_MS));
+                .filter(|(_, expires)| *expires > transport.now_ms())
+            {
+                current.clone()
+            } else {
+                if cache
+                    .discovery
+                    .as_ref()
+                    .is_none_or(|(current, _)| current != &uri)
+                {
+                    cache.jwks = None;
+                }
+                cache.discovery = Some((uri.clone(), transport.now_ms() + CACHE_MS));
+                uri
+            }
+        };
+        if !force {
+            let cache = self.cache.lock().await;
+            if let Some((keys, _)) = cache
+                .jwks
+                .as_ref()
+                .filter(|(_, expires)| *expires > transport.now_ms())
+                && cache
+                    .discovery
+                    .as_ref()
+                    .is_some_and(|(current, _)| current == &uri)
+            {
+                return Ok(keys.clone());
+            }
         }
-        self.jwks
+        #[derive(serde::Deserialize)]
+        struct Jwks {
+            keys: Vec<Map<String, Value>>,
+        }
+        let data: Jwks = fetch_json(transport, uri.as_str(), signal, "JWKS request failed").await?;
+        let mut cache = self.cache.lock().await;
+        if cache
+            .discovery
             .as_ref()
-            .map(|(keys, _)| keys.as_slice())
-            .ok_or(OpenAIIdTokenValidationError("invalid JWKS"))
+            .is_none_or(|(current, _)| current != &uri)
+        {
+            return Err(OpenAIIdTokenValidationError(
+                "discovery changed during JWKS request",
+            ));
+        }
+        cache.jwks = Some((data.keys.clone(), transport.now_ms() + CACHE_MS));
+        Ok(data.keys)
     }
 }
 
@@ -156,10 +188,9 @@ impl OpenAIIdTokenVerifier {
                 && key.get("use").is_none_or(|v| v == "sig")
         };
         let (n, e) = {
-            let mut cache = self.cache.lock().await;
-            let mut keys = cache.load_keys(transport, signal, false).await?;
+            let mut keys = self.load_keys(transport, signal, false).await?;
             if !keys.iter().any(|key| matches(&key)) {
-                keys = cache.load_keys(transport, signal, true).await?;
+                keys = self.load_keys(transport, signal, true).await?;
             }
             let mut matching = keys.iter().filter(matches);
             let key = matching
@@ -230,3 +261,139 @@ impl OpenAIIdTokenVerifier {
 #[cfg(test)]
 #[path = "openai_id_token_tests.rs"]
 pub(super) mod test_support;
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use crate::auth::oauth::transport::HttpResponse;
+    use crate::utils::abort::AbortController;
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+    use tokio::sync::oneshot;
+
+    struct WaitingTransport {
+        request: StdMutex<Option<oneshot::Sender<HttpRequest>>>,
+    }
+
+    struct LateDiscoveryTransport {
+        entered: StdMutex<Option<oneshot::Sender<()>>>,
+        release: StdMutex<Option<oneshot::Receiver<()>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl OAuthTransport for LateDiscoveryTransport {
+        async fn execute(
+            &self,
+            request: HttpRequest,
+            _: &AbortSignal,
+        ) -> anyhow::Result<HttpResponse> {
+            if request.url == DISCOVERY_URL {
+                let release = self.release.lock().unwrap().take().expect("one discovery");
+                self.entered
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                release.await.expect("release discovery");
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: r#"{"jwks_uri":"https://old.example/keys"}"#.into(),
+                })
+            } else {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: r#"{"keys":[]}"#.into(),
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn late_discovery_does_not_replace_newer_cached_uri() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (entered, started) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            let transport = Arc::new(LateDiscoveryTransport {
+                entered: StdMutex::new(Some(entered)),
+                release: StdMutex::new(Some(released)),
+            });
+            let verifier = Arc::new(OpenAIIdTokenVerifier::default());
+            let task = {
+                let transport = transport.clone();
+                let verifier = verifier.clone();
+                tokio::spawn(async move {
+                    verifier
+                        .load_keys(transport.as_ref(), &AbortController::new().signal(), false)
+                        .await
+                })
+            };
+            started.await.unwrap();
+            let newer = Url::parse("https://new.example/keys").unwrap();
+            verifier.cache.lock().await.discovery =
+                Some((newer.clone(), transport.now_ms() + CACHE_MS));
+            release.send(()).unwrap();
+            task.await.unwrap().expect("load newer keys");
+            assert_eq!(
+                verifier.cache.lock().await.discovery.as_ref().unwrap().0,
+                newer
+            );
+        })
+        .await
+        .expect("bounded discovery race");
+    }
+
+    #[async_trait::async_trait]
+    impl OAuthTransport for WaitingTransport {
+        async fn execute(
+            &self,
+            request: HttpRequest,
+            _: &AbortSignal,
+        ) -> anyhow::Result<HttpResponse> {
+            if let Some(sender) = self.request.lock().unwrap().take() {
+                sender.send(request).expect("request observer");
+            }
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_has_a_deadline_and_does_not_hold_the_cache_lock() {
+        let (sender, receiver) = oneshot::channel();
+        let transport = Arc::new(WaitingTransport {
+            request: StdMutex::new(Some(sender)),
+        });
+        let verifier = Arc::new(OpenAIIdTokenVerifier::default());
+        let worker = {
+            let verifier = verifier.clone();
+            let transport = transport.clone();
+            tokio::spawn(async move {
+                let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"k"}"#);
+                let token = format!("{header}.e30.eA");
+                verifier
+                    .verify(
+                        transport.as_ref(),
+                        Some(&token),
+                        "client",
+                        "nonce",
+                        &AbortController::new().signal(),
+                    )
+                    .await
+            })
+        };
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .unwrap()
+            .unwrap();
+        let cache_available = verifier.cache.try_lock().is_ok();
+        worker.abort();
+        assert!(
+            request.timeout_ms.is_some(),
+            "discovery must have a request deadline"
+        );
+        assert!(cache_available, "network I/O must not hold the cache lock");
+    }
+}

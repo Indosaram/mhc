@@ -299,6 +299,116 @@ async fn remove_account_signs_out_its_dir_and_removes_only_its_slot() {
 }
 
 #[tokio::test]
+async fn removing_an_account_does_not_hold_the_store_lock_during_cli_logout() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let fixture = Fixture::new(true);
+    fixture.login("", false).await;
+    fixture.login("work", false).await;
+    let listener = tokio::net::UnixListener::bind(fixture.oauth.cli.cwd.join("logout-gate.sock"))
+        .expect("logout gate");
+    let removal = remove_provider_account_with_cli(&fixture.oauth, "default", None);
+    let concurrent = async {
+        let (mut stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                .await
+                .expect("logout reached gate")
+                .expect("accept logout");
+        let mut ready = [0; 1];
+        stream.read_exact(&mut ready).await.expect("logout ready");
+        assert_eq!(ready, *b"R");
+        let mutation = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.oauth.store.modify(
+                PROVIDER,
+                Box::new(|credential| {
+                    Box::pin(async move {
+                        let mut credential = credential
+                            .and_then(Credential::into_oauth)
+                            .expect("account pool");
+                        let accounts = credential.extra["accounts"]
+                            .as_array_mut()
+                            .expect("accounts");
+                        let work = accounts
+                            .iter_mut()
+                            .find(|slot| slot["name"] == "work")
+                            .expect("work slot");
+                        work["displayName"] = json!("concurrent");
+                        Ok(Some(Credential::OAuth(credential)))
+                    })
+                }),
+                None,
+            ),
+        )
+        .await;
+        stream.write_all(b"G").await.expect("release logout");
+        mutation
+            .expect("another mutation completed during logout")
+            .expect("save sibling");
+    };
+    let (removed, ()) = tokio::join!(removal, concurrent);
+    removed.expect("remove");
+    assert_eq!(fixture.auth()[PROVIDER]["accounts"][0]["name"], "work");
+    assert_eq!(
+        fixture.auth()[PROVIDER]["accounts"][0]["displayName"],
+        "concurrent"
+    );
+}
+
+#[tokio::test]
+async fn removing_an_account_does_not_delete_a_concurrent_replacement() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let fixture = Fixture::new(true);
+    fixture.login("", false).await;
+    let replacement = "0123456789abcdef0123456789abcdef";
+    let replacement_dir = fixture.dir(replacement);
+    std::fs::create_dir_all(&replacement_dir).expect("replacement account");
+    std::fs::write(replacement_dir.join("login"), "").expect("replacement login");
+    let listener = tokio::net::UnixListener::bind(fixture.oauth.cli.cwd.join("logout-gate.sock"))
+        .expect("logout gate");
+    let removal = remove_provider_account_with_cli(&fixture.oauth, "default", None);
+    let concurrent = async {
+        let (mut stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                .await
+                .expect("logout reached gate")
+                .expect("accept logout");
+        let mut ready = [0; 1];
+        stream.read_exact(&mut ready).await.expect("logout ready");
+        assert_eq!(ready, *b"R");
+        let mutation = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.oauth.store.modify(
+                PROVIDER,
+                Box::new(move |credential| {
+                    Box::pin(async move {
+                        let mut credential = credential
+                            .and_then(Credential::into_oauth)
+                            .expect("account pool");
+                        credential.extra["accounts"][0]["dirId"] = json!(replacement);
+                        Ok(Some(Credential::OAuth(credential)))
+                    })
+                }),
+                None,
+            ),
+        )
+        .await;
+        stream.write_all(b"G").await.expect("release logout");
+        mutation
+            .expect("replacement completed during logout")
+            .expect("save replacement");
+    };
+    let (removed, ()) = tokio::join!(removal, concurrent);
+    assert!(removed.is_err());
+    assert_eq!(
+        fixture.auth()[PROVIDER]["accounts"][0]["dirId"],
+        replacement
+    );
+    assert!(replacement_dir.join("login").exists());
+}
+
+#[tokio::test]
 async fn reconnect_retires_old_directory_and_keeps_pin_order_and_name() {
     let fixture = Fixture::new(true);
     fixture.login("", false).await;

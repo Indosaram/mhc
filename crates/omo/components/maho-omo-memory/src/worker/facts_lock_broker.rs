@@ -223,12 +223,28 @@ impl FactsLockBroker {
             serde_json::from_slice(&frame).map_err(|error| error.to_string())?;
         let acquired_key = request.acquire;
         let path = match acquired_key.as_str() {
-            "auth" => &self.auth_path,
-            "settings" => &self.settings_path,
+            "auth" => self.auth_path.clone(),
+            "settings" => self.settings_path.clone(),
+            key if key.strip_prefix("refresh:").is_some_and(|identity| {
+                identity.len() == 64
+                    && identity
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }) =>
+            {
+                let identity = &key["refresh:".len()..];
+                PathBuf::from(format!("{}.refresh-{identity}", self.auth_path.display()))
+            }
             _ => return Self::respond(&mut write, Err("unknown facts lock key".into())).await,
         };
         let key_path = path.to_string_lossy().into_owned();
-        let budget = request.budget_ms.min(5_500);
+        let budget = request
+            .budget_ms
+            .min(if acquired_key.starts_with("refresh:") {
+                35_000
+            } else {
+                5_500
+            });
         #[cfg(test)]
         let acquire_hook = self
             .acquire_hook
@@ -292,6 +308,9 @@ impl FactsLockBroker {
                     Err("facts lock key changed during lease".into()),
                 )
                 .await;
+            }
+            if acquired_key.starts_with("refresh:") {
+                return Self::respond(&mut write, Err("refresh leases cannot write".into())).await;
             }
             let path = path.to_owned();
             let content = request.write;

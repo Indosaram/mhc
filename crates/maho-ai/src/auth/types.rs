@@ -174,6 +174,30 @@ pub type RefreshLockOperation = Box<
         > + Send,
 >;
 
+type DefaultRefreshLocks =
+    std::collections::HashMap<(usize, String, String), std::sync::Weak<tokio::sync::Mutex<()>>>;
+
+fn default_refresh_lock(
+    store: usize,
+    provider_id: &str,
+    slot_name: &str,
+) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<DefaultRefreshLocks>> =
+        std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() != 0);
+    let key = (store, provider_id.to_owned(), slot_name.to_owned());
+    if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
 /// App-owned credential storage, keyed by `Provider.id`, one entry per provider.
 ///
 /// Mutations are serialized per provider, including conditional deletion.
@@ -206,17 +230,25 @@ pub trait CredentialStore: Send + Sync {
         anyhow::bail!("Credential store for {provider_id} does not implement readSlot")
     }
 
-    /// Hold session-scoped exclusion through read, exchange and persistence. Persistent stores
-    /// should override this with a cross-process lock separate from the global write lock.
+    /// Hold session-scoped exclusion through read, exchange and persistence. The default
+    /// serializes callers on this store within the process. Persistent stores should override
+    /// this with a cross-process lock separate from the global write lock.
     async fn with_refresh_lock(
         &self,
-        _provider_id: &str,
-        _slot_name: &str,
+        provider_id: &str,
+        slot_name: &str,
         operation: RefreshLockOperation,
         options: Option<AuthOperationOptions>,
     ) -> Result<Option<Credential>, crate::auth::oauth_refresh::RefreshError> {
         let signal =
             crate::utils::abort::operation_signal(options.and_then(|options| options.signal));
+        let identity = self as *const Self as *const () as usize;
+        let lock = default_refresh_lock(identity, provider_id, slot_name);
+        let _guard = crate::utils::abort::race_with_abort_signal(lock.lock(), &signal)
+            .await
+            .map_err(|reason| {
+                crate::auth::oauth_refresh::RefreshError::Aborted(reason.to_string())
+            })?;
         operation(signal).await
     }
 

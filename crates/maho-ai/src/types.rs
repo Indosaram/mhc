@@ -410,6 +410,8 @@ pub type ProviderTelemetryContext = std::sync::Arc<dyn std::any::Any + Send + Sy
 #[derive(Clone, Default)]
 pub struct ProviderRequestOptions {
     pub signal: Option<crate::utils::abort::AbortSignal>,
+    /// Stored OAuth accounts whose credentials match this request.
+    pub auth_slots: Vec<String>,
     /// Originating session working directory for subprocess-backed providers.
     pub cwd: Option<String>,
     pub abort_server_side_fallback: Option<bool>,

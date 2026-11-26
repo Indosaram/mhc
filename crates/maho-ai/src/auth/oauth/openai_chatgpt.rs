@@ -193,12 +193,13 @@ fn callback_response(
 
 async fn start_callback_server(
     state: String,
+    host: &str,
     port: u16,
     known_client: Option<KnownClient>,
 ) -> anyhow::Result<CallbackServer> {
-    let listener = match TcpListener::bind(("127.0.0.1", port)).await {
+    let listener = match TcpListener::bind((host, port)).await {
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            TcpListener::bind(("127.0.0.1", 0)).await?
+            TcpListener::bind((host, 0)).await?
         }
         result => result?,
     };
@@ -253,6 +254,24 @@ async fn start_callback_server(
         }
     });
     Ok(CallbackServer { task, result, port })
+}
+
+fn callback_uri(host: &str, port: u16) -> anyhow::Result<String> {
+    let host = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let url = Url::parse(&format!("http://{host}:{port}{CALLBACK_PATH}"))?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.port_or_known_default() != Some(port)
+        || url.path() != CALLBACK_PATH
+    {
+        anyhow::bail!("Invalid OAuth callback host");
+    }
+    Ok(url.into())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -598,8 +617,11 @@ impl OAuthAuth for OpenAIChatGPTOAuth {
         let pkce = generate_pkce();
         let state = generate_pkce().verifier;
         let nonce = generate_pkce().verifier;
+        let callback_host = super::loopback::callback_host();
+        let fallback_uri = callback_uri(&callback_host, self.preferred_callback_port)?;
         let mut callback = match start_callback_server(
             state.clone(),
+            &callback_host,
             self.preferred_callback_port,
             known_client.clone(),
         )
@@ -607,14 +629,14 @@ impl OAuthAuth for OpenAIChatGPTOAuth {
         {
             Ok(callback) => Some(callback),
             Err(error) => {
-                interaction.notify(AuthEvent::Info { message: format!("Could not listen on {REDIRECT_URI}; paste the final redirect URL to continue. {error}"), links: None });
+                interaction.notify(AuthEvent::Info { message: format!("Could not listen on {fallback_uri}; paste the final redirect URL to continue. {error}"), links: None });
                 None
             }
         };
-        let redirect_uri = callback.as_ref().map_or_else(
-            || REDIRECT_URI.to_owned(),
-            |server| format!("http://127.0.0.1:{}{CALLBACK_PATH}", server.port),
-        );
+        let redirect_uri = match &callback {
+            Some(server) => callback_uri(&callback_host, server.port)?,
+            None => fallback_uri,
+        };
         interaction.notify(AuthEvent::AuthUrl { url: authorization_url(
             &host_id, &pkce.challenge, &state, &nonce, &redirect_uri,
             options.as_ref(), known_client.as_ref(),
@@ -1122,7 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn callback_server_ignores_invalid_state_then_delivers_issued_client()
     -> anyhow::Result<()> {
-        let mut server = start_callback_server("expected".into(), 0, None).await?;
+        let mut server = start_callback_server("expected".into(), "127.0.0.1", 0, None).await?;
         let base = format!("http://127.0.0.1:{}{CALLBACK_PATH}", server.port);
         let client = reqwest::Client::new();
         let exercise = async {
@@ -1148,6 +1170,44 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), exercise).await??;
+        Ok(())
+    }
+
+    #[test]
+    fn callback_uri_uses_the_requested_host() {
+        assert_eq!(
+            callback_uri("localhost", 1455).unwrap(),
+            "http://localhost:1455/auth/callback"
+        );
+        assert_eq!(
+            callback_uri("::1", 1455).unwrap(),
+            "http://[::1]:1455/auth/callback"
+        );
+        assert!(callback_uri("user@localhost", 1455).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn callback_server_binds_the_requested_loopback_address() -> anyhow::Result<()> {
+        let mut server = start_callback_server("expected".into(), "127.0.0.2", 0, None).await?;
+        let uri = callback_uri("127.0.0.2", server.port)?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let (response, result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                client
+                    .get(format!("{uri}?code=c&state=expected&client_id=issued"))
+                    .send(),
+                server.result.recv(),
+            )
+        })
+        .await?;
+        assert_eq!(response?.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            result
+                .ok_or_else(|| anyhow::anyhow!("callback closed"))??
+                .code,
+            "c"
+        );
         Ok(())
     }
 

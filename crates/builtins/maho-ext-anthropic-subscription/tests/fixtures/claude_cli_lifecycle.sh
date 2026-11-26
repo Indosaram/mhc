@@ -28,6 +28,14 @@ case "${1:-} ${2:-}" in
     ;;
   'auth logout')
     test -f "$CLAUDE_CONFIG_DIR/login"
+    if [ -S "$HOME/logout-gate.sock" ]; then
+      python3 -c 'import os, socket
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.path.join(os.environ["HOME"], "logout-gate.sock"))
+s.sendall(b"R")
+assert s.recv(1) == b"G"
+'
+    fi
     rm "$CLAUDE_CONFIG_DIR/login"
     printf '%s\n' "${CLAUDE_CONFIG_DIR##*/}" >> "$HOME/logged-out"
     ;;

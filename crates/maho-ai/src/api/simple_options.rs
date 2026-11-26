@@ -181,6 +181,9 @@ pub fn build_base_options(
         .or_else(|| stream.and_then(|stream| stream.request.api_key.clone()));
     let request = ProviderRequestOptions {
         signal: stream.and_then(|stream| stream.request.signal.clone()),
+        auth_slots: stream
+            .map(|stream| stream.request.auth_slots.clone())
+            .unwrap_or_default(),
         abort_server_side_fallback: stream
             .and_then(|stream| stream.request.abort_server_side_fallback),
         telemetry_context: stream.and_then(|stream| stream.request.telemetry_context.clone()),
@@ -332,6 +335,18 @@ pub fn adjust_max_tokens_for_thinking(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_options_keep_selected_oauth_slot() {
+        let model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
+        let mut simple = SimpleStreamOptions::default();
+        simple.stream.request.auth_slots = vec!["work".into()];
+        let options = build_base_options(&model, &Context::default(), Some(&simple), None)
+            .expect("base options");
+        assert_eq!(options.request.auth_slots, ["work"]);
+    }
 
     #[tokio::test]
     async fn base_options_preserve_and_await_provider_event_hooks() {

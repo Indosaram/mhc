@@ -1356,27 +1356,53 @@ struct ModelsInner {
 #[derive(Default)]
 struct OAuthLogoutState {
     controller: AbortController,
-    in_progress: usize,
+    provider_in_progress: usize,
+    slots: HashMap<String, AbortController>,
+    slots_in_progress: HashMap<String, usize>,
 }
 
 struct SigningOut<'a> {
     states: &'a Mutex<HashMap<String, OAuthLogoutState>>,
     provider_id: &'a str,
+    slot_id: Option<String>,
 }
 
 impl Drop for SigningOut<'_> {
     fn drop(&mut self) {
         let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(state) = states.get_mut(self.provider_id) {
-            state.in_progress -= 1;
-            if state.in_progress == 0 {
-                states.remove(self.provider_id);
+            if let Some(slot_id) = &self.slot_id {
+                if let Some(count) = state.slots_in_progress.get_mut(slot_id) {
+                    *count -= 1;
+                    if *count == 0 {
+                        state.slots_in_progress.remove(slot_id);
+                        if state.provider_in_progress == 0 {
+                            state.slots.insert(slot_id.clone(), AbortController::new());
+                        }
+                    }
+                }
+            } else {
+                state.provider_in_progress -= 1;
+                if state.provider_in_progress == 0 {
+                    state.controller = AbortController::new();
+                    for (name, controller) in &mut state.slots {
+                        if !state.slots_in_progress.contains_key(name) {
+                            *controller = AbortController::new();
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-struct LogoutStreamLink(CombinedAbortSignal);
+pub struct LogoutStreamLink(CombinedAbortSignal);
+
+impl LogoutStreamLink {
+    pub fn signal(&self) -> Option<AbortSignal> {
+        self.0.signal.clone()
+    }
+}
 
 impl Drop for LogoutStreamLink {
     fn drop(&mut self) {
@@ -1864,7 +1890,15 @@ impl Models {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(provider_id)
-            .is_some_and(|state| state.in_progress != 0)
+            .is_some_and(|state| {
+                state.provider_in_progress != 0
+                    || overrides
+                        .slot_name
+                        .as_ref()
+                        .map_or(!state.slots_in_progress.is_empty(), |slot| {
+                            state.slots_in_progress.contains_key(slot)
+                        })
+            })
         {
             return Ok(None);
         }
@@ -1971,20 +2005,30 @@ impl Models {
             .get_provider(provider_id)
             .and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone()));
         let _signing_out = oauth.as_ref().filter(|oauth| oauth.has_revoke()).map(|_| {
-            let controller = {
+            let controllers = {
                 let mut states = self
                     .inner
                     .oauth_logout
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
                 let state = states.entry(provider_id.to_owned()).or_default();
-                state.in_progress += 1;
-                state.controller.clone()
+                if let Some(slot_id) = options.slot_id.as_ref() {
+                    *state.slots_in_progress.entry(slot_id.clone()).or_default() += 1;
+                    vec![state.slots.entry(slot_id.clone()).or_default().clone()]
+                } else {
+                    state.provider_in_progress += 1;
+                    std::iter::once(state.controller.clone())
+                        .chain(state.slots.values().cloned())
+                        .collect()
+                }
             };
-            controller.abort(Some(AbortReason::new("Error", "Account signed out")));
+            for controller in controllers {
+                controller.abort(Some(AbortReason::new("Error", "Account signed out")));
+            }
             SigningOut {
                 states: &self.inner.oauth_logout,
                 provider_id,
+                slot_id: options.slot_id.clone(),
             }
         });
         self.inner
@@ -2042,6 +2086,7 @@ impl Models {
         })?;
         let overrides = AuthResolutionOverrides {
             api_key: request.api_key.clone(),
+            slot_name: (request.auth_slots.len() == 1).then(|| request.auth_slots[0].clone()),
             env: request.env.clone(),
             signal: request.signal.clone(),
             ..AuthResolutionOverrides::default()
@@ -2087,9 +2132,49 @@ impl Models {
         Ok((provider, resolution.auth.base_url, options))
     }
 
+    /// Link a request to the provider and, when known, the selected OAuth account.
+    pub fn link_logout_signal(
+        &self,
+        provider_id: &str,
+        slot_id: Option<&str>,
+        signal: Option<AbortSignal>,
+    ) -> LogoutStreamLink {
+        self.link_logout_signals(provider_id, slot_id, signal)
+    }
+
+    fn link_logout_signals<'a>(
+        &self,
+        provider_id: &str,
+        slot_ids: impl IntoIterator<Item = &'a str>,
+        signal: Option<AbortSignal>,
+    ) -> LogoutStreamLink {
+        let mut signals = vec![signal];
+        if self
+            .get_provider(provider_id)
+            .and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone()))
+            .filter(|oauth| oauth.has_revoke())
+            .is_some()
+        {
+            let mut states = self
+                .inner
+                .oauth_logout
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let state = states.entry(provider_id.to_owned()).or_default();
+            signals.push(Some(state.controller.signal()));
+            for slot in slot_ids {
+                signals.push(Some(
+                    state.slots.entry(slot.to_owned()).or_default().signal(),
+                ));
+            }
+        }
+        LogoutStreamLink(combine_abort_signals(&signals))
+    }
+
     fn lazy<F>(
         &self,
         model: &Model,
+        slot_ids: &[String],
         signal: Option<AbortSignal>,
         setup: impl FnOnce(Option<AbortSignal>) -> F,
     ) -> AssistantMessageEventStream
@@ -2098,22 +2183,9 @@ impl Models {
             + Send
             + 'static,
     {
-        let logout_signal = self
-            .get_provider(&model.provider)
-            .and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone()))
-            .filter(|oauth| oauth.has_revoke())
-            .map(|_| {
-                self.inner
-                    .oauth_logout
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .entry(model.provider.clone())
-                    .or_default()
-                    .controller
-                    .signal()
-            });
-        let linked = LogoutStreamLink(combine_abort_signals(&[signal, logout_signal]));
-        let setup = setup(linked.0.signal.clone());
+        let linked =
+            self.link_logout_signals(&model.provider, slot_ids.iter().map(String::as_str), signal);
+        let setup = setup(linked.signal());
         crate::api::lazy::lazy_stream_typed_with_guard(
             model,
             async move {
@@ -2142,14 +2214,20 @@ impl Models {
         let models = self.clone();
         let (model_owned, context) = (model.clone(), context.clone());
         let mut options = options.unwrap_or_default();
-        self.lazy(model, options.request.signal.take(), |signal| async move {
-            options.request.signal = signal;
-            let (provider, request_model, request) = models
-                .apply_auth(&model_owned, &options.request, &transforms)
-                .await?;
-            options.request = request;
-            Ok(provider.stream(&request_model, &context, Some(options)))
-        })
+        let slots = options.request.auth_slots.clone();
+        self.lazy(
+            model,
+            &slots,
+            options.request.signal.take(),
+            |signal| async move {
+                options.request.signal = signal;
+                let (provider, request_model, request) = models
+                    .apply_auth(&model_owned, &options.request, &transforms)
+                    .await?;
+                options.request = request;
+                Ok(provider.stream(&request_model, &context, Some(options)))
+            },
+        )
     }
 
     pub async fn complete(
@@ -2175,8 +2253,10 @@ impl Models {
         let models = self.clone();
         let (model_owned, context) = (model.clone(), context.clone());
         let mut options = options.unwrap_or_default();
+        let slots = options.stream.request.auth_slots.clone();
         self.lazy(
             model,
+            &slots,
             options.stream.request.signal.take(),
             |signal| async move {
                 options.stream.request.signal = signal;
@@ -2212,24 +2292,30 @@ impl Models {
         let models = self.clone();
         let (model_owned, handle) = (model.clone(), handle.clone());
         let mut options = options.unwrap_or_default();
-        self.lazy(model, options.request.signal.take(), |signal| async move {
-            options.request.signal = signal;
-            let (provider, request_model, request) = models
-                .apply_auth(&model_owned, &options.request, &transforms)
-                .await?;
-            options.request = request;
-            provider
-                .fetch_deferred(&request_model, &handle, Some(options))
-                .ok_or_else(|| {
-                    ModelsError::new(
-                        ModelsErrorCode::Provider,
-                        format!(
-                            "Provider {} does not support deferred responses",
-                            model_owned.provider
-                        ),
-                    )
-                })
-        })
+        let slots = options.request.auth_slots.clone();
+        self.lazy(
+            model,
+            &slots,
+            options.request.signal.take(),
+            |signal| async move {
+                options.request.signal = signal;
+                let (provider, request_model, request) = models
+                    .apply_auth(&model_owned, &options.request, &transforms)
+                    .await?;
+                options.request = request;
+                provider
+                    .fetch_deferred(&request_model, &handle, Some(options))
+                    .ok_or_else(|| {
+                        ModelsError::new(
+                            ModelsErrorCode::Provider,
+                            format!(
+                                "Provider {} does not support deferred responses",
+                                model_owned.provider
+                            ),
+                        )
+                    })
+            },
+        )
     }
 
     pub async fn fetch_deferred(
@@ -2815,7 +2901,7 @@ mod models_api_audit_tests {
     async fn wrapper_preserves_oauth_setup_diagnostic() {
         // Given a typed OAuth setup failure.
         let models = create_models(None);
-        let stream = models.lazy(&relay_model(), None, |_| async {
+        let stream = models.lazy(&relay_model(), &[], None, |_| async {
             Err(ModelsError::new(
                 ModelsErrorCode::OAuth,
                 "refresh unavailable",
@@ -2845,7 +2931,7 @@ mod models_api_audit_tests {
         source.push(crate::types::AssistantMessageEvent::Start {
             partial: partial.clone(),
         });
-        let stream = models.lazy(&model, None, |_| async move { Ok(source) });
+        let stream = models.lazy(&model, &[], None, |_| async move { Ok(source) });
         tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
             .await
             .expect("event deadline")
@@ -2866,7 +2952,7 @@ mod models_api_audit_tests {
         let models = create_models(None);
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (resource_tx, mut resource_rx) = tokio::sync::oneshot::channel::<()>();
-        let stream = models.lazy(&relay_model(), None, |_| async move {
+        let stream = models.lazy(&relay_model(), &[], None, |_| async move {
             let _resource = resource_tx;
             entered_tx.send(()).expect("entered subscriber");
             std::future::pending().await
@@ -2911,7 +2997,7 @@ mod models_api_audit_tests {
             } else {
                 source.end(Some(message));
             }
-            let stream = models.lazy(&model, None, |_| async move { Ok(source) });
+            let stream = models.lazy(&model, &[], None, |_| async move { Ok(source) });
             let before = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
                 .await
                 .expect("terminal deadline");

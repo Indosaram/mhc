@@ -1,7 +1,7 @@
 use maho_ai::auth::types::{AuthInteraction, AuthPrompt, AuthPromptKind, AuthPromptOption};
 use maho_ai::utils::abort::AbortController;
 use maho_ext_api::*;
-use maho_ext_builtin_loose::oauth_login_interaction::ExtensionLoginInteraction;
+use maho_ext_builtin_loose::oauth_login_interaction::{ExtensionLoginInteraction, LoginCancelled};
 use std::sync::Arc;
 
 struct DialogUi {
@@ -113,7 +113,7 @@ async fn select_maps_label_to_provider_option_id() {
 async fn dismissing_owned_dialog_aborts_login() {
     let login = interaction(None, None);
     let result = login.prompt(text_prompt()).await;
-    assert!(result.is_err());
+    assert!(result.unwrap_err().is::<LoginCancelled>());
     assert!(login.signal().expect("signal").aborted());
 }
 
@@ -125,7 +125,7 @@ async fn aborted_prompt_does_not_abort_login() {
     let mut prompt = text_prompt();
     prompt.signal = Some(prompt_controller.signal());
     let result = login.prompt(prompt).await;
-    assert!(result.is_err());
+    assert!(result.unwrap_err().is::<LoginCancelled>());
     assert!(!login.signal().expect("signal").aborted());
 }
 
