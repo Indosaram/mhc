@@ -404,6 +404,25 @@ struct Level {
     owners: Vec<LeafId>,
 }
 
+struct CatalogBuildGuard<'a> {
+    store: &'a CompactContentStore,
+    buffered: &'a AtomicUsize,
+    held: BTreeSet<LeafId>,
+    levels: Vec<Level>,
+}
+
+impl Drop for CatalogBuildGuard<'_> {
+    fn drop(&mut self) {
+        let count: usize = self.levels.iter().map(|level| level.writer.count()).sum();
+        self.buffered.fetch_sub(count, Ordering::SeqCst);
+        for &id in &self.held {
+            if let Err(error) = self.store.adjust(id, -1, 0) {
+                eprintln!("catalog build cleanup failed: {error}");
+            }
+        }
+    }
+}
+
 enum PointerOp {
     Component(Vec<LeafId>),
     Node(LeafId, PointerHead),
@@ -464,28 +483,24 @@ impl CompactRecoveryCatalog {
         components: &mut BoxStream<'_, CatalogComponent>,
         valid: ValidCheck<'_>,
     ) -> Result<CatalogRoot, RecoveryBytesError> {
-        let mut held: BTreeSet<LeafId> = BTreeSet::new();
-        let mut levels: Vec<Level> = Vec::new();
+        let mut guard = CatalogBuildGuard {
+            store,
+            buffered: &self.buffered,
+            held: BTreeSet::new(),
+            levels: Vec::new(),
+        };
         let mut count = 0usize;
         let mut nodes = 0usize;
 
-        let cleanup = |held: &BTreeSet<LeafId>, levels: &[Level]| {
-            let total_in_levels: usize = levels.iter().map(|l| l.writer.count()).sum();
-            self.buffered.fetch_sub(total_in_levels, Ordering::SeqCst);
-            for &id in held {
-                let _ = store.adjust(id, -1, 0);
-            }
-        };
-
-        let result: Result<CatalogRoot, RecoveryBytesError> = async {
+        async {
             while let Some(component) = components.next().await {
                 let entry = self.describe(store, &component, valid).await?;
                 Self::place(
                     store,
                     &self.buffered,
                     &self.peak_buffered,
-                    &mut held,
-                    &mut levels,
+                    &mut guard.held,
+                    &mut guard.levels,
                     &mut nodes,
                     0,
                     entry,
@@ -496,15 +511,15 @@ impl CompactRecoveryCatalog {
             }
             let mut level = 0usize;
             loop {
-                if levels.len() <= level {
-                    levels.push(Self::new_level());
+                if guard.levels.len() <= level {
+                    guard.levels.push(Self::new_level());
                 }
-                let top = level == levels.len() - 1;
+                let top = level == guard.levels.len() - 1;
                 let sealed = Self::seal(
                     store,
                     &self.buffered,
-                    &mut held,
-                    &mut levels,
+                    &mut guard.held,
+                    &mut guard.levels,
                     &mut nodes,
                     level,
                 )?;
@@ -513,8 +528,8 @@ impl CompactRecoveryCatalog {
                         store,
                         &self.buffered,
                         &self.peak_buffered,
-                        &mut held,
-                        &mut levels,
+                        &mut guard.held,
+                        &mut guard.levels,
                         &mut nodes,
                         level + 1,
                         sealed.entry,
@@ -527,16 +542,11 @@ impl CompactRecoveryCatalog {
                 let root = self
                     .finish_root(store, ref_, sealed, level + 1, count, nodes)
                     .await?;
-                held.remove(&root.owner);
+                guard.held.remove(&root.owner);
                 return Ok(root);
             }
         }
-        .await;
-
-        if result.is_err() {
-            cleanup(&held, &levels);
-        }
-        result
+        .await
     }
 
     fn new_level() -> Level {
@@ -606,6 +616,7 @@ impl CompactRecoveryCatalog {
         level: usize,
     ) -> Result<Sealed, RecoveryBytesError> {
         let sealed_level = std::mem::replace(&mut levels[level], Self::new_level());
+        buffered.fetch_sub(sealed_level.writer.count(), Ordering::SeqCst);
         let text = sealed_level.writer.encode();
         let node = store.create_leaf(&text, true)?;
         held.insert(node);
@@ -639,7 +650,6 @@ impl CompactRecoveryCatalog {
                 held.remove(&taken);
             }
         }
-        buffered.fetch_sub(sealed_level.writer.count(), Ordering::SeqCst);
         let bytes = stored_bytes(&text);
         *nodes += 1;
         let id = protocol_id(&format!("node-{:016}", *nodes));
@@ -828,6 +838,38 @@ mod tests {
 
     fn ok_valid() -> Result<(), RecoveryBytesError> {
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_build_releases_held_components_and_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = CompactContentStore::new(CompactContentStoreOptions {
+            dir: dir.path().join("epoch").display().to_string(),
+            ..Default::default()
+        });
+        let catalog = CompactRecoveryCatalog::new();
+        let leaf = store.create_leaf("catalog item", false).expect("leaf");
+        let component = CatalogComponent {
+            kind: protocol_id("entry"),
+            id: protocol_id("e1"),
+            leaves: vec![leaf],
+            owner: leaf,
+        };
+        let mut components = stream::iter([component]).chain(stream::pending()).boxed();
+        let mut build =
+            Box::pin(catalog.build(&store, catalog_root_ref(1), &mut components, &ok_valid));
+        std::future::poll_fn(|cx| {
+            assert!(build.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(catalog.buffered.load(Ordering::SeqCst), 1);
+        drop(build);
+        store.adjust(leaf, -1, 0).expect("producer release");
+        assert_eq!(catalog.buffered.load(Ordering::SeqCst), 0);
+        assert_eq!(store.status().resident_payload_bytes, 0);
+        store.idle().await;
+        store.retire().await.expect("retire");
     }
 
     #[tokio::test]

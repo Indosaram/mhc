@@ -58,61 +58,109 @@ impl MirrorPending {
         deliver: impl FnOnce() + Send + 'static,
         drop_fn: Option<Box<dyn FnOnce() + Send>>,
     ) {
+        for action in self.enqueue_actions(line, Box::new(deliver), drop_fn) {
+            action();
+        }
+    }
+
+    pub fn enqueue_shared(
+        pending: &std::sync::Mutex<Self>,
+        line: &str,
+        deliver: impl FnOnce() + Send + 'static,
+        drop_fn: Option<Box<dyn FnOnce() + Send>>,
+    ) {
+        let actions = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .enqueue_actions(line, Box::new(deliver), drop_fn);
+        for action in actions {
+            action();
+        }
+    }
+
+    fn enqueue_actions(
+        &mut self,
+        line: &str,
+        deliver: Box<dyn FnOnce() + Send>,
+        drop_fn: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Vec<Box<dyn FnOnce() + Send>> {
         if self.reason.is_some() {
-            if let Some(drop_fn) = drop_fn {
-                drop_fn();
-            }
-            return;
+            return drop_fn.into_iter().collect();
         }
         if self.active {
-            deliver();
-            return;
+            return vec![deliver];
         }
         let bytes = line.len();
         if self.records.len() >= MIRROR_PENDING_LIMITS_ENTRIES
             || self.bytes + bytes > MIRROR_PENDING_LIMITS_BYTES
         {
             self.reason = Some(MirrorPendingReason::AdmissionLimit);
-            self.clear();
-            if let Some(drop_fn) = drop_fn {
-                drop_fn();
-            }
-            return;
+            let mut actions = self.clear_actions();
+            actions.extend(drop_fn);
+            return actions;
         }
         self.bytes += bytes;
-        self.records.push(PendingRecord {
-            deliver: Box::new(deliver),
-            drop_fn,
-        });
+        self.records.push(PendingRecord { deliver, drop_fn });
+        Vec::new()
     }
 
     /// Synchronous ownership transfer into the already installed actor barrier, never a second producer.
     pub fn activate(&mut self) {
+        for action in self.activate_actions() {
+            action();
+        }
+    }
+
+    pub fn activate_shared(pending: &std::sync::Mutex<Self>) {
+        let actions = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .activate_actions();
+        for action in actions {
+            action();
+        }
+    }
+
+    fn activate_actions(&mut self) -> Vec<Box<dyn FnOnce() + Send>> {
         if self.reason.is_some() || self.active {
-            return;
+            return Vec::new();
         }
         self.active = true;
         let records = std::mem::take(&mut self.records);
         self.bytes = 0;
-        for record in records {
-            (record.deliver)();
-        }
+        records.into_iter().map(|record| record.deliver).collect()
     }
 
     pub fn retire(&mut self, reason: Option<MirrorPendingReason>) {
         self.reason
             .get_or_insert(reason.unwrap_or(MirrorPendingReason::AttemptCancelled));
-        self.clear();
+        for action in self.clear_actions() {
+            action();
+        }
     }
 
-    fn clear(&mut self) {
+    pub fn retire_shared(pending: &std::sync::Mutex<Self>, reason: Option<MirrorPendingReason>) {
+        let actions = {
+            let mut guard = pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard
+                .reason
+                .get_or_insert(reason.unwrap_or(MirrorPendingReason::AttemptCancelled));
+            guard.clear_actions()
+        };
+        for action in actions {
+            action();
+        }
+    }
+
+    fn clear_actions(&mut self) -> Vec<Box<dyn FnOnce() + Send>> {
         let records = std::mem::take(&mut self.records);
         self.bytes = 0;
-        for record in records {
-            if let Some(drop_fn) = record.drop_fn {
-                drop_fn();
-            }
-        }
+        records
+            .into_iter()
+            .filter_map(|record| record.drop_fn)
+            .collect()
     }
 }
 
@@ -123,6 +171,36 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn shared_activation_and_retirement_run_callbacks_without_lock() {
+        for activate in [true, false] {
+            let pending = Arc::new(std::sync::Mutex::new(MirrorPending::new()));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let delivered_pending = Arc::clone(&pending);
+            let delivered_calls = Arc::clone(&calls);
+            let dropped_pending = Arc::clone(&pending);
+            let dropped_calls = Arc::clone(&calls);
+            MirrorPending::enqueue_shared(
+                &pending,
+                "line",
+                move || {
+                    assert!(delivered_pending.try_lock().is_ok());
+                    delivered_calls.fetch_add(1, Ordering::SeqCst);
+                },
+                Some(Box::new(move || {
+                    assert!(dropped_pending.try_lock().is_ok());
+                    dropped_calls.fetch_add(1, Ordering::SeqCst);
+                })),
+            );
+            if activate {
+                MirrorPending::activate_shared(&pending);
+            } else {
+                MirrorPending::retire_shared(&pending, None);
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
 
     #[test]
     fn buffers_until_activate_and_delivers_immediately_after() {

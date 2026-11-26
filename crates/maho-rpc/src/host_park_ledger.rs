@@ -294,7 +294,9 @@ impl<S: Clone + Send + Sync + 'static> HostParkLedger<S> {
     async fn retire(&self, key: &str, park: &Arc<Mutex<ParkEntry<S>>>) {
         let (existing_rx, opened, tx_done) = {
             let mut g = park.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(expiry) = g.expiry.take() {
+            if let Some(expiry) = g.expiry.take()
+                && Some(expiry.id()) != tokio::task::try_id()
+            {
                 expiry.abort();
             }
             if let Some(rx) = &g.closing {
@@ -333,6 +335,49 @@ mod tests {
     use super::*;
     use futures::FutureExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_finishes_async_close_and_releases_slot() {
+        let (started_tx, mut started_rx) = watch::channel(false);
+        let (release_tx, release_rx) = watch::channel(false);
+        let ledger = HostParkLedger::with_ttl(
+            move |_: String| {
+                let started = started_tx.clone();
+                let mut release = release_rx.clone();
+                async move {
+                    started.send_replace(true);
+                    release.wait_for(|ready| *ready).await.expect("release");
+                }
+                .boxed()
+            },
+            Duration::from_secs(1),
+        );
+        ledger
+            .park("expired", || async { Ok("session".to_owned()) }.boxed())
+            .await
+            .expect("park");
+        let entry = ledger.state.lock().expect("state").parks["expired"].clone();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            started_rx.wait_for(|started| *started),
+        )
+        .await
+        .expect("close start deadline")
+        .expect("close started");
+        let mut finished = entry
+            .lock()
+            .expect("entry")
+            .closing
+            .clone()
+            .expect("closing");
+        release_tx.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), finished.wait_for(|done| *done))
+            .await
+            .expect("close deadline")
+            .expect("close completed");
+        assert_eq!(ledger.size(), 0);
+    }
 
     #[tokio::test]
     async fn parks_coalesces_bounds_capacity_claims_and_stops() {

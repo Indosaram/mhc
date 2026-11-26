@@ -406,7 +406,7 @@ pub async fn produce_page(
     valid: Option<ValidCheck<'_>>,
 ) -> Result<RecoveryPage, RecoveryBytesError> {
     let total = bytes.length();
-    if offset >= total && total > 0 {
+    if offset > total || (offset == total && total > 0) {
         return Err(RecoveryBytesError::Range);
     }
     let length = FRAGMENT_MAX_BYTES.min(total - offset);
@@ -498,5 +498,9 @@ mod tests {
         assert_eq!(page.length, 0);
         assert!(page.complete);
         assert_eq!(page.next, None);
+        assert!(matches!(
+            produce_page(frozen.as_ref(), 1, None).await,
+            Err(RecoveryBytesError::Range)
+        ));
     }
 }

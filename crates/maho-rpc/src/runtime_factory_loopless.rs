@@ -460,10 +460,20 @@ impl HandFileGuards for RunnerFileGuards {
     }
 
     fn filesystem_policy(&self) -> Option<FilesystemPolicyChecker> {
-        self.runner
-            .try_lock()
-            .ok()
-            .and_then(|runner| runner.filesystem_policy())
+        if let Ok(runner) = self.runner.try_lock() {
+            return runner.filesystem_policy();
+        }
+        let runner = Arc::clone(&self.runner);
+        Some(Arc::new(move |request| {
+            let runner = Arc::clone(&runner);
+            Box::pin(async move {
+                let policy = runner.lock().await.filesystem_policy();
+                match policy {
+                    Some(check) => check(request).await,
+                    None => Ok(maho_tools::filesystem_policy::FilesystemPolicyDecision::Allow),
+                }
+            })
+        }))
     }
 }
 
@@ -719,6 +729,104 @@ mod tests {
     use crate::loopless_execute_grant::grant_loopless_execute_to_test_harness;
     use crate::loopless_runtime::LooplessRuntimeProfile;
     use serde_json::json;
+
+    struct DenyingRunner;
+
+    #[async_trait]
+    impl LooplessExtensionRunner for DenyingRunner {
+        fn has_handlers(&self, _: EventKind) -> bool {
+            false
+        }
+        async fn emit_tool_call(
+            &mut self,
+            _: &mut ToolCallEvent,
+        ) -> Result<Option<ToolCallEventResult>, ExtensionFailure> {
+            Ok(None)
+        }
+        async fn emit_tool_result(
+            &mut self,
+            _: ToolResultEvent,
+        ) -> Result<Option<ToolResultEventResult>, ExtensionFailure> {
+            Ok(None)
+        }
+        async fn emit_input(
+            &mut self,
+            _: InputEvent,
+        ) -> Result<InputEventResult, ExtensionFailure> {
+            Ok(InputEventResult::Continue)
+        }
+        async fn emit_before_agent_start(
+            &mut self,
+            _: BeforeAgentStartEvent,
+        ) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
+            Ok(None)
+        }
+        async fn emit_before_provider_request_with_metadata(
+            &mut self,
+            payload: Value,
+            _: Option<Model>,
+            _: Option<BTreeMap<String, Option<String>>>,
+            _: Option<&str>,
+        ) -> Result<Value, ExtensionFailure> {
+            Ok(payload)
+        }
+        async fn emit(&mut self, _: ExtensionEvent) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn on_error(&mut self, _: LooplessExtensionErrorListener) {}
+        fn invalidate(&self, _: &str) {}
+        fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
+            Vec::new()
+        }
+        fn filesystem_policy(&self) -> Option<FilesystemPolicyChecker> {
+            Some(Arc::new(|_| {
+                Box::pin(async {
+                    Ok(
+                        maho_tools::filesystem_policy::FilesystemPolicyDecision::Deny {
+                            reason: "denied".to_owned(),
+                        },
+                    )
+                })
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn file_policy_waits_for_contended_runner_instead_of_allowing() {
+        use maho_tools::filesystem_policy::{
+            FilesystemOperation, FilesystemPolicyDecision, FilesystemPolicyRequest,
+        };
+        use std::task::Poll;
+
+        let runner: Arc<Mutex<dyn LooplessExtensionRunner>> = Arc::new(Mutex::new(DenyingRunner));
+        let guard = RunnerFileGuards {
+            handlers: crate::loopless_tool_handlers::extension_tool_handlers(
+                Arc::clone(&runner),
+                crate::loopless_tool_handlers::TwoSidedHome::Loop,
+            ),
+            runner: Arc::clone(&runner),
+        };
+        let held = runner.lock().await;
+        let checker = guard
+            .filesystem_policy()
+            .expect("policy must remain enforced under contention");
+        let mut decision = checker(FilesystemPolicyRequest {
+            operation: FilesystemOperation::Read,
+            canonical_path: PathBuf::from("/restricted"),
+            tool_name: "read".to_owned(),
+        });
+        std::future::poll_fn(|cx| {
+            assert!(decision.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(held);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), decision)
+            .await
+            .expect("policy deadline")
+            .expect("policy decision");
+        assert!(matches!(result, FilesystemPolicyDecision::Deny { .. }));
+    }
 
     #[tokio::test]
     async fn builds_loopless_runtime_refuses_without_grant_and_runs_with_grant() {

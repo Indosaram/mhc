@@ -59,6 +59,7 @@ pub struct Epoch {
     pub retired_order: VecDeque<String>,
     pub retired: HashSet<String>,
     pub serial_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) callback_active: bool,
     pub ended: bool,
     pub waiting: usize,
 }
@@ -75,6 +76,7 @@ impl Epoch {
             retired_order: VecDeque::new(),
             retired: HashSet::new(),
             serial_lock: Arc::new(tokio::sync::Mutex::new(())),
+            callback_active: false,
             ended: false,
             waiting: 0,
         }

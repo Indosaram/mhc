@@ -77,10 +77,7 @@ impl AdmissionRoutingActor {
         self.subscriptions.clear();
         self.mirror_owners.clear();
         for pending in self.pending_mirrors.values() {
-            pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .retire(None);
+            MirrorPending::retire_shared(pending, None);
         }
         self.pending_mirrors.clear();
         self.admissions.clear();
@@ -290,6 +287,7 @@ impl AdmissionRoutingActor {
         };
 
         let remaining = Arc::new(Mutex::new((lines.len(), false)));
+        let overflow = Arc::new(Mutex::new(None));
         for (i, routed_line) in lines.into_iter().enumerate() {
             let adm_id = serde_json::from_str::<Value>(routed_line.trim_end())
                 .ok()
@@ -307,51 +305,60 @@ impl AdmissionRoutingActor {
             let demoted_line = replacements.as_ref().and_then(|r| r.get(i)).cloned();
             let rem_ok = remaining.clone();
             let written_ok = written.clone();
+            let overflow_for_delivery = Arc::clone(&overflow);
             let line_for_deliver = routed_line.clone();
             let deliver = move || {
                 let mut ok = true;
                 if let Some(sink) = &sink
-                    && sink
-                        .enqueue(QueueEntry {
-                            line: line_for_deliver,
-                            key: entry_key,
-                            demoted_line,
-                            on_written: None,
-                        })
-                        .is_err()
+                    && let Err(error) = sink.enqueue(QueueEntry {
+                        line: line_for_deliver,
+                        key: entry_key,
+                        demoted_line,
+                        on_written: None,
+                    })
                 {
                     ok = false;
+                    *overflow_for_delivery
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
                 }
-                let mut st = rem_ok.lock().unwrap_or_else(PoisonError::into_inner);
-                st.1 |= ok;
-                st.0 -= 1;
-                if st.0 == 0
+                let finished = {
+                    let mut st = rem_ok.lock().unwrap_or_else(PoisonError::into_inner);
+                    st.1 |= ok;
+                    st.0 -= 1;
+                    (st.0 == 0).then_some(st.1)
+                };
+                if let Some(success) = finished
                     && let Some(cb) = &written_ok
                 {
-                    cb(st.1);
+                    cb(success);
                 }
             };
             if let Some(pending) = pending {
                 let rem_drop = remaining.clone();
                 let written_drop = written.clone();
                 let drop_fn: Box<dyn FnOnce() + Send> = Box::new(move || {
-                    let mut st = rem_drop.lock().unwrap_or_else(PoisonError::into_inner);
-                    st.0 -= 1;
-                    if st.0 == 0
+                    let finished = {
+                        let mut st = rem_drop.lock().unwrap_or_else(PoisonError::into_inner);
+                        st.0 -= 1;
+                        (st.0 == 0).then_some(st.1)
+                    };
+                    if let Some(success) = finished
                         && let Some(cb) = &written_drop
                     {
-                        cb(st.1);
+                        cb(success);
                     }
                 });
-                pending
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .enqueue(&routed_line, deliver, Some(drop_fn));
+                MirrorPending::enqueue_shared(&pending, &routed_line, deliver, Some(drop_fn));
             } else {
                 deliver();
             }
         }
-        Ok(())
+        let error = overflow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        error.map_or(Ok(()), Err)
     }
 }
 
@@ -367,6 +374,51 @@ mod tests {
     use crate::session_acceptance_lane::{FrozenAcceptedRoot, RetireReason, SessionAcceptanceLane};
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn direct_routed_overflow_returns_queue_error() {
+        let sink = SocketEventSinkActor::new(
+            tokio::io::sink(),
+            1,
+            30_000,
+            Arc::new(Mutex::new(
+                crate::loop_blocked_time::LoopBlockedTime::default(),
+            )),
+            |_| {},
+        );
+        let mut actor = AdmissionRoutingActor::new(Some(sink));
+        let result = actor.enqueue_routed("{\"type\":\"event\"}\n", None, None, None);
+        assert!(result.is_err(), "queue overflow must reach the caller");
+        actor.close();
+    }
+
+    #[test]
+    fn active_mirror_written_callback_can_reenter_pending() {
+        let pending = Arc::new(Mutex::new(MirrorPending::new()));
+        pending.lock().expect("pending").activate();
+        let mut actor = AdmissionRoutingActor::default();
+        actor
+            .pending_mirrors
+            .insert("adm-1".into(), Arc::clone(&pending));
+        let unlocked = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&unlocked);
+        let pending_for_callback = Arc::clone(&pending);
+        actor
+            .enqueue_routed(
+                "{\"type\":\"event\",\"admissionId\":\"adm-1\"}\n",
+                None,
+                None,
+                Some(Arc::new(move |_| {
+                    observed.store(pending_for_callback.try_lock().is_ok(), Ordering::SeqCst);
+                })),
+            )
+            .expect("enqueue");
+        assert!(
+            unlocked.load(Ordering::SeqCst),
+            "callback ran under mirror lock"
+        );
+        actor.close();
+    }
 
     struct TestLane {
         lane: Mutex<SessionAcceptanceLane>,

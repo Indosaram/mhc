@@ -444,12 +444,20 @@ pub async fn compact_open(
                             if let Some((_, rel)) = slot {
                                 rel().await;
                             }
-                            *physical_refusal
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner) = Some(resp);
-                            Err(CompactAdmissionError::new(
-                                CompactAdmissionReason::StorageUnavailable,
-                            ))
+                            if let Value::Object(answer) = resp {
+                                *physical_refusal
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner) =
+                                    Some(Value::Object(answer.clone()));
+                                Ok(Produced::simple(answer))
+                            } else {
+                                *unexpected_err
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner) = Some(resp);
+                                Err(CompactAdmissionError::new(
+                                    CompactAdmissionReason::StorageUnavailable,
+                                ))
+                            }
                         }
                         Ok(None) => {
                             let Some((answer, release)) = slot else {
@@ -476,8 +484,16 @@ pub async fn compact_open(
             .await
     };
 
+    let physical_refusal = if run_res.is_ok() {
+        physical_refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    } else {
+        None
+    };
     match run_res {
-        Ok(answer) => {
+        Ok(answer) if physical_refusal.is_none() => {
             let cancelled = cancelled_answer().await;
             let mut response = cancelled.clone().unwrap_or(answer);
             if let Some(id) = command.id {
@@ -522,11 +538,15 @@ pub async fn compact_open(
                     deliver();
                 }
             } else {
-                let _ = host.enqueue_control(Value::Object(response), &peer).await;
+                host.enqueue_control(Value::Object(response), &peer)
+                    .await
+                    .map_err(
+                        |error| json!({"error": "control_enqueue_failed", "message": error}),
+                    )?;
             }
             Ok(None)
         }
-        Err(cause) => {
+        result => {
             if let Some(tx) = delivery_tx
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -534,11 +554,7 @@ pub async fn compact_open(
             {
                 let _ = tx.send(None);
             }
-            let err_kind = if let Some(resp) = physical_refusal
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-            {
+            let err_kind = if let Some(resp) = physical_refusal {
                 PhysicalOrAdmissionError::OpenRefused(resp)
             } else if let Some(unexp) = unexpected_err
                 .lock()
@@ -547,7 +563,7 @@ pub async fn compact_open(
             {
                 PhysicalOrAdmissionError::Unexpected(unexp)
             } else {
-                PhysicalOrAdmissionError::Admission(cause)
+                PhysicalOrAdmissionError::Admission(result.expect_err("admission failed"))
             };
 
             let acc = accepted
@@ -590,9 +606,12 @@ pub async fn compact_open(
                         let fut = h.enqueue_control(ended, &p);
                         let _ = tx.send(fut);
                     }));
-                    if let Ok(fut) = rx.await {
-                        let _ = fut.await;
-                    }
+                    let fut = rx.await.map_err(|error| {
+                        json!({"error": "control_enqueue_failed", "message": error.to_string()})
+                    })?;
+                    fut.await.map_err(
+                        |error| json!({"error": "control_enqueue_failed", "message": error}),
+                    )?;
                     Ok(None)
                 }
                 PhysicalOrAdmissionError::Admission(adm_err) => {
@@ -624,9 +643,12 @@ pub async fn compact_open(
                         let fut = h.enqueue_control(ended, &p);
                         let _ = tx.send(fut);
                     }));
-                    if let Ok(fut) = rx.await {
-                        let _ = fut.await;
-                    }
+                    let fut = rx.await.map_err(|error| {
+                        json!({"error": "control_enqueue_failed", "message": error.to_string()})
+                    })?;
+                    fut.await.map_err(
+                        |error| json!({"error": "control_enqueue_failed", "message": error}),
+                    )?;
                     Ok(None)
                 }
             }
@@ -757,6 +779,7 @@ mod tests {
         lane: Arc<TestLane>,
         baselines: Mutex<Vec<GeneratedFramesCursor>>,
         controls: Mutex<Vec<Value>>,
+        fail_controls: AtomicBool,
     }
 
     impl OpenRouterHost for MockOpenHost {
@@ -806,6 +829,9 @@ mod tests {
             response: Value,
             _: &str,
         ) -> BoxFuture<'static, Result<(), String>> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Box::pin(async { Err("control queue failed".into()) });
+            }
             self.controls
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -822,6 +848,7 @@ mod tests {
             lane: Arc::new(TestLane::new()),
             baselines: Mutex::new(Vec::new()),
             controls: Mutex::new(Vec::new()),
+            fail_controls: AtomicBool::new(false),
         });
         let phys_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -892,6 +919,104 @@ mod tests {
                 .len(),
             1
         );
+        host.fail_controls.store(true, Ordering::SeqCst);
+        let replay_error = compact_open(
+            host.clone(),
+            OpenCommandInput {
+                id: Some("r3".into()),
+                command_type: "open_session".into(),
+                admission_id: Some("adm-1".into()),
+                retry: true,
+                request_fields: BTreeMap::from([("cwd".into(), json!("/tmp"))]),
+            },
+            |_, _| Box::pin(async { panic!("replay must not reopen") }),
+        )
+        .await;
+        assert!(
+            replay_error.is_err(),
+            "a failed control frame must not be reported as answered"
+        );
+        host.admissions.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn accepted_open_refusal_propagates_control_queue_failure() {
+        let host = Arc::new(MockOpenHost {
+            admissions: Arc::new(CompactAdmissions::default()),
+            checkpoints: RecoveryCheckpoints::default(),
+            lane: Arc::new(TestLane::new()),
+            baselines: Mutex::new(Vec::new()),
+            controls: Mutex::new(Vec::new()),
+            fail_controls: AtomicBool::new(true),
+        });
+        let result = compact_open(
+            host.clone(),
+            OpenCommandInput {
+                id: Some("r1".into()),
+                command_type: "open_session".into(),
+                admission_id: Some("adm-1".into()),
+                retry: false,
+                request_fields: BTreeMap::new(),
+            },
+            |accept, _| {
+                Box::pin(async move {
+                    accept(OpenedSessionInfo {
+                        session_id: "s1".into(),
+                        attached: false,
+                    })
+                    .await
+                    .map_err(|e| json!({"error": e.to_string()}))?;
+                    Ok(Some(
+                        json!({"type":"response", "success":false, "error":"open refused"}),
+                    ))
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            result.expect_err("control queue failure")["error"],
+            "control_enqueue_failed"
+        );
+        host.admissions.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn physical_refusal_is_replayed_on_retry() {
+        let host = Arc::new(MockOpenHost {
+            admissions: Arc::new(CompactAdmissions::default()),
+            checkpoints: RecoveryCheckpoints::default(),
+            lane: Arc::new(TestLane::new()),
+            baselines: Mutex::new(Vec::new()),
+            controls: Mutex::new(Vec::new()),
+            fail_controls: AtomicBool::new(false),
+        });
+        let command = |id: &str, retry| OpenCommandInput {
+            id: Some(id.into()),
+            command_type: "open_session".into(),
+            admission_id: Some("adm-refused".into()),
+            retry,
+            request_fields: BTreeMap::new(),
+        };
+        let original = compact_open(host.clone(), command("r1", false), |_, _| {
+            Box::pin(async {
+                Ok(Some(
+                    json!({"type":"response", "success":false, "errorCode":"path_in_use"}),
+                ))
+            })
+        })
+        .await
+        .expect("first refusal")
+        .expect("response");
+        assert_eq!(original["errorCode"], "path_in_use");
+        let retry = compact_open(host.clone(), command("r2", true), |_, _| {
+            Box::pin(async { panic!("retry must not reopen") })
+        })
+        .await
+        .expect("replayed refusal");
+        let replay = retry
+            .or_else(|| host.controls.lock().expect("controls").last().cloned())
+            .expect("retry response");
+        assert_eq!(replay["errorCode"], "path_in_use");
         host.admissions.dispose().await;
     }
 }

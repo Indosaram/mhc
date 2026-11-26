@@ -25,10 +25,31 @@ use crate::compact_settled_messages::SettledRead;
 use crate::session_acceptance_lane::{FrozenAcceptedRoot, RetireReason};
 use futures::future::BoxFuture;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+
+pub(crate) struct FreezeCommitVersion(Mutex<Arc<()>>);
+
+impl FreezeCommitVersion {
+    pub(crate) fn new() -> Self {
+        Self(Mutex::new(Arc::new(())))
+    }
+
+    pub(crate) fn advance(&self) -> Arc<()> {
+        let mut current = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        *current = Arc::new(());
+        Arc::clone(&current)
+    }
+
+    pub(crate) fn matches(&self, expected: &Arc<()>) -> bool {
+        Arc::ptr_eq(
+            &self.0.lock().unwrap_or_else(PoisonError::into_inner),
+            expected,
+        )
+    }
+}
 
 /// RULING-119 route retirement proof (from `route-retire-reasons.ts`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +103,25 @@ struct CheckpointLeaseState {
     dispose: Option<Box<dyn FnOnce() + Send>>,
 }
 
+struct CheckpointOperation(Arc<Mutex<CheckpointLeaseState>>);
+
+impl Drop for CheckpointOperation {
+    fn drop(&mut self) {
+        let dispose = {
+            let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            state.operations -= 1;
+            if state.released && state.operations == 0 && state.retains == 0 {
+                state.dispose.take()
+            } else {
+                None
+            }
+        };
+        if let Some(dispose) = dispose {
+            dispose();
+        }
+    }
+}
+
 impl CheckpointLease {
     fn new(
         dispose: impl FnOnce() + Send + 'static,
@@ -114,33 +154,25 @@ impl CheckpointLease {
         read: impl Future<Output = Result<T, E>>,
         map_compact: fn(CompactError) -> E,
     ) -> Result<T, E> {
+        {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.released {
+                return Err(map_compact(CompactError::read(CompactReadReason::Released)));
+            }
+            state.operations += 1;
+        }
+        let _guard = CheckpointOperation(self.state.clone());
         if let Err(err) = self.assert() {
             return Err(map_compact(err));
         }
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .released
         {
-            self.state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .operations += 1;
+            return Err(map_compact(CompactError::read(CompactReadReason::Released)));
         }
-        struct OpGuard(Arc<Mutex<CheckpointLeaseState>>);
-        impl Drop for OpGuard {
-            fn drop(&mut self) {
-                let dispose = {
-                    let mut st = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-                    st.operations -= 1;
-                    if st.released && st.operations == 0 && st.retains == 0 {
-                        st.dispose.take()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(d) = dispose {
-                    d();
-                }
-            }
-        }
-        let _guard = OpGuard(self.state.clone());
         let value = read.await?;
         if let Err(err) = self.assert() {
             return Err(map_compact(err));
@@ -155,20 +187,8 @@ impl CheckpointLease {
                 .unwrap_or_else(PoisonError::into_inner)
                 .operations += 1;
         }
-        let out = read.await;
-        let dispose = {
-            let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            st.operations -= 1;
-            if st.released && st.operations == 0 && st.retains == 0 {
-                st.dispose.take()
-            } else {
-                None
-            }
-        };
-        if let Some(d) = dispose {
-            d();
-        }
-        out
+        let _guard = CheckpointOperation(self.state.clone());
+        read.await
     }
 
     fn retain(&self, root_key: usize) -> RetainedRoot {
@@ -241,9 +261,31 @@ impl FrozenCheckpoint {
 
 pub type TokenEndListener = Arc<dyn Fn(&str) + Send + Sync>;
 
+const RETIRED_TOKEN_HISTORY_LIMIT: usize = 4096;
+
+#[derive(Default)]
+struct IssuedTokens {
+    entries: HashMap<String, RecoveryAdmission>,
+    retired: VecDeque<String>,
+}
+
+impl IssuedTokens {
+    fn retire(&mut self, id: &str) {
+        if !self.entries.contains_key(id) {
+            return;
+        }
+        self.retired.push_back(id.to_owned());
+        while self.retired.len() > RETIRED_TOKEN_HISTORY_LIMIT {
+            if let Some(oldest) = self.retired.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+}
+
 struct CheckpointsInner {
     checkpoints: Mutex<HashMap<String, FrozenCheckpoint>>,
-    issued: Mutex<HashMap<String, RecoveryAdmission>>,
+    issued: Mutex<IssuedTokens>,
     streams: Mutex<RecoveryStreams>,
     manifests: Arc<RecoveryManifests>,
     refusals: Mutex<HashMap<RefusalReason, u64>>,
@@ -271,7 +313,7 @@ impl RecoveryCheckpoints {
         Self {
             inner: Arc::new(CheckpointsInner {
                 checkpoints: Mutex::new(HashMap::new()),
-                issued: Mutex::new(HashMap::new()),
+                issued: Mutex::new(IssuedTokens::default()),
                 streams: Mutex::new(RecoveryStreams::new()),
                 manifests,
                 refusals: Mutex::new(HashMap::new()),
@@ -371,6 +413,27 @@ impl RecoveryCheckpoints {
         lane: Arc<dyn RecoveryLane>,
         join: bool,
     ) -> RecoveryOutcome<FrozenCheckpoint> {
+        self.freeze_inner(route, lane, join, None)
+            .map(|checkpoint| checkpoint.expect("unconditional freeze commits"))
+    }
+
+    pub(crate) fn freeze_if_current(
+        &self,
+        route: &RecoveryRoute,
+        lane: Arc<dyn RecoveryLane>,
+        version: &FreezeCommitVersion,
+        expected: &Arc<()>,
+    ) -> RecoveryOutcome<Option<FrozenCheckpoint>> {
+        self.freeze_inner(route, lane, false, Some((version, expected)))
+    }
+
+    fn freeze_inner(
+        &self,
+        route: &RecoveryRoute,
+        lane: Arc<dyn RecoveryLane>,
+        join: bool,
+        version: Option<(&FreezeCommitVersion, &Arc<()>)>,
+    ) -> RecoveryOutcome<Option<FrozenCheckpoint>> {
         if lane.retired() {
             return self.refuse(repair_needed(RepairReason::LaneRetired));
         }
@@ -398,7 +461,7 @@ impl RecoveryCheckpoints {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .join(route);
-                    return recovered(current);
+                    return recovered(Some(current));
                 }
             }
         }
@@ -431,12 +494,33 @@ impl RecoveryCheckpoints {
             lane.release_cut(cut.root_key);
             return self.refuse(storage_unavailable(StorageUnavailableReason::Ownership));
         }
-        let retired = self
-            .inner
-            .streams
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .next(route, &cut.root.session_epoch, &id, generation);
+        let retired = if let Some((version, expected)) = version {
+            let current = version.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if Arc::ptr_eq(&current, expected) {
+                Some(
+                    self.inner
+                        .streams
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .next(route, &cut.root.session_epoch, &id, generation),
+                )
+            } else {
+                None
+            }
+        } else {
+            Some(
+                self.inner
+                    .streams
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .next(route, &cut.root.session_epoch, &id, generation),
+            )
+        };
+        let Some(retired) = retired else {
+            self.inner.manifests.release(&id);
+            lane.release_cut(cut.root_key);
+            return recovered(None);
+        };
         let admission = RecoveryAdmission {
             socket_epoch: route.socket_epoch.clone(),
             admission_id: route.admission_id.clone(),
@@ -478,6 +562,11 @@ impl RecoveryCheckpoints {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .remove(&tok_id_dispose);
+                    inner
+                        .issued
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .retire(&tok_id_dispose);
                     let listeners = inner
                         .ended
                         .lock()
@@ -513,6 +602,7 @@ impl RecoveryCheckpoints {
             .issued
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .entries
             .insert(token.id.clone(), admission);
         self.inner
             .checkpoints
@@ -527,7 +617,7 @@ impl RecoveryCheckpoints {
         if let Some(retired_id) = retired {
             self.reclaim(&retired_id);
         }
-        recovered(checkpoint)
+        recovered(Some(checkpoint))
     }
 
     pub fn release(&self, token: &RecoveryToken) {
@@ -829,6 +919,7 @@ impl RecoveryCheckpoints {
             .issued
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .entries
             .get(&token.id)
             .cloned();
         let Some(admission) = admission else {
@@ -922,6 +1013,70 @@ mod tests {
     use crate::compact_content_store::CompactContentStoreOptions;
     use crate::compact_recovery_types::RecoveryRouteKind;
     use std::sync::atomic::AtomicU64;
+
+    #[tokio::test]
+    async fn cancelled_hold_releases_retired_checkpoint() {
+        let disposed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&disposed);
+        let lease = CheckpointLease::new(
+            move || {
+                observed.store(true, Ordering::SeqCst);
+            },
+            || Ok(()),
+        );
+        let mut held = Box::pin(lease.hold(std::future::pending::<()>()));
+        std::future::poll_fn(|cx| {
+            assert!(held.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(lease.release());
+        assert!(!disposed.load(Ordering::SeqCst));
+        drop(held);
+        assert!(
+            disposed.load(Ordering::SeqCst),
+            "cancelled hold must release its operation"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_during_validation_does_not_start_read_after_disposal() {
+        let disposed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&disposed);
+        let slot = Arc::new(Mutex::new(std::sync::Weak::<CheckpointLease>::new()));
+        let callback_slot = Arc::clone(&slot);
+        let lease = Arc::new(CheckpointLease::new(
+            move || {
+                observed.store(true, Ordering::SeqCst);
+            },
+            move || {
+                callback_slot
+                    .lock()
+                    .expect("slot")
+                    .upgrade()
+                    .expect("lease")
+                    .release();
+                Ok(())
+            },
+        ));
+        *slot.lock().expect("slot") = Arc::downgrade(&lease);
+        let did_read = AtomicBool::new(false);
+        let result = lease
+            .run(
+                async {
+                    did_read.store(true, Ordering::SeqCst);
+                    Ok::<(), CompactError>(())
+                },
+                |error| error,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            !did_read.load(Ordering::SeqCst),
+            "released checkpoint must not start reading"
+        );
+        assert!(disposed.load(Ordering::SeqCst));
+    }
 
     struct RealLaneWrap {
         lane: Mutex<crate::session_acceptance_lane::SessionAcceptanceLane>,
@@ -1045,6 +1200,50 @@ mod tests {
             peer: "peer-1".into(),
             session_id: "s1".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn retired_checkpoint_history_is_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lane = Arc::new(RealLaneWrap::new(&dir));
+        let checkpoints = RecoveryCheckpoints::default();
+        let route = route("se-1", "adm-1");
+        let oldest = checkpoints
+            .freeze(&route, lane.clone(), false)
+            .expect("first");
+        for _ in 1..4099 {
+            checkpoints
+                .freeze(&route, lane.clone(), false)
+                .expect("freeze");
+        }
+        let recent = checkpoints
+            .freeze(&route, lane.clone(), false)
+            .expect("recent");
+        checkpoints
+            .freeze(&route, lane.clone(), false)
+            .expect("latest");
+        assert!(
+            checkpoints
+                .inner
+                .issued
+                .lock()
+                .expect("issued")
+                .entries
+                .len()
+                <= 4097,
+            "retired token history must be bounded in addition to the live token"
+        );
+        assert_eq!(
+            checkpoints.check(&oldest.token, &route.caller()),
+            Err(repair_needed(RepairReason::UnknownToken))
+        );
+        assert_eq!(
+            checkpoints.check(&recent.token, &route.caller()),
+            Err(crate::compact_recovery_types::superseded_token(4101))
+        );
+        checkpoints.forget_peer("se-1");
+        lane.store.idle().await;
+        lane.store.retire().await.expect("retire");
     }
 
     #[tokio::test]

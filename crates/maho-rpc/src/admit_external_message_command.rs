@@ -159,7 +159,7 @@ pub fn admit_external_message(
     };
     let editor = json!({});
     let busy = session.is_streaming();
-    match admission.admit_with_stamp_and_holds(&input, &editor, busy, &[], stamp, deliver) {
+    match admission.admit_classified(&input, &editor, busy, &[], stamp, deliver) {
         Ok(res) => {
             let kind = match res["kind"].as_str().unwrap_or("queued") {
                 "started" => ExternalAdmissionKind::Started,
@@ -174,17 +174,69 @@ pub fn admit_external_message(
                 holds: None,
             })
         }
-        Err(err) => AdmitExternalMessageAnswer::Refused {
-            message: err,
-            error_code: RPC_ERROR_SESSION_CLOSING.to_owned(),
-            error_data: None,
-        },
+        Err(err) => {
+            let error_code = match &err {
+                maho_core::external_admission::ExternalAdmissionError::Closed(_) => {
+                    RPC_ERROR_SESSION_CLOSING
+                }
+                maho_core::external_admission::ExternalAdmissionError::Invalid(_) => {
+                    crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT
+                }
+                maho_core::external_admission::ExternalAdmissionError::Delivery(_) => {
+                    "delivery_failed"
+                }
+                maho_core::external_admission::ExternalAdmissionError::InProgress => {
+                    "delivery_in_progress"
+                }
+            };
+            AdmitExternalMessageAnswer::Refused {
+                message: err.to_string(),
+                error_code: error_code.to_owned(),
+                error_data: None,
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delivery_failure_is_not_reported_as_session_closing() {
+        let session = crate::connection_handler::test_support::session();
+        let command =
+            crate::admit_external_message_wire::parse_admit_external_message_command(&json!({
+                "type": "admit_external_message",
+                "deliveryId": "delivery-error",
+                "text": "hello",
+                "deliverAs": "followUp",
+                "whenIdle": "queue"
+            }))
+            .expect("command");
+        let peer = DeliveryPeer {
+            origin: None,
+            connection_origin: ConnectionOrigin::Local,
+            turn_origin: Some(ConnectionOrigin::Local),
+        };
+        for attempt in 0..2 {
+            let answer = admit_external_message(&session, &command, &peer, |_, _| {
+                assert_eq!(attempt, 0, "failed retry must not redeliver");
+                Err("delivery failed".into())
+            });
+            assert!(
+                matches!(answer, AdmitExternalMessageAnswer::Refused { error_code, .. }
+                if error_code == "delivery_failed")
+            );
+        }
+        session.external_admission().close("closed".into());
+        let answer = admit_external_message(&session, &command, &peer, |_, _| unreachable!());
+        assert!(
+            matches!(answer, AdmitExternalMessageAnswer::Refused { error_code, .. }
+            if error_code == RPC_ERROR_SESSION_CLOSING)
+        );
+    }
 
     #[test]
     fn ledger_id_namespaces_local_and_device() {

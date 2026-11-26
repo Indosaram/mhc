@@ -17,6 +17,7 @@ pub const TRANSCRIPT_TAIL_RESIDENT_BYTES: usize = 32 * 1024 * 1024;
 pub enum TailReadFailure {
     TranscriptSegmentMissing,
     TranscriptSegmentMismatch,
+    TranscriptTailPoisoned,
 }
 
 impl TailReadFailure {
@@ -24,6 +25,7 @@ impl TailReadFailure {
         match self {
             Self::TranscriptSegmentMissing => "transcript_segment_missing",
             Self::TranscriptSegmentMismatch => "transcript_segment_mismatch",
+            Self::TranscriptTailPoisoned => "transcript_tail_poisoned",
         }
     }
 }
@@ -81,10 +83,14 @@ impl TailHold {
         self.held.contains_key(&index)
     }
 
-    pub fn get_text(&self, index: usize) -> Option<Arc<String>> {
-        let entry = self.held.get(&index)?;
-        let guard = entry.lock().unwrap_or_else(PoisonError::into_inner);
-        Some(Arc::clone(&guard.text))
+    pub fn get_text(&self, index: usize) -> Result<Option<Arc<String>>, TailReadFailure> {
+        let Some(entry) = self.held.get(&index) else {
+            return Ok(None);
+        };
+        let guard = entry
+            .lock()
+            .map_err(|_| TailReadFailure::TranscriptTailPoisoned)?;
+        Ok(Some(Arc::clone(&guard.text)))
     }
 
     pub fn release(&mut self) {
@@ -298,6 +304,28 @@ pub fn stage_bootstrap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poisoned_held_tail_is_not_read_as_valid_text() {
+        let budget = Arc::new(Mutex::new(TailBudget::with_default()));
+        let mut tail = TranscriptTail::new(None, budget);
+        let staged = tail.stage(0, "{\"id\":\"0\"}").expect("stage");
+        tail.adopt(0, staged);
+        let hold = tail.hold(1, 0);
+        let entry = Arc::clone(tail.entries.get(&0).expect("entry"));
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = entry.lock().expect("entry");
+                panic!("poison held entry");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            hold.get_text(0),
+            Err(TailReadFailure::TranscriptTailPoisoned)
+        );
+    }
 
     #[test]
     fn hold_pins_kept_entries_across_persisted_until_cut_released() {

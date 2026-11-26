@@ -152,7 +152,17 @@ impl WorkerTransfer {
             (self.post)(message);
             return Ok(());
         }
-        let count = units.len().div_ceil(FRAGMENT_UNITS);
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        while start < units.len() {
+            let mut end = start.saturating_add(FRAGMENT_UNITS).min(units.len());
+            if end < units.len() && (0xd800..=0xdbff).contains(&units[end - 1]) {
+                end -= 1;
+            }
+            ranges.push((start, end));
+            start = end;
+        }
+        let count = ranges.len();
         let has_ordinal = message.get("ordinal").is_some_and(|v| !v.is_null());
         let commit = has_ordinal.then(|| self.stamp.defer((count - 1) as u64));
         let msg_type = message
@@ -162,19 +172,18 @@ impl WorkerTransfer {
             .to_owned();
         let signal = message.get("signal").cloned();
 
-        for index in 0..count {
+        for (index, (start, end)) in ranges.into_iter().enumerate() {
             if index > 0 && !self.take() {
                 return Ok(());
             }
             let is_last = index == count - 1;
-            let start = index * FRAGMENT_UNITS;
-            let end = ((index + 1) * FRAGMENT_UNITS).min(units.len());
-            let chunk_text = String::from_utf16_lossy(&units[start..end]);
+            let chunk_text =
+                String::from_utf16(&units[start..end]).map_err(|err| err.to_string())?;
             let mut frag = json!({
                 "type": "fragment",
                 "of": msg_type,
                 "length": units.len() * 2,
-                "offset": index * FRAGMENT_UNITS * 2,
+                "offset": start * 2,
                 "text": chunk_text,
             });
             if let Some(commit) = commit {
@@ -215,6 +224,53 @@ mod tests {
     use super::*;
     use crate::session_worker_permits::{HostPermits, WorkerPermitLedger};
     use std::sync::Mutex;
+
+    #[test]
+    fn fragmented_message_preserves_surrogate_pair_at_boundary() {
+        let ledger = Arc::new(WorkerPermitLedger::default());
+        let host = HostPermits::new(ledger);
+        let posted = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = Arc::clone(&posted);
+        let returned = host.clone();
+        let mut transfer = WorkerTransfer::new(
+            Arc::new(move |value| {
+                captured.lock().expect("posted").push(value);
+                returned.returned();
+            }),
+            host.block.clone(),
+            CompactProducerStamp::new(),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+        );
+        let empty = serde_json::to_string(&json!({"type": "output", "body": ""})).expect("json");
+        let prefix = empty.find("\"body\":\"").expect("body") + "\"body\":\"".len();
+        let body = format!(
+            "{}😀{}",
+            "a".repeat(FRAGMENT_UNITS - prefix - 1),
+            "z".repeat(16)
+        );
+        let message = json!({"type": "output", "body": body});
+        let original = serde_json::to_string(&message).expect("json");
+        transfer.send(|| Ok(message)).expect("send");
+        let fragments = posted.lock().expect("posted");
+        assert!(fragments.len() > 1);
+        let reconstructed: String = fragments
+            .iter()
+            .map(|fragment| fragment["text"].as_str().expect("fragment text"))
+            .collect();
+        assert_eq!(reconstructed, original);
+        let mut offset = 0;
+        for fragment in fragments.iter() {
+            assert_eq!(fragment["offset"].as_u64(), Some(offset as u64));
+            offset += fragment["text"]
+                .as_str()
+                .expect("fragment text")
+                .encode_utf16()
+                .count()
+                * 2;
+        }
+        host.close();
+    }
 
     #[test]
     fn small_message_posts_directly_and_large_message_fragments_with_deferred_ordinal() {

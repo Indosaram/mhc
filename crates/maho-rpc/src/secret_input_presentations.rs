@@ -55,15 +55,14 @@ impl RaiserNotices {
     fn raised(
         &mut self,
         fanout: &SessionEventFanout,
-        flush: &dyn Fn(),
         session_id: &str,
         ui_request_id: &str,
         excluded: &[Option<&str>],
         mut notice: Value,
-    ) {
+    ) -> bool {
         let session = self.pending.entry(session_id.to_owned()).or_default();
         if session.contains_key(ui_request_id) {
-            return;
+            return false;
         }
         let recipients: Vec<String> = fanout
             .targets
@@ -75,7 +74,7 @@ impl RaiserNotices {
             })
             .collect();
         if recipients.is_empty() {
-            return;
+            return false;
         }
         session.insert(ui_request_id.to_owned(), recipients.clone());
         notice["sessionId"] = json!(session_id);
@@ -84,23 +83,23 @@ impl RaiserNotices {
             for id in &recipients {
                 let _ = fanout.enqueue_line(id, &line);
             }
-            flush();
+            return true;
         }
+        false
     }
 
     fn settled(
         &mut self,
         fanout: &SessionEventFanout,
-        flush: &dyn Fn(),
         session_id: &str,
         ui_request_id: &str,
         mut record: Value,
-    ) {
+    ) -> bool {
         let Some(session) = self.pending.get_mut(session_id) else {
-            return;
+            return false;
         };
         let Some(recipients) = session.remove(ui_request_id) else {
-            return;
+            return false;
         };
         if session.is_empty() {
             self.pending.remove(session_id);
@@ -111,12 +110,14 @@ impl RaiserNotices {
             for id in &recipients {
                 let _ = fanout.enqueue_line(id, &line);
             }
-            flush();
+            return true;
         }
+        false
     }
 }
 
 struct SecretOwner {
+    identity: Arc<()>,
     session: String,
     connection: Option<String>,
     cancel: Option<Box<dyn FnOnce() + Send + Sync>>,
@@ -125,6 +126,30 @@ struct SecretOwner {
     background: bool,
     raised_by: String,
     origin: Option<RpcRemoteOrigin>,
+}
+
+impl SecretOwner {
+    fn snapshot(&self) -> Self {
+        Self {
+            identity: Arc::clone(&self.identity),
+            session: self.session.clone(),
+            connection: self.connection.clone(),
+            cancel: None,
+            raiser: self.raiser,
+            sealed: self.sealed.clone(),
+            background: self.background,
+            raised_by: self.raised_by.clone(),
+            origin: self.origin.clone(),
+        }
+    }
+
+    fn matches_snapshot(&self, snapshot: &Self) -> bool {
+        Arc::ptr_eq(&self.identity, &snapshot.identity)
+            && self.connection == snapshot.connection
+            && self.raiser == snapshot.raiser
+            && self.sealed == snapshot.sealed
+            && self.background == snapshot.background
+    }
 }
 
 struct PresentationInner {
@@ -138,6 +163,7 @@ struct PresentationInner {
     sole_capabilities: Vec<String>,
     sealed_source: Option<Arc<dyn SealedSecretSource>>,
     sealed_unsub: Option<Box<dyn FnOnce() + Send>>,
+    sealed_generation: Arc<()>,
     latches: HashMap<String, Arc<dyn SealedLatch>>,
 }
 
@@ -195,36 +221,6 @@ impl PresentationInner {
             owner,
         )
     }
-
-    fn available(&self, fanout: &SessionEventFanout, owner: &SecretOwner) -> bool {
-        (owner.raiser && self.live(fanout, owner))
-            || owner
-                .sealed
-                .iter()
-                .any(|h| self.sealed_source.as_ref().is_some_and(|s| s.current(h)))
-    }
-
-    fn recheck(&mut self) {
-        let to_cancel: Vec<Box<dyn FnOnce() + Send + Sync>> = {
-            let fanout = self
-                .fanout
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let unavailable_ids: Vec<String> = self
-                .owners
-                .iter()
-                .filter(|(_, owner)| !self.available(&fanout, owner))
-                .map(|(id, _)| id.clone())
-                .collect();
-            unavailable_ids
-                .into_iter()
-                .filter_map(|id| self.owners.get_mut(&id).and_then(|o| o.cancel.take()))
-                .collect()
-        };
-        for cancel in to_cancel {
-            cancel();
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -252,18 +248,18 @@ impl SecretInputPresentations {
                 sole_capabilities: Vec::new(),
                 sealed_source: None,
                 sealed_unsub: None,
+                sealed_generation: Arc::new(()),
                 latches: HashMap::new(),
             })),
         }
     }
 
     pub fn handshake(&self, capabilities: &[String]) {
-        let mut inner = self
-            .inner
+        self.inner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.sole_capabilities = capabilities.to_vec();
-        inner.recheck();
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sole_capabilities = capabilities.to_vec();
+        self.recheck();
     }
 
     pub fn use_sealed(
@@ -271,41 +267,66 @@ impl SecretInputPresentations {
         source: Option<Arc<dyn SealedSecretSource>>,
     ) -> Box<dyn FnOnce() + Send> {
         let weak = Arc::downgrade(&self.inner);
-        let source_ptr = source
-            .as_ref()
-            .map(|s| Arc::as_ptr(s).cast::<()>() as usize);
-        {
+        let generation = Arc::new(());
+        let old_unsub = {
             let mut inner = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(unsub) = inner.sealed_unsub.take() {
-                unsub();
-            }
+            let old_unsub = inner.sealed_unsub.take();
+            inner.sealed_generation = Arc::clone(&generation);
             inner.sealed_source = source.clone();
-            inner.sealed_unsub = source.as_ref().map(|src| {
-                let this = self.clone();
-                src.on_change(Arc::new(move || this.recheck()))
-            });
-            inner.recheck();
+            old_unsub
+        };
+        if let Some(unsub) = old_unsub {
+            unsub();
         }
+        self.recheck();
+        let new_unsub = source.as_ref().map(|src| {
+            let this = self.clone();
+            src.on_change(Arc::new(move || this.recheck()))
+        });
+        let (stale_unsub, installed) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if Arc::ptr_eq(&inner.sealed_generation, &generation) {
+                inner.sealed_unsub = new_unsub;
+                (None, true)
+            } else {
+                (new_unsub, false)
+            }
+        };
+        if let Some(unsub) = stale_unsub {
+            unsub();
+        }
+        if installed {
+            self.recheck();
+        }
+        let this = self.clone();
         Box::new(move || {
             let Some(arc) = weak.upgrade() else {
                 return;
             };
-            let mut inner = arc
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let current_ptr = inner
-                .sealed_source
-                .as_ref()
-                .map(|s| Arc::as_ptr(s).cast::<()>() as usize);
-            if current_ptr == source_ptr {
-                if let Some(unsub) = inner.sealed_unsub.take() {
-                    unsub();
+            let (unsub, removed) = {
+                let mut inner = arc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if Arc::ptr_eq(&inner.sealed_generation, &generation) {
+                    let unsub = inner.sealed_unsub.take();
+                    inner.sealed_source = None;
+                    inner.sealed_generation = Arc::new(());
+                    (unsub, true)
+                } else {
+                    (None, false)
                 }
-                inner.sealed_source = None;
-                inner.recheck();
+            };
+            if let Some(unsub) = unsub {
+                unsub();
+            }
+            if removed {
+                this.recheck();
             }
         })
     }
@@ -342,63 +363,126 @@ impl SecretInputPresentations {
     }
 
     pub fn recheck(&self) {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recheck();
-    }
-
-    /// The raiser leaves; the request ends only when no sealed holder is current either.
-    pub fn detach(&self, connection: &str) {
-        let cancels: Vec<Box<dyn FnOnce() + Send + Sync>> = {
+        let (fanout, capabilities, locality, source, generation, owners) = {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                Arc::clone(&inner.fanout),
+                inner.sole_capabilities.clone(),
+                Arc::clone(&inner.locality),
+                inner.sealed_source.clone(),
+                Arc::clone(&inner.sealed_generation),
+                inner
+                    .owners
+                    .iter()
+                    .filter(|(_, owner)| owner.cancel.is_some())
+                    .map(|(id, owner)| (id.clone(), owner.snapshot()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let unavailable = owners
+            .into_iter()
+            .filter(|(_, owner)| {
+                let live = owner.raiser && {
+                    let fanout = fanout
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    PresentationInner::owner_live(&capabilities, locality.as_ref(), &fanout, owner)
+                };
+                !live
+                    && !owner
+                        .sealed
+                        .iter()
+                        .any(|holder| source.as_ref().is_some_and(|s| s.current(holder)))
+            })
+            .collect::<Vec<_>>();
+        let cancels = {
             let mut inner = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let fanout = inner.fanout.clone();
-            let fanout_guard = fanout
+            if !Arc::ptr_eq(&inner.sealed_generation, &generation)
+                || inner.sole_capabilities != capabilities
+            {
+                Vec::new()
+            } else {
+                unavailable
+                    .into_iter()
+                    .filter_map(|(id, snapshot)| {
+                        inner
+                            .owners
+                            .get_mut(&id)
+                            .filter(|owner| owner.matches_snapshot(&snapshot))
+                            .and_then(|owner| owner.cancel.take())
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        for cancel in cancels {
+            cancel();
+        }
+    }
+
+    /// The raiser leaves; the request ends only when no sealed holder is current either.
+    pub fn detach(&self, connection: &str) {
+        let (source, generation, owners) = {
+            let mut inner = self
+                .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let matching_ids: Vec<String> = inner
+            let owners = inner
                 .owners
-                .iter()
+                .iter_mut()
                 .filter(|(_, o)| o.connection.as_deref() == Some(connection))
-                .map(|(id, _)| id.clone())
-                .collect();
-            let sole_capabilities = inner.sole_capabilities.clone();
-            let locality = Arc::clone(&inner.locality);
-            let sealed_source = inner.sealed_source.clone();
-            let mut to_cancel = Vec::new();
-            let mut to_remove = Vec::new();
-            for id in matching_ids {
-                let keep = if let Some(owner) = inner.owners.get_mut(&id) {
+                .map(|(id, owner)| {
                     owner.raiser = false;
                     owner.connection = None;
-                    let has_sealed = owner
-                        .sealed
-                        .iter()
-                        .any(|h| sealed_source.as_ref().is_some_and(|s| s.current(h)));
-                    let live_raiser = owner.raiser
-                        && PresentationInner::owner_live(
-                            &sole_capabilities,
-                            locality.as_ref(),
-                            &fanout_guard,
-                            owner,
-                        );
-                    has_sealed || live_raiser
-                } else {
-                    true
-                };
-                if !keep && let Some(mut owner) = inner.owners.remove(&id) {
-                    if let Some(c) = owner.cancel.take() {
-                        to_cancel.push(c);
-                    }
-                    to_remove.push(id);
-                }
+                    (id.clone(), owner.snapshot())
+                })
+                .collect::<Vec<_>>();
+            (
+                inner.sealed_source.clone(),
+                Arc::clone(&inner.sealed_generation),
+                owners,
+            )
+        };
+        let unavailable = owners
+            .into_iter()
+            .filter(|(_, owner)| {
+                !owner
+                    .sealed
+                    .iter()
+                    .any(|holder| source.as_ref().is_some_and(|s| s.current(holder)))
+            })
+            .collect::<Vec<_>>();
+        let cancels = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !Arc::ptr_eq(&inner.sealed_generation, &generation) {
+                Vec::new()
+            } else {
+                unavailable
+                    .into_iter()
+                    .filter_map(|(id, snapshot)| {
+                        if inner
+                            .owners
+                            .get(&id)
+                            .is_some_and(|owner| owner.matches_snapshot(&snapshot))
+                        {
+                            inner
+                                .owners
+                                .remove(&id)
+                                .and_then(|mut owner| owner.cancel.take())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
             }
-            drop(fanout_guard);
-            let _ = to_remove;
-            to_cancel
         };
         for cancel in cancels {
             cancel();
@@ -419,12 +503,37 @@ impl SecretInputRoute for PresentationRoute {
         id: &str,
         unavailable: Box<dyn FnOnce() + Send + Sync>,
     ) -> Option<SecretInputUnavailableReason> {
-        let mut inner = self
-            .presentations
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let preferred = (inner.current)();
+        let (mut inner, preferred, holders) = loop {
+            let (current, source, generation) = {
+                let inner = self
+                    .presentations
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    Arc::clone(&inner.current),
+                    inner.sealed_source.clone(),
+                    Arc::clone(&inner.sealed_generation),
+                )
+            };
+            let preferred = current();
+            let holders = if self.sealed {
+                source
+                    .as_ref()
+                    .map(|s| s.holders(&self.session))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let inner = self
+                .presentations
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if Arc::ptr_eq(&inner.sealed_generation, &generation) {
+                break (inner, preferred, holders);
+            }
+        };
         let fanout_arc = inner.fanout.clone();
         let fanout = fanout_arc
             .lock()
@@ -448,15 +557,6 @@ impl SecretInputRoute for PresentationRoute {
                 SecretInputUnavailableReason::NoPresenter
             });
         }
-        let holders = if self.sealed {
-            inner
-                .sealed_source
-                .as_ref()
-                .map(|s| s.holders(&self.session))
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         if let Some(reason) = refused
             && holders.is_empty()
         {
@@ -468,6 +568,7 @@ impl SecretInputRoute for PresentationRoute {
         inner.owners.insert(
             id.to_owned(),
             SecretOwner {
+                identity: Arc::new(()),
                 session: self.session.clone(),
                 connection: if refused.is_none() { connection } else { None },
                 cancel: Some(unavailable),
@@ -504,22 +605,55 @@ impl SecretInputRoute for PresentationRoute {
     }
 
     fn available(&self, id: &str) -> bool {
-        let inner = self
-            .presentations
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(owner) = inner.owners.get(id) else {
-            return false;
-        };
-        if owner.session != self.session {
-            return false;
+        loop {
+            let (owner, fanout, capabilities, locality, source, generation) = {
+                let inner = self
+                    .presentations
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(owner) = inner
+                    .owners
+                    .get(id)
+                    .filter(|owner| owner.session == self.session)
+                else {
+                    return false;
+                };
+                (
+                    owner.snapshot(),
+                    Arc::clone(&inner.fanout),
+                    inner.sole_capabilities.clone(),
+                    Arc::clone(&inner.locality),
+                    inner.sealed_source.clone(),
+                    Arc::clone(&inner.sealed_generation),
+                )
+            };
+            let raiser_live = owner.raiser && {
+                let fanout = fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                PresentationInner::owner_live(&capabilities, locality.as_ref(), &fanout, &owner)
+            };
+            let available = raiser_live
+                || owner
+                    .sealed
+                    .iter()
+                    .any(|holder| source.as_ref().is_some_and(|s| s.current(holder)));
+            let inner = self
+                .presentations
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if Arc::ptr_eq(&inner.sealed_generation, &generation)
+                && inner.sole_capabilities == capabilities
+                && inner
+                    .owners
+                    .get(id)
+                    .is_some_and(|current| current.matches_snapshot(&owner))
+            {
+                return available;
+            }
         }
-        let fanout = inner
-            .fanout
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.available(&fanout, owner)
     }
 
     fn presenter(&self, id: &str) -> Option<String> {
@@ -553,16 +687,25 @@ impl SecretInputRoute for PresentationRoute {
     }
 
     fn sealed_outcome(&self, id: &str, outcome: SecretInputOutcome, winner_grant: Option<&str>) {
-        let inner = self
-            .presentations
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let (Some(owner), Some(source)) = (inner.owners.get(id), &inner.sealed_source)
-            && owner.session == self.session
-            && !owner.sealed.is_empty()
-        {
-            source.settle(&owner.sealed, id, outcome, winner_grant);
+        let target = {
+            let inner = self
+                .presentations
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner
+                .owners
+                .get(id)
+                .filter(|owner| owner.session == self.session && !owner.sealed.is_empty())
+                .and_then(|owner| {
+                    inner
+                        .sealed_source
+                        .clone()
+                        .map(|source| (source, owner.sealed.clone()))
+                })
+        };
+        if let Some((source, holders)) = target {
+            source.settle(&holders, id, outcome, winner_grant);
         }
     }
 
@@ -596,18 +739,27 @@ impl SecretInputRoute for PresentationRoute {
     }
 
     fn offer_sealed(&self, id: &str, offer: SealedOfferDetails) {
-        let inner = self
-            .presentations
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let (Some(owner), Some(source)) = (inner.owners.get(id), &inner.sealed_source)
-            && owner.session == self.session
-            && !owner.sealed.is_empty()
-        {
+        let target = {
+            let inner = self
+                .presentations
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner
+                .owners
+                .get(id)
+                .filter(|owner| owner.session == self.session && !owner.sealed.is_empty())
+                .and_then(|owner| {
+                    inner
+                        .sealed_source
+                        .clone()
+                        .map(|source| (source, owner.sealed.clone()))
+                })
+        };
+        if let Some((source, holders)) = target {
             source.offer(
                 &self.session,
-                &owner.sealed,
+                &holders,
                 SealedSecretOffer {
                     ui_request_id: id.to_owned(),
                     title: offer.title,
@@ -620,12 +772,57 @@ impl SecretInputRoute for PresentationRoute {
     }
 
     fn send(&self, id: &str, mut record: Value) {
-        let (cancel, line, conn, flush) = {
-            let mut inner = self
+        let (mut inner, sealed_live, holder_conns) = loop {
+            let (owner, source, generation) = {
+                let inner = self
+                    .presentations
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    inner
+                        .owners
+                        .get(id)
+                        .filter(|o| o.session == self.session)
+                        .map(SecretOwner::snapshot),
+                    inner.sealed_source.clone(),
+                    Arc::clone(&inner.sealed_generation),
+                )
+            };
+            let sealed_live = owner.as_ref().is_some_and(|owner| {
+                owner
+                    .sealed
+                    .iter()
+                    .any(|holder| source.as_ref().is_some_and(|s| s.current(holder)))
+            });
+            let holder_conns = owner
+                .as_ref()
+                .and_then(|owner| {
+                    source.as_ref().map(|src| {
+                        owner
+                            .sealed
+                            .iter()
+                            .map(|holder| src.connection_of(holder))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .unwrap_or_default();
+            let inner = self
                 .presentations
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = inner.owners.get(id).filter(|o| o.session == self.session);
+            let matches = match (&owner, current) {
+                (Some(snapshot), Some(owner)) => owner.matches_snapshot(snapshot),
+                (None, None) => true,
+                _ => false,
+            };
+            if matches && Arc::ptr_eq(&inner.sealed_generation, &generation) {
+                break (inner, sealed_live, holder_conns);
+            }
+        };
+        let (cancel, line, conn, flush, notice_flush) = {
             let fanout_arc = inner.fanout.clone();
             let fanout = fanout_arc
                 .lock()
@@ -633,32 +830,32 @@ impl SecretInputRoute for PresentationRoute {
             let flush = inner.flush.clone();
 
             // Notify non-presenters first.
+            let live_raiser = inner
+                .owners
+                .get(id)
+                .is_some_and(|o| o.session == self.session && o.raiser && inner.live(&fanout, o));
+            let available = live_raiser || sealed_live;
             let notice_info = inner
                 .owners
                 .get(id)
                 .filter(|o| o.session == self.session)
                 .map(|o| {
-                    let avail = inner.available(&fanout, o);
-                    let holder_conns: Vec<String> = inner
-                        .sealed_source
-                        .as_ref()
-                        .map(|src| o.sealed.iter().map(|h| src.connection_of(h)).collect())
-                        .unwrap_or_default();
                     let raising = if o.raised_by == NO_RAISING_CONNECTION {
                         None
                     } else {
                         Some(o.raised_by.clone())
                     };
                     (
-                        avail,
+                        available,
                         o.connection.clone(),
                         raising,
-                        holder_conns,
+                        holder_conns.clone(),
                         o.raised_by.clone(),
                         o.origin.clone(),
                     )
                 });
 
+            let mut notice_flush = false;
             if let Some((avail, owner_conn, raising, holder_conns, raised_by, origin)) = notice_info
             {
                 let rec_type = record.get("type").and_then(Value::as_str);
@@ -682,18 +879,13 @@ impl SecretInputRoute for PresentationRoute {
                     if let Some(orig) = origin {
                         notice["remoteOrigin"] = serde_json::to_value(orig).unwrap_or(Value::Null);
                     }
-                    inner.notices.raised(
-                        &fanout,
-                        flush.as_ref(),
-                        &self.session,
-                        id,
-                        &excluded,
-                        notice,
-                    );
+                    notice_flush =
+                        inner
+                            .notices
+                            .raised(&fanout, &self.session, id, &excluded, notice);
                 } else if rec_type == Some("secret_input_settled") {
-                    inner.notices.settled(
+                    notice_flush = inner.notices.settled(
                         &fanout,
-                        flush.as_ref(),
                         &self.session,
                         id,
                         json!({
@@ -704,28 +896,24 @@ impl SecretInputRoute for PresentationRoute {
                 }
             }
 
-            let available = inner
-                .owners
-                .get(id)
-                .is_some_and(|o| o.session == self.session && inner.available(&fanout, o));
             if !available {
                 let cancel = inner.owners.get_mut(id).and_then(|o| o.cancel.take());
-                (cancel, None, None, flush)
+                (cancel, None, None, flush, notice_flush)
             } else {
-                let live_raiser = inner
-                    .owners
-                    .get(id)
-                    .is_some_and(|o| o.raiser && inner.live(&fanout, o));
                 if !live_raiser {
-                    (None, None, None, flush)
+                    (None, None, None, flush, notice_flush)
                 } else {
                     record["sessionId"] = json!(self.session);
                     let line = serialize_json_line(&record).ok();
                     let conn = inner.owners.get(id).and_then(|o| o.connection.clone());
-                    (None, line, conn, flush)
+                    (None, line, conn, flush, notice_flush)
                 }
             }
         };
+        drop(inner);
+        if notice_flush {
+            flush();
+        }
         if let Some(cancel) = cancel {
             cancel();
             return;
@@ -761,27 +949,33 @@ impl SecretInputRoute for PresentationRoute {
     }
 
     fn settled(&self, id: &str) {
-        let mut inner = self
-            .presentations
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(owner) = inner.owners.get_mut(id) {
-            owner.cancel = None;
-        }
-        if let Some(source) = &inner.sealed_source {
+        let source = {
+            let mut inner = self
+                .presentations
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(owner) = inner.owners.get_mut(id) {
+                owner.cancel = None;
+            }
+            inner.sealed_source.clone()
+        };
+        if let Some(source) = source {
             source.retire(id);
         }
     }
 
     fn forget(&self, id: &str) {
-        let mut inner = self
-            .presentations
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.owners.remove(id);
-        if let Some(source) = &inner.sealed_source {
+        let source = {
+            let mut inner = self
+                .presentations
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.owners.remove(id);
+            inner.sealed_source.clone()
+        };
+        if let Some(source) = source {
             source.withdraw(id);
         }
     }
@@ -804,6 +998,413 @@ impl SecretInputRoute for PresentationRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ReentrantSource {
+        state: std::sync::Weak<Mutex<PresentationInner>>,
+        observations: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl SealedSecretSource for ReentrantSource {
+        fn holders(&self, _: &str) -> Vec<SealedHolder> {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+            Vec::new()
+        }
+        fn current(&self, _: &SealedHolder) -> bool {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+            false
+        }
+        fn connection_of(&self, _: &SealedHolder) -> String {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+            String::new()
+        }
+        fn offer(&self, _: &str, _: &[SealedHolder], _: SealedSecretOffer) {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+        }
+        fn withdraw(&self, _: &str) {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+        }
+        fn retire(&self, _: &str) {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+        }
+        fn on_change(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+            let state = self.state.upgrade().expect("state");
+            let unlocked = state.try_lock().is_ok();
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(unlocked);
+            if unlocked {
+                listener();
+            }
+            let state = self.state.clone();
+            let observations = Arc::clone(&self.observations);
+            Box::new(move || {
+                let state = state.upgrade().expect("state");
+                observations
+                    .lock()
+                    .expect("observations")
+                    .push(state.try_lock().is_ok());
+            })
+        }
+        fn eligible(&self, _: &SealedHolder) -> bool {
+            false
+        }
+        fn principal_of(&self, _: &SealedHolder) -> Option<String> {
+            None
+        }
+        fn answer<'a>(
+            &'a self,
+            _: &'a SealedHolder,
+            _: &'a crate::secret_sealed_answers::SealedAnswerFrame,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<crate::secret_input_requests::SealedAnswer, SealedAnswerReply>,
+        > {
+            Box::pin(async { panic!("answer is not used by this test") })
+        }
+        fn settle(&self, _: &[SealedHolder], _: &str, _: SecretInputOutcome, _: Option<&str>) {
+            let state = self.state.upgrade().expect("state");
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(state.try_lock().is_ok());
+        }
+        fn admit_jti(&self, _: &str, _: i64) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn sealed_source_subscribe_and_unsubscribe_allow_reentry() {
+        let pres = SecretInputPresentations::new(
+            Arc::new(Mutex::new(SessionEventFanout::default())),
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(ReentrantSource {
+            state: Arc::downgrade(&pres.inner),
+            observations: Arc::clone(&observations),
+        });
+        let unsubscribe = pres.use_sealed(Some(source));
+        unsubscribe();
+        assert_eq!(
+            *observations.lock().expect("observations"),
+            vec![true, true]
+        );
+    }
+
+    #[test]
+    fn sealed_source_retire_and_withdraw_allow_reentry() {
+        let pres = SecretInputPresentations::new(
+            Arc::new(Mutex::new(SessionEventFanout::default())),
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(ReentrantSource {
+            state: Arc::downgrade(&pres.inner),
+            observations: Arc::clone(&observations),
+        });
+        let unsubscribe = pres.use_sealed(Some(source));
+        observations.lock().expect("observations").clear();
+        let route = pres.route("s1", false);
+        route.settled("r1");
+        route.forget("r1");
+        assert_eq!(
+            *observations.lock().expect("observations"),
+            vec![true, true]
+        );
+        unsubscribe();
+    }
+
+    #[test]
+    fn sealed_offer_and_outcome_allow_source_reentry() {
+        let pres = SecretInputPresentations::new(
+            Arc::new(Mutex::new(SessionEventFanout::default())),
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(ReentrantSource {
+            state: Arc::downgrade(&pres.inner),
+            observations: Arc::clone(&observations),
+        });
+        let unsubscribe = pres.use_sealed(Some(source));
+        pres.inner.lock().expect("state").owners.insert(
+            "r1".into(),
+            SecretOwner {
+                identity: Arc::new(()),
+                session: "s1".into(),
+                connection: Some("c1".into()),
+                cancel: None,
+                raiser: false,
+                sealed: vec![SealedHolder {
+                    id: "holder".into(),
+                    binding_id: 1,
+                    durable_session_id: "s1".into(),
+                    connection_id: "c1".into(),
+                    principal_id: "p1".into(),
+                }],
+                background: false,
+                raised_by: "agent".into(),
+                origin: None,
+            },
+        );
+        observations.lock().expect("observations").clear();
+        let route = pres.route("s1", true);
+        route.offer_sealed(
+            "r1",
+            SealedOfferDetails {
+                hpke_pk: "key".into(),
+                title: "title".into(),
+                placeholder: None,
+                deadline_at_ms: 1,
+            },
+        );
+        route.sealed_outcome("r1", SecretInputOutcome::Cancelled, None);
+        assert_eq!(
+            *observations.lock().expect("observations"),
+            vec![true, true]
+        );
+        observations.lock().expect("observations").clear();
+        route.send(
+            "r1",
+            json!({"type":"secret_input_settled", "outcome":"cancelled"}),
+        );
+        let send_observations = observations.lock().expect("observations").clone();
+        assert!(!send_observations.is_empty());
+        assert!(send_observations.iter().all(|unlocked| *unlocked));
+        observations.lock().expect("observations").clear();
+        pres.detach("c1");
+        assert_eq!(*observations.lock().expect("observations"), vec![true]);
+        unsubscribe();
+    }
+
+    #[test]
+    fn sealed_availability_allows_source_reentry() {
+        let pres = SecretInputPresentations::new(
+            Arc::new(Mutex::new(SessionEventFanout::default())),
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(ReentrantSource {
+            state: Arc::downgrade(&pres.inner),
+            observations: Arc::clone(&observations),
+        });
+        let unsubscribe = pres.use_sealed(Some(source));
+        pres.inner.lock().expect("state").owners.insert(
+            "r1".into(),
+            SecretOwner {
+                identity: Arc::new(()),
+                session: "s1".into(),
+                connection: None,
+                cancel: Some(Box::new(|| {})),
+                raiser: false,
+                sealed: vec![SealedHolder {
+                    id: "holder".into(),
+                    binding_id: 1,
+                    durable_session_id: "s1".into(),
+                    connection_id: "c1".into(),
+                    principal_id: "p1".into(),
+                }],
+                background: false,
+                raised_by: "agent".into(),
+                origin: None,
+            },
+        );
+        observations.lock().expect("observations").clear();
+        assert!(!pres.route("s1", true).available("r1"));
+        assert_eq!(*observations.lock().expect("observations"), vec![true]);
+        observations.lock().expect("observations").clear();
+        pres.recheck();
+        assert_eq!(*observations.lock().expect("observations"), vec![true]);
+        unsubscribe();
+    }
+
+    #[test]
+    fn selecting_sealed_holders_allows_source_reentry() {
+        let pres = SecretInputPresentations::new(
+            Arc::new(Mutex::new(SessionEventFanout::default())),
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(ReentrantSource {
+            state: Arc::downgrade(&pres.inner),
+            observations: Arc::clone(&observations),
+        });
+        let unsubscribe = pres.use_sealed(Some(source));
+        observations.lock().expect("observations").clear();
+        let _ = pres.route("s1", true).select("r1", Box::new(|| {}));
+        assert_eq!(*observations.lock().expect("observations"), vec![true]);
+        unsubscribe();
+    }
+
+    #[test]
+    fn notice_flush_can_reenter_presentation_and_fanout() {
+        let fanout = Arc::new(Mutex::new(SessionEventFanout::default()));
+        {
+            let mut fanout = fanout.lock().expect("fanout");
+            for (id, capability) in [
+                ("owner", SECRET_INPUT_CAPABILITY),
+                ("watcher", RAISER_NOTICE_CAPABILITY),
+            ] {
+                fanout.targets.register(id);
+                fanout.targets.set_capabilities(
+                    id,
+                    &[
+                        capability.into(),
+                        crate::custom_capability::INTERACTIVE_USER_CAPABILITY.into(),
+                    ],
+                );
+                fanout.attach(id, "s1", 0.0).expect("attach");
+            }
+        }
+        let slot = Arc::new(Mutex::new(
+            std::sync::Weak::<Mutex<PresentationInner>>::new(),
+        ));
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let callback_slot = Arc::clone(&slot);
+        let callback_fanout = Arc::clone(&fanout);
+        let callback_observations = Arc::clone(&observations);
+        let pres = SecretInputPresentations::new(
+            fanout,
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(move || {
+                let state = callback_slot
+                    .lock()
+                    .expect("slot")
+                    .upgrade()
+                    .expect("state");
+                let unlocked = state.try_lock().is_ok() && callback_fanout.try_lock().is_ok();
+                callback_observations
+                    .lock()
+                    .expect("observations")
+                    .push(unlocked);
+            }),
+            Arc::new(LocalOnlyLocality),
+        );
+        *slot.lock().expect("slot") = Arc::downgrade(&pres.inner);
+        pres.inner.lock().expect("state").owners.insert(
+            "r1".into(),
+            SecretOwner {
+                identity: Arc::new(()),
+                session: "s1".into(),
+                connection: Some("owner".into()),
+                cancel: None,
+                raiser: true,
+                sealed: Vec::new(),
+                background: false,
+                raised_by: "agent".into(),
+                origin: None,
+            },
+        );
+        let route = pres.route("s1", false);
+        route.send(
+            "r1",
+            json!({"type":"extension_ui_request", "title":"prompt"}),
+        );
+        route.send(
+            "r1",
+            json!({"type":"secret_input_settled", "outcome":"cancelled"}),
+        );
+        let observations = observations.lock().expect("observations");
+        assert!(observations.len() >= 2);
+        assert!(observations.iter().all(|unlocked| *unlocked));
+    }
+
+    #[test]
+    fn stale_sealed_unsubscribe_keeps_new_registration() {
+        let pres = SecretInputPresentations::new(
+            Arc::new(Mutex::new(SessionEventFanout::default())),
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let source = Arc::new(ReentrantSource {
+            state: Arc::downgrade(&pres.inner),
+            observations: Arc::new(Mutex::new(Vec::new())),
+        });
+        let first = pres.use_sealed(Some(source.clone()));
+        let second = pres.use_sealed(Some(source));
+        first();
+        assert!(pres.inner.lock().expect("state").sealed_source.is_some());
+        second();
+        assert!(pres.inner.lock().expect("state").sealed_source.is_none());
+    }
+
+    #[test]
+    fn cancellation_callback_runs_without_presentation_lock() {
+        let fanout = Arc::new(Mutex::new(SessionEventFanout::default()));
+        let pres = SecretInputPresentations::new(
+            fanout,
+            Arc::new(|| None),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(LocalOnlyLocality),
+        );
+        let route = pres.route("s1", false);
+        route.handshake(&[
+            SECRET_INPUT_CAPABILITY.into(),
+            crate::custom_capability::INTERACTIVE_USER_CAPABILITY.into(),
+        ]);
+        let unlocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&unlocked);
+        let state = Arc::downgrade(&pres.inner);
+        assert_eq!(
+            route.select(
+                "r1",
+                Box::new(move || {
+                    let state = state.upgrade().expect("presentation state");
+                    observed.store(
+                        state.try_lock().is_ok(),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                }),
+            ),
+            None
+        );
+        pres.handshake(&[]);
+        assert!(unlocked.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn sole_handshake_gates_capability_and_detach_cancels_when_no_sealed_holders() {

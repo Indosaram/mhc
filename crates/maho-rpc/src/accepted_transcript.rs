@@ -381,7 +381,7 @@ fn read_with_hold(
         None => Vec::new(),
     };
     for index in hold.file_count..root.count {
-        let Some(text) = hold.get_text(index) else {
+        let Some(text) = hold.get_text(index)? else {
             return Err(TranscriptReadError::Unavailable(
                 TranscriptUnavailableReason::TranscriptTailTrimmed,
             ));

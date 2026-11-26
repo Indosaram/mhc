@@ -12,12 +12,13 @@ pub use crate::compact_admission_storage::ADMISSION_LIMITS;
 use crate::compact_admission_storage::{
     AdmissionRow, AdmissionState, read_admission_row, write_admission_row,
 };
-use crate::compact_admission_types::{AdmissionIdentity, Answer, Epoch, HotSender, Produced};
+use crate::compact_admission_types::{
+    AdmissionIdentity, Answer, Epoch, HotSender, Produced, ReleaseFn,
+};
 use crate::compact_recovery_ids::parse_bounded_id;
 use futures::future::BoxFuture;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::watch;
 
@@ -53,6 +54,49 @@ struct AdmissionsState {
     epochs: HashMap<String, Arc<Mutex<Epoch>>>,
     losses: ProducerLosses,
     retired_overflow: u64,
+}
+
+struct PendingSettlementRelease {
+    release: Option<ReleaseFn>,
+    state: Arc<Mutex<AdmissionsState>>,
+}
+
+impl Drop for PendingSettlementRelease {
+    fn drop(&mut self) {
+        let Some(release) = self.release.take() else {
+            return;
+        };
+        let state = Arc::clone(&self.state);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                drop(handle.spawn(async move {
+                    use futures::FutureExt;
+                    let result = std::panic::AssertUnwindSafe(async move { release().await })
+                        .catch_unwind()
+                        .await;
+                    let failure = match result {
+                        Ok(Ok(())) => None,
+                        Ok(Err(cause)) => Some(cause),
+                        Err(_) => Some("producer release panicked".to_owned()),
+                    };
+                    if let Some(cause) = failure {
+                        record_producer_loss(
+                            &mut state.lock().unwrap_or_else(PoisonError::into_inner).losses,
+                            ProducerLossKind::ReleaseFailed,
+                            1,
+                            Some(&cause),
+                        );
+                    }
+                }));
+            }
+            Err(_) => record_producer_loss(
+                &mut state.lock().unwrap_or_else(PoisonError::into_inner).losses,
+                ProducerLossKind::ReleaseFailed,
+                1,
+                Some("runtime unavailable for cancelled settlement release"),
+            ),
+        }
+    }
 }
 
 pub struct CompactAdmissions {
@@ -149,6 +193,15 @@ impl CompactAdmissions {
     async fn acquire_serial(
         epoch: &Arc<Mutex<Epoch>>,
     ) -> Result<tokio::sync::OwnedMutexGuard<()>, CompactAdmissionError> {
+        struct Waiting(Arc<Mutex<Epoch>>);
+        impl Drop for Waiting {
+            fn drop(&mut self) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .waiting -= 1;
+            }
+        }
         let serial_lock = {
             let mut guard = epoch.lock().unwrap_or_else(PoisonError::into_inner);
             if guard.waiting >= ADMISSION_LIMITS.hot {
@@ -159,8 +212,18 @@ impl CompactAdmissions {
             guard.waiting += 1;
             guard.serial_lock.clone()
         };
+        let waiting = Waiting(Arc::clone(epoch));
         let lock_guard = serial_lock.lock_owned().await;
-        epoch.lock().unwrap_or_else(PoisonError::into_inner).waiting -= 1;
+        drop(waiting);
+        if epoch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .callback_active
+        {
+            return Err(CompactAdmissionError::new(
+                CompactAdmissionReason::AdmissionBusy,
+            ));
+        }
         Ok(lock_guard)
     }
 
@@ -240,8 +303,8 @@ impl CompactAdmissions {
                     ));
                 }
                 let capacity = self.max_entries.min(self.max_bytes / ADMISSION_LIMITS.row);
-                let mut ep_snapshot = {
-                    let mut guard = epoch.lock().unwrap_or_else(PoisonError::into_inner);
+                {
+                    let guard = epoch.lock().unwrap_or_else(PoisonError::into_inner);
                     if guard.retired.contains(&key) {
                         return Err(CompactAdmissionError::new(
                             CompactAdmissionReason::AdmissionRetired,
@@ -252,9 +315,7 @@ impl CompactAdmissions {
                             CompactAdmissionReason::AdmissionBusy,
                         ));
                     }
-                    // Reserve while holding no lock across await by temporarily taking state.
-                    std::mem::replace(&mut *guard, Epoch::new(String::new(), PathBuf::new()))
-                };
+                }
                 let socket_epoch = identity.socket_epoch.clone();
                 let routed = self.routed.clone();
                 let mut overflowed = || {
@@ -268,19 +329,12 @@ impl CompactAdmissions {
                     s.retired_overflow += 1;
                 };
                 let reserved = reserve_row(
-                    &mut ep_snapshot,
+                    &epoch,
                     capacity,
                     &|adm| routed(&socket_epoch, adm),
                     &mut overflowed,
                 )
                 .await;
-                {
-                    let mut guard = epoch.lock().unwrap_or_else(PoisonError::into_inner);
-                    // Preserve any `ended` flag set concurrently while reserving.
-                    ep_snapshot.ended |= guard.ended;
-                    ep_snapshot.waiting = guard.waiting;
-                    *guard = ep_snapshot;
-                }
                 if !reserved? {
                     return Err(CompactAdmissionError::new(
                         CompactAdmissionReason::AdmissionLimit,
@@ -394,22 +448,47 @@ impl CompactAdmissions {
             }
         };
 
-        let release_fn = produced.release.take();
+        let mut pending_release = PendingSettlementRelease {
+            release: produced.release.take(),
+            state: Arc::clone(&self.state),
+        };
         let settled =
             settle_produced_admission(&epoch, &key, &identity.fingerprint, produced).await;
+        let release_fn = pending_release.release.take();
         match settled {
             Ok(settled) => {
                 if settled.cancelled
                     && let Some(release) = release_fn
+                    && let Err(cause) = release().await
                 {
-                    let _ = release().await;
+                    record_producer_loss(
+                        &mut self
+                            .state
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .losses,
+                        ProducerLossKind::ReleaseFailed,
+                        1,
+                        Some(&cause),
+                    );
                 }
                 pending_tx.send_replace(Some(Ok(settled.value.clone())));
                 Ok(settled.value)
             }
             Err(cause) => {
-                if let Some(release) = release_fn {
-                    let _ = release().await;
+                if let Some(release) = release_fn
+                    && let Err(release_cause) = release().await
+                {
+                    record_producer_loss(
+                        &mut self
+                            .state
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .losses,
+                        ProducerLossKind::ReleaseFailed,
+                        1,
+                        Some(&release_cause),
+                    );
                 }
                 Err(self
                     .record_failure(&epoch, &key, &identity.fingerprint, &pending_tx, cause)
@@ -441,14 +520,29 @@ impl CompactAdmissions {
                 .failures
                 .insert(key.to_owned(), row.clone());
         }
-        let dir = {
-            let _serial = Self::acquire_serial(epoch).await;
-            epoch
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .directory
-                .clone()
+        let _serial = match Self::acquire_serial(epoch).await {
+            Ok(serial) => serial,
+            Err(error) => {
+                epoch
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .failures
+                    .insert(
+                        key.to_owned(),
+                        AdmissionRow {
+                            failure: Some("storage_unavailable".into()),
+                            ..row
+                        },
+                    );
+                pending_tx.send_replace(Some(Err(error.clone())));
+                return Err(error);
+            }
         };
+        let dir = epoch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .directory
+            .clone();
         if let Err(storage_cause) = write_admission_row(&dir, key, &row).await {
             eprintln!("senpi rpc admission failure row write failed: {storage_cause}");
             epoch
@@ -662,6 +756,222 @@ mod tests {
             fingerprint: fp.into(),
             retry,
         }
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_epoch_serial_lock_visible() {
+        let epoch_slot = Arc::new(Mutex::new(None::<Arc<Mutex<Epoch>>>));
+        let expected_slot = Arc::new(Mutex::new(None::<Arc<tokio::sync::Mutex<()>>>));
+        let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let slot = Arc::clone(&epoch_slot);
+        let expected = Arc::clone(&expected_slot);
+        let observed = Arc::clone(&seen);
+        let admissions = CompactAdmissions::new(
+            1,
+            ADMISSION_LIMITS.row,
+            Arc::new(move |_, _| {
+                let epoch = slot.lock().expect("slot").as_ref().expect("epoch").clone();
+                let expected = expected
+                    .lock()
+                    .expect("expected")
+                    .as_ref()
+                    .expect("lock")
+                    .clone();
+                let actual = epoch.lock().expect("epoch").serial_lock.clone();
+                observed.store(Arc::ptr_eq(&actual, &expected), Ordering::SeqCst);
+                false
+            }),
+        );
+        let epoch = admissions
+            .get_or_create_epoch("se-1", "peer-1")
+            .expect("epoch");
+        *expected_slot.lock().expect("expected") =
+            Some(epoch.lock().expect("epoch").serial_lock.clone());
+        *epoch_slot.lock().expect("slot") = Some(epoch);
+        for id in ["first", "second"] {
+            admissions
+                .run(identity(id, &"a".repeat(64), false), |_| {
+                    Box::pin(async { Ok(Produced::simple(Answer::new())) })
+                })
+                .await
+                .expect("admit");
+        }
+        assert!(
+            seen.load(Ordering::SeqCst),
+            "retention replaced the serial lock"
+        );
+        admissions.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_serial_waiter_releases_waiting_budget() {
+        use std::task::Poll;
+
+        let admissions = CompactAdmissions::default();
+        let epoch = admissions
+            .get_or_create_epoch("se-1", "peer-1")
+            .expect("epoch");
+        let serial = epoch.lock().expect("epoch").serial_lock.clone();
+        let held = serial.lock().await;
+        let mut waiting = Box::pin(CompactAdmissions::acquire_serial(&epoch));
+        std::future::poll_fn(|cx| {
+            assert!(waiting.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(epoch.lock().expect("epoch").waiting, 1);
+        drop(waiting);
+        assert_eq!(epoch.lock().expect("epoch").waiting, 0);
+        drop(held);
+        admissions.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn failure_record_reports_serial_admission_limit_to_waiters() {
+        let admissions = CompactAdmissions::default();
+        let epoch = admissions
+            .get_or_create_epoch("se-1", "peer-1")
+            .expect("epoch");
+        epoch.lock().expect("epoch").waiting = ADMISSION_LIMITS.hot;
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let failure = CompactAdmissionError::new(CompactAdmissionReason::StorageUnavailable);
+        let error = admissions
+            .record_failure(&epoch, "key", &"a".repeat(64), &sender, failure)
+            .await
+            .expect_err("serial admission must fail");
+        assert_eq!(error.reason, CompactAdmissionReason::AdmissionBusy);
+        assert_eq!(
+            receiver
+                .borrow()
+                .as_ref()
+                .expect("waiter notified")
+                .as_ref()
+                .expect_err("failed")
+                .reason,
+            CompactAdmissionReason::AdmissionBusy
+        );
+        epoch.lock().expect("epoch").waiting = 0;
+        admissions.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn release_failures_after_refusal_and_activation_failure_are_reported() {
+        let admissions = CompactAdmissions::default();
+        for (id, refuse) in [("refused", true), ("activation", false)] {
+            let result = admissions
+                .run(identity(id, &"a".repeat(64), false), move |_| {
+                    Box::pin(async move {
+                        Ok(Produced {
+                            answer: Answer::new(),
+                            release: Some(Box::new(|| {
+                                Box::pin(async { Err("release failed".into()) })
+                            })),
+                            activate: (!refuse)
+                                .then(|| Box::new(|| Err("activation failed".into())) as _),
+                            refusal: refuse.then(|| Box::new(|| Some(Answer::new())) as _),
+                        })
+                    })
+                })
+                .await;
+            if refuse {
+                assert!(result.is_ok(), "persisted refusal remains replayable");
+            } else {
+                assert!(result.is_err(), "activation failure remains visible");
+            }
+        }
+        assert_eq!(admissions.status().release_failed, 2);
+        admissions.dispose().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activation_reentry_is_busy_until_durable_result_is_ready() {
+        let admissions = Arc::new(CompactAdmissions::default());
+        let callback_admissions = Arc::clone(&admissions);
+        let result = admissions
+            .run(
+                identity("activation-reentry", &"a".repeat(64), false),
+                move |_| {
+                    Box::pin(async move {
+                        Ok(Produced {
+                            answer: Answer::new(),
+                            release: None,
+                            refusal: None,
+                            activate: Some(Box::new(move || {
+                                let epoch = callback_admissions.get_epoch("se-1").expect("epoch");
+                                let serial = epoch.lock().expect("epoch").serial_lock.clone();
+                                assert!(
+                                    serial.try_lock().is_ok(),
+                                    "callback must not hold serial lock"
+                                );
+                                let error = futures::executor::block_on(
+                                    callback_admissions.cancel("se-1", "activation-reentry"),
+                                )
+                                .expect_err("reentrant admission must be busy");
+                                assert_eq!(error.reason, CompactAdmissionReason::AdmissionBusy);
+                                Ok(())
+                            })),
+                        })
+                    })
+                },
+            )
+            .await;
+        assert!(result.is_ok());
+        assert!(matches!(
+            admissions.cancel("se-1", "activation-reentry").await,
+            Ok(CancelOutcome::AlreadyComplete)
+        ));
+        admissions.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_settlement_releases_producer() {
+        let admissions = Arc::new(CompactAdmissions::default());
+        let callback_admissions = Arc::clone(&admissions);
+        let task_admissions = Arc::clone(&admissions);
+        let (lock_send, lock_receive) = tokio::sync::oneshot::channel();
+        let (release_send, release_receive) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            task_admissions
+                .run(
+                    identity("cancel-settle", &"a".repeat(64), false),
+                    move |_| {
+                        Box::pin(async move {
+                            Ok(Produced {
+                                answer: Answer::new(),
+                                release: Some(Box::new(move || {
+                                    Box::pin(async move {
+                                        release_send.send(()).expect("release receiver");
+                                        Ok(())
+                                    })
+                                })),
+                                refusal: None,
+                                activate: Some(Box::new(move || {
+                                    let epoch =
+                                        callback_admissions.get_epoch("se-1").expect("epoch");
+                                    let serial = epoch.lock().expect("epoch").serial_lock.clone();
+                                    lock_send
+                                        .send(serial.try_lock_owned().expect("unlocked"))
+                                        .expect("lock receiver");
+                                    Ok(())
+                                })),
+                            })
+                        })
+                    },
+                )
+                .await
+        });
+        let held = tokio::time::timeout(std::time::Duration::from_secs(5), lock_receive)
+            .await
+            .expect("activation reached")
+            .expect("serial lock");
+        task.abort();
+        assert!(task.await.expect_err("run cancelled").is_cancelled());
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(5), release_receive)
+            .await
+            .expect("producer release completed")
+            .expect("release called");
+        admissions.dispose().await;
     }
 
     #[tokio::test]

@@ -2,7 +2,9 @@
 //! physical stream, freezing seed checkpoints when unselected records precede a selected one.
 
 use crate::compact_negotiation::COMPACT_EVENTS_CAPABILITY;
-use crate::compact_recovery_state::{RecoveryCheckpoints, RecoveryLane, RecoveryRoute};
+use crate::compact_recovery_state::{
+    FreezeCommitVersion, RecoveryCheckpoints, RecoveryLane, RecoveryRoute,
+};
 use crate::compact_recovery_types::{CheckpointToken, RecoveryCaller, RecoveryRouteKind};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -29,6 +31,7 @@ struct StreamFrontierState {
     epoch: String,
     dirty: bool,
     seed: Option<CheckpointToken>,
+    version: Arc<FreezeCommitVersion>,
 }
 
 /// One minimal delivered-state frontier per physical stream, never a reducer or omitted-record log.
@@ -131,37 +134,52 @@ impl CompactRequiredStreams {
                 continue;
             }
             let key = (peer.clone(), session_id.to_owned());
-            let mut states = self.states.lock().unwrap_or_else(PoisonError::into_inner);
-            let state = states.entry(key).or_insert_with(|| StreamFrontierState {
-                epoch: String::new(),
-                dirty: false,
-                seed: None,
+            let initial_seed = checkpoints.tokens().into_iter().find(|t| {
+                t.admission.socket_epoch == caller.socket_epoch
+                    && t.admission.session_id == session_id
             });
-            if state.epoch != lane_epoch {
-                state.epoch = lane_epoch.clone();
-                state.dirty = false;
-                state.seed = checkpoints.tokens().into_iter().find(|t| {
-                    t.admission.socket_epoch == caller.socket_epoch
-                        && t.admission.session_id == session_id
-                });
-            }
-            let Some(record) = record else {
-                continue;
+            let selected = record.map(|record| {
+                let record_type = record
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("undefined");
+                stream.routes.iter().any(|id| reg.admissions.contains(id))
+                    || !self
+                        .backend
+                        .mirror_admissions(&peer, session_id, record_type)
+                        .is_empty()
+            });
+            let refresh_version = {
+                let mut states = self.states.lock().unwrap_or_else(PoisonError::into_inner);
+                let state = states
+                    .entry(key.clone())
+                    .or_insert_with(|| StreamFrontierState {
+                        epoch: String::new(),
+                        dirty: false,
+                        seed: None,
+                        version: Arc::new(FreezeCommitVersion::new()),
+                    });
+                if state.epoch != lane_epoch {
+                    state.epoch = lane_epoch.clone();
+                    state.dirty = false;
+                    state.seed = initial_seed;
+                    state.version.advance();
+                }
+                match selected {
+                    None => None,
+                    Some(false) => {
+                        state.dirty = true;
+                        state.version.advance();
+                        None
+                    }
+                    Some(true) if state.dirty => {
+                        let expected = state.version.advance();
+                        Some((Arc::clone(&state.version), expected))
+                    }
+                    Some(true) => None,
+                }
             };
-            let record_type = record
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("undefined");
-            let selected = stream.routes.iter().any(|id| reg.admissions.contains(id))
-                || !self
-                    .backend
-                    .mirror_admissions(&peer, session_id, record_type)
-                    .is_empty();
-            if !selected {
-                state.dirty = true;
-                continue;
-            }
-            if state.dirty {
+            if let Some((version, expected)) = refresh_version {
                 let route = RecoveryRoute {
                     socket_epoch: caller.socket_epoch.clone(),
                     admission_id: stream.routes[0].clone(),
@@ -173,11 +191,29 @@ impl CompactRequiredStreams {
                     peer: peer.clone(),
                     session_id: session_id.to_owned(),
                 };
-                match checkpoints.freeze(&route, lane.clone(), false) {
-                    Ok(cp) => {
-                        state.seed = Some(cp.token);
-                        state.dirty = false;
+                let committed =
+                    checkpoints.freeze_if_current(&route, lane.clone(), &version, &expected);
+                match committed {
+                    Ok(Some(cp)) => {
+                        let accepted = {
+                            let mut states =
+                                self.states.lock().unwrap_or_else(PoisonError::into_inner);
+                            if let Some(state) = states.get_mut(&key)
+                                && Arc::ptr_eq(&state.version, &version)
+                                && version.matches(&expected)
+                            {
+                                state.seed = Some(cp.token.clone());
+                                state.dirty = false;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if !accepted {
+                            checkpoints.release(&cp.token);
+                        }
                     }
+                    Ok(None) => {}
                     Err(failure) => {
                         self.backend.close_peer(
                             &peer,
@@ -201,7 +237,14 @@ impl CompactRequiredStreams {
         self.states
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(_, s), _| s != session_id);
+            .retain(|(_, s), state| {
+                if s == session_id {
+                    state.version.advance();
+                    false
+                } else {
+                    true
+                }
+            });
     }
 }
 
@@ -219,6 +262,7 @@ mod tests {
         next_key: AtomicU64,
         gen_counter: AtomicU64,
         roots: Mutex<HashMap<usize, FrozenAcceptedRoot>>,
+        freeze_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
     impl TestLane {
@@ -230,6 +274,7 @@ mod tests {
                 next_key: AtomicU64::new(1),
                 gen_counter: AtomicU64::new(0),
                 roots: Mutex::new(HashMap::new()),
+                freeze_probe: Mutex::new(None),
             }
         }
     }
@@ -255,6 +300,10 @@ mod tests {
             Some(self.gen_counter.fetch_add(1, Ordering::SeqCst) + 1)
         }
         fn freeze_cut(&self) -> Option<FrozenLaneCut> {
+            let probe = self.freeze_probe.lock().expect("probe").clone();
+            if let Some(probe) = probe {
+                probe();
+            }
             let root = self
                 .lane
                 .lock()
@@ -338,6 +387,7 @@ mod tests {
         lane: Arc<TestLane>,
         checkpoints: RecoveryCheckpoints,
         mirror_type: Mutex<&'static str>,
+        mirror_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
     impl RequiredStreamsBackend for MockBackend {
@@ -367,6 +417,10 @@ mod tests {
             vec!["mir-1".into()]
         }
         fn mirror_admissions(&self, _: &str, _: &str, ty: &str) -> Vec<String> {
+            let probe = self.mirror_probe.lock().expect("probe").clone();
+            if let Some(probe) = probe {
+                probe();
+            }
             if ty
                 == *self
                     .mirror_type
@@ -386,6 +440,7 @@ mod tests {
             lane: Arc::new(TestLane::new()),
             checkpoints: RecoveryCheckpoints::default(),
             mirror_type: Mutex::new("turn_end"),
+            mirror_probe: Mutex::new(None),
         });
         let req = CompactRequiredStreams::new(backend.clone());
 
@@ -401,5 +456,110 @@ mod tests {
         assert_eq!(seed2.admission.generation, 2);
 
         req.forget_session("s1");
+    }
+
+    #[test]
+    fn frontier_callbacks_run_without_states_lock() {
+        let backend = Arc::new(MockBackend {
+            lane: Arc::new(TestLane::new()),
+            checkpoints: RecoveryCheckpoints::default(),
+            mirror_type: Mutex::new("turn_end"),
+            mirror_probe: Mutex::new(None),
+        });
+        let req = Arc::new(CompactRequiredStreams::new(backend.clone()));
+        req.prepare("s1", Some(&json!({"type":"message_update"})));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let weak = Arc::downgrade(&req);
+        let observed = Arc::clone(&seen);
+        let probe: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let req = weak.upgrade().expect("required streams");
+            observed
+                .lock()
+                .expect("observations")
+                .push(req.states.try_lock().is_ok());
+        });
+        *backend.mirror_probe.lock().expect("probe") = Some(Arc::clone(&probe));
+        *backend.lane.freeze_probe.lock().expect("probe") = Some(probe);
+        req.prepare("s1", Some(&json!({"type":"turn_end"})));
+        assert_eq!(*seen.lock().expect("observations"), vec![true, true]);
+    }
+
+    #[test]
+    fn reentrant_record_invalidates_in_flight_seed() {
+        let backend = Arc::new(MockBackend {
+            lane: Arc::new(TestLane::new()),
+            checkpoints: RecoveryCheckpoints::default(),
+            mirror_type: Mutex::new("turn_end"),
+            mirror_probe: Mutex::new(None),
+        });
+        let req = Arc::new(CompactRequiredStreams::new(backend.clone()));
+        req.prepare("s1", Some(&json!({"type":"message_update"})));
+        req.take_seed("p1", "s1").expect("initial seed");
+        let weak = Arc::downgrade(&req);
+        let once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *backend.lane.freeze_probe.lock().expect("probe") = Some(Arc::new(move || {
+            if !once.swap(true, Ordering::SeqCst) {
+                weak.upgrade()
+                    .expect("required streams")
+                    .prepare("s1", Some(&json!({"type":"message_update"})));
+            }
+        }));
+        req.prepare("s1", Some(&json!({"type":"turn_end"})));
+        assert!(
+            req.take_seed("p1", "s1").is_none(),
+            "stale seed must not be delivered"
+        );
+        req.prepare("s1", Some(&json!({"type":"turn_end"})));
+        assert!(
+            req.take_seed("p1", "s1").is_some(),
+            "dirty frontier must be refreshed"
+        );
+    }
+
+    #[test]
+    fn concurrent_refresh_never_returns_retired_seed() {
+        let backend = Arc::new(MockBackend {
+            lane: Arc::new(TestLane::new()),
+            checkpoints: RecoveryCheckpoints::default(),
+            mirror_type: Mutex::new("turn_end"),
+            mirror_probe: Mutex::new(None),
+        });
+        let req = Arc::new(CompactRequiredStreams::new(backend.clone()));
+        req.prepare("s1", Some(&json!({"type":"message_update"})));
+        req.take_seed("p1", "s1").expect("initial seed");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let once = std::sync::atomic::AtomicBool::new(false);
+        *backend.lane.freeze_probe.lock().expect("probe") = Some(Arc::new(move || {
+            if !once.swap(true, Ordering::SeqCst) {
+                entered_tx.send(()).expect("entered");
+                release_rx
+                    .lock()
+                    .expect("release")
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("release deadline");
+            }
+        }));
+        let first = Arc::clone(&req);
+        let worker =
+            std::thread::spawn(move || first.prepare("s1", Some(&json!({"type":"turn_end"}))));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("freeze deadline");
+        req.prepare("s1", Some(&json!({"type":"turn_end"})));
+        release_tx.send(()).expect("release");
+        worker.join().expect("worker");
+        let seed = req
+            .take_seed("p1", "s1")
+            .expect("selected event must have a seed");
+        let caller = RecoveryCaller {
+            socket_epoch: "se-1".into(),
+            session_id: "s1".into(),
+        };
+        assert!(
+            backend.checkpoints.check(&seed, &caller).is_ok(),
+            "seed must remain current"
+        );
     }
 }

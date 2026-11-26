@@ -60,9 +60,44 @@ pub struct LooplessHandOptions {
     pub wakes: Option<Arc<dyn HandWakes>>,
 }
 
+enum DisposalState {
+    Ready,
+    Running,
+    Finished(Result<(), String>),
+}
+
+struct ScopeGeneration {
+    disposal: Mutex<DisposalState>,
+}
+
+struct DisposalGuard<'a> {
+    generation: &'a ScopeGeneration,
+    finished: bool,
+}
+
+impl DisposalGuard<'_> {
+    fn finish(&mut self, result: Result<(), String>) {
+        *self
+            .generation
+            .disposal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = DisposalState::Finished(result);
+        self.finished = true;
+    }
+}
+
+impl Drop for DisposalGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish(Err("scope disposal was cancelled".into()));
+        }
+    }
+}
+
 struct ScopeEntry {
     root: String,
     runtime: Arc<tokio::sync::OnceCell<Result<LooplessRuntime, String>>>,
+    generation: Arc<ScopeGeneration>,
 }
 
 struct LooplessHandInner {
@@ -71,7 +106,6 @@ struct LooplessHandInner {
     hand_run: Arc<HandRunBinding>,
     runtimes: Mutex<HashMap<String, ScopeEntry>>,
     disposed: Mutex<HashSet<String>>,
-    disposals: Mutex<HashSet<String>>,
     closed: std::sync::atomic::AtomicBool,
 }
 
@@ -80,7 +114,7 @@ impl LooplessHandInner {
         &self,
         scope: &ExecutionScope,
         reopen: bool,
-    ) -> Result<LooplessRuntime, String> {
+    ) -> Result<(LooplessRuntime, Arc<ScopeGeneration>), String> {
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("this hand is closed".to_owned());
         }
@@ -90,7 +124,7 @@ impl LooplessHandInner {
                 scope.root
             ));
         }
-        let cell = {
+        let (cell, generation) = {
             let mut map = self.runtimes.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(known) = map.get(&scope.id) {
                 if known.root != scope.root {
@@ -99,7 +133,7 @@ impl LooplessHandInner {
                         scope.id
                     ));
                 }
-                Arc::clone(&known.runtime)
+                (Arc::clone(&known.runtime), Arc::clone(&known.generation))
             } else {
                 let mut disposed = self.disposed.lock().unwrap_or_else(PoisonError::into_inner);
                 if !reopen && disposed.contains(&scope.id) {
@@ -110,14 +144,18 @@ impl LooplessHandInner {
                 }
                 disposed.remove(&scope.id);
                 let cell = Arc::new(tokio::sync::OnceCell::new());
+                let generation = Arc::new(ScopeGeneration {
+                    disposal: Mutex::new(DisposalState::Ready),
+                });
                 map.insert(
                     scope.id.clone(),
                     ScopeEntry {
                         root: scope.root.clone(),
                         runtime: Arc::clone(&cell),
+                        generation: Arc::clone(&generation),
                     },
                 );
-                cell
+                (cell, generation)
             }
         };
 
@@ -137,35 +175,49 @@ impl LooplessHandInner {
             .await
             .clone();
         if res.is_err() {
-            self.runtimes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&scope.id);
+            let mut map = self.runtimes.lock().unwrap_or_else(PoisonError::into_inner);
+            if map
+                .get(&scope.id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.generation, &generation))
+            {
+                map.remove(&scope.id);
+            }
         }
-        res
+        res.map(|runtime| (runtime, generation))
     }
 
     async fn dispose_scope_runtime(
         &self,
-        scope_id: &str,
+        generation: &Arc<ScopeGeneration>,
         runtime: &LooplessRuntime,
     ) -> Result<(), String> {
         {
-            let mut disposals = self
-                .disposals
+            let mut state = generation
+                .disposal
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if !disposals.insert(scope_id.to_owned()) {
-                return Ok(());
+            match &*state {
+                DisposalState::Ready => *state = DisposalState::Running,
+                DisposalState::Running => {
+                    return Err("scope disposal is already in progress".into());
+                }
+                DisposalState::Finished(result) => return result.clone(),
             }
         }
-        runtime.dispose().await
+        let mut guard = DisposalGuard {
+            generation,
+            finished: false,
+        };
+        let result = runtime.dispose().await;
+        guard.finish(result.clone());
+        result
     }
 }
 
 struct LooplessHandScope {
     scope: ExecutionScope,
     runtime: LooplessRuntime,
+    generation: Arc<ScopeGeneration>,
     hand: Arc<LooplessHandInner>,
     file_ops: Option<crate::hand_file_ops::HandFileOpFn>,
 }
@@ -216,19 +268,28 @@ impl HandScope for LooplessHandScope {
         let hand = Arc::clone(&self.hand);
         let scope_id = self.scope.id.clone();
         let runtime = self.runtime.clone();
+        let generation = Arc::clone(&self.generation);
         Box::pin(async move {
-            hand.runtimes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&scope_id);
-            hand.disposed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(scope_id.clone());
-            if let Some(ref wakes) = hand.wakes {
+            let removed = {
+                let mut runtimes = hand.runtimes.lock().unwrap_or_else(PoisonError::into_inner);
+                if runtimes
+                    .get(&scope_id)
+                    .is_some_and(|entry| Arc::ptr_eq(&entry.generation, &generation))
+                {
+                    runtimes.remove(&scope_id);
+                    hand.disposed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(scope_id.clone());
+                    true
+                } else {
+                    false
+                }
+            };
+            if removed && let Some(ref wakes) = hand.wakes {
                 wakes.close_scope(&scope_id);
             }
-            hand.dispose_scope_runtime(&scope_id, &runtime).await
+            hand.dispose_scope_runtime(&generation, &runtime).await
         })
     }
 }
@@ -241,7 +302,7 @@ pub struct LooplessHand {
 
 impl LooplessHand {
     pub async fn open_scope(&self, scope: ExecutionScope) -> Result<Arc<dyn HandScope>, String> {
-        let runtime = self.inner.runtime_of(&scope, true).await?;
+        let (runtime, generation) = self.inner.runtime_of(&scope, true).await?;
         let file_ops = runtime.file_guards.as_ref().map(|guards| {
             create_hand_file_ops(
                 &scope.root,
@@ -252,6 +313,7 @@ impl LooplessHand {
         Ok(Arc::new(LooplessHandScope {
             scope,
             runtime,
+            generation,
             hand: Arc::clone(&self.inner),
             file_ops,
         }))
@@ -263,7 +325,7 @@ impl LooplessHand {
         event: &str,
         payload: Value,
     ) -> Result<Value, String> {
-        let runtime = self.inner.runtime_of(scope, false).await?;
+        let (runtime, _) = self.inner.runtime_of(scope, false).await?;
         runtime.run_loop_hooks(event, payload).await
     }
 
@@ -277,18 +339,20 @@ impl LooplessHand {
             .closed
             .store(true, std::sync::atomic::Ordering::SeqCst);
         type RuntimeCell = Arc<tokio::sync::OnceCell<Result<LooplessRuntime, String>>>;
-        let open: Vec<(String, RuntimeCell)> = {
+        let open: Vec<(RuntimeCell, Arc<ScopeGeneration>)> = {
             let mut map = self
                 .inner
                 .runtimes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            map.drain().map(|(k, v)| (k, v.runtime)).collect()
+            map.drain()
+                .map(|(_, v)| (v.runtime, v.generation))
+                .collect()
         };
         let mut errors = Vec::new();
-        for (scope_id, cell) in open {
+        for (cell, generation) in open {
             if let Some(Ok(runtime)) = cell.get()
-                && let Err(err) = self.inner.dispose_scope_runtime(&scope_id, runtime).await
+                && let Err(err) = self.inner.dispose_scope_runtime(&generation, runtime).await
             {
                 errors.push(err);
             }
@@ -345,7 +409,6 @@ pub fn create_loopless_hand(
         }),
         runtimes: Mutex::new(HashMap::new()),
         disposed: Mutex::new(HashSet::new()),
-        disposals: Mutex::new(HashSet::new()),
         closed: std::sync::atomic::AtomicBool::new(false),
     });
     Arc::new(LooplessHand { inner })
@@ -369,6 +432,119 @@ mod tests {
     use maho_agent::execution::remote_executor::HandCall;
     use maho_ai::utils::abort::AbortController;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn reopened_scope_disposes_each_runtime_and_ignores_stale_dispose() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("agent");
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut hand = create_loopless_hand(
+            LooplessCliConfiguration {
+                cwd: root.clone(),
+                agent_dir: agent_dir.to_string_lossy().into_owned(),
+                no_extensions: true,
+                no_skills: true,
+                ..Default::default()
+            },
+            LooplessHandOptions::default(),
+        );
+        let inner = Arc::get_mut(&mut Arc::get_mut(&mut hand).expect("hand").inner).expect("inner");
+        let factory = Arc::clone(&inner.factory);
+        let disposals = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&disposals);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started_tx)));
+        inner.factory = Arc::new(move |profile| {
+            let factory = Arc::clone(&factory);
+            let count = Arc::clone(&count);
+            let started = Arc::clone(&started);
+            Box::pin(async move {
+                let mut runtime = factory(profile).await?;
+                let original = Arc::clone(&runtime.dispose);
+                runtime.dispose = Arc::new(move || {
+                    let original = Arc::clone(&original);
+                    let count = Arc::clone(&count);
+                    let started = Arc::clone(&started);
+                    Box::pin(async move {
+                        let attempt = count.fetch_add(1, Ordering::SeqCst);
+                        original().await?;
+                        if attempt == 3 {
+                            Err("injected disposal failure".into())
+                        } else if attempt == 4 {
+                            started
+                                .lock()
+                                .expect("started")
+                                .take()
+                                .expect("sender")
+                                .send(())
+                                .expect("notify");
+                            std::future::pending::<Result<(), String>>().await
+                        } else {
+                            Ok(())
+                        }
+                    })
+                });
+                Ok(runtime)
+            })
+        });
+        let identity = ExecutionScope {
+            id: "reopened".into(),
+            root,
+        };
+        let first = hand.open_scope(identity.clone()).await.expect("first open");
+        first.dispose().await.expect("first dispose");
+        let second = hand
+            .open_scope(identity.clone())
+            .await
+            .expect("second open");
+        second.dispose().await.expect("second dispose");
+        assert_eq!(disposals.load(Ordering::SeqCst), 2);
+        let third = hand.open_scope(identity.clone()).await.expect("third open");
+        first.dispose().await.expect("stale dispose");
+        hand.run_loop_hooks(
+            &identity,
+            "describe_tools",
+            json!({"sessionId": "x", "idle": true}),
+        )
+        .await
+        .expect("stale dispose must not remove the new runtime");
+        third.dispose().await.expect("third dispose");
+        assert_eq!(disposals.load(Ordering::SeqCst), 3);
+        let fourth = hand
+            .open_scope(identity.clone())
+            .await
+            .expect("fourth open");
+        assert_eq!(
+            fourth.dispose().await.unwrap_err(),
+            "injected disposal failure"
+        );
+        assert_eq!(
+            fourth.dispose().await.unwrap_err(),
+            "injected disposal failure"
+        );
+        assert_eq!(disposals.load(Ordering::SeqCst), 4);
+        let fifth = hand.open_scope(identity).await.expect("fifth open");
+        let running = Arc::clone(&fifth);
+        let task = tokio::spawn(async move { running.dispose().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("dispose start deadline")
+            .expect("dispose started");
+        assert_eq!(
+            fifth.dispose().await.unwrap_err(),
+            "scope disposal is already in progress"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            fifth.dispose().await.unwrap_err(),
+            "scope disposal was cancelled"
+        );
+        hand.close().await.expect("close");
+    }
 
     #[tokio::test]
     async fn opens_disposes_and_guards_scope_roots_and_closed_hand() {

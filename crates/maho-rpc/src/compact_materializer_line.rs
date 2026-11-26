@@ -4,12 +4,13 @@
 use crate::compact_event_leases::EventLeases;
 use crate::compact_record_staging::{RecordContent, json_chunks};
 use crate::compact_recovery_state::RecoveryCheckpoints;
-use crate::compact_recovery_types::RecoveryCaller;
+use crate::compact_recovery_types::{RecoveryCaller, RecoveryOutcome};
 use crate::compact_required_streams::CompactRequiredStreams;
 use crate::jsonl::serialize_json_line;
 use crate::session_acceptance_admission::is_sequenced;
 use serde_json::{Value, json};
 use std::borrow::Cow;
+use std::sync::Arc;
 
 /// H: per-admission framing is <= 16 KiB including LF, independent of payload size and number of
 /// routes.
@@ -78,6 +79,20 @@ pub struct MaterializerLine {
     pub undelivered: Box<dyn FnOnce(bool) + Send>,
 }
 
+fn register_lease_routes(
+    events: &EventLeases,
+    caller: &RecoveryCaller,
+    lease_id: &str,
+    owner: &str,
+    routes: &[String],
+) -> RecoveryOutcome<()> {
+    let held = events.claim(caller, lease_id, owner)?;
+    for route in routes {
+        held.add_admission(route.clone());
+    }
+    Ok(())
+}
+
 fn payload_chunks(record: &Value) -> Vec<String> {
     json_chunks(record, 65_536)
 }
@@ -85,7 +100,7 @@ fn payload_chunks(record: &Value) -> Vec<String> {
 /// One accepted record's payload is staged once by S13, not serialized into each admission's
 /// envelope.
 pub fn materializer_line(
-    host: &dyn MaterializerHost,
+    host: Arc<dyn MaterializerHost>,
     required: &CompactRequiredStreams,
     peer: &str,
     session_id: &str,
@@ -145,21 +160,19 @@ pub fn materializer_line(
             .map_err(|err| err.to_string())?;
             let reason_str = reason.as_str().to_owned();
             let peer_owned = peer.to_owned();
-            // Notice: host close is handled by caller invoking `undelivered` or `close_peer` via
-            // explicit callback if host is Arc-wrapped. Keeping closure clean & Send-safe:
-            let _ = (&peer_owned, &reason_str);
             return Ok(Some(MaterializerLine {
                 line,
                 atomic: true,
-                undelivered: Box::new(|_| {}),
+                undelivered: Box::new(move |_| {
+                    host.close_peer(&peer_owned, "event_lease_refused", &reason_str);
+                }),
             }));
         }
     };
 
-    if let Ok(held) = events.claim(&caller, &lease.id, &owner) {
-        for route in &routes {
-            held.add_admission(route.clone());
-        }
+    if let Err(error) = register_lease_routes(&events, &caller, &lease.id, &owner, &routes) {
+        events.abandon(&caller.socket_epoch, &lease.id);
+        return Err(format!("event lease claim failed: {error:?}"));
     }
     let seed = required.take_seed(peer, session_id);
     let controls = match seed {
@@ -218,6 +231,7 @@ mod tests {
         checkpoints: RecoveryCheckpoints,
         events: EventLeases,
         lane: Arc<TestLane>,
+        closed: Mutex<Vec<(String, String, String)>>,
     }
 
     struct TestLane {
@@ -371,7 +385,12 @@ mod tests {
         fn peer_socket_epoch(&self, peer: &str) -> Option<String> {
             (peer == "p1").then(|| "se1".into())
         }
-        fn close_peer(&self, _: &str, _: &str, _: &str) {}
+        fn close_peer(&self, peer: &str, code: &str, detail: &str) {
+            self.closed
+                .lock()
+                .expect("closed")
+                .push((peer.into(), code.into(), detail.into()));
+        }
         fn checkpoints(&self) -> RecoveryCheckpoints {
             self.checkpoints.clone()
         }
@@ -409,6 +428,7 @@ mod tests {
                 next_key: std::sync::atomic::AtomicUsize::new(0),
                 gen_num: std::sync::atomic::AtomicU64::new(0),
             }),
+            closed: Mutex::new(Vec::new()),
         });
         let _ = host
             .checkpoints
@@ -428,7 +448,7 @@ mod tests {
         let big_text = "x".repeat(32_000);
         let rec =
             json!({"type": "message_end", "message": {"role": "assistant", "content": big_text}});
-        let out = materializer_line(host.as_ref(), &required, "p1", "s1", &rec, Some(42))
+        let out = materializer_line(host.clone(), &required, "p1", "s1", &rec, Some(42))
             .expect("no error")
             .expect("materialized");
         assert!(out.atomic);
@@ -440,5 +460,85 @@ mod tests {
 
         (out.undelivered)(false);
         assert_eq!(host.events.status().open, 0);
+    }
+
+    #[test]
+    fn refused_event_lease_closes_peer_after_refusal() {
+        let mut lane = SessionAcceptanceLane::default();
+        lane.bootstrap(Default::default(), Some("ep1".into()));
+        let host = Arc::new(TestHost {
+            checkpoints: RecoveryCheckpoints::default(),
+            events: EventLeases::new(0),
+            lane: Arc::new(TestLane {
+                lane: Mutex::new(lane),
+                roots: Mutex::new(HashMap::new()),
+                next_key: std::sync::atomic::AtomicUsize::new(0),
+                gen_num: std::sync::atomic::AtomicU64::new(0),
+            }),
+            closed: Mutex::new(Vec::new()),
+        });
+        host.checkpoints
+            .freeze(
+                &RecoveryRoute {
+                    socket_epoch: "se1".into(),
+                    admission_id: "adm1".into(),
+                    route_kind: RecoveryRouteKind::Ordinary,
+                    peer: "p1".into(),
+                    session_id: "s1".into(),
+                },
+                host.lane.clone(),
+                true,
+            )
+            .expect("freeze route");
+        let required = CompactRequiredStreams::new(host.clone());
+        let record = json!({"type":"message_end","message":{"role":"assistant","content":"x".repeat(32_000)}});
+        let out = materializer_line(host.clone(), &required, "p1", "s1", &record, Some(42))
+            .expect("materialize")
+            .expect("refusal");
+        assert_eq!(
+            serde_json::from_str::<Value>(out.line.trim()).expect("json")["reason"],
+            "lease_limit"
+        );
+        (out.undelivered)(true);
+        assert_eq!(
+            *host.closed.lock().expect("closed"),
+            vec![(
+                "p1".into(),
+                "event_lease_refused".into(),
+                "lease_limit".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn forgotten_peer_lease_cannot_be_registered_for_delivery() {
+        let events = EventLeases::default();
+        let record = json!({"type":"message_end","payload":"hello"});
+        let lease = events
+            .mint(
+                "se1",
+                "s1",
+                "adm1",
+                "ep1",
+                42,
+                &record,
+                RecordContent::Text(record.to_string()),
+                None,
+            )
+            .expect("mint");
+        events.forget_peer("se1");
+        let caller = RecoveryCaller {
+            socket_epoch: "se1".into(),
+            session_id: "s1".into(),
+        };
+        let result = register_lease_routes(&events, &caller, &lease.id, "adm1", &["adm1".into()]);
+        assert!(matches!(
+            result,
+            Err(
+                crate::compact_recovery_types::RecoveryFailure::RepairNeeded {
+                    reason: crate::compact_recovery_types::RepairReason::UnknownToken
+                }
+            )
+        ));
     }
 }

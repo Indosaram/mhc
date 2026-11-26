@@ -29,6 +29,36 @@ use maho_core::session_settled::{parse_session_settled, set_session_settled, set
 use maho_core::turn_origin::ConnectionOrigin;
 use serde_json::{Value, json};
 
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn external_message_success_delivers_to_real_session() {
+        let session = crate::connection_handler::test_support::session();
+        let before = session.messages().len();
+        let command = json!({
+            "type": "admit_external_message",
+            "deliveryId": "delivery-1",
+            "text": "real delivery sentinel",
+            "deliverAs": "followUp",
+            "whenIdle": "queue"
+        });
+        let response = handle_extended_session_command(&session, &command, None)
+            .await
+            .expect("response");
+        assert!(matches!(response.result, RpcResponseResult::Success { .. }));
+        let messages = session.messages();
+        assert_eq!(messages.len(), before + 1);
+        assert!(
+            serde_json::to_string(&messages)
+                .expect("messages")
+                .contains("real delivery sentinel")
+        );
+        session.dispose().await;
+    }
+}
+
 fn ok_response(
     id: Option<String>,
     command: &str,
@@ -213,7 +243,8 @@ pub async fn handle_extended_session_command(
                 connection_origin: ConnectionOrigin::Local,
                 turn_origin: Some(ConnectionOrigin::Local),
             };
-            let deliver = |_input: Value, _id: &str| Ok(());
+            let deliver =
+                |message: Value, lane: &str| session.deliver_external_message(message, lane);
             match admit_external_message(session, &cmd, &peer, deliver) {
                 AdmitExternalMessageAnswer::Ok(reply) => {
                     let data = serde_json::to_value(reply).ok();

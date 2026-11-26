@@ -197,6 +197,46 @@ struct RequestsState {
     lifetimes: HashMap<String, CancelSignal>,
 }
 
+struct ActiveRequest {
+    state: Arc<Mutex<RequestsState>>,
+    socket_epoch: String,
+    token_id: String,
+    finished: bool,
+}
+
+impl ActiveRequest {
+    fn finish(&mut self, state: &mut RequestsState) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        if let Some(entry) = state.tokens.get_mut(&self.token_id) {
+            entry.active = false;
+        }
+        let left = state
+            .outstanding
+            .get(&self.socket_epoch)
+            .copied()
+            .unwrap_or(1)
+            .saturating_sub(1);
+        if left > 0 {
+            state.outstanding.insert(self.socket_epoch.clone(), left);
+        } else {
+            state.outstanding.remove(&self.socket_epoch);
+            state.lifetimes.remove(&self.socket_epoch);
+        }
+    }
+}
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        if !self.finished {
+            let state = Arc::clone(&self.state);
+            self.finish(&mut state.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    }
+}
+
 /// The page requests of one host over its checkpoint owner and event leases (S11b, RULING-62 Q1 A).
 pub struct RecoveryPageRequests {
     checkpoints: RecoveryCheckpoints,
@@ -291,17 +331,16 @@ impl RecoveryPageRequests {
             return self.refuse(RequestRefusalReason::MalformedRequest);
         }
 
-        {
+        let limited = {
             let st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if st
-                .outstanding
+            st.outstanding
                 .get(&caller.socket_epoch)
                 .copied()
                 .unwrap_or(0)
                 >= SOCKET_PAGE_REQUESTS_MAX
-            {
-                return self.refuse(RequestRefusalReason::RequestLimit);
-            }
+        };
+        if limited {
+            return self.refuse(RequestRefusalReason::RequestLimit);
         }
 
         let source = if kind == "event" {
@@ -335,40 +374,50 @@ impl RecoveryPageRequests {
         }
         let outcome = {
             let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let entry = st.tokens.entry(source.id.clone()).or_insert(TokenRequests {
-                active: false,
-                ordinal: 0,
-                current: None,
-            });
-            if entry.active {
-                LookupOutcome::Refuse(RequestRefusalReason::Busy)
-            } else if let Some((prev_req, prev_ans)) = &entry.current
-                && prev_req.request_id == request.request_id
+            if st
+                .outstanding
+                .get(&caller.socket_epoch)
+                .copied()
+                .unwrap_or(0)
+                >= SOCKET_PAGE_REQUESTS_MAX
             {
-                if prev_req.same_request(request) {
-                    LookupOutcome::Cached(Box::new(prev_ans.clone()))
-                } else {
-                    LookupOutcome::Refuse(RequestRefusalReason::RequestMismatch)
-                }
+                LookupOutcome::Refuse(RequestRefusalReason::RequestLimit)
             } else {
-                let last = position.map_or(entry.ordinal, |p| p.ordinal);
-                if last == u64::MAX {
-                    LookupOutcome::Refuse(RequestRefusalReason::OrdinalExhausted)
-                } else if let Some(pos) = position
-                    && pos.ordinal != entry.ordinal
+                let entry = st.tokens.entry(source.id.clone()).or_insert(TokenRequests {
+                    active: false,
+                    ordinal: 0,
+                    current: None,
+                });
+                if entry.active {
+                    LookupOutcome::Refuse(RequestRefusalReason::Busy)
+                } else if let Some((prev_req, prev_ans)) = &entry.current
+                    && prev_req.request_id == request.request_id
                 {
-                    LookupOutcome::Refuse(RequestRefusalReason::CursorOutOfRange)
+                    if prev_req.same_request(request) {
+                        LookupOutcome::Cached(Box::new(prev_ans.clone()))
+                    } else {
+                        LookupOutcome::Refuse(RequestRefusalReason::RequestMismatch)
+                    }
                 } else {
-                    entry.active = true;
-                    *st.outstanding
-                        .entry(caller.socket_epoch.clone())
-                        .or_insert(0) += 1;
-                    let sig = st
-                        .lifetimes
-                        .entry(caller.socket_epoch.clone())
-                        .or_default()
-                        .clone();
-                    LookupOutcome::Ready(sig)
+                    let last = position.map_or(entry.ordinal, |p| p.ordinal);
+                    if last == u64::MAX {
+                        LookupOutcome::Refuse(RequestRefusalReason::OrdinalExhausted)
+                    } else if let Some(pos) = position
+                        && pos.ordinal != entry.ordinal
+                    {
+                        LookupOutcome::Refuse(RequestRefusalReason::CursorOutOfRange)
+                    } else {
+                        entry.active = true;
+                        *st.outstanding
+                            .entry(caller.socket_epoch.clone())
+                            .or_insert(0) += 1;
+                        let sig = st
+                            .lifetimes
+                            .entry(caller.socket_epoch.clone())
+                            .or_default()
+                            .clone();
+                        LookupOutcome::Ready(sig)
+                    }
                 }
             }
         };
@@ -376,6 +425,12 @@ impl RecoveryPageRequests {
             LookupOutcome::Cached(ans) => return Ok(*ans),
             LookupOutcome::Refuse(reason) => return self.refuse(reason),
             LookupOutcome::Ready(sig) => sig,
+        };
+        let mut active = ActiveRequest {
+            state: Arc::clone(&self.state),
+            socket_epoch: caller.socket_epoch.clone(),
+            token_id: source.id.clone(),
+            finished: false,
         };
 
         let offset = position.map_or(0, |p| p.offset);
@@ -415,18 +470,7 @@ impl RecoveryPageRequests {
         let page_res = page_fut.await;
 
         let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let left = st
-            .outstanding
-            .get(&caller.socket_epoch)
-            .copied()
-            .unwrap_or(1)
-            .saturating_sub(1);
-        if left > 0 {
-            st.outstanding.insert(caller.socket_epoch.clone(), left);
-        } else {
-            st.outstanding.remove(&caller.socket_epoch);
-            st.lifetimes.remove(&caller.socket_epoch);
-        }
+        active.finish(&mut st);
 
         let page = match page_res {
             Ok(page) => page,
@@ -551,6 +595,67 @@ mod tests {
     use super::*;
     use crate::compact_record_staging::RecordContent;
     use serde_json::json;
+
+    #[test]
+    fn limit_refusal_does_not_deadlock() {
+        const CHILD: &str = "MHC_TEST_RECOVERY_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                let result = runtime.block_on(async {
+                    let requests =
+                        RecoveryPageRequests::new(RecoveryCheckpoints::default(), None, None);
+                    requests
+                        .state
+                        .lock()
+                        .expect("state")
+                        .outstanding
+                        .insert("se-1".into(), SOCKET_PAGE_REQUESTS_MAX);
+                    let caller = RecoveryCaller {
+                        socket_epoch: "se-1".into(),
+                        session_id: "s1".into(),
+                    };
+                    let request = RecoveryPageRequest {
+                        request_id: "req-1".into(),
+                        admission_id: "adm-1".into(),
+                        token: Some("tok-1".into()),
+                        lease: None,
+                        component_ref: "manifest".into(),
+                        cursor: None,
+                    };
+                    requests.request(&caller, &request, None).await
+                });
+                sender.send(result).expect("report result");
+            });
+            let result = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("request deadline");
+            assert!(matches!(
+                result,
+                Err(RecoveryPageFailure::RequestRefused(RequestRefusal {
+                    reason: RequestRefusalReason::RequestLimit,
+                    ..
+                }))
+            ));
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("limit_refusal_does_not_deadlock")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .output()
+            .expect("run isolated test process");
+        assert!(
+            child.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+    }
 
     #[tokio::test]
     async fn serves_event_lease_pages_handles_exact_retry_and_refuses_mismatch() {

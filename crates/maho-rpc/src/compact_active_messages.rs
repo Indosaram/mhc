@@ -333,6 +333,40 @@ mod tests {
     use crate::compact_transition::CompactBlockKind;
 
     #[tokio::test]
+    async fn replacing_block_with_shorter_text_reduces_byte_counters() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut active = CompactActiveMessages::new(
+            CompactContentStoreOptions {
+                dir: dir.path().join("epoch").display().to_string(),
+                ..Default::default()
+            },
+            None,
+        );
+        let address = BlockAddress {
+            message_id: "m1".into(),
+            content_index: 0,
+        };
+        for (text, witness, tail_bytes, witness_bytes) in
+            [("abcdef", "wxyz", 12, 8), ("ab", "x", 4, 2)]
+        {
+            let mut draft = CompactSeededDraft::new(active.store.clone());
+            let mut block = draft.text(CompactBlockKind::Text, text).expect("text");
+            block.witness = witness.to_owned();
+            adjust_block(&active.store, &block, 1).expect("retain");
+            active
+                .publish(&address, block.clone(), Some("E1".into()), None, None)
+                .expect("publish");
+            adjust_block(&active.store, &block, -1).expect("drop caller ref");
+            assert_eq!(active.resident_tail_bytes, tail_bytes);
+            assert_eq!(active.hot_witness_bytes, witness_bytes);
+        }
+        active.drop_active("m1").expect("drop");
+        assert_eq!(active.resident_tail_bytes, 0);
+        assert_eq!(active.hot_witness_bytes, 0);
+        active.store.retire().await.expect("retire");
+    }
+
+    #[tokio::test]
     async fn publishes_installs_and_settles_active_messages_to_zero_leak() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut active = CompactActiveMessages::new(

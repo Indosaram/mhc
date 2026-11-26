@@ -695,6 +695,136 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn socket_page_limit_counts_independent_pending_leases() {
+        use crate::compact_recovery_requests::{
+            RecoveryPageFailure, RecoveryPageRequest, RecoveryPageRequests, RequestRefusalReason,
+            SOCKET_PAGE_REQUESTS_MAX,
+        };
+        use crate::compact_recovery_state::RecoveryCheckpoints;
+
+        let leases = EventLeases::default();
+        let caller = RecoveryCaller {
+            socket_epoch: "se-1".into(),
+            session_id: "s1".into(),
+        };
+        let mut pages = Vec::new();
+        for index in 0..=SOCKET_PAGE_REQUESTS_MAX {
+            let record = json!({"type": "message_end", "index": index});
+            let admission = format!("adm-{index}");
+            let lease = leases
+                .mint(
+                    "se-1",
+                    "s1",
+                    &admission,
+                    "ep-1",
+                    1,
+                    &record,
+                    RecordContent::Text(record.to_string()),
+                    None,
+                )
+                .expect("mint");
+            let held = leases.claim(&caller, &lease.id, &admission).expect("claim");
+            held.shared.lock().expect("shared").opened = Some(
+                std::future::pending::<Result<Arc<dyn FrozenBytes>, RecoveryBytesError>>()
+                    .boxed()
+                    .shared(),
+            );
+            pages.push(RecoveryPageRequest {
+                request_id: format!("req-{index}"),
+                admission_id: admission,
+                token: None,
+                lease: Some(("event".into(), lease.id)),
+                component_ref: EVENT_RECORD_COMPONENT.into(),
+                cursor: None,
+            });
+        }
+        let requests = Arc::new(RecoveryPageRequests::new(
+            RecoveryCheckpoints::default(),
+            None,
+            Some(leases),
+        ));
+        let barrier = Arc::new(tokio::sync::Barrier::new(pages.len() + 1));
+        let mut tasks = tokio::task::JoinSet::new();
+        for page in pages {
+            let requests = Arc::clone(&requests);
+            let barrier = Arc::clone(&barrier);
+            let caller = caller.clone();
+            tasks.spawn(async move {
+                barrier.wait().await;
+                requests.request(&caller, &page, None).await
+            });
+        }
+        barrier.wait().await;
+        let refused = tokio::time::timeout(std::time::Duration::from_secs(5), tasks.join_next())
+            .await
+            .expect("request deadline")
+            .expect("task")
+            .expect("join")
+            .expect_err("socket limit");
+        assert!(
+            matches!(refused, RecoveryPageFailure::RequestRefused(refusal)
+            if refusal.reason == RequestRefusalReason::RequestLimit)
+        );
+        assert_eq!(requests.status().outstanding, SOCKET_PAGE_REQUESTS_MAX);
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(requests.status().outstanding, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_page_request_releases_socket_budget_and_token() {
+        use crate::compact_recovery_requests::{RecoveryPageRequest, RecoveryPageRequests};
+        use crate::compact_recovery_state::RecoveryCheckpoints;
+        use std::task::Poll;
+
+        let leases = EventLeases::default();
+        let record = json!({"type": "message_end", "payload": "hello"});
+        let lease = leases
+            .mint(
+                "se-1",
+                "s1",
+                "adm-1",
+                "ep-1",
+                1,
+                &record,
+                RecordContent::Text(record.to_string()),
+                None,
+            )
+            .expect("mint");
+        let caller = RecoveryCaller {
+            socket_epoch: "se-1".into(),
+            session_id: "s1".into(),
+        };
+        let held = leases.claim(&caller, &lease.id, "adm-1").expect("claim");
+        held.shared.lock().expect("shared").opened = Some(
+            std::future::pending::<Result<Arc<dyn FrozenBytes>, RecoveryBytesError>>()
+                .boxed()
+                .shared(),
+        );
+        let requests =
+            RecoveryPageRequests::new(RecoveryCheckpoints::default(), None, Some(leases));
+        let request = RecoveryPageRequest {
+            request_id: "req-1".into(),
+            admission_id: "adm-1".into(),
+            token: None,
+            lease: Some(("event".into(), lease.id)),
+            component_ref: EVENT_RECORD_COMPONENT.into(),
+            cursor: None,
+        };
+        let mut page = Box::pin(requests.request(&caller, &request, None));
+        std::future::poll_fn(|cx| {
+            assert!(page.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(requests.status().outstanding, 1);
+        drop(page);
+        assert_eq!(requests.status().outstanding, 0);
+        held.shared.lock().expect("shared").opened = None;
+        assert!(requests.request(&caller, &request, None).await.is_ok());
+    }
+
     #[tokio::test]
     async fn mints_pages_counts_multi_admission_receipts_and_detects_duplicates() {
         let leases = EventLeases::default();

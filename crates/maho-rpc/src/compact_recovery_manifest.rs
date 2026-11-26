@@ -46,6 +46,42 @@ struct Built {
     store: CompactContentStore,
 }
 
+#[derive(Default)]
+struct ManifestCache {
+    ready: HashMap<String, Built>,
+    pins: HashMap<String, Arc<()>>,
+}
+
+struct ManifestComponents<'a> {
+    store: &'a CompactContentStore,
+    owners: Vec<LeafId>,
+    leaves: Vec<LeafId>,
+}
+
+struct ManifestRoot<'a> {
+    catalogs: &'a CompactRecoveryCatalog,
+    store: &'a CompactContentStore,
+    root: Option<CatalogRoot>,
+}
+
+impl Drop for ManifestRoot<'_> {
+    fn drop(&mut self) {
+        if let Some(root) = self.root.take() {
+            self.catalogs.release(self.store, &root);
+        }
+    }
+}
+
+impl Drop for ManifestComponents<'_> {
+    fn drop(&mut self) {
+        for &id in self.owners.iter().chain(&self.leaves) {
+            if let Err(error) = self.store.adjust(id, -1, 0) {
+                eprintln!("manifest component cleanup failed: {error}");
+            }
+        }
+    }
+}
+
 fn utf16_chunks(value: &str) -> Vec<String> {
     let total = usize::try_from(utf16_len(value)).unwrap_or(0);
     let mut parts = Vec::new();
@@ -62,7 +98,7 @@ fn utf16_chunks(value: &str) -> Vec<String> {
 /// One manifest and catalog per token, built once from the pinned root and released with the token.
 pub struct RecoveryManifests {
     catalogs: CompactRecoveryCatalog,
-    ready: Mutex<HashMap<String, Built>>,
+    ready: Mutex<ManifestCache>,
     verified: Mutex<VerifiedComponents>,
     counter: Mutex<u64>,
     family_builder: Option<FamilyComponentsFn>,
@@ -78,7 +114,7 @@ impl RecoveryManifests {
     pub fn new(family_builder: Option<FamilyComponentsFn>) -> Self {
         Self {
             catalogs: CompactRecoveryCatalog::new(),
-            ready: Mutex::new(HashMap::new()),
+            ready: Mutex::new(ManifestCache::default()),
             verified: Mutex::new(VerifiedComponents::new()),
             counter: Mutex::new(0),
             family_builder,
@@ -94,10 +130,16 @@ impl RecoveryManifests {
 
     /// `token_id` pins `root_key` for the cache; another live token pinning it is a `FrozenRootPinnedError`.
     pub fn pin(&self, token_id: &str, root_key: usize) -> Result<(), FrozenRootPinnedError> {
+        let mut cache = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
         self.verified
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .pin(token_id, root_key)
+            .pin(token_id, root_key)?;
+        cache
+            .pins
+            .entry(token_id.to_owned())
+            .or_insert_with(|| Arc::new(()));
+        Ok(())
     }
 
     pub async fn manifest(
@@ -106,22 +148,36 @@ impl RecoveryManifests {
         store: &CompactContentStore,
         valid: ValidCheck<'_>,
     ) -> Result<RecoveryManifest, RecoveryBytesError> {
-        if let Some(built) = self
-            .ready
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&token.id)
-            .cloned()
-        {
-            return Ok(built.manifest);
-        }
+        let pin = {
+            let cache = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(built) = cache.ready.get(&token.id) {
+                return Ok(built.manifest.clone());
+            }
+            cache
+                .pins
+                .get(&token.id)
+                .cloned()
+                .ok_or(RecoveryBytesError::Unavailable)?
+        };
         let built = self.build(token, store, valid).await?;
-        let manifest = built.manifest.clone();
-        self.ready
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(token.id.clone(), built);
-        Ok(manifest)
+        let existing = {
+            let mut cache = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+            if !cache
+                .pins
+                .get(&token.id)
+                .is_some_and(|current| Arc::ptr_eq(current, &pin))
+            {
+                None
+            } else if let Some(existing) = cache.ready.get(&token.id) {
+                Some(existing.manifest.clone())
+            } else {
+                let manifest = built.manifest.clone();
+                cache.ready.insert(token.id.clone(), built);
+                return Ok(manifest);
+            }
+        };
+        self.catalogs.release(&built.store, &built.root);
+        existing.ok_or(RecoveryBytesError::Unavailable)
     }
 
     /// A raw ref is validated before any use; without a built catalog no ref can name anything.
@@ -136,6 +192,7 @@ impl RecoveryManifests {
             .ready
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .ready
             .get(token_id)
             .cloned()
             .ok_or(RecoveryBytesError::Range)?;
@@ -166,6 +223,7 @@ impl RecoveryManifests {
             .ready
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .ready
             .get(&token.id)
             .cloned()
             .ok_or(RecoveryBytesError::Range)?;
@@ -196,6 +254,7 @@ impl RecoveryManifests {
                     .ready
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
+                    .ready
                     .get(&token.id)
                     .is_some_and(|b| b.root.ref_ == built.root.ref_);
                 if still_current {
@@ -212,15 +271,16 @@ impl RecoveryManifests {
     }
 
     pub fn release(&self, token_id: &str) {
-        let built = self
-            .ready
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(token_id);
-        self.verified
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drop_token(token_id);
+        let built = {
+            let mut cache = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+            cache.pins.remove(token_id);
+            let built = cache.ready.remove(token_id);
+            self.verified
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .drop_token(token_id);
+            built
+        };
         if let Some(built) = built {
             self.catalogs.release(&built.store, &built.root);
         }
@@ -255,7 +315,11 @@ impl RecoveryManifests {
 
         let mut texts: HashMap<TextField, Option<ManifestText>> = HashMap::new();
         let mut oversized: Vec<(TextField, CatalogComponent)> = Vec::new();
-        let mut owned: Vec<LeafId> = Vec::new();
+        let mut owned = ManifestComponents {
+            store,
+            owners: Vec::new(),
+            leaves: Vec::new(),
+        };
 
         let build_result: Result<Built, RecoveryBytesError> = async {
             for field in TEXT_FIELDS {
@@ -270,10 +334,11 @@ impl RecoveryManifests {
                 let mut leaves = Vec::new();
                 for chunk in utf16_chunks(value) {
                     let leaf = store.create_leaf(&chunk, false)?;
-                    owned.push(leaf);
+                    owned.leaves.push(leaf);
                     leaves.push(leaf);
                 }
                 let owner = store.text().own(&leaves)?;
+                owned.owners.push(owner);
                 let component = CatalogComponent {
                     kind: manifest_kind.clone(),
                     id: protocol_id(field.as_str()),
@@ -299,25 +364,29 @@ impl RecoveryManifests {
                 .build(store, root_ref.clone(), &mut component_stream, valid)
                 .await?;
 
-            self.assemble(
+            let mut root_guard = ManifestRoot {
+                catalogs: &self.catalogs,
                 store,
-                token,
-                root_ref,
-                built_root,
-                &oversized,
-                &mut texts,
-                registry.required_kinds,
-            )
-            .await
+                root: Some(built_root.clone()),
+            };
+            let result = self
+                .assemble(
+                    store,
+                    token,
+                    root_ref,
+                    built_root,
+                    &oversized,
+                    &mut texts,
+                    registry.required_kinds,
+                )
+                .await;
+            if result.is_ok() {
+                root_guard.root = None;
+            }
+            result
         }
         .await;
 
-        for (_, comp) in &oversized {
-            let _ = store.adjust(comp.owner, -1, 0);
-        }
-        for leaf in owned {
-            let _ = store.adjust(leaf, -1, 0);
-        }
         build_result
     }
 
@@ -402,9 +471,6 @@ impl RecoveryManifests {
             })
         }
         .await;
-        if res.is_err() {
-            self.catalogs.release(store, &built);
-        }
         res
     }
 }
@@ -444,6 +510,131 @@ mod tests {
                 turn_id: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn releasing_during_concurrent_builds_does_not_publish_catalogs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = CompactContentStore::new(CompactContentStoreOptions {
+            dir: dir.path().join("epoch").display().to_string(),
+            ..Default::default()
+        });
+        let ready = Arc::new(tokio::sync::Barrier::new(3));
+        let resume = Arc::new(tokio::sync::Barrier::new(3));
+        let builder_ready = Arc::clone(&ready);
+        let builder_resume = Arc::clone(&resume);
+        let manifests = Arc::new(RecoveryManifests::new(Some(Arc::new(move |_| {
+            let ready = Arc::clone(&builder_ready);
+            let resume = Arc::clone(&builder_resume);
+            Box::pin(async move {
+                ready.wait().await;
+                resume.wait().await;
+                Ok((Vec::new(), family_registry(&default_family_producers())))
+            })
+        }))));
+        let token = token("s1");
+        manifests.pin(&token.id, 1).expect("pin");
+        let mut builds = tokio::task::JoinSet::new();
+        for _ in 0..2 {
+            let manifests = Arc::clone(&manifests);
+            let token = token.clone();
+            let store = store.clone();
+            builds.spawn(async move { manifests.manifest(&token, &store, &ok_valid).await });
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready.wait())
+            .await
+            .expect("both builds started");
+        manifests.release(&token.id);
+        resume.wait().await;
+        while let Some(result) = builds.join_next().await {
+            assert!(
+                result.expect("join").is_err(),
+                "released build must not publish"
+            );
+        }
+        assert!(manifests.ready.lock().expect("ready").ready.is_empty());
+        store.idle().await;
+        store.retire().await.expect("retire");
+    }
+
+    #[tokio::test]
+    async fn concurrent_builds_share_one_catalog_and_release_the_loser() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = CompactContentStore::new(CompactContentStoreOptions {
+            dir: dir.path().join("epoch").display().to_string(),
+            ..Default::default()
+        });
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let builder_barrier = Arc::clone(&barrier);
+        let manifests = Arc::new(RecoveryManifests::new(Some(Arc::new(move |_| {
+            let barrier = Arc::clone(&builder_barrier);
+            Box::pin(async move {
+                barrier.wait().await;
+                Ok((Vec::new(), family_registry(&default_family_producers())))
+            })
+        }))));
+        let token = token(&"session".repeat(30));
+        manifests.pin(&token.id, 1).expect("pin");
+        let mut builds = tokio::task::JoinSet::new();
+        for _ in 0..2 {
+            let manifests = Arc::clone(&manifests);
+            let token = token.clone();
+            let store = store.clone();
+            builds.spawn(async move { manifests.manifest(&token, &store, &ok_valid).await });
+        }
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), builds.join_next())
+            .await
+            .expect("deadline")
+            .expect("task")
+            .expect("join")
+            .expect("manifest");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), builds.join_next())
+            .await
+            .expect("deadline")
+            .expect("task")
+            .expect("join")
+            .expect("manifest");
+        assert_eq!(first.catalog_root, second.catalog_root);
+        manifests.release(&token.id);
+        assert_eq!(
+            store.status().resident_payload_bytes,
+            0,
+            "both catalog roots must be released"
+        );
+        store.idle().await;
+        store.retire().await.expect("retire");
+    }
+
+    #[tokio::test]
+    async fn cancelled_build_releases_partial_component_leaves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = CompactContentStore::new(CompactContentStoreOptions {
+            dir: dir.path().join("epoch").display().to_string(),
+            ..Default::default()
+        });
+        let manifests =
+            RecoveryManifests::new(Some(Arc::new(|_| Box::pin(std::future::pending()))));
+        let token = token(&"session".repeat(30));
+        manifests.pin(&token.id, 1).expect("pin");
+        let mut build = Box::pin(manifests.manifest(&token, &store, &ok_valid));
+        std::future::poll_fn(|cx| {
+            assert!(build.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(
+            store.status().resident_payload_bytes > 0,
+            "partial build owns leaves"
+        );
+        drop(build);
+        assert_eq!(
+            store.status().resident_payload_bytes,
+            0,
+            "cancelled build must release leaves"
+        );
+        manifests.release(&token.id);
+        store.idle().await;
+        store.retire().await.expect("retire");
     }
 
     #[tokio::test]

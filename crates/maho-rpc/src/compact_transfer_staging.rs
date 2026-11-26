@@ -183,12 +183,12 @@ impl StagedTransfer {
             self.abort();
             return Err(TransferStagingError::new(StagingRefusal::LengthMismatch).into());
         }
-        self.open = false;
         let digester = self
             .digester
             .take()
             .ok_or_else(|| TransferStagingError::new(StagingRefusal::StagingClosed))?;
         let digest = digester.finish()?;
+        self.open = false;
         let content = StagedContent {
             id: self.id,
             ref_: FrozenRef::Staged {
@@ -545,6 +545,34 @@ mod tests {
             })
         ));
         assert_eq!(staging.staged_bytes(), 0);
+        staging.close().await.expect("close");
+    }
+
+    #[tokio::test]
+    async fn failed_digest_commit_releases_leaves_and_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = CompactContentStore::new(CompactContentStoreOptions {
+            dir: dir.path().join("epoch").display().to_string(),
+            ..Default::default()
+        });
+        let staging = TransferStaging::new(store, Some(4));
+        let mut transfer = staging
+            .begin(protocol_id("event"), protocol_id("rec"), 4)
+            .expect("begin");
+        transfer.append("ab").expect("append");
+        assert!(staging.resident_bytes() > 0);
+        transfer.digester = Some(CatalogDigester::new(CatalogDomain::Leaf, 4));
+        assert!(transfer.commit().is_err(), "digest mismatch must fail");
+        assert_eq!(staging.staged_bytes(), 0);
+        assert_eq!(staging.resident_bytes(), 0);
+        assert!(
+            staging
+                .state
+                .lock()
+                .expect("state")
+                .open_transfers
+                .is_empty()
+        );
         staging.close().await.expect("close");
     }
 }

@@ -46,7 +46,7 @@ impl SubprocessLooplessWorker {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .kill_on_drop(true);
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         let stdin = child.stdin.take();
@@ -220,6 +220,22 @@ pub fn start_loopless_worker_with(command: Command) -> Result<Arc<dyn LooplessWo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn worker_can_write_more_than_a_pipe_of_stderr_before_ready() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(
+            "read line; head -c 131072 /dev/zero >&2; printf '{\"type\":\"ready\",\"tools\":[\"read\"]}\\n'; read close_line",
+        );
+        let worker = SubprocessLooplessWorker::spawn(cmd).expect("spawn");
+        let ready = tokio::time::timeout(
+            Duration::from_secs(5),
+            worker.start(LooplessCliConfiguration::default(), "/tmp".into()),
+        )
+        .await;
+        worker.close(0).await;
+        assert_eq!(ready.expect("ready deadline").expect("ready"), vec!["read"]);
+    }
 
     #[tokio::test]
     async fn subprocess_worker_handles_ready_and_close() {
