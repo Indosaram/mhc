@@ -789,7 +789,9 @@ impl McpClient {
                 let cancelled = json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"Request cancelled"}});
                 if self.is_legacy_sse() {
                     // A missing POST acknowledgement must not hold the cancellation hostage.
-                    let _ = tokio::time::timeout(Duration::from_millis(400),self.send(&cancelled)).await;
+                    tokio::time::timeout(Duration::from_millis(400),self.send(&cancelled))
+                        .await
+                        .map_err(|_| failure(&self.server,McpErrorKind::Timeout,"MCP cancellation notification timed out","request"))??;
                 } else {
                     self.send(&cancelled).await?;
                 }

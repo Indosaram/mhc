@@ -322,7 +322,7 @@ mod tests {
                 assert!(
                     missing_providers
                         .iter()
-                        .any(|provider| provider == "kimi-coding"),
+                        .any(|provider| provider == "deepseek"),
                     "the unpinned builtin chain contributes its providers"
                 );
                 assert!(

@@ -95,7 +95,9 @@ impl McpClient {
             return Err("invalid SSE JSON-RPC message");
         }
         if message.get("method").and_then(Value::as_str).is_some() {
-            let _ = self.notifications.send(message);
+            self.notifications
+                .send(message)
+                .map_err(|_| "SSE JSON-RPC message has no receiver")?;
         } else if let Some(id) = message.get("id").and_then(Value::as_u64) {
             let reply = if let Some(error) = message.get("error") {
                 // The peer can echo the full endpoint or credentials in message/data.
@@ -125,7 +127,9 @@ impl McpClient {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&id)
             {
-                let _ = sender.send(reply);
+                sender
+                    .send(reply)
+                    .map_err(|_| "SSE JSON-RPC reply receiver was dropped")?;
             }
         }
         Ok(())
@@ -540,5 +544,19 @@ mod tests {
         );
         assert_eq!(good_rx.await.unwrap().unwrap()["ok"], true);
         assert!(!*client.closed.borrow());
+
+        assert!(
+            client
+                .sse_message(json!({"jsonrpc":"2.0","id":"server","method":"unknown/method"}))
+                .is_err()
+        );
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        client.pending.lock().unwrap().insert(3, dropped_tx);
+        drop(dropped_rx);
+        assert!(
+            client
+                .sse_message(json!({"jsonrpc":"2.0","id":3,"result":{}}))
+                .is_err()
+        );
     }
 }

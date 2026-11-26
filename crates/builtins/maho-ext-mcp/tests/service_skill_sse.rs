@@ -190,6 +190,8 @@ async fn sse_server_request_receives_a_json_rpc_response() {
                                     .to_string(),
                                 )
                                 .unwrap();
+                        } else if request["method"] == "notifications/cancelled" {
+                            return StatusCode::SERVICE_UNAVAILABLE;
                         } else if request.get("id").is_some() && request.get("method").is_none() {
                             reply_tx.send(request).unwrap();
                         }
@@ -227,6 +229,22 @@ async fn sse_server_request_receives_a_json_rpc_response() {
         .unwrap();
     assert_eq!(response["id"], "server-1");
     assert_eq!(response["error"]["code"], -32601);
+    let signal = maho_ext_api::AbortSignal::default();
+    signal.abort();
+    let error = client
+        .request_guarded(
+            "tools/list",
+            json!({}),
+            Duration::from_secs(3),
+            Some(&signal),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.cause.as_deref().map(|cause| &cause["status"]),
+        Some(&json!(503))
+    );
     client.close().await.unwrap();
     handler.abort();
     server.abort();
