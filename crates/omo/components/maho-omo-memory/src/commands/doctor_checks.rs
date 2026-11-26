@@ -572,9 +572,8 @@ pub fn check_runtime_size(
     input: &RuntimeSizeCheckInput,
 ) -> (DoctorCheck, RuntimeSizeReport) {
     use memory_core::retention::{
-        RuntimeCapEvictableOptions, RuntimeCapExcess, RuntimeSizeBudgetOutcome,
-        RuntimeSizeStandingLevel, count_runtime_past_retention, describe_runtime_cap_excess,
-        format_runtime_bytes, measure_runtime_cap_evictable_bytes,
+        RuntimeCapEvictableOptions, RuntimeSizeBudgetOutcome, RuntimeSizeStandingLevel,
+        count_runtime_past_retention, format_runtime_bytes, measure_runtime_cap_evictable_bytes,
         measure_runtime_size_within_budget, measure_unreflected_journal_bytes,
         read_last_retention_log_entry, read_unreflected_retention_gate, runtime_size_standing,
     };
@@ -647,12 +646,12 @@ pub fn check_runtime_size(
             } else {
                 None
             };
-            let excess = describe_runtime_cap_excess(RuntimeCapExcess {
-                over_cap_bytes: over_cap,
-                evictable_bytes: evictable_bytes.unwrap_or(0),
-                unreflected_bytes: unreflected_bytes.unwrap_or(0),
-                discard_unreflected_journals: input.discard_unreflected_journals,
-            });
+            let excess = measured_cap_excess(
+                over_cap,
+                evictable_bytes,
+                unreflected_bytes,
+                input.discard_unreflected_journals,
+            );
             let stores: Vec<RuntimeStoreSizeReport> = size
                 .stores
                 .into_iter()
@@ -723,14 +722,21 @@ pub fn check_runtime_size(
                 ));
             }
             if level == CheckLevel::Warn && excess.is_none() {
-                parts.push(format!(
-                    "the next maintenance pass evicts the oldest runtime data down to the cap{}",
-                    if past_total > 0 {
-                        " after retention frees what is past its window"
-                    } else {
-                        ""
-                    }
-                ));
+                if over_cap > 0
+                    && (evictable_bytes.is_none()
+                        || (!input.discard_unreflected_journals && unreflected_bytes.is_none()))
+                {
+                    parts.push("retention capacity could not be measured".to_owned());
+                } else {
+                    parts.push(format!(
+                        "the next maintenance pass evicts the oldest runtime data down to the cap{}",
+                        if past_total > 0 {
+                            " after retention frees what is past its window"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
             }
             if level == CheckLevel::Warn {
                 parts.push(
@@ -761,6 +767,26 @@ pub fn check_runtime_size(
     check.detail = format!("{}; {cleanup_text}", check.detail);
     report.last_cleanup = last_cleanup;
     (check, report)
+}
+
+fn measured_cap_excess(
+    over_cap_bytes: u64,
+    evictable_bytes: Option<u64>,
+    unreflected_bytes: Option<u64>,
+    discard_unreflected_journals: bool,
+) -> Option<String> {
+    let evictable_bytes = evictable_bytes?;
+    let unreflected_bytes = if discard_unreflected_journals {
+        unreflected_bytes.unwrap_or(0)
+    } else {
+        unreflected_bytes?
+    };
+    memory_core::retention::describe_runtime_cap_excess(memory_core::retention::RuntimeCapExcess {
+        over_cap_bytes,
+        evictable_bytes,
+        unreflected_bytes,
+        discard_unreflected_journals,
+    })
 }
 
 fn size_unknown_result(
@@ -795,4 +821,17 @@ fn size_unknown_result(
             last_cleanup: None,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::measured_cap_excess;
+
+    #[test]
+    fn incomplete_measurements_do_not_claim_a_known_excess_cause() {
+        assert!(measured_cap_excess(10, None, Some(0), false).is_none());
+        assert!(measured_cap_excess(10, Some(0), None, false).is_none());
+        assert!(measured_cap_excess(10, Some(0), Some(0), false).is_some());
+        assert!(measured_cap_excess(10, Some(0), None, true).is_some());
+    }
 }

@@ -48,6 +48,100 @@ fn consecutive_reflection_failures_use_bounded_exponential_backoff() {
 }
 
 #[test]
+fn replaced_longer_transcript_does_not_reuse_old_source_ids() {
+    for replace_file in [false, true] {
+        let original_dir = tempfile::tempdir().expect("original");
+        let replacement_dir = tempfile::tempdir().expect("replacement");
+        let journal = create_journal(original_dir.path());
+        let replacement = create_journal(replacement_dir.path());
+        let assistant = |id: &str, text: &str| TranscriptProjection::Assistant {
+            message_id: id.to_owned(),
+            text_blocks: vec![text.to_owned()],
+            reasoning_blocks: Vec::new(),
+            tool_calls: Vec::new(),
+        };
+        let old = assistant("assistant-1", "old");
+        journal
+            .reconcile(std::slice::from_ref(&old))
+            .expect("original");
+        replacement
+            .reconcile(&[
+                assistant("assistant-2", "new"),
+                assistant("assistant-3", "extra"),
+            ])
+            .expect("replacement");
+        let old_len = std::fs::metadata(&journal.transcript_path)
+            .expect("old metadata")
+            .len();
+        let replacement_data =
+            std::fs::read(&replacement.transcript_path).expect("replacement data");
+        assert_eq!(
+            replacement_data
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .expect("first row") as u64
+                + 1,
+            old_len
+        );
+        if replace_file {
+            #[cfg(windows)]
+            std::fs::remove_file(&journal.transcript_path).expect("remove old transcript");
+            std::fs::rename(&replacement.transcript_path, &journal.transcript_path)
+                .expect("replace");
+        } else {
+            std::fs::write(&journal.transcript_path, replacement_data).expect("overwrite");
+        }
+        let result = journal.reconcile(&[old]).expect("reconcile");
+        assert_eq!(result.appended, 1);
+        assert_eq!(result.skipped, 0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replaced_same_size_and_mtime_transcript_does_not_reuse_old_source_ids() {
+    let original_dir = tempfile::tempdir().expect("original");
+    let replacement_dir = tempfile::tempdir().expect("replacement");
+    let journal = create_journal(original_dir.path());
+    let replacement = create_journal(replacement_dir.path());
+    let assistant = |id: &str, text: &str| TranscriptProjection::Assistant {
+        message_id: id.to_owned(),
+        text_blocks: vec![text.to_owned()],
+        reasoning_blocks: Vec::new(),
+        tool_calls: Vec::new(),
+    };
+    let old = assistant("assistant-1", "old");
+    journal
+        .reconcile(std::slice::from_ref(&old))
+        .expect("original");
+    replacement
+        .reconcile(&[assistant("assistant-2", "new")])
+        .expect("replacement");
+    let old_meta = std::fs::metadata(&journal.transcript_path).expect("original metadata");
+    assert_eq!(
+        old_meta.len(),
+        std::fs::metadata(&replacement.transcript_path)
+            .expect("replacement metadata")
+            .len()
+    );
+    std::fs::File::options()
+        .write(true)
+        .open(&replacement.transcript_path)
+        .expect("open replacement")
+        .set_times(std::fs::FileTimes::new().set_modified(old_meta.modified().expect("mtime")))
+        .expect("preserve mtime");
+    assert_eq!(
+        std::fs::metadata(&replacement.transcript_path)
+            .expect("replacement metadata")
+            .modified()
+            .expect("replacement mtime"),
+        old_meta.modified().expect("original mtime")
+    );
+    std::fs::rename(&replacement.transcript_path, &journal.transcript_path).expect("replace");
+    assert_eq!(journal.reconcile(&[old]).expect("reconcile").appended, 1);
+}
+
+#[test]
 fn test_rows_are_idempotent_and_steps_stay_derived_when_three_completed_assistant_messages_reconciled_twice()
  {
     // given

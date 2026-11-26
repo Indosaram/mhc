@@ -7,11 +7,13 @@ use serde_json::Value;
 
 use crate::config::config_dir_name;
 use crate::linked_worktree_checkout::linked_worktree_main_checkout_dir;
-use crate::lockfile_policy::{FILE_STORAGE_SYNC_LOCK_BUDGET_MS, acquire_lock_sync};
+use crate::lockfile_policy::{
+    FILE_STORAGE_SYNC_LOCK_BUDGET_MS, acquire_lock_async, acquire_lock_sync,
+};
 use crate::paths::{PathInputOptions, canonicalize_path, canonicalize_path_strict, resolve_path};
 use crate::text::strip_bom;
 use crate::trust_store_writers::{
-    hold_trust_store_lock_in_realm, in_trust_store_write_turn, trust_store_lock_held_in_realm,
+    in_trust_store_lock_scope, in_trust_store_write_turn, trust_store_lock_held_in_realm,
 };
 
 pub type ProjectTrustDecision = Option<bool>;
@@ -241,10 +243,10 @@ where
         if let Some(parent) = Path::new(path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _guard = acquire_lock_sync(path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+        let _guard = acquire_lock_async(path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+            .await
             .map_err(|error| error.message())?;
-        let _hold = hold_trust_store_lock_in_realm(path);
-        write().await
+        in_trust_store_lock_scope(path, async move { write().await }).await
     })
     .await
 }
@@ -637,6 +639,90 @@ pub fn get_saved_project_trust_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trust_lock_ownership_is_limited_to_the_acquiring_task() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("trust.json").to_string_lossy().into_owned();
+        let path_for_write = path.clone();
+        with_trust_file_write_lock(&path, move || async move {
+            assert!(trust_store_lock_held_in_realm(&path_for_write));
+            assert_eq!(
+                with_trust_file_lock(&path_for_write, || 7).expect("nested"),
+                7
+            );
+            let path_for_other = path_for_write.clone();
+            let other =
+                tokio::spawn(async move { trust_store_lock_held_in_realm(&path_for_other) })
+                    .await
+                    .expect("other task");
+            assert!(!other, "another task must acquire its own file lock");
+            Ok(())
+        })
+        .await
+        .expect("write lock");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_trust_guard_does_not_authorize_another_task() {
+        let path = "task-ownership-probe";
+        let _guard = crate::trust_store_writers::hold_trust_store_lock_in_realm(path);
+        assert!(trust_store_lock_held_in_realm(path));
+        assert!(
+            !tokio::spawn(async move { trust_store_lock_held_in_realm(path) })
+                .await
+                .expect("other task")
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_lock_is_owned_while_write_future_is_created() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("trust.json").to_string_lossy().into_owned();
+        let path_for_write = path.clone();
+        with_trust_file_write_lock(&path, move || {
+            let nested = if trust_store_lock_held_in_realm(&path_for_write) {
+                with_trust_file_lock(&path_for_write, || ())
+            } else {
+                Err("lock ownership missing while creating future".to_owned())
+            };
+            async move { nested }
+        })
+        .await
+        .expect("nested write");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn contended_async_trust_lock_does_not_block_the_executor() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("trust.json").to_string_lossy().into_owned();
+        let holder_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = acquire_lock_sync(&holder_path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+                .expect("holder lock");
+            ready_tx.send(()).expect("holder ready");
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok()
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("holder ready");
+        let (attempt_tx, attempt_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            attempt_tx.send(()).expect("notify attempt");
+            with_trust_file_write_lock(&path, || async { Ok(()) }).await
+        });
+        attempt_rx.await.expect("attempt started");
+        release_tx.send(()).expect("release holder");
+        assert!(
+            holder.join().expect("holder thread"),
+            "executor stopped making progress"
+        );
+        waiter.await.expect("waiter task").expect("waiter lock");
+    }
 
     #[test]
     fn stores_decisions_and_inherits_from_parent_directories() {

@@ -946,10 +946,29 @@ impl Clone for EntriesCache {
 #[derive(Clone)]
 struct SessionManagerProjectionHooks {
     write_fence: Arc<Mutex<crate::session_write_fence::SessionWriteFence>>,
+    ownership: Arc<Mutex<SessionOwnership>>,
+    pending_capture: Arc<Mutex<Option<ProjectionCapture>>>,
+    captures_transcript_base: bool,
+}
+
+struct ProjectionCapture {
+    path: String,
+    identity: Option<crate::session_file_identity::FileIdentity>,
+    contents: Option<String>,
 }
 
 impl crate::session_store::durable_binding::ProjectionHooks for SessionManagerProjectionHooks {
     fn before_write(&self, path: &str) -> Result<(), String> {
+        if self
+            .ownership
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_file
+            .as_deref()
+            != Some(path)
+        {
+            return Err("session no longer owns this projection path".to_owned());
+        }
         self.write_fence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -961,9 +980,37 @@ impl crate::session_store::durable_binding::ProjectionHooks for SessionManagerPr
 
     fn after_replace(
         &self,
-        _path: &str,
-        _identity: Option<crate::session_file_identity::FileIdentity>,
+        path: &str,
+        identity: Option<crate::session_file_identity::FileIdentity>,
     ) {
+        if self.captures_transcript_base {
+            *self
+                .pending_capture
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ProjectionCapture {
+                path: path.to_owned(),
+                identity,
+                contents: None,
+            });
+        }
+    }
+
+    fn after_replace_with_contents(
+        &self,
+        path: &str,
+        identity: Option<crate::session_file_identity::FileIdentity>,
+        contents: &str,
+    ) {
+        if self.captures_transcript_base {
+            *self
+                .pending_capture
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ProjectionCapture {
+                path: path.to_owned(),
+                identity,
+                contents: Some(contents.to_owned()),
+            });
+        }
     }
 }
 
@@ -995,6 +1042,7 @@ pub struct SessionManager {
     resident_blobs_dir: Arc<Mutex<Option<String>>>,
     call_keys: crate::session_file_call_keys::SessionFileCallKeys,
     durable: Option<Arc<crate::session_store::durable_binding::DurableSessionBinding>>,
+    pending_projection_capture: Arc<Mutex<Option<ProjectionCapture>>>,
     bind_pending: bool,
     bind_raced: bool,
     projection_warning_listeners:
@@ -1005,7 +1053,7 @@ pub struct SessionManager {
     /// `full_entry_count` at the latest mirror trim: entries before it may be missing from the mirror.
     trimmed_entry_count: usize,
     /// Refuses writes by a presumed-done owner whose fence another process advanced (senpi#3652).
-    write_fence: crate::session_write_fence::SessionWriteFence,
+    write_fence: Arc<Mutex<crate::session_write_fence::SessionWriteFence>>,
     /// Bumped whenever the history is replaced (not on append or mirror trim); keys `reduce_history`'s memo.
     history_generation: u64,
     /// The mirror's last `full_entry_count - verbatim_from_count` entries are the history's own tail, in order.
@@ -1138,13 +1186,16 @@ impl SessionManager {
             resident_blobs_dir,
             call_keys: crate::session_file_call_keys::SessionFileCallKeys::default(),
             durable: None,
+            pending_projection_capture: Arc::new(Mutex::new(None)),
             bind_pending: false,
             bind_raced: false,
             projection_warning_listeners: Arc::new(Mutex::new(Vec::new())),
             mirror_trimmed: false,
             full_entry_count: 0,
             trimmed_entry_count: 0,
-            write_fence: crate::session_write_fence::SessionWriteFence::new(),
+            write_fence: Arc::new(Mutex::new(
+                crate::session_write_fence::SessionWriteFence::new(),
+            )),
             history_generation: 0,
             verbatim_from_count: 0,
             history_reductions: crate::session_history_reduce::HistoryReductions::new(),
@@ -1620,6 +1671,8 @@ impl SessionManager {
             let resolved = resolve_path(session_file, session_file, &PathInputOptions::default());
             crate::session_write_reservation::reserve_session_write(&resolved);
             self.write_fence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .opened(&resolved)
                 .map_err(|error| error.to_string())?;
         }
@@ -2004,6 +2057,7 @@ impl SessionManager {
     fn rewrite_file(&mut self) {
         if let Err(error) = self.check_session_hold() {
             eprintln!("cannot rewrite session: {error}");
+            self.last_write_error = Some(error);
             return;
         }
         if !self.persist {
@@ -2012,8 +2066,14 @@ impl SessionManager {
         let Some(session_file) = self.session_file.clone() else {
             return;
         };
-        if let Err(error) = self.write_fence.assert_owned(&session_file) {
+        let fence_result = self
+            .write_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .assert_owned(&session_file);
+        if let Err(error) = fence_result {
             eprintln!("cannot rewrite session: {error}");
+            self.last_write_error = Some(error.to_string());
             return;
         }
         crate::session_write_reservation::reserve_session_write(&session_file);
@@ -2087,6 +2147,8 @@ impl SessionManager {
             return Ok(());
         };
         self.write_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .assert_owned(&session_file)
             .map_err(std::io::Error::other)?;
         crate::session_write_reservation::reserve_session_write(&session_file);
@@ -2215,6 +2277,7 @@ impl SessionManager {
         entry: Value,
         recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
     ) {
+        self.apply_projection_capture();
         // PERF-DIVERGENCE(senpi session-manager.ts): upstream keeps one object per entry; the port deep-cloned each appended entry for externalize, for the push, and again for persist, so this moves the entry through externalize into file_entries and persists from there. Stored and written values are identical.
         let entry = self.resident_store.externalize_owned(entry);
         let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -2362,10 +2425,76 @@ impl SessionManager {
         }
     }
 
+    fn apply_projection_capture(&mut self) {
+        let capture = self
+            .pending_projection_capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(capture) = capture else { return };
+        if self.session_file.as_deref() != Some(capture.path.as_str()) {
+            return;
+        }
+        if let Some(identity) = &capture.identity {
+            let current = std::fs::File::open(&capture.path).ok().and_then(|file| {
+                crate::session_file_identity::capture_file_identity(&file, &capture.path)
+            });
+            if current.as_ref() != Some(identity) {
+                self.mark_projection_capture_unavailable();
+                return;
+            }
+        }
+        let entries = match capture.contents {
+            Some(contents) => match contents
+                .lines()
+                .map(serde_json::from_str)
+                .collect::<Result<Vec<Value>, _>>()
+            {
+                Ok(entries) => entries,
+                Err(error) => {
+                    eprintln!("cannot capture projected transcript: {error}");
+                    self.mark_projection_capture_unavailable();
+                    return;
+                }
+            },
+            None => self.file_entries.clone(),
+        };
+        let count = entries.len();
+        self.transcript_file
+            .capture(capture.identity, Some(&entries));
+        let transition = if let Some(file_identity) = self.transcript_file.identity.clone() {
+            crate::session_transcript_journal::TranscriptTransition::Persisted {
+                persistence: crate::session_transcript_journal::TranscriptPersistence {
+                    file_identity,
+                    count,
+                },
+            }
+        } else {
+            crate::session_transcript_journal::TranscriptTransition::Unavailable {
+                reason: crate::session_transcript_journal::TranscriptUnavailableReason::TranscriptFileIdentityUnavailable,
+            }
+        };
+        if let Some(journal) = &mut self.transcript_journal {
+            journal.record([transition]);
+        }
+    }
+
+    fn mark_projection_capture_unavailable(&mut self) {
+        self.transcript_file.capture(None, None);
+        if let Some(journal) = &mut self.transcript_journal {
+            journal.record([
+                crate::session_transcript_journal::TranscriptTransition::Unavailable {
+                    reason: crate::session_transcript_journal::TranscriptUnavailableReason::TranscriptFileIdentityUnavailable,
+                },
+            ]);
+        }
+    }
+
     /// Starts journaling committed transcript changes and returns the whole transcript they follow (R3.C1.1).
     pub fn begin_transcript_journal(
         &mut self,
     ) -> Vec<crate::session_transcript_journal::TranscriptTransition> {
+        self.apply_projection_capture();
         self.transcript_journal =
             Some(crate::session_transcript_journal::TranscriptJournal::default());
         self.transcript_snapshot()
@@ -2375,6 +2504,7 @@ impl SessionManager {
     pub fn drain_transcript(
         &mut self,
     ) -> Vec<crate::session_transcript_journal::TranscriptTransition> {
+        self.apply_projection_capture();
         self.transcript_journal
             .as_mut()
             .map(crate::session_transcript_journal::TranscriptJournal::drain)
@@ -2382,6 +2512,7 @@ impl SessionManager {
     }
 
     fn journal_replace(&mut self) {
+        self.apply_projection_capture();
         if self.transcript_journal.is_none() {
             return;
         }
@@ -3082,7 +3213,10 @@ impl SessionManager {
                 }
             });
         let hooks = Arc::new(SessionManagerProjectionHooks {
-            write_fence: Arc::new(Mutex::new(self.write_fence.clone())),
+            write_fence: Arc::clone(&self.write_fence),
+            ownership: Arc::clone(&self.ownership),
+            pending_capture: Arc::clone(&self.pending_projection_capture),
+            captures_transcript_base: self.captures_transcript_base,
         });
         let opened = crate::session_store::durable_binding::DurableSessionBinding::open(
             binding,
@@ -4388,6 +4522,224 @@ impl crate::session_history_reduce::HistorySource for ManagerHistory<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewrite_reports_a_lost_write_fence() {
+        let dir = tempfile::tempdir().expect("session directory");
+        let directory = dir.path().to_string_lossy();
+        let mut manager = SessionManager::create(&directory, Some(&directory), None);
+        manager.persist_header_now().expect("header");
+        let path = manager.session_file().expect("session file").to_owned();
+        let before = std::fs::read(&path).expect("session file");
+        crate::session_write_fence::advance_session_fence(&path).expect("take over");
+
+        manager.rewrite_file();
+        assert!(manager.last_persistence_error().is_some());
+        assert_eq!(std::fs::read(path).expect("session file"), before);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn projection_replacement_updates_transcript_file_identity() {
+        use maho_agent::durable::{
+            DurableStore, DurableStoreOptions, StoreOperation, StoreWritePoint,
+            create_memory_store_medium, open_memory_store,
+        };
+
+        let dir = tempfile::tempdir().expect("session directory");
+        let directory = dir.path().to_string_lossy();
+        let mut manager = SessionManager::create(&directory, Some(&directory), None);
+        manager.captures_transcript_base = true;
+        manager.persist_header_now().expect("header");
+        let path = manager.session_file().expect("session file").to_owned();
+        let original = manager
+            .transcript_file
+            .identity
+            .clone()
+            .expect("original identity");
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let store = Arc::new(open_memory_store(
+            create_memory_store_medium(),
+            DurableStoreOptions {
+                on_write_point: Some(Arc::new(move |point| {
+                    if point
+                        == (StoreWritePoint::Durable {
+                            op: StoreOperation::Commit,
+                        })
+                    {
+                        events.send(()).expect("event receiver");
+                    }
+                    Ok(())
+                })),
+            },
+        ));
+        store.claim(0, 1).await.expect("claim");
+        manager
+            .bind_durable_store(crate::session_store::durable_binding::DurableStoreBinding {
+                store,
+                epoch: 1,
+                files: None,
+            })
+            .await
+            .expect("bind");
+        manager
+            .durable
+            .as_ref()
+            .expect("binding")
+            .commit_rewrite(&manager.header_line_for_store(), Vec::new())
+            .expect("commit session");
+        manager.begin_transcript_journal();
+        while received.try_recv().is_ok() {}
+        manager
+            .durable
+            .as_ref()
+            .expect("binding")
+            .mark_projection_stale(&path)
+            .expect("stale");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            received.recv().await.expect("stale marker committed");
+            received.recv().await.expect("replacement committed");
+            received.recv().await.expect("projection ledger committed");
+        })
+        .await
+        .expect("projection deadline");
+        let file = std::fs::File::open(&path).expect("replacement");
+        let current = crate::session_file_identity::capture_file_identity(&file, &path)
+            .expect("replacement identity");
+        assert_ne!(current, original);
+        assert!(manager.drain_transcript().iter().any(|transition| matches!(
+            transition,
+            crate::session_transcript_journal::TranscriptTransition::Persisted {
+                persistence
+            } if persistence.file_identity == current
+        )));
+        let snapshot = manager.begin_transcript_journal();
+        assert!(snapshot.iter().any(|transition| matches!(
+            transition,
+            crate::session_transcript_journal::TranscriptTransition::Replace {
+                base: Some(base)
+            } if base.file_identity == current
+        )));
+        manager
+            .durable
+            .as_ref()
+            .expect("binding")
+            .mark_projection_stale(&path)
+            .expect("stale again");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            received.recv().await.expect("stale marker committed");
+            received.recv().await.expect("replacement committed");
+            received.recv().await.expect("projection ledger committed");
+        })
+        .await
+        .expect("second projection deadline");
+        let other = dir.path().join("external.jsonl");
+        std::fs::write(&other, b"replacement\n").expect("external file");
+        std::fs::rename(other, &path).expect("external replacement");
+        let snapshot = manager.begin_transcript_journal();
+        assert!(
+            snapshot.iter().any(|transition| matches!(
+                transition,
+                crate::session_transcript_journal::TranscriptTransition::Unavailable { .. }
+            )),
+            "a superseded capture must not expose an old base"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_projection_cannot_write_after_switching_sessions() {
+        use maho_agent::durable::{
+            DurableStore, DurableStoreOptions, create_memory_store_medium, open_memory_store,
+        };
+
+        let dir = tempfile::tempdir().expect("session directory");
+        let directory = dir.path().to_string_lossy();
+        let mut manager = SessionManager::create(&directory, Some(&directory), None);
+        manager.persist_header_now().expect("header");
+        let old_path = manager.session_file().expect("session file").to_owned();
+        let store = Arc::new(open_memory_store(
+            create_memory_store_medium(),
+            DurableStoreOptions::default(),
+        ));
+        store.claim(0, 1).await.expect("claim");
+        manager
+            .bind_durable_store(crate::session_store::durable_binding::DurableStoreBinding {
+                store,
+                epoch: 1,
+                files: None,
+            })
+            .await
+            .expect("bind");
+        let old_binding = Arc::clone(manager.durable.as_ref().expect("binding"));
+        let (warnings, mut received) = tokio::sync::mpsc::unbounded_channel();
+        manager.on_projection_warning(Arc::new(move |warning| {
+            warnings.send(warning).expect("warning receiver");
+        }));
+        manager.new_session(None);
+        let before = std::fs::read(&old_path).expect("old session file");
+        old_binding
+            .mark_projection_stale(&old_path)
+            .expect("mark stale");
+        let warning = tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+            .await
+            .expect("projection warning deadline")
+            .expect("projection warning");
+        assert_eq!(warning.code, "EACCES");
+        assert_eq!(std::fs::read(&old_path).expect("old session file"), before);
+    }
+
+    #[tokio::test]
+    async fn projection_fence_failure_fences_the_session_writer() {
+        use maho_agent::durable::{
+            DurableStore, DurableStoreOptions, create_memory_store_medium, open_memory_store,
+        };
+
+        let dir = tempfile::tempdir().expect("session directory");
+        let directory = dir.path().to_string_lossy();
+        let mut manager = SessionManager::create(&directory, Some(&directory), None);
+        manager.persist_header_now().expect("header");
+        let path = manager.session_file().expect("session file").to_owned();
+        let store = Arc::new(open_memory_store(
+            create_memory_store_medium(),
+            DurableStoreOptions::default(),
+        ));
+        store.claim(0, 1).await.expect("claim");
+        manager
+            .bind_durable_store(crate::session_store::durable_binding::DurableStoreBinding {
+                store,
+                epoch: 1,
+                files: None,
+            })
+            .await
+            .expect("bind");
+        let (warnings, mut received) = tokio::sync::mpsc::unbounded_channel();
+        manager.on_projection_warning(Arc::new(move |warning| {
+            warnings.send(warning).expect("warning receiver");
+        }));
+
+        crate::session_write_fence::advance_session_fence(&path).expect("take over");
+        manager
+            .durable
+            .as_ref()
+            .expect("binding")
+            .mark_projection_stale(&path)
+            .expect("mark stale");
+        let warning = tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+            .await
+            .expect("projection warning deadline")
+            .expect("projection warning");
+        assert_eq!(warning.code, "EACCES");
+
+        std::fs::remove_file(crate::session_write_fence::session_fence_file(&path))
+            .expect("restore original fence token");
+        let before = std::fs::read(&path).expect("original file");
+        manager.append_custom("must-not-write", None);
+        assert!(
+            manager.take_write_error().is_some(),
+            "writer remains fenced"
+        );
+        assert_eq!(std::fs::read(&path).expect("file"), before);
+    }
 
     fn holder_record(manager: &SessionManager) -> std::path::PathBuf {
         Path::new(manager.session_file().expect("session file"))

@@ -1,7 +1,7 @@
 //! Port of senpi packages/coding-agent/src/core/session-store/durable-binding.ts.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use maho_agent::durable::store::{StoreWrite, SyncCommitStore};
@@ -35,6 +35,14 @@ pub struct DurableStoreBinding {
 pub trait ProjectionHooks: Send + Sync {
     fn before_write(&self, path: &str) -> Result<(), String>;
     fn after_replace(&self, path: &str, identity: Option<FileIdentity>);
+    fn after_replace_with_contents(
+        &self,
+        path: &str,
+        identity: Option<FileIdentity>,
+        _contents: &str,
+    ) {
+        self.after_replace(path, identity);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +175,29 @@ struct BindingState {
     whole_unrecorded: bool,
 }
 
+#[derive(Default)]
+struct PendingProjectionWork {
+    count: AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+struct ProjectionWorkGuard(Arc<PendingProjectionWork>);
+
+impl Drop for ProjectionWorkGuard {
+    fn drop(&mut self) {
+        if self.0.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.0.changed.notify_waiters();
+        }
+    }
+}
+
+impl PendingProjectionWork {
+    fn track(self: &Arc<Self>) -> ProjectionWorkGuard {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        ProjectionWorkGuard(Arc::clone(self))
+    }
+}
+
 /// A `SessionManager`'s binding to the durable store (S20b).
 pub struct DurableSessionBinding {
     stale: AtomicBool,
@@ -176,6 +207,8 @@ pub struct DurableSessionBinding {
     handle: SyncSessionHandle,
     importer: Arc<JsonlImporter>,
     admission: AdmissionLine,
+    pending_work: Arc<PendingProjectionWork>,
+    runtime: tokio::runtime::Handle,
     warn: ProjectionWarnCallback,
     hooks: Arc<dyn ProjectionHooks>,
 }
@@ -198,6 +231,11 @@ impl DurableSessionBinding {
         warn: ProjectionWarnCallback,
         hooks: Arc<dyn ProjectionHooks>,
     ) -> Result<(Arc<Self>, bool), String> {
+        let mut header: SessionHeader =
+            serde_json::from_str(header_line).map_err(|e| e.to_string())?;
+        if header.get("id").and_then(Value::as_str) != Some(session_id) {
+            return Err("session header ID does not match the session ID".to_owned());
+        }
         let path_str = resolve_path(session_file);
         let path = Path::new(&path_str);
         let admission = create_admission_line();
@@ -232,6 +270,9 @@ impl DurableSessionBinding {
                     .ok_or_else(|| {
                         format!("the store marks {path_str} stale but holds no session {marked}")
                     })?;
+                if stored.header.get("id").and_then(Value::as_str) != Some(marked.as_str()) {
+                    return Err("stored session header ID does not match the session ID".to_owned());
+                }
                 let contents = projection_image(&stored.header, &stored.entries);
                 reproject_file(
                     &importer,
@@ -242,17 +283,46 @@ impl DurableSessionBinding {
                     &contents,
                 )
                 .await?;
+                header = stored.header;
                 id = marked;
                 reprojected = true;
             } else {
                 id = importer.import_file(path).await?.session_id;
+                if id != session_id {
+                    let stored = open_session_store(binding.store.clone(), binding.epoch)
+                        .load(&id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| {
+                            format!("imported session {id} is missing from the store")
+                        })?;
+                    if stored.header.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                        return Err(
+                            "stored session header ID does not match the session ID".to_owned()
+                        );
+                    }
+                    let contents = projection_image(&stored.header, &stored.entries);
+                    reproject_file(
+                        &importer,
+                        &admission,
+                        &binding,
+                        hooks.as_ref(),
+                        &path_str,
+                        &contents,
+                    )
+                    .await?;
+                    header = stored.header;
+                    reprojected = true;
+                }
             }
         }
-        let header: SessionHeader = serde_json::from_str(header_line).map_err(|e| e.to_string())?;
         let handle = open_sync_session_store(binding.store.clone(), binding.epoch)
             .open(&id, header)
             .await
             .map_err(|e| e.to_string())?;
+        if handle.header().get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            return Err("stored session header ID does not match the session ID".to_owned());
+        }
         let size = stamp_of(path)
             .await
             .map_err(|e| e.to_string())?
@@ -270,6 +340,8 @@ impl DurableSessionBinding {
             handle,
             importer,
             admission,
+            pending_work: Arc::new(PendingProjectionWork::default()),
+            runtime: tokio::runtime::Handle::current(),
             warn,
             hooks,
         });
@@ -290,6 +362,9 @@ impl DurableSessionBinding {
         entries: Vec<StoredEntry>,
     ) -> Result<(), String> {
         let header: SessionHeader = serde_json::from_str(header_line).map_err(|e| e.to_string())?;
+        if header.get("id") != self.handle.header().get("id") {
+            return Err("session header ID does not match the session ID".to_owned());
+        }
         self.handle
             .rewrite_sync(header, entries)
             .map_err(|e| e.to_string())?;
@@ -461,13 +536,24 @@ impl DurableSessionBinding {
     }
 
     pub async fn settled(&self) {
+        loop {
+            let notified = self.pending_work.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.pending_work.count.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            notified.await;
+        }
         self.admission.admit(|| async {}).await;
     }
 
     pub fn schedule_repair(self: &Arc<Self>, session_file: &str) {
         let path = resolve_path(session_file);
         let this = Arc::clone(self);
-        tokio::spawn(async move {
+        let pending = self.pending_work.track();
+        self.runtime.spawn(async move {
+            let _pending = pending;
             let res: Result<(), (String, String)> = this
                 .admission
                 .admit(|| async {
@@ -483,7 +569,8 @@ impl DurableSessionBinding {
                         replace_with(this.binding.files.as_deref(), Path::new(&path), &contents)
                             .await
                             .map_err(|e| (e.kind().to_string(), e.to_string()))?;
-                    this.hooks.after_replace(&path, identity);
+                    this.hooks
+                        .after_replace_with_contents(&path, identity, &contents);
                     if generation != this.generation.load(Ordering::SeqCst) {
                         this.schedule_repair(&path);
                         return Ok(());
@@ -535,7 +622,9 @@ impl DurableSessionBinding {
     {
         let this = Arc::clone(self);
         let generation = self.generation.load(Ordering::SeqCst);
-        tokio::spawn(async move {
+        let pending = self.pending_work.track();
+        self.runtime.spawn(async move {
+            let _pending = pending;
             let res = this
                 .admission
                 .admit(|| async {
@@ -571,7 +660,7 @@ async fn reproject_file(
     let identity = replace_with(binding.files.as_deref(), Path::new(path), contents)
         .await
         .map_err(|e| e.to_string())?;
-    hooks.after_replace(path, identity);
+    hooks.after_replace_with_contents(path, identity, contents);
     if let Some(written) = stamp_of(Path::new(path)).await.map_err(|e| e.to_string())? {
         admission
             .admit(|| importer.record_projection(Path::new(path), contents, written))
@@ -589,4 +678,181 @@ async fn reproject_file(
         )
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maho_agent::durable::{
+        DurableStore, DurableStoreOptions, create_memory_store_medium, open_memory_store,
+    };
+
+    async fn memory_binding() -> DurableStoreBinding {
+        let store = Arc::new(open_memory_store(
+            create_memory_store_medium(),
+            DurableStoreOptions::default(),
+        ));
+        store.claim(0, 1).await.expect("claim");
+        DurableStoreBinding {
+            store,
+            epoch: 1,
+            files: None,
+        }
+    }
+
+    struct Hooks;
+    impl ProjectionHooks for Hooks {
+        fn before_write(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn after_replace(&self, _: &str, _: Option<FileIdentity>) {}
+    }
+
+    #[tokio::test]
+    async fn rejects_a_header_with_a_different_session_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp
+            .path()
+            .join("missing.jsonl")
+            .to_string_lossy()
+            .into_owned();
+        let result = DurableSessionBinding::open(
+            memory_binding().await,
+            &path,
+            "expected-id",
+            r#"{"id":"other-id"}"#,
+            Arc::new(|_| {}),
+            Arc::new(Hooks),
+        )
+        .await;
+        assert!(result.is_err(), "header ID must match the session key");
+    }
+
+    #[tokio::test]
+    async fn imported_fork_keeps_store_and_projected_header_ids_consistent() {
+        use crate::session_import::jsonl_import::{HatchMarker, JsonlFiles, write_hatch_marker};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("session.jsonl");
+        let header = json!({"type":"session","version":3,"id":"s1","timestamp":"2026-11-24T00:00:00.000Z","cwd":"/w"});
+        let first = json!({"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-24T00:00:01.000Z","message":{"role":"user","content":"hi"}});
+        let original = json!({"type":"message","id":"m2","parentId":"m1","timestamp":"2026-11-24T00:00:02.000Z","message":{"role":"assistant","content":"original"}});
+        let changed = json!({"type":"message","id":"m3","parentId":"m1","timestamp":"2026-11-24T00:00:03.000Z","message":{"role":"assistant","content":"changed"}});
+        tokio::fs::write(&file, format!("{header}\n{first}\n{original}\n"))
+            .await
+            .expect("initial file");
+        let binding = memory_binding().await;
+        let importer = create_jsonl_importer(JsonlImporterOptions {
+            store: binding.store.clone(),
+            epoch: binding.epoch,
+            admission: create_admission_line(),
+            files: None,
+            now: None,
+            mtime_tick_ms: Some(0.0),
+        });
+        importer.import_file(&file).await.expect("initial import");
+        tokio::fs::write(&file, format!("{header}\n{first}\n{changed}\n"))
+            .await
+            .expect("divergent file");
+        let stamp = RealJsonlFiles.stat(&file).await.expect("stat");
+        write_hatch_marker(
+            &file,
+            HatchMarker {
+                size: stamp.size,
+                mtime_ms: stamp.mtime_ms,
+            },
+        )
+        .await
+        .expect("hatch marker");
+
+        let store = binding.store.clone();
+        let mut manager = crate::session_manager::SessionManager::open(
+            file.to_str().expect("path"),
+            Some(tmp.path().to_str().expect("directory")),
+            Some("/w"),
+            None,
+        )
+        .expect("open session");
+        manager
+            .bind_durable_store(binding)
+            .await
+            .expect("bind imported fork");
+        let id = manager.session_id().to_owned();
+        assert_ne!(id, "s1");
+        let contents = tokio::fs::read_to_string(&file).await.expect("projection");
+        let projected: Value =
+            serde_json::from_str(contents.lines().next().expect("header")).expect("header JSON");
+        assert_eq!(projected["id"], id);
+        let stored = open_session_store(store, 1)
+            .load(&id)
+            .await
+            .expect("load")
+            .expect("stored fork");
+        assert_eq!(
+            stored.header.get("id").and_then(Value::as_str),
+            Some(id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn settled_waits_for_a_scheduled_repair_before_its_first_poll() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = crate::session_manager::SessionManager::create(&dir, Some(&dir), None);
+        manager.persist_header_now().expect("header");
+        let path = manager.session_file().expect("session file").to_owned();
+        let header = tokio::fs::read_to_string(&path).await.expect("header file");
+        let (binding, _) = DurableSessionBinding::open(
+            memory_binding().await,
+            &path,
+            manager.session_id(),
+            header.lines().next().expect("header"),
+            Arc::new(|_| {}),
+            Arc::new(Hooks),
+        )
+        .await
+        .expect("bind");
+        binding
+            .commit_rewrite(header.lines().next().expect("header"), Vec::new())
+            .expect("commit");
+        binding
+            .mark_projection_stale(&path)
+            .expect("schedule repair");
+        let mut settled = Box::pin(binding.settled());
+        assert!(
+            futures::poll!(settled.as_mut()).is_pending(),
+            "scheduled repair must be awaited"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), settled)
+            .await
+            .expect("repair deadline");
+        assert!(!binding.projection_stale());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synchronous_session_append_works_without_a_current_runtime() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = crate::session_manager::SessionManager::create(&dir, Some(&dir), None);
+        manager.persist_header_now().expect("persist header");
+        manager
+            .bind_durable_store(memory_binding().await)
+            .await
+            .expect("bind");
+        let path = manager.session_file().expect("session file").to_owned();
+        let manager = std::thread::spawn(move || {
+            manager.append_custom("runtime-probe", Some(serde_json::json!({"value": 42})));
+            manager
+        })
+        .join()
+        .expect("synchronous append must not panic");
+        let contents = std::fs::read_to_string(path).expect("session file");
+        assert!(
+            contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|entry| entry["type"] == "custom" && entry["customType"] == "runtime-probe")
+        );
+        manager.settle_durable_projection().await;
+    }
 }

@@ -69,9 +69,9 @@ fn after_doctype(text: &str, from: usize) -> Option<usize> {
         if ch == b'"' || ch == b'\'' {
             let token = if ch == b'"' { "\"" } else { "'" };
             at = after_token(text, token, at + 1)?;
-        } else if in_subset && text[at..].starts_with("<!--") {
+        } else if in_subset && bytes[at..].starts_with(b"<!--") {
             at = after_token(text, "-->", at + 4)?;
-        } else if in_subset && text[at..].starts_with("<?") {
+        } else if in_subset && bytes[at..].starts_with(b"<?") {
             at = after_token(text, "?>", at + 2)?;
         } else if ch == b'>' && !in_subset {
             return Some(at + 1);
@@ -103,7 +103,11 @@ fn has_svg_root(text: &str) -> bool {
                 return false;
             };
             at = next;
-        } else if text[at..].len() >= 9 && text[at..at + 9].eq_ignore_ascii_case("<!doctype") {
+        } else if text
+            .as_bytes()
+            .get(at..at + 9)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<!doctype"))
+        {
             let Some(next) = after_doctype(text, at + 9) else {
                 return false;
             };
@@ -214,4 +218,19 @@ pub async fn inline_local_images(html: &str) -> Result<InlinedHtml, HtmlRenderIm
         .map(|(path, _)| path)
         .collect();
     Ok(InlinedHtml { html: out, missing })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_image_bytes;
+
+    #[test]
+    fn svg_doctype_allows_non_ascii_internal_subset() {
+        assert!(is_image_bytes("<!DOCTYPE svg [é]><svg/>".as_bytes()));
+    }
+
+    #[test]
+    fn non_ascii_bytes_across_doctype_prefix_are_not_an_image() {
+        assert!(!is_image_bytes("abcdefg한".as_bytes()));
+    }
 }

@@ -7,6 +7,50 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::errors::GitError;
 use super::exec::{GitExec, GitExecOptions, GitExecResult, system_git_exec};
 
+#[cfg(unix)]
+#[test]
+fn non_utf8_environment_is_preserved_for_git() {
+    use std::os::unix::ffi::OsStringExt;
+
+    const CHILD: &str = "MHC_TEST_GIT_NON_UTF8_CHILD";
+    const VALUE: &str = "MHC_TEST_GIT_NON_UTF8_VALUE";
+    let bytes = b"before\xffafter";
+    if std::env::var_os(CHILD).is_some() {
+        let options = GitExecOptions {
+            cwd: std::env::temp_dir(),
+            timeout_ms: 5_000,
+            ..GitExecOptions::default()
+        };
+        let result = system_git_exec()
+            .run_bytes(
+                &[
+                    "-c".to_owned(),
+                    format!("alias.envprobe=!printf '%s' \"${VALUE}\""),
+                    "envprobe".to_owned(),
+                ],
+                &options,
+            )
+            .expect("run git alias");
+        assert_eq!(result.code, 0);
+        assert_eq!(result.stdout, bytes);
+        return;
+    }
+    let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .arg("non_utf8_environment_is_preserved_for_git")
+        .arg("--nocapture")
+        .env(CHILD, "1")
+        .env(VALUE, std::ffi::OsString::from_vec(bytes.to_vec()))
+        .env("GIT_DIR", std::ffi::OsString::from_vec(bytes.to_vec()))
+        .output()
+        .expect("run isolated test process");
+    assert!(
+        child.status.success(),
+        "child failed: {}\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+}
+
 struct FailingMockExec {
     call_count: Arc<AtomicUsize>,
 }

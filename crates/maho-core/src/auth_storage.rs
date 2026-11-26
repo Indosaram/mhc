@@ -1362,38 +1362,28 @@ impl AuthStorage {
                             return Err(busy.message());
                         }
                     };
-                    let current = std::fs::read_to_string(&backend.auth_path).ok();
-                    let (data, repaired, migrated, moved_skip) = match current.as_deref() {
-                        None => (AuthStorageData::new(), false, false, None),
-                        Some(text) => {
-                            let doc = match crate::auth_store_load_error::parse_auth_document(text)
-                            {
-                                Ok(doc) => doc,
-                                Err(load_err) => {
-                                    let msg = load_err.message();
-                                    parse_load_error = Some(load_err);
-                                    return Err(msg);
-                                }
-                            };
-                            let (repaired_data, repaired_flag) = repair_poisoned_pool_slots(&doc);
-                            let (migrated_data, migrated_flag) =
-                                migrate_legacy_provider_keys(&repaired_data);
-                            let moved =
-                                crate::anthropic_legacy_sign_out::sign_out_legacy_claude_logins(
-                                    &migrated_data,
-                                );
-                            (
-                                moved.data,
-                                repaired_flag,
-                                migrated_flag || moved.migrated,
-                                moved.skipped,
-                            )
+                    let current = std::fs::read_to_string(&backend.auth_path)
+                        .map_err(|error| format!("Failed to read auth.json: {error}"))?;
+                    let doc = match crate::auth_store_load_error::parse_auth_document(&current) {
+                        Ok(doc) => doc,
+                        Err(load_err) => {
+                            let msg = load_err.message();
+                            parse_load_error = Some(load_err);
+                            return Err(msg);
                         }
                     };
+                    let (repaired_data, repaired) = repair_poisoned_pool_slots(&doc);
+                    let (migrated_data, migrated_flag) =
+                        migrate_legacy_provider_keys(&repaired_data);
+                    let moved = crate::anthropic_legacy_sign_out::sign_out_legacy_claude_logins(
+                        &migrated_data,
+                    );
+                    let data = moved.data;
+                    let migrated = migrated_flag || moved.migrated;
                     parsed_ok = true;
-                    skipped = moved_skip;
+                    skipped = moved.skipped;
                     if migrated {
-                        backup_auth_file(self.auth_path.as_deref(), current.as_deref());
+                        backup_auth_file(self.auth_path.as_deref(), Some(&current));
                     }
                     guard.assert_held()?;
                     if repaired || migrated {
@@ -2573,6 +2563,22 @@ mod tests {
         assert!(storage.get("anthropic").is_none());
         assert_eq!(storage.errors().len(), 1);
         assert!(storage.errors()[0].contains("it is not valid JSON"));
+    }
+
+    #[test]
+    fn unreadable_auth_document_keeps_loaded_snapshot_and_reports_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        std::fs::write(&path, r#"{"openai":{"type":"api_key","key":"stored"}}"#)
+            .expect("write valid auth");
+        let storage = AuthStorage::create(&path);
+        assert!(storage.get("openai").is_some());
+        let invalid = b"\xffinvalid";
+        std::fs::write(&path, invalid).expect("write invalid UTF-8");
+        storage.reload();
+        assert!(storage.get("openai").is_some());
+        assert!(!storage.errors().is_empty());
+        assert_eq!(std::fs::read(&path).expect("read auth"), invalid);
     }
 
     // senpi `parseStorageContent` reads with `parseAuthDocument`: an entry the read-only validator would refuse

@@ -329,7 +329,6 @@ impl CredentialStore for AuthStorageCredentialStore {
             .delete(provider_id)
             .map_err(|error| anyhow::anyhow!(error))
     }
-
 }
 
 fn models_error(error: maho_ai::auth::resolve::ModelsError) -> ModelsError {

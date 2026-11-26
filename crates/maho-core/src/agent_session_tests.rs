@@ -1,6 +1,13 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn root_tool_call_id_extracts_root_segment() {
+    assert_eq!(root_tool_call_id("call_1"), "call_1");
+    assert_eq!(root_tool_call_id("call_1/2"), "call_1");
+    assert_eq!(root_tool_call_id("call_1/2/3"), "call_1");
+}
+
 fn conversation_entries(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
     entries
         .into_iter()
@@ -17277,6 +17284,58 @@ fn interrupted_test_session() -> AgentSession {
     session
 }
 
+#[tokio::test]
+async fn host_restart_continuation_retries_after_delivery_failure() {
+    let session = test_session();
+    session.set_continued_from_host_restart(true);
+    session.hold_automatic_turns();
+    lock(&session.inner.engine_turn_hold).note("probe", Some(json!({})));
+
+    assert!(session.continue_after_host_restart().await.is_err());
+    assert!(
+        !session
+            .inner
+            .p8
+            .restart_continued
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        session.continue_after_host_restart().await.is_err(),
+        "failed continuation must retry delivery"
+    );
+}
+
+#[tokio::test]
+async fn host_restart_does_not_mark_done_when_hold_release_fails() {
+    use crate::engine_turn_hold::{EngineTurnHold, HoldKind};
+    let session = test_session();
+    let mut hold = EngineTurnHold::new(
+        &[],
+        true,
+        Arc::new(|_, data| {
+            if data.get("op").and_then(Value::as_str) == Some("release") {
+                Err("release failed".to_owned())
+            } else {
+                Ok(())
+            }
+        }),
+        Arc::new(|_| {}),
+        Arc::new(|_| {}),
+    );
+    hold.add_hold(HoldKind::SessionHold, Some("other"), None);
+    *lock(&session.inner.engine_turn_hold) = hold;
+    session.hold_automatic_turns();
+    session.set_continued_from_host_restart(true);
+    assert!(session.continue_after_host_restart().await.is_err());
+    assert!(
+        !session
+            .inner
+            .p8
+            .restart_continued
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
 /// senpi test/suite/regressions/4204-interrupted-resume.test.ts: opening an interrupted session installs the
 /// interrupted-run session hold before session_start producers run, and automatic work is refused until a
 /// person continues.
@@ -17541,6 +17600,27 @@ async fn compaction_start_and_end_are_lifecycle_edges() {
     });
     assert!(!session.is_compacting());
     assert_eq!(session.lifecycle_snapshot()["state"], "done");
+}
+
+#[tokio::test]
+async fn lifecycle_handlers_can_emit_another_lifecycle_event() {
+    let session = test_session();
+    let nested = session.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let _subscription = session.on_extension_event(
+        "session_lifecycle",
+        Arc::new(move |data| {
+            let sequence = data["sequence"].as_u64().expect("sequence");
+            sender.send(sequence).expect("observe event");
+            if sequence == 1 {
+                nested.emit_sequenced_lifecycle(json!({"sequence": 2}));
+            }
+        }),
+    );
+    std::thread::spawn(move || session.emit_sequenced_lifecycle(json!({"sequence": 1})));
+    let deadline = std::time::Duration::from_secs(5);
+    assert_eq!(receiver.recv_timeout(deadline).expect("first event"), 1);
+    assert_eq!(receiver.recv_timeout(deadline).expect("nested event"), 2);
 }
 
 /// senpi test/suite/regressions/3864-activity-delivery.test.ts and 3864-activity-ordering.test.ts: a run's tool

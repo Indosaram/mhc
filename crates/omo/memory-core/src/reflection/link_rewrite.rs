@@ -97,6 +97,9 @@ fn repoint_line_outside_code(
                 idx = end;
                 continue;
             }
+            out.push_str(ticks);
+            idx += tick_count;
+            continue;
         }
         let next_tick = line[idx..].find('`').map_or(line.len(), |rel| idx + rel);
         out.push_str(&repoint_segment(
@@ -409,6 +412,35 @@ fn posix_relative(from: &str, to: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmatched_inline_backticks_do_not_block_link_rewriting() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let targets = LinkTargets {
+                live: BTreeSet::from(["notes/new.md".to_owned()]),
+                removed: BTreeMap::from([(
+                    "notes/old.md".to_owned(),
+                    Successor::Moved {
+                        path: "notes/new.md".to_owned(),
+                    },
+                )]),
+            };
+            let result = repoint_links(
+                "notes/index.md",
+                "한 ` [[notes/old]]\n글 `` [old](old.md)",
+                &targets,
+                None,
+            );
+            sender.send(result).expect("receive rewritten links");
+        });
+        assert_eq!(
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("unmatched backticks must not block"),
+            "한 ` [[notes/new]]\n글 `` [old](new.md)"
+        );
+    }
 
     #[test]
     fn repoints_moved_archived_and_deleted_links_while_preserving_code_spans() {

@@ -55,10 +55,11 @@ fn wall_age(value: &Value, now: i64) -> Option<i64> {
 fn machine_age(value: &Value, clock: &StampClock) -> Option<i64> {
     let up = value.get("up").and_then(Value::as_i64)?;
     let host = value.get("host").and_then(Value::as_str)?;
-    if host != clock.host {
+    let current_uptime = (clock.uptime)();
+    if host != clock.host || up <= 0 || current_uptime <= 0 {
         return None;
     }
-    let age = (clock.uptime)() - up;
+    let age = current_uptime - up;
     if age < -UPTIME_RESOLUTION_MS {
         None
     } else {

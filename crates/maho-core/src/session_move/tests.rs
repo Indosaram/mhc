@@ -95,6 +95,52 @@ impl Fixture {
     }
 }
 #[tokio::test]
+async fn interrupted_import_settles_when_machine_uptime_is_unavailable() {
+    let mut f = Fixture::new().await;
+    let default_clock = move_landing::StampClock::default();
+    let now = (default_clock.now)();
+    let host = default_clock.host;
+    f.ledger = MoveLedger::with_clock(
+        f.ledger.dir(),
+        move_landing::StampClock {
+            now: std::sync::Arc::new(move || now),
+            uptime: std::sync::Arc::new(|| 0),
+            host: host.clone(),
+        },
+    );
+    assert!(
+        with_move_step_hook(
+            std::sync::Arc::new(|step| {
+                if step == MoveStep::ImportStamped {
+                    Err("injected".into())
+                } else {
+                    Ok(())
+                }
+            }),
+            f.import(),
+        )
+        .await
+        .is_err()
+    );
+    let after = MoveLedger::with_clock(
+        f.ledger.dir(),
+        move_landing::StampClock {
+            now: std::sync::Arc::new(move || now + move_landing::COMMIT_SETTLE_AFTER_MS + 1_000),
+            uptime: std::sync::Arc::new(|| 0),
+            host,
+        },
+    );
+    assert_eq!(
+        import::answer_move_status(&after, "m1", None)
+            .await
+            .expect("settled status"),
+        MoveStatus::Failed {
+            reason: move_ledger::FailReason::ImportFailed
+        }
+    );
+}
+
+#[tokio::test]
 async fn import_fault_boundaries_reconcile_from_file_and_never_land_twice() {
     for boundary in [
         MoveStep::ImportReceived,

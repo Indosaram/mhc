@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -103,11 +103,25 @@ impl TranscriptJournalOptions {
 struct TranscriptTailCache {
     byte_offset: u64,
     mtime: Option<SystemTime>,
+    identity: Option<(u64, u64)>,
     raw_len: usize,
     completed_steps: usize,
     source_ids: HashSet<String>,
     anchor_id: Option<String>,
     bytes_since_anchor: usize,
+}
+
+fn file_identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
 }
 
 /// Durable append-only journal for conversation transcript entries.
@@ -346,6 +360,7 @@ impl TranscriptJournal {
                 let empty = TranscriptTailCache {
                     byte_offset: 0,
                     mtime: meta.modified().ok(),
+                    identity: file_identity(&meta),
                     raw_len: 0,
                     completed_steps: 0,
                     source_ids: HashSet::new(),
@@ -369,44 +384,17 @@ impl TranscriptJournal {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
 
-        if let Some(mut cache) = cached
+        // A larger file may have been replaced or rewritten, so size growth alone is not
+        // evidence that the previously scanned prefix still matches.
+        if let Some(cache) = cached
             && cache.anchor_id.as_deref() == anchor_id
             && mtime.is_some()
+            && cache.identity.is_some()
+            && cache.identity == file_identity(&meta)
+            && size == cache.byte_offset
+            && mtime == cache.mtime
         {
-            if size == cache.byte_offset && mtime == cache.mtime {
-                return Ok(cache);
-            }
-            if size > cache.byte_offset
-                && let Ok(mut file) = std::fs::File::open(&self.transcript_path)
-                && file.seek(SeekFrom::Start(cache.byte_offset)).is_ok()
-            {
-                let delta = (size - cache.byte_offset) as usize;
-                let mut buf = vec![0u8; delta];
-                if file.read_exact(&mut buf).is_ok()
-                    && let Ok(tail_str) = String::from_utf8(buf)
-                {
-                    for line in tail_str.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let row = parse_row_probe(trimmed)?;
-                        if row.is_completed_step() {
-                            cache.completed_steps += 1;
-                        }
-                        cache.source_ids.insert(row.source_line_id.into_owned());
-                    }
-                    cache.byte_offset = size;
-                    cache.mtime = mtime;
-                    cache.raw_len += delta;
-                    cache.bytes_since_anchor += delta;
-                    *self
-                        .transcript_tail
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(cache.clone());
-                    return Ok(cache);
-                }
-            }
+            return Ok(cache);
         }
 
         let raw = self.read_raw_unlocked()?;
@@ -442,7 +430,8 @@ impl TranscriptJournal {
         };
         let fresh_cache = TranscriptTailCache {
             byte_offset: meta_after.as_ref().map_or(raw.len() as u64, |m| m.len()),
-            mtime: meta_after.and_then(|m| m.modified().ok()),
+            mtime: meta_after.as_ref().and_then(|m| m.modified().ok()),
+            identity: meta_after.as_ref().and_then(file_identity),
             raw_len: raw.len(),
             completed_steps,
             source_ids,
@@ -495,8 +484,10 @@ impl TranscriptJournal {
             if let Ok(meta) = std::fs::metadata(&self.transcript_path) {
                 cache.byte_offset = meta.len();
                 cache.mtime = meta.modified().ok();
+                cache.identity = file_identity(&meta);
             } else {
                 cache.byte_offset += appended_bytes as u64;
+                cache.identity = None;
             }
             *self
                 .transcript_tail

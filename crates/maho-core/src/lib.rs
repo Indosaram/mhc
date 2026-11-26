@@ -113,7 +113,6 @@ pub mod utils;
 
 pub mod agent_abort_provenance;
 pub mod agent_session;
-pub mod agent_session_p8;
 pub mod agent_session_runtime;
 pub mod agent_session_services;
 pub mod agent_settled_delivery;

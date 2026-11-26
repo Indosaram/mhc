@@ -74,11 +74,11 @@ pub fn bind_decision_preset(session: DecisionSession) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(session_id.clone(), Arc::clone(&arc));
 
-    if let Some(hook) = OVERRIDE_HOOK
+    let hook = OVERRIDE_HOOK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-    {
+        .clone();
+    if let Some(hook) = hook {
         let resolver = Arc::new(move || decision_preset(&arc, &[]));
         hook(&session_id, resolver);
     }
@@ -149,4 +149,49 @@ fn delegated_preset(session: &DecisionSession) -> PermissionPresetName {
         .as_deref()
         .and_then(PermissionPresetName::parse)
         .unwrap_or(PermissionPresetName::Ask)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn override_hook_can_replace_itself_during_binding() {
+        const CHILD: &str = "MHC_TEST_PERMISSION_HOOK_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            register_decision_preset_override_hook(Arc::new(move |_, _| {
+                let next = sender.clone();
+                register_decision_preset_override_hook(Arc::new(move |_, _| {
+                    next.send(2).expect("observe replacement hook");
+                }));
+                sender.send(1).expect("observe original hook");
+            }));
+            let make_session = |session_id: &str| DecisionSession {
+                session_id: session_id.to_owned(),
+                parent_session_id: None,
+                named_preset: Arc::new(|| None),
+                launch_flag_named: Arc::new(|| false),
+                recorded_preset: Arc::new(|| None),
+            };
+            std::thread::spawn(move || bind_decision_preset(make_session("first")));
+            let timeout = std::time::Duration::from_secs(5);
+            assert_eq!(receiver.recv_timeout(timeout).expect("original hook"), 1);
+            bind_decision_preset(make_session("second"));
+            assert_eq!(receiver.recv_timeout(timeout).expect("replacement hook"), 2);
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("override_hook_can_replace_itself_during_binding")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .output()
+            .expect("run isolated test process");
+        assert!(
+            child.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+    }
 }
