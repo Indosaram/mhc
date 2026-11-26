@@ -306,34 +306,23 @@ impl StoreHandLedger {
         };
 
         if need_from_start {
-            let step_replies = [
-                self.admit_new(invoke, &digest, guard.clone()).await?,
-                self.apply(
-                    execution_id,
-                    ExecutionEvent::Prepare,
-                    &self.executor,
-                    guard.clone(),
-                )
-                .await?,
-                self.apply(
-                    execution_id,
-                    ExecutionEvent::Effect,
-                    &self.executor,
-                    guard.clone(),
-                )
-                .await?,
-                self.apply(
-                    execution_id,
-                    ExecutionEvent::Freeze {
-                        call: frozen,
-                        awaiting_consent: false,
-                    },
-                    &self.executor,
-                    guard.clone(),
-                )
-                .await?,
+            let steps = [
+                None,
+                Some(ExecutionEvent::Prepare),
+                Some(ExecutionEvent::Effect),
+                Some(ExecutionEvent::Freeze {
+                    call: frozen,
+                    awaiting_consent: false,
+                }),
             ];
-            for reply in step_replies {
+            for step in steps {
+                let reply = match step {
+                    None => self.admit_new(invoke, &digest, guard.clone()).await?,
+                    Some(event) => {
+                        self.apply(execution_id, event, &self.executor, guard.clone())
+                            .await?
+                    }
+                };
                 if Self::is_fenced(&reply) {
                     return self.fenced(execution_id).await;
                 }

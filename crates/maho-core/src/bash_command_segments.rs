@@ -58,8 +58,10 @@ pub struct BashCommandSegment {
     pub words: Vec<BashCommandWord>,
     /// Wrappers around this command, outermost first.
     pub wrappers: Vec<BashCommandWrapper>,
-    /// Commands of one pipeline (`a | b`, and every command a wrapper in it runs) share this number.
+    /// Commands in the same shell pipeline share this number.
     pub pipeline: usize,
+    /// Pipelines containing a shell wrapper that runs this command.
+    pub pipeline_ancestors: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,14 +97,6 @@ struct LexedSegment {
 #[derive(Default)]
 struct SegmentSink {
     segments: Vec<LexedSegment>,
-    pipelines: usize,
-}
-
-impl SegmentSink {
-    fn new_pipeline(&mut self) -> usize {
-        self.pipelines += 1;
-        self.pipelines
-    }
 }
 
 #[derive(Debug)]
@@ -131,8 +125,14 @@ struct State {
     steps: usize,
     /// Current nesting of `expand_simple_command`.
     wrapper_depth: usize,
+    pipelines: usize,
 }
 impl State {
+    fn new_pipeline(&mut self) -> usize {
+        self.pipelines += 1;
+        self.pipelines
+    }
+
     /// Counts lexer work; overrunning the budget makes the command `unparsed`, never slow.
     fn step(&mut self) -> Lex<()> {
         self.steps += 1;
@@ -398,7 +398,7 @@ impl<'a> Lexer<'a> {
         if depth > MAX_DEPTH {
             return Err(Unparsed);
         }
-        let pipeline = sink.new_pipeline();
+        let pipeline = state.new_pipeline();
         Ok(Self {
             source,
             index: 0,
@@ -637,7 +637,7 @@ impl<'a> Lexer<'a> {
             });
         }
         if !pipes_on {
-            self.pipeline = self.sink.new_pipeline();
+            self.pipeline = self.state.new_pipeline();
         }
         Ok(())
     }
@@ -1069,6 +1069,7 @@ struct Entry {
     words: Vec<Word>,
     wrappers: Vec<BashCommandWrapper>,
     pipeline: usize,
+    pipeline_ancestors: Vec<usize>,
 }
 
 /// Where a simple command sits: the wrappers around it (outermost first) and its pipeline.
@@ -1076,6 +1077,7 @@ struct Entry {
 struct Place {
     wrappers: Vec<BashCommandWrapper>,
     pipeline: usize,
+    pipeline_ancestors: Vec<usize>,
 }
 
 fn public_word(word: &Word) -> BashCommandWord {
@@ -1159,6 +1161,7 @@ fn expand_one_command(
         words: rest.to_vec(),
         wrappers: place.wrappers.clone(),
         pipeline: place.pipeline,
+        pipeline_ancestors: place.pipeline_ancestors.clone(),
     };
     // The wrapper's own entry: its name alone, as the permission line has always had it.
     let wrapper_entry = Entry {
@@ -1168,6 +1171,7 @@ fn expand_one_command(
         words: Vec::new(),
         wrappers: place.wrappers.clone(),
         pipeline: place.pipeline,
+        pipeline_ancestors: place.pipeline_ancestors.clone(),
     };
     let mut inside_wrappers = place.wrappers;
     inside_wrappers.push(BashCommandWrapper {
@@ -1177,6 +1181,7 @@ fn expand_one_command(
     let inside = Place {
         wrappers: inside_wrappers,
         pipeline: place.pipeline,
+        pipeline_ancestors: place.pipeline_ancestors,
     };
 
     if SHELLS.contains(&name.as_str()) {
@@ -1295,6 +1300,8 @@ fn expand_one_command(
 }
 
 fn expand_script(state: &mut State, script: &str, out: &mut Vec<Entry>, inside: Place) -> Lex<()> {
+    let mut ancestors = inside.pipeline_ancestors.clone();
+    ancestors.push(inside.pipeline);
     for segment in lex_segments(state, script)? {
         expand_simple_command(
             state,
@@ -1303,6 +1310,7 @@ fn expand_script(state: &mut State, script: &str, out: &mut Vec<Entry>, inside: 
             Place {
                 wrappers: inside.wrappers.clone(),
                 pipeline: segment.pipeline,
+                pipeline_ancestors: ancestors.clone(),
             },
         )?;
     }
@@ -1416,6 +1424,7 @@ fn analyze(command: &str) -> Option<Vec<Entry>> {
     let mut state = State {
         steps: 0,
         wrapper_depth: 0,
+        pipelines: 0,
     };
     // `command.length` counts UTF-16 units upstream; the char count is never larger.
     let result = if command.encode_utf16().count() > MAX_COMMAND_LENGTH {
@@ -1431,6 +1440,7 @@ fn analyze(command: &str) -> Option<Vec<Entry>> {
                     Place {
                         wrappers: Vec::new(),
                         pipeline: segment.pipeline,
+                        pipeline_ancestors: Vec::new(),
                     },
                 )?;
             }
@@ -1467,6 +1477,7 @@ pub fn analyze_bash_command_words(command: &str) -> BashCommandWordsAnalysis {
                     words: entry.words.iter().map(public_word).collect(),
                     wrappers: entry.wrappers,
                     pipeline: entry.pipeline,
+                    pipeline_ancestors: entry.pipeline_ancestors,
                 })
                 .collect(),
         },
@@ -1496,4 +1507,35 @@ pub fn best_effort_command_lines(command: &str) -> Vec<Vec<String>> {
     (0..words.len())
         .map(|index| words[index..(index + CANDIDATE_WORDS).min(words.len())].to_vec())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_scripts_preserve_pipeline_relationships_without_collisions() {
+        let BashCommandWordsAnalysis::Parsed { segments } =
+            analyze_bash_command_words("a | b; sh -c 'c | d; e'; f | g")
+        else {
+            panic!("command is parsed");
+        };
+        let ids: Vec<_> = segments
+            .iter()
+            .map(|segment| (segment.name.as_str(), segment.pipeline))
+            .collect();
+        assert_eq!(
+            ids.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            ["a", "b", "sh", "c", "d", "e", "f", "g"]
+        );
+        assert_eq!(ids[0].1, ids[1].1);
+        assert_ne!(ids[2].1, ids[3].1);
+        assert_eq!(segments[3].pipeline_ancestors, [ids[2].1]);
+        assert_eq!(segments[5].pipeline_ancestors, [ids[2].1]);
+        assert_eq!(ids[3].1, ids[4].1);
+        assert_eq!(ids[6].1, ids[7].1);
+        assert_ne!(ids[0].1, ids[3].1);
+        assert_ne!(ids[3].1, ids[5].1);
+        assert_ne!(ids[5].1, ids[6].1);
+    }
 }

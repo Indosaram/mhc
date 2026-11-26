@@ -26,11 +26,13 @@ fn quote(text: &str) -> String {
 }
 
 fn piped_into_kill(segment_index: usize, segments: &[BashCommandSegment]) -> bool {
-    let pipeline = segments[segment_index].pipeline;
-    segments
-        .iter()
-        .skip(segment_index + 1)
-        .any(|other| other.pipeline == pipeline && is_kill_family(&other.name))
+    let segment = &segments[segment_index];
+    segments.iter().skip(segment_index + 1).any(|other| {
+        is_kill_family(&other.name)
+            && (other.pipeline == segment.pipeline
+                || other.pipeline_ancestors.contains(&segment.pipeline)
+                || segment.pipeline_ancestors.contains(&other.pipeline))
+    })
 }
 
 /// The command line nix-shell runs (`--run`/`--command`), or the applet line busybox runs (`busybox sh -c ...`).
@@ -102,6 +104,7 @@ fn unwrap_opaque(segment: &BashCommandSegment) -> Vec<BashCommandSegment> {
         words: segment.words[index + 1..].to_vec(),
         wrappers,
         pipeline: segment.pipeline,
+        pipeline_ancestors: segment.pipeline_ancestors.clone(),
     }]
 }
 

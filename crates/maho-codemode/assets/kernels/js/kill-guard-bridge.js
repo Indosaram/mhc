@@ -102,6 +102,8 @@ function sendCheck(payload) {
 	}
 	if (Atomics.load(ctrl, 0) !== STATUS_DONE) {
 		Atomics.store(ctrl, 0, STATUS_IDLE);
+		client = undefined;
+		void worker.terminate();
 		return {
 			action: "refuse",
 			rule: "R5",

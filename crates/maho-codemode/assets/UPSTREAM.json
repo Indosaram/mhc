@@ -510,7 +510,7 @@
       "status": "local",
       "upstreamCommit": null,
       "change": "local bridge adapter for worker-kill-guard.js forwarding synchronous kill-guard checks over HTTP /kill_guard_check to maho_core::kill_guard",
-      "sha256": "a0ef9d636fa6e58920d2e4c48e685022ac138805d1b649568aab5551ec2f537d"
+      "sha256": "3d703f9e31e128f85498c3085cb4df43acbea52eda80318af556bfaed9832e27"
     },
     {
       "path": "skill/bun/SKILL.md",

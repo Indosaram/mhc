@@ -58,6 +58,46 @@ fn step_commit_error_brand_matches_step_commit_error_and_rejects_other_errors() 
 }
 
 #[tokio::test]
+async fn tool_host_failure_has_distinct_error_classification() {
+    struct FailingHost;
+    impl ToolHost for FailingHost {
+        fn execute(
+            &self,
+            _: ToolHostCall,
+            _: ToolHostOptions,
+        ) -> maho_ai::types::BoxFuture<'_, Result<ToolHostResult, String>> {
+            Box::pin(async { Err("host-fault-17".to_owned()) })
+        }
+    }
+    let mut cfg = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
+    cfg.tool_host = Some(Arc::new(FailingHost));
+    let sink: maho_agent::AgentEventSink = Arc::new(|_| Box::pin(async {}));
+    let err = run_agent_loop(
+        vec![user_message("go")],
+        maho_agent::AgentContext {
+            system_prompt: String::new(),
+            system_prompt_stable_prefix: None,
+            messages: Vec::new(),
+            tools: None,
+            declared_tools: None,
+        },
+        cfg,
+        sink,
+        None,
+        Some(scripted_stream_fn(vec![assistant(
+            vec![tool_call("call-1", "echo", json!({}))],
+            StopReason::ToolUse,
+        )])),
+    )
+    .await
+    .expect_err("host failure propagates");
+    assert!(matches!(
+        err,
+        maho_agent::AgentLoopError::ToolHost(message) if message == "host-fault-17"
+    ));
+}
+
+#[tokio::test]
 async fn commit_step_unset_leaves_loop_unchanged_and_set_commits_before_tool_dispatch_and_turn_end()
 {
     let trace: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();

@@ -67,6 +67,8 @@ pub enum AgentLoopError {
     #[error(transparent)]
     StepCommit(#[from] StepCommitError),
     #[error("{0}")]
+    ToolHost(String),
+    #[error("{0}")]
     Other(String),
 }
 
@@ -2126,10 +2128,7 @@ async fn execute_tool_calls(
     let scope = config
         .execution_scope
         .clone()
-        .unwrap_or_else(|| ExecutionScope {
-            id: uuid::Uuid::new_v4().to_string(),
-            root: String::new(),
-        });
+        .ok_or_else(|| AgentLoopError::Other("missing execution scope".to_owned()))?;
     let result = host
         .execute(
             ToolHostCall {
@@ -2148,7 +2147,7 @@ async fn execute_tool_calls(
             },
         )
         .await
-        .map_err(AgentLoopError::Other)?;
+        .map_err(AgentLoopError::ToolHost)?;
     Ok(ExecutedToolCallBatch {
         messages: result.messages,
         terminate: result.terminate,

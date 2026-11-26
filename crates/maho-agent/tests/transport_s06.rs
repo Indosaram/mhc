@@ -14,11 +14,85 @@ use maho_agent::transport::in_process_carrier::{
 };
 use maho_agent::transport::local_endpoint::{endpoint_key, local_endpoint};
 use maho_agent::transport::reliable_transport::{
-    ReliableTransportOptions, create_reliable_transport,
+    ReferencePacket, ReliableTransportOptions, create_reliable_transport,
 };
-use maho_agent::transport::transport::{Transport, TransportClock};
+use maho_agent::transport::transport::{CarrierMessage, CarrierSide, Transport, TransportClock};
 
 use crate::s06_adapters::{DEFAULT_T0, reference_transport_adapter};
+
+#[tokio::test]
+async fn handler_panics_are_reported_and_do_not_stall_the_lane() {
+    let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (delivered_tx, mut delivered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let rt = create_reliable_transport(ReliableTransportOptions {
+        clock: Arc::new(create_manual_timers(DEFAULT_T0)),
+        window: Some(4),
+        retransmit_ms: Some(100),
+        on_handler_error: Arc::new(move |error, frame| {
+            error_tx
+                .send((error.to_owned(), frame.payload.clone()))
+                .expect("observe error");
+        }),
+    });
+    rt.on_frame(Arc::new(move |frame| match frame.payload.as_slice() {
+        b"sync" => panic!("synchronous handler panic"),
+        b"async" => Box::pin(async { panic!("asynchronous handler panic") }),
+        _ => {
+            let delivered_tx = delivered_tx.clone();
+            Box::pin(async move { delivered_tx.send(frame.payload).expect("observe delivery") })
+        }
+    }));
+    for (seq, payload) in [b"sync".as_slice(), b"async", b"ok"]
+        .into_iter()
+        .enumerate()
+    {
+        rt.message(&CarrierMessage::new(ReferencePacket::Data {
+            lane: "lane".to_owned(),
+            seq: seq as u64 + 1,
+            payload: payload.to_vec(),
+        }));
+    }
+    let (first, second, last) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        (
+            error_rx.recv().await,
+            error_rx.recv().await,
+            delivered_rx.recv().await,
+        )
+    })
+    .await
+    .expect("lane continues after errors");
+    assert_eq!(first.expect("sync error").1, b"sync");
+    assert_eq!(second.expect("async error").1, b"async");
+    assert_eq!(last.expect("third frame"), b"ok");
+    rt.close();
+}
+
+#[test]
+fn delivery_outside_a_runtime_does_not_stall_the_lane() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let rt = create_reliable_transport(ReliableTransportOptions {
+        clock: Arc::new(create_manual_timers(DEFAULT_T0)),
+        window: Some(4),
+        retransmit_ms: Some(100),
+        on_handler_error: Arc::new(|error, _| panic!("unexpected handler error: {error}")),
+    });
+    rt.on_frame(Arc::new(move |frame| {
+        let sender = sender.clone();
+        Box::pin(async move { sender.send(frame.payload).expect("observe delivery") })
+    }));
+    rt.message(&CarrierMessage::new(ReferencePacket::Data {
+        lane: "lane".to_owned(),
+        seq: 1,
+        payload: b"ok".to_vec(),
+    }));
+    assert_eq!(
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("frame delivered"),
+        b"ok"
+    );
+    rt.close();
+}
 
 #[tokio::test]
 async fn win32_sim_enforces_open_file_unlink_and_exec_mode_rules() {

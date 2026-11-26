@@ -1,8 +1,9 @@
 //! Port of senpi `packages/agent/src/transport/reliable-transport.ts`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use futures::FutureExt;
 use maho_ai::types::BoxFuture;
 use tokio::sync::oneshot;
 
@@ -66,7 +67,13 @@ struct OutLane {
     transmitted: u64,
     outbox: BTreeMap<u64, Vec<u8>>,
     waiters: VecDeque<Waiter>,
-    cancel_retransmit: Option<TransportTimerCancel>,
+    retransmit: Option<RetransmitTimer>,
+    timer_generation: u64,
+}
+
+enum RetransmitTimer {
+    Arming(u64),
+    Armed(u64, TransportTimerCancel),
 }
 
 impl OutLane {
@@ -77,7 +84,8 @@ impl OutLane {
             transmitted: 0,
             outbox: BTreeMap::new(),
             waiters: VecDeque::new(),
-            cancel_retransmit: None,
+            retransmit: None,
+            timer_generation: 0,
         }
     }
 }
@@ -107,7 +115,10 @@ struct State {
     ack_due: BTreeSet<String>,
     next: usize,
     connection: Option<Arc<dyn CarrierConnection>>,
+    connection_generation: u64,
     writable: bool,
+    writable_generation: u64,
+    pumping: bool,
     closed: bool,
     handler: Option<FrameHandler>,
 }
@@ -140,31 +151,18 @@ impl State {
         }
     }
 
-    fn disarm(state: &mut OutLane) {
-        if let Some(cancel) = state.cancel_retransmit.take() {
-            cancel();
+    fn disarm(state: &mut OutLane) -> Option<TransportTimerCancel> {
+        match state.retransmit.take() {
+            Some(RetransmitTimer::Armed(_, cancel)) => Some(cancel),
+            Some(RetransmitTimer::Arming(_)) | None => None,
         }
     }
 
-    fn disarm_all(&mut self) {
-        for state in self.out_lanes.values_mut() {
-            Self::disarm(state);
-        }
-    }
-
-    fn emit(&mut self, packet: ReferencePacket) -> bool {
-        let Some(conn) = self.connection.as_ref().map(Arc::clone) else {
-            return false;
-        };
-        if !self.writable {
-            return false;
-        }
-        if conn.send(CarrierMessage::new(packet)) {
-            true
-        } else {
-            self.writable = false;
-            false
-        }
+    fn disarm_all(&mut self) -> Vec<TransportTimerCancel> {
+        self.out_lanes
+            .values_mut()
+            .filter_map(Self::disarm)
+            .collect()
     }
 }
 
@@ -173,85 +171,159 @@ pub struct ReliableTransport {
     clock: Arc<dyn TransportClock>,
     window: usize,
     retransmit_ms: i64,
-    #[allow(dead_code)]
     on_handler_error: OnHandlerError,
     state: Arc<Mutex<State>>,
 }
 
 impl ReliableTransport {
-    fn arm(&self, guard: &mut State) {
-        if guard.connection.is_none() {
-            return;
-        }
-        let lanes: Vec<String> = guard
-            .out_lanes
-            .iter()
-            .filter(|(_, lane)| lane.cancel_retransmit.is_none() && !lane.outbox.is_empty())
-            .map(|(name, _)| name.clone())
-            .collect();
+    fn arm(&self) {
+        let lanes: Vec<String> = {
+            let guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.closed || guard.connection.is_none() {
+                return;
+            }
+            guard.out_lanes.keys().cloned().collect()
+        };
         for lane_name in lanes {
+            let generation = {
+                let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.closed || guard.connection.is_none() {
+                    return;
+                }
+                let Some(lane) = guard.out_lanes.get_mut(&lane_name) else {
+                    continue;
+                };
+                if lane.retransmit.is_some() || lane.outbox.is_empty() {
+                    continue;
+                }
+                lane.timer_generation += 1;
+                let generation = lane.timer_generation;
+                lane.retransmit = Some(RetransmitTimer::Arming(generation));
+                generation
+            };
             let transport = self.clone();
             let lane_for_cb = lane_name.clone();
             let cancel = self.clock.set_timer(
                 Box::new(move || {
-                    let mut guard = transport.state.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(lane) = guard.out_lanes.get_mut(&lane_for_cb) {
-                        lane.cancel_retransmit = None;
-                        lane.transmitted = lane.acked;
+                    let should_pump = {
+                        let mut guard = transport.state.lock().unwrap_or_else(|p| p.into_inner());
+                        let Some(lane) = guard.out_lanes.get_mut(&lane_for_cb) else {
+                            return;
+                        };
+                        if !matches!(
+                            lane.retransmit,
+                            Some(RetransmitTimer::Arming(id) | RetransmitTimer::Armed(id, _))
+                                if id == generation
+                        ) {
+                            false
+                        } else {
+                            lane.retransmit = None;
+                            lane.transmitted = lane.acked;
+                            true
+                        }
+                    };
+                    if should_pump {
+                        transport.pump();
                     }
-                    transport.pump(&mut guard);
                 }),
                 self.retransmit_ms,
             );
-            if let Some(lane) = guard.out_lanes.get_mut(&lane_name) {
-                lane.cancel_retransmit = Some(cancel);
+            let installed = {
+                let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                let active = !guard.closed && guard.connection.is_some();
+                if let Some(lane) = guard.out_lanes.get_mut(&lane_name)
+                    && active
+                    && !lane.outbox.is_empty()
+                    && matches!(lane.retransmit, Some(RetransmitTimer::Arming(id)) if id == generation)
+                {
+                    lane.retransmit = Some(RetransmitTimer::Armed(generation, Arc::clone(&cancel)));
+                    true
+                } else {
+                    false
+                }
+            };
+            if !installed {
+                cancel();
             }
         }
     }
 
-    fn pump(&self, guard: &mut State) {
-        if guard.connection.is_none() || !guard.writable {
-            return;
-        }
-        let ack_lanes: Vec<String> = guard.ack_due.iter().cloned().collect();
-        for lane in ack_lanes {
-            let seq = guard.in_lane(&lane).delivered;
-            if !guard.emit(ReferencePacket::Ack {
-                lane: lane.clone(),
-                seq,
-            }) {
+    fn pump(&self) {
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.pumping {
                 return;
             }
-            guard.ack_due.remove(&lane);
+            guard.pumping = true;
         }
-        let mut idle = 0usize;
-        let order_len = guard.order.len();
-        while idle < order_len {
-            let lane = guard.order[guard.next % order_len].clone();
-            let (seq, payload) = {
-                let state = guard.out_lane(&lane);
-                let seq = state.transmitted + 1;
-                (seq, state.outbox.get(&seq).cloned())
+        loop {
+            let action = {
+                let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                let Some(connection) = guard.connection.as_ref().map(Arc::clone) else {
+                    guard.pumping = false;
+                    return;
+                };
+                if guard.closed || !guard.writable {
+                    guard.pumping = false;
+                    return;
+                }
+                let packet = if let Some(lane) = guard.ack_due.first().cloned() {
+                    guard.ack_due.remove(&lane);
+                    let seq = guard.in_lane(&lane).delivered;
+                    Some(ReferencePacket::Ack { lane, seq })
+                } else {
+                    let order_len = guard.order.len();
+                    let mut packet = None;
+                    for _ in 0..order_len {
+                        let lane = guard.order[guard.next % order_len].clone();
+                        guard.next += 1;
+                        let state = guard.out_lane(&lane);
+                        let seq = state.transmitted + 1;
+                        if let Some(payload) = state.outbox.get(&seq).cloned() {
+                            state.transmitted = seq;
+                            packet = Some(ReferencePacket::Data { lane, seq, payload });
+                            break;
+                        }
+                    }
+                    packet
+                };
+                match packet {
+                    Some(packet) => Some((
+                        connection,
+                        guard.connection_generation,
+                        guard.writable_generation,
+                        packet,
+                    )),
+                    None => {
+                        guard.pumping = false;
+                        None
+                    }
+                }
             };
-            let Some(payload) = payload else {
-                guard.next += 1;
-                idle += 1;
-                continue;
-            };
-            if !guard.emit(ReferencePacket::Data {
-                lane: lane.clone(),
-                seq,
-                payload,
-            }) {
+            let Some((connection, connection_generation, writable_generation, packet)) = action
+            else {
+                self.arm();
                 return;
+            };
+            if !connection.send(CarrierMessage::new(packet.clone())) {
+                let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                match packet {
+                    ReferencePacket::Ack { lane, .. } => {
+                        guard.ack_due.insert(lane);
+                    }
+                    ReferencePacket::Data { lane, seq, .. } => {
+                        if let Some(state) = guard.out_lanes.get_mut(&lane) {
+                            state.transmitted = state.transmitted.min(seq - 1).max(state.acked);
+                        }
+                    }
+                }
+                if guard.connection_generation == connection_generation
+                    && guard.writable_generation == writable_generation
+                {
+                    guard.writable = false;
+                }
             }
-            if let Some(state) = guard.out_lanes.get_mut(&lane) {
-                state.transmitted = seq;
-            }
-            guard.next += 1;
-            idle = 0;
         }
-        self.arm(guard);
     }
 
     fn start_deliver(&self, lane: String) {
@@ -268,15 +340,46 @@ impl ReliableTransport {
             handler
         };
 
+        static FALLBACK: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        let rt = tokio::runtime::Handle::try_current().unwrap_or_else(|_| {
+            FALLBACK
+                .get_or_init(|| {
+                    tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(1)
+                        .enable_all()
+                        .build()
+                        .expect("create transport delivery runtime")
+                })
+                .handle()
+                .clone()
+        });
         let transport = self.clone();
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                transport.deliver_loop(lane, handler).await;
-            });
-        }
+        rt.spawn(async move {
+            transport.deliver_loop(lane, handler).await;
+        });
     }
 
     async fn deliver_loop(self, lane: String, handler: FrameHandler) {
+        struct BusyGuard {
+            state: Arc<Mutex<State>>,
+            lane: String,
+            armed: bool,
+        }
+        impl Drop for BusyGuard {
+            fn drop(&mut self) {
+                if self.armed {
+                    let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(lane) = state.in_lanes.get_mut(&self.lane) {
+                        lane.busy = false;
+                    }
+                }
+            }
+        }
+        let mut busy = BusyGuard {
+            state: Arc::clone(&self.state),
+            lane: lane.clone(),
+            armed: true,
+        };
         loop {
             let frame = {
                 let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -284,6 +387,7 @@ impl ReliableTransport {
                     if let Some(in_lane) = guard.in_lanes.get_mut(&lane) {
                         in_lane.busy = false;
                     }
+                    busy.armed = false;
                     return;
                 }
                 let next_frame = guard
@@ -296,20 +400,33 @@ impl ReliableTransport {
                         if let Some(in_lane) = guard.in_lanes.get_mut(&lane) {
                             in_lane.busy = false;
                         }
+                        busy.armed = false;
                         return;
                     }
                 }
             };
-            handler(frame).await;
-            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            guard.in_lane(&lane).delivered += 1;
-            guard.ack_due.insert(lane.clone());
-            self.pump(&mut guard);
+            let result = std::panic::AssertUnwindSafe(async { handler(frame.clone()).await })
+                .catch_unwind()
+                .await;
+            if let Err(error) = result {
+                let message = error
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| error.downcast_ref::<&str>().copied())
+                    .unwrap_or("frame handler panicked");
+                (self.on_handler_error)(message, &frame);
+            }
+            {
+                let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                guard.in_lane(&lane).delivered += 1;
+                guard.ack_due.insert(lane.clone());
+            }
+            self.pump();
         }
     }
 
     fn on_data(&self, guard: &mut State, lane: String, seq: u64, payload: Vec<u8>) -> bool {
-        let should_deliver = {
+        {
             let state = guard.in_lane(&lane);
             if seq == state.received + 1 {
                 state.received = seq;
@@ -319,26 +436,27 @@ impl ReliableTransport {
                 guard.ack_due.insert(lane);
                 false
             }
-        };
-        self.pump(guard);
-        should_deliver
+        }
     }
 
-    fn on_ack(&self, guard: &mut State, lane: String, ack_seq: u64) {
-        let Some(state) = guard.out_lanes.get_mut(&lane) else {
-            return;
-        };
+    fn on_ack(
+        &self,
+        guard: &mut State,
+        lane: String,
+        ack_seq: u64,
+    ) -> Option<TransportTimerCancel> {
+        let state = guard.out_lanes.get_mut(&lane)?;
         if ack_seq <= state.acked || ack_seq >= state.next_seq {
-            return;
+            return None;
         }
         for seq in (state.acked + 1)..=ack_seq {
             state.outbox.remove(&seq);
         }
         state.acked = ack_seq;
         state.transmitted = state.transmitted.max(state.acked);
-        State::disarm(state);
+        let cancel = State::disarm(state);
         State::admit(state, self.window);
-        self.pump(guard);
+        cancel
     }
 }
 
@@ -355,7 +473,10 @@ pub fn create_reliable_transport(options: ReliableTransportOptions) -> Arc<Relia
             ack_due: BTreeSet::new(),
             next: 0,
             connection: None,
+            connection_generation: 0,
             writable: false,
+            writable_generation: 0,
+            pumping: false,
             closed: false,
             handler: None,
         })),
@@ -380,9 +501,9 @@ impl Transport for ReliableTransport {
                 let state = guard.out_lane(&lane);
                 state.waiters.push_back(Waiter { payload, tx });
                 State::admit(state, window);
-                self.pump(&mut guard);
                 rx
             };
+            self.pump();
             rx.await.unwrap_or(Err(TransportClosedError))
         })
     }
@@ -407,20 +528,24 @@ impl Transport for ReliableTransport {
     }
 
     fn close(&self) {
-        let current = {
+        let (current, cancels) = {
             let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
             if guard.closed {
                 return;
             }
             guard.closed = true;
-            guard.disarm_all();
+            let cancels = guard.disarm_all();
             for state in guard.out_lanes.values_mut() {
                 while let Some(waiter) = state.waiters.pop_front() {
                     let _ = waiter.tx.send(Err(TransportClosedError));
                 }
             }
-            guard.connection.take()
+            guard.connection_generation += 1;
+            (guard.connection.take(), cancels)
         };
+        for cancel in cancels {
+            cancel();
+        }
         if let Some(conn) = current {
             conn.close();
         }
@@ -429,13 +554,15 @@ impl Transport for ReliableTransport {
 
 impl CarrierSide for ReliableTransport {
     fn attached(&self, new_connection: Arc<dyn CarrierConnection>) {
-        let closed = {
+        let (closed, cancels) = {
             let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
             if guard.closed {
-                true
+                (true, Vec::new())
             } else {
                 guard.connection = Some(Arc::clone(&new_connection));
+                guard.connection_generation += 1;
                 guard.writable = true;
+                guard.writable_generation += 1;
                 for state in guard.out_lanes.values_mut() {
                     state.transmitted = state.acked;
                 }
@@ -448,13 +575,17 @@ impl CarrierSide for ReliableTransport {
                 for lane in ack_lanes {
                     guard.ack_due.insert(lane);
                 }
-                guard.disarm_all();
-                self.pump(&mut guard);
-                false
+                let cancels = guard.disarm_all();
+                (false, cancels)
             }
         };
+        for cancel in cancels {
+            cancel();
+        }
         if closed {
             new_connection.close();
+        } else {
+            self.pump();
         }
     }
 
@@ -462,41 +593,51 @@ impl CarrierSide for ReliableTransport {
         let Some(packet) = message.downcast_ref::<ReferencePacket>().cloned() else {
             return;
         };
-        let deliver_lane = {
+        let (deliver_lane, cancel) = {
             let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
             match packet {
                 ReferencePacket::Data { lane, seq, payload } => {
                     if self.on_data(&mut guard, lane.clone(), seq, payload) {
-                        Some(lane)
+                        (Some(lane), None)
                     } else {
-                        None
+                        (None, None)
                     }
                 }
-                ReferencePacket::Ack { lane, seq } => {
-                    self.on_ack(&mut guard, lane, seq);
-                    None
-                }
+                ReferencePacket::Ack { lane, seq } => (None, self.on_ack(&mut guard, lane, seq)),
             }
         };
+        if let Some(cancel) = cancel {
+            cancel();
+        }
+        self.pump();
         if let Some(lane) = deliver_lane {
             self.start_deliver(lane);
         }
     }
 
     fn writable(&self) {
-        let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if guard.connection.is_none() {
-            return;
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.connection.is_none() {
+                return;
+            }
+            guard.writable = true;
+            guard.writable_generation += 1;
         }
-        guard.writable = true;
-        self.pump(&mut guard);
+        self.pump();
     }
 
     fn detached(&self) {
-        let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        guard.connection = None;
-        guard.writable = false;
-        guard.disarm_all();
+        let cancels = {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            guard.connection = None;
+            guard.connection_generation += 1;
+            guard.writable = false;
+            guard.disarm_all()
+        };
+        for cancel in cancels {
+            cancel();
+        }
     }
 }
 
@@ -507,5 +648,142 @@ impl TransportSide for ReliableTransport {
 
     fn as_carrier_side(&self) -> Arc<dyn CarrierSide> {
         Arc::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Observations = Arc<Mutex<Vec<(&'static str, bool)>>>;
+    struct Probe {
+        state: Mutex<std::sync::Weak<Mutex<State>>>,
+        observed: Observations,
+    }
+    impl Probe {
+        fn record(&self, action: &'static str) {
+            let state = self
+                .state
+                .lock()
+                .expect("probe state")
+                .upgrade()
+                .expect("transport alive");
+            self.observed
+                .lock()
+                .expect("observations")
+                .push((action, state.try_lock().is_ok()));
+        }
+    }
+    impl CarrierConnection for Probe {
+        fn send(&self, _: CarrierMessage) -> bool {
+            self.record("send");
+            true
+        }
+        fn close(&self) {}
+    }
+    struct ProbeClock(Arc<Probe>);
+    impl TransportClock for ProbeClock {
+        fn now(&self) -> i64 {
+            0
+        }
+        fn set_timer(&self, _: Box<dyn FnOnce() + Send + 'static>, _: i64) -> TransportTimerCancel {
+            self.0.record("set timer");
+            let probe = self.0.clone();
+            Arc::new(move || probe.record("cancel timer"))
+        }
+    }
+
+    #[tokio::test]
+    async fn external_carrier_and_timer_callbacks_run_without_state_lock() {
+        let probe = Arc::new(Probe {
+            state: Mutex::new(std::sync::Weak::new()),
+            observed: Arc::new(Mutex::new(Vec::new())),
+        });
+        let transport = create_reliable_transport(ReliableTransportOptions {
+            clock: Arc::new(ProbeClock(probe.clone())),
+            window: Some(4),
+            retransmit_ms: Some(100),
+            on_handler_error: Arc::new(|error, _| panic!("unexpected handler error: {error}")),
+        });
+        *probe.state.lock().expect("probe state") = Arc::downgrade(&transport.state);
+        transport.attached(probe.clone());
+        transport
+            .send("lane", b"payload".to_vec())
+            .await
+            .expect("admit frame");
+        transport.close();
+        assert_eq!(
+            *probe.observed.lock().expect("observations"),
+            [("send", true), ("set timer", true), ("cancel timer", true)]
+        );
+    }
+
+    struct ReentrantCarrier {
+        transport: Mutex<std::sync::Weak<ReliableTransport>>,
+        sends: std::sync::atomic::AtomicUsize,
+        acknowledge: bool,
+    }
+    impl CarrierConnection for ReentrantCarrier {
+        fn send(&self, message: CarrierMessage) -> bool {
+            let transport = self
+                .transport
+                .lock()
+                .expect("transport")
+                .upgrade()
+                .expect("alive");
+            let count = self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.acknowledge {
+                if let Some(ReferencePacket::Data { lane, seq, .. }) =
+                    message.downcast_ref::<ReferencePacket>()
+                {
+                    transport.message(&CarrierMessage::new(ReferencePacket::Ack {
+                        lane: lane.clone(),
+                        seq: *seq,
+                    }));
+                }
+                true
+            } else if count == 0 {
+                transport.writable();
+                false
+            } else {
+                true
+            }
+        }
+        fn close(&self) {}
+    }
+
+    #[tokio::test]
+    async fn reentrant_ack_and_writable_notifications_preserve_progress() {
+        for acknowledge in [true, false] {
+            let probe = Arc::new(Probe {
+                state: Mutex::new(std::sync::Weak::new()),
+                observed: Arc::new(Mutex::new(Vec::new())),
+            });
+            let transport = create_reliable_transport(ReliableTransportOptions {
+                clock: Arc::new(ProbeClock(probe.clone())),
+                window: Some(4),
+                retransmit_ms: Some(100),
+                on_handler_error: Arc::new(|error, _| panic!("unexpected handler error: {error}")),
+            });
+            *probe.state.lock().expect("probe state") = Arc::downgrade(&transport.state);
+            let carrier = Arc::new(ReentrantCarrier {
+                transport: Mutex::new(Arc::downgrade(&transport)),
+                sends: std::sync::atomic::AtomicUsize::new(0),
+                acknowledge,
+            });
+            transport.attached(carrier.clone());
+            transport
+                .send("lane", b"payload".to_vec())
+                .await
+                .expect("admit frame");
+            if acknowledge {
+                assert_eq!(transport.in_flight("lane"), 0);
+                assert_eq!(carrier.sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+            } else {
+                assert_eq!(transport.in_flight("lane"), 1);
+                assert_eq!(carrier.sends.load(std::sync::atomic::Ordering::SeqCst), 2);
+            }
+            transport.close();
+        }
     }
 }

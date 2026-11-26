@@ -150,14 +150,20 @@ async fn run_direct(
     let mut child = cmd
         .spawn()
         .map_err(|e| DeviceFileError::new(DeviceFileErrorCode::Io, e.to_string()))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(input) = &request.stdin {
-            let _ = stdin.write_all(input).await;
-        }
-        let _ = stdin.shutdown().await;
-    }
-
-    let wait_future = child.wait_with_output();
+    let stdin = child.stdin.take();
+    let wait_future = async {
+        let write_input = async {
+            if let Some(mut stdin) = stdin {
+                if let Some(input) = &request.stdin {
+                    stdin.write_all(input).await?;
+                }
+                stdin.shutdown().await?;
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let (_, output) = tokio::try_join!(write_input, child.wait_with_output())?;
+        Ok::<_, std::io::Error>(output)
+    };
     let timeout_dur = request.timeout_ms.map(Duration::from_millis);
 
     let output = tokio::select! {

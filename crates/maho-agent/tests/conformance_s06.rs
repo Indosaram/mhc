@@ -71,26 +71,19 @@ use crate::support::{
 };
 
 fn senpi_root() -> PathBuf {
-    if let Ok(path) = std::env::var("SENPI_SRC") {
-        let pb = PathBuf::from(path);
-        if pb.exists() {
-            return pb;
-        }
-    }
-    PathBuf::from("/home/gwjeon/work/upstream/senpi-pin")
+    std::env::var_os("SENPI_SRC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").expect("set SENPI_SRC or HOME"))
+                .join("code/senpi")
+        })
 }
 
 async fn read_repo_file(rel: &str) -> Result<Vec<u8>, String> {
-    let primary = senpi_root().join(rel);
-    match tokio::fs::read(&primary).await {
-        Ok(bytes) => Ok(bytes),
-        Err(primary_err) => {
-            let fallback = PathBuf::from("/home/gwjeon/work/upstream/senpi").join(rel);
-            tokio::fs::read(&fallback)
-                .await
-                .map_err(|_| format!("failed to read {}: {primary_err}", primary.display()))
-        }
-    }
+    let path = senpi_root().join(rel);
+    tokio::fs::read(&path)
+        .await
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))
 }
 
 fn manifest_case(id: &str, adapters: Vec<AdapterKind>) -> ManifestCase {

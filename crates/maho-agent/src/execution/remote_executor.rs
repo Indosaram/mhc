@@ -101,7 +101,7 @@ impl DoneWaiter {
 
 struct ScopeState {
     root: String,
-    opened: Arc<tokio::sync::OnceCell<Result<Arc<dyn HandScope>, String>>>,
+    opened: Arc<tokio::sync::OnceCell<Arc<dyn HandScope>>>,
     last_sequential: Option<DoneWaiter>,
     wave: Vec<DoneWaiter>,
 }
@@ -125,6 +125,7 @@ struct ExecutorInner {
     running: Mutex<HashMap<String, RunningCall>>,
     planes: Arc<PlaneClient>,
     closed: AtomicBool,
+    active: Arc<tokio::sync::RwLock<()>>,
     ready_done: AtomicBool,
     ready_notify: Notify,
 }
@@ -141,9 +142,14 @@ impl ExecutorInner {
         let lane = lane.to_owned();
         let bytes = encode_remote_message(message);
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let on_fault = Arc::clone(&self.on_fault);
             rt.spawn(async move {
-                let _ = transport.send(&lane, bytes).await;
+                if let Err(err) = transport.send(&lane, bytes).await {
+                    on_fault(format!("failed to send on lane {lane}: {err}"));
+                }
             });
+        } else {
+            (self.on_fault)(format!("cannot send on lane {lane}: no runtime"));
         }
     }
 
@@ -187,11 +193,10 @@ impl ExecutorInner {
 
         let scope_cloned = scope.clone();
         let open_res = opened_cell
-            .get_or_init(|| async move { (self.open_scope)(scope_cloned).await })
-            .await
-            .clone();
+            .get_or_try_init(|| async move { (self.open_scope)(scope_cloned).await })
+            .await;
         match open_res {
-            Ok(hand_scope) => Ok((state_arc, hand_scope)),
+            Ok(hand_scope) => Ok((state_arc, Arc::clone(hand_scope))),
             Err(reason) => Err(format!("scope_unavailable: {reason}")),
         }
     }
@@ -202,6 +207,7 @@ impl ExecutorInner {
         call: RemoteInvoke,
         file_op: Option<super::device_files::DeviceFileOp>,
     ) {
+        let active = Arc::clone(&self.active).read_owned().await;
         if self.closed.load(Ordering::SeqCst) {
             self.refuse(lane, &call.execution_id, "hand_closed");
             return;
@@ -238,6 +244,12 @@ impl ExecutorInner {
         let (scope_mutex, hand_scope) = match self.get_or_open_scope(&bound_scope).await {
             Ok(pair) => pair,
             Err(reason) => {
+                if self.ledger.is_none() {
+                    self.seen
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&call.execution_id);
+                }
                 self.refuse(lane, &call.execution_id, reason);
                 return;
             }
@@ -269,22 +281,30 @@ impl ExecutorInner {
             }
         }
 
+        let controller = AbortController::new();
+        let registered = {
+            let mut running = self.running.lock().unwrap_or_else(|p| p.into_inner());
+            if self.closed.load(Ordering::SeqCst) {
+                false
+            } else {
+                running.insert(
+                    call.execution_id.clone(),
+                    RunningCall {
+                        controller: controller.clone(),
+                        root: granted_root,
+                    },
+                );
+                true
+            }
+        };
+        if !registered {
+            self.refuse(lane, &call.execution_id, "hand_closed");
+            return;
+        }
         self.accepted
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(call.execution_id.clone());
-
-        let controller = AbortController::new();
-        self.running
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
-                call.execution_id.clone(),
-                RunningCall {
-                    controller: controller.clone(),
-                    root: granted_root,
-                },
-            );
 
         let sequential = file_op.is_some() || hand_scope.is_sequential(&call.name);
         let waiter = DoneWaiter::new();
@@ -307,6 +327,7 @@ impl ExecutorInner {
         let lane_owned = lane.to_owned();
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
+                let _active = active;
                 struct WaiterGuard(DoneWaiter);
                 impl Drop for WaiterGuard {
                     fn drop(&mut self) {
@@ -477,6 +498,8 @@ impl RemoteExecutor {
         for c in controllers {
             c.abort(None);
         }
+        let active = self.inner.active.write().await;
+        drop(active);
         let scope_arcs: Vec<Arc<tokio::sync::Mutex<ScopeState>>> = self
             .inner
             .scopes
@@ -486,9 +509,21 @@ impl RemoteExecutor {
             .map(|(_, s)| s)
             .collect();
         for scope_arc in scope_arcs {
-            let guard = scope_arc.lock().await;
-            if let Some(Ok(hand_scope)) = guard.opened.get() {
-                let _ = hand_scope.dispose().await;
+            let (waiters, hand_scope) = {
+                let guard = scope_arc.lock().await;
+                let mut waiters = guard.wave.clone();
+                if let Some(last) = &guard.last_sequential {
+                    waiters.push(last.clone());
+                }
+                (waiters, guard.opened.get().cloned())
+            };
+            for waiter in waiters {
+                waiter.wait().await;
+            }
+            if let Some(hand_scope) = hand_scope
+                && let Err(err) = hand_scope.dispose().await
+            {
+                (self.inner.on_fault)(format!("scope disposal failed: {err}"));
             }
         }
         self.inner.transport.close();
@@ -518,6 +553,7 @@ pub fn create_remote_executor(options: RemoteExecutorOptions) -> Arc<RemoteExecu
         running: Mutex::new(HashMap::new()),
         planes,
         closed: AtomicBool::new(false),
+        active: Arc::new(tokio::sync::RwLock::new(())),
         ready_done: AtomicBool::new(false),
         ready_notify: Notify::new(),
     });
@@ -672,4 +708,324 @@ pub fn create_remote_executor(options: RemoteExecutorOptions) -> Arc<RemoteExecu
         inner,
         _stop_watching: stop_watching,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::transport::TransportClosedError;
+
+    struct ClosedTransport;
+
+    impl Transport for ClosedTransport {
+        fn send(&self, _: &str, _: Vec<u8>) -> BoxFuture<'_, Result<(), TransportClosedError>> {
+            Box::pin(async { Err(TransportClosedError) })
+        }
+        fn on_frame(&self, _: FrameHandler) {}
+        fn in_flight(&self, _: &str) -> usize {
+            0
+        }
+        fn close(&self) {}
+    }
+
+    struct OpenTransport;
+    impl Transport for OpenTransport {
+        fn send(&self, _: &str, _: Vec<u8>) -> BoxFuture<'_, Result<(), TransportClosedError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn on_frame(&self, _: FrameHandler) {}
+        fn in_flight(&self, _: &str) -> usize {
+            0
+        }
+        fn close(&self) {}
+    }
+
+    fn executor(fault: ExecutorFaultFn) -> Arc<RemoteExecutor> {
+        create_remote_executor(RemoteExecutorOptions {
+            transport: Arc::new(ClosedTransport),
+            open_scope: Arc::new(|_| Box::pin(async { Err("not used".to_owned()) })),
+            authority: HandAuthority::SelfHost,
+            ledger: None,
+            fence: None,
+            instance: Some("test".to_owned()),
+            file_channel: false,
+            on_fault: fault,
+        })
+    }
+
+    #[tokio::test]
+    async fn failed_hello_send_reports_fault() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = Mutex::new(Some(sender));
+        let _executor = executor(Arc::new(move |fault| {
+            if let Some(sender) = sender.lock().expect("fault sender").take() {
+                let _ = sender.send(fault);
+            }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .expect("send failure is reported")
+            .expect("fault callback is alive");
+    }
+
+    #[test]
+    fn reply_without_runtime_reports_fault() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let executor = executor(Arc::new(move |fault| {
+            sender.send(fault).expect("test receives fault");
+        }));
+        executor.inner.reply(
+            "lane",
+            &RemoteHandMessage::Hello {
+                instance: "test".to_owned(),
+                durable: false,
+                ops: Vec::new(),
+            },
+        );
+        assert!(receiver.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn close_waits_for_calls_and_disposes_without_scope_lock() {
+        struct Scope {
+            state: Mutex<std::sync::Weak<tokio::sync::Mutex<ScopeState>>>,
+            done: DoneWaiter,
+            observed: tokio::sync::mpsc::UnboundedSender<(bool, bool)>,
+        }
+        impl HandScope for Scope {
+            fn run(&self, _: HandCall) -> BoxFuture<'_, Result<AgentToolResult, String>> {
+                unreachable!("this test installs an active call directly")
+            }
+            fn is_sequential(&self, _: &str) -> bool {
+                false
+            }
+            fn dispose(&self) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    let state = self
+                        .state
+                        .lock()
+                        .expect("scope state")
+                        .upgrade()
+                        .expect("alive");
+                    let unlocked = state.try_lock().is_ok();
+                    self.observed
+                        .send((self.done.done.load(Ordering::SeqCst), unlocked))
+                        .expect("observe disposal");
+                    Err("dispose failed".to_owned())
+                })
+            }
+        }
+        let (fault_tx, mut fault_rx) = tokio::sync::mpsc::unbounded_channel();
+        let executor = create_remote_executor(RemoteExecutorOptions {
+            transport: Arc::new(OpenTransport),
+            open_scope: Arc::new(|_| Box::pin(async { Err("not used".to_owned()) })),
+            authority: HandAuthority::SelfHost,
+            ledger: None,
+            fence: None,
+            instance: Some("test".to_owned()),
+            file_channel: false,
+            on_fault: Arc::new(move |fault| {
+                fault_tx.send(fault).expect("observe fault");
+            }),
+        });
+        let waiter = DoneWaiter::new();
+        let (observed_tx, mut observed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let scope = Arc::new(Scope {
+            state: Mutex::new(std::sync::Weak::new()),
+            done: waiter.clone(),
+            observed: observed_tx,
+        });
+        let opened = Arc::new(tokio::sync::OnceCell::new());
+        assert!(opened.set(scope.clone() as Arc<dyn HandScope>).is_ok());
+        let state = Arc::new(tokio::sync::Mutex::new(ScopeState {
+            root: "root".to_owned(),
+            opened,
+            last_sequential: None,
+            wave: vec![waiter.clone()],
+        }));
+        *scope.state.lock().expect("scope state") = Arc::downgrade(&state);
+        executor
+            .inner
+            .scopes
+            .lock()
+            .expect("scopes")
+            .insert("lane".to_owned(), state);
+        let controller = AbortController::new();
+        let signal = controller.signal();
+        executor.inner.running.lock().expect("running").insert(
+            "call".to_owned(),
+            RunningCall {
+                controller,
+                root: "root".to_owned(),
+            },
+        );
+        let closing = tokio::spawn(async move { executor.close().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), signal.cancelled())
+            .await
+            .expect("call is cancelled");
+        waiter.finish();
+        tokio::time::timeout(std::time::Duration::from_secs(5), closing)
+            .await
+            .expect("close completes")
+            .expect("close task");
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), observed_rx.recv())
+                .await
+                .expect("disposal observed"),
+            Some((true, true))
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), fault_rx.recv())
+                .await
+                .expect("dispose fault reported")
+                .expect("fault callback alive")
+                .contains("dispose failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn invocation_is_not_accepted_after_close_during_scope_open() {
+        struct Scope;
+        impl HandScope for Scope {
+            fn run(&self, _: HandCall) -> BoxFuture<'_, Result<AgentToolResult, String>> {
+                Box::pin(async { Err("unexpected run".to_owned()) })
+            }
+            fn is_sequential(&self, _: &str) -> bool {
+                false
+            }
+            fn dispose(&self) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
+        let release = Arc::new(Notify::new());
+        let open_release = release.clone();
+        let executor = create_remote_executor(RemoteExecutorOptions {
+            transport: Arc::new(OpenTransport),
+            open_scope: Arc::new(move |_| {
+                let release = open_release.clone();
+                let entered = entered_tx.lock().expect("open signal").take();
+                Box::pin(async move {
+                    entered.expect("first open").send(()).expect("observe open");
+                    release.notified().await;
+                    Ok(Arc::new(Scope) as Arc<dyn HandScope>)
+                })
+            }),
+            authority: HandAuthority::SelfHost,
+            ledger: None,
+            fence: None,
+            instance: Some("test".to_owned()),
+            file_channel: false,
+            on_fault: Arc::new(|fault| panic!("unexpected fault: {fault}")),
+        });
+        let inner = executor.inner.clone();
+        let invocation = tokio::spawn(async move {
+            inner
+                .handle_invoke(
+                    "lane",
+                    RemoteInvoke {
+                        epoch: None,
+                        execution_id: "execution".to_owned(),
+                        batch_id: "batch".to_owned(),
+                        index: 0,
+                        scope: ExecutionScope {
+                            id: "lane".to_owned(),
+                            root: "root".to_owned(),
+                        },
+                        tool_call_id: "call".to_owned(),
+                        name: "tool".to_owned(),
+                        arguments: Value::Null,
+                        session_ref: None,
+                        prompt_surface: None,
+                    },
+                    None,
+                )
+                .await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .expect("scope open started")
+            .expect("open callback alive");
+        let mut close = Box::pin(executor.close());
+        assert!(matches!(
+            futures::poll!(close.as_mut()),
+            std::task::Poll::Pending
+        ));
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), invocation)
+            .await
+            .expect("invocation completes")
+            .expect("invocation task");
+        assert!(executor.accepted().is_empty());
+        tokio::time::timeout(std::time::Duration::from_secs(5), close)
+            .await
+            .expect("close waits for scope opening");
+    }
+
+    #[tokio::test]
+    async fn failed_scope_open_allows_same_and_new_execution_retries() {
+        struct Scope;
+        impl HandScope for Scope {
+            fn run(&self, _: HandCall) -> BoxFuture<'_, Result<AgentToolResult, String>> {
+                Box::pin(async { Err("test result".to_owned()) })
+            }
+            fn is_sequential(&self, _: &str) -> bool {
+                false
+            }
+            fn dispose(&self) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let open_attempts = attempts.clone();
+        let executor = create_remote_executor(RemoteExecutorOptions {
+            transport: Arc::new(OpenTransport),
+            open_scope: Arc::new(move |_| {
+                let attempt = open_attempts.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if attempt == 0 {
+                        Err("temporary failure".to_owned())
+                    } else {
+                        Ok(Arc::new(Scope) as Arc<dyn HandScope>)
+                    }
+                })
+            }),
+            authority: HandAuthority::SelfHost,
+            ledger: None,
+            fence: None,
+            instance: Some("test".to_owned()),
+            file_channel: false,
+            on_fault: Arc::new(|fault| panic!("unexpected fault: {fault}")),
+        });
+        let mut call = RemoteInvoke {
+            epoch: None,
+            execution_id: "first".to_owned(),
+            batch_id: "batch".to_owned(),
+            index: 0,
+            scope: ExecutionScope {
+                id: "lane".to_owned(),
+                root: "root".to_owned(),
+            },
+            tool_call_id: "call".to_owned(),
+            name: "tool".to_owned(),
+            arguments: Value::Null,
+            session_ref: None,
+            prompt_surface: None,
+        };
+        executor
+            .inner
+            .handle_invoke("lane", call.clone(), None)
+            .await;
+        call.execution_id = "second".to_owned();
+        executor
+            .inner
+            .handle_invoke("lane", call.clone(), None)
+            .await;
+        call.execution_id = "first".to_owned();
+        executor.inner.handle_invoke("lane", call, None).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(executor.accepted(), ["second", "first"]);
+        executor.close().await;
+    }
 }

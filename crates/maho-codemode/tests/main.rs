@@ -101,6 +101,8 @@ mod kernel_tools_scope;
 mod kill_guard_kernels;
 #[path = "kill_guard_runtime_env.rs"]
 mod kill_guard_runtime_env;
+#[path = "kill_guard_timeout.rs"]
+mod kill_guard_timeout;
 #[path = "kill_guard_worker_capture.rs"]
 mod kill_guard_worker_capture;
 #[path = "local_module_loader.rs"]

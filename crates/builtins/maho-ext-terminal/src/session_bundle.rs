@@ -455,9 +455,16 @@ impl TerminalSessionBundle {
             .lock()
             .expect("interrupt stops")
             .insert(id.to_owned(), turn_id.to_owned());
-        let stopped = crate::manager::stop_shared(&self.manager, id)
-            .await
-            .map_err(|error| error.to_string())?;
+        let stopped = match crate::manager::stop_shared(&self.manager, id).await {
+            Ok(stopped) => stopped,
+            Err(error) => {
+                let mut stops = self.interrupt_stops.lock().expect("interrupt stops");
+                if stops.get(id).is_some_and(|turn| turn == turn_id) {
+                    stops.remove(id);
+                }
+                return Err(error.to_string());
+            }
+        };
         let exited = exit_rx.borrow_and_update().is_some()
             || self
                 .manager
@@ -521,12 +528,12 @@ impl TerminalSessionBundle {
         if self.routing.lock().expect("terminal routing").torndown {
             return;
         }
-        if let Some(release) = self
+        let release = self
             .run_job_releases
             .lock()
             .expect("run job releases")
-            .remove(id)
-        {
+            .remove(id);
+        if let Some(release) = release {
             release();
         }
         let interrupted_turn = self
@@ -666,6 +673,56 @@ impl TerminalSessionBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_job_release_callback_runs_without_the_release_lock() {
+        let mut bundle = TerminalSessionBundle::new(1);
+        let releases = Arc::clone(&bundle.run_job_releases);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        bundle.track_run_job("job", move || {
+            sender.send(releases.try_lock().is_ok()).unwrap();
+        });
+        bundle.notify_background_exit("job");
+        assert!(receiver.try_recv().unwrap());
+        bundle.teardown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupt_stop_error_clears_the_interrupt_marker() {
+        let mut bundle = TerminalSessionBundle::new(1);
+        let manager =
+            crate::manager::TerminalManager::new(1).with_kill_process(Arc::new(|_, _| {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            }));
+        bundle.manager = Arc::new(Mutex::new(manager));
+        let id = {
+            let mut manager = bundle.manager.lock().expect("manager");
+            let id = manager
+                .create("read", crate::shared::test_sh_options("read value"))
+                .expect("create terminal");
+            manager.track_detached_child(
+                &id,
+                crate::manager::TrackedDetachedChild {
+                    process_group_id: Some(12345),
+                    ..Default::default()
+                },
+            );
+            id
+        };
+        bundle
+            .stop_for_interrupt(&id, "turn")
+            .await
+            .expect_err("detached child cleanup fails");
+        assert!(
+            !bundle
+                .interrupt_stops
+                .lock()
+                .expect("interrupt stops")
+                .contains_key(&id)
+        );
+        bundle.teardown().expect("bundle teardown");
+    }
+
     #[test]
     fn parked_background_exit_republishes_state_and_flushes_to_new_owner() {
         let mut bundle = TerminalSessionBundle::new(2);

@@ -82,6 +82,25 @@ fn synthetic_table() -> Vec<ProcessRow> {
 
 type TestSelectFn = Arc<dyn Fn(&[String]) -> Option<Vec<i64>> + Send + Sync>;
 
+#[test]
+fn nested_shell_pipelines_only_connect_related_commands() {
+    let f = fixture(FixtureOpts::default());
+    for command in [
+        "pgrep -f '.*'; sh -c 'kill -0 400'",
+        r#"sh -c "pgrep -f '.*'; kill -0 400""#,
+    ] {
+        assert_eq!(judge_command(command, &f.context), KillGuardVerdict::Allow);
+    }
+    for command in [
+        r#"pgrep -f '.*' | sh -c 'xargs kill'"#,
+        r#"pgrep -f '.*' | sh -c 'echo ok; xargs kill'"#,
+        r#"sh -c "pgrep -f '.*'" | xargs kill"#,
+        r#"sh -c "pgrep -f '.*' | xargs kill""#,
+    ] {
+        assert_eq!(rule_tag(&judge_command(command, &f.context)), "R1");
+    }
+}
+
 #[derive(Default)]
 struct FixtureOpts {
     platform: Option<&'static str>,

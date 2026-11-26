@@ -176,6 +176,148 @@ fn device_files_local_flag_reports_true() {
     assert!(local_device_files().is_local());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn device_run_drains_output_while_writing_large_stdin() {
+    let request = maho_agent::execution::device_files::DeviceRunRequest {
+        exe: "/bin/sh".to_owned(),
+        argv: vec![
+            "-c".to_owned(),
+            "head -c 1048576 /dev/zero; cat >/dev/null".to_owned(),
+        ],
+        cwd: std::env::current_dir()
+            .expect("working directory")
+            .to_string_lossy()
+            .into_owned(),
+        env: None,
+        stdin: Some(vec![b'x'; 1024 * 1024]),
+        timeout_ms: Some(10_000),
+        activity_lock: None,
+    };
+    let files = local_device_files();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        files.run(request, DeviceFileOptions::default()),
+    )
+    .await
+    .expect("bidirectional process completes")
+    .expect("device run succeeds");
+    assert_eq!(result.code, Some(0));
+    assert_eq!(result.stdout.len(), 1024 * 1024);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn device_run_can_abort_while_stdin_is_blocked() {
+    use tokio::io::AsyncReadExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ready = dir.path().join("ready");
+    let blocked = dir.path().join("blocked");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&ready)
+            .arg(&blocked)
+            .status()
+            .expect("create fifos")
+            .success()
+    );
+    let request = maho_agent::execution::device_files::DeviceRunRequest {
+        exe: "/bin/sh".to_owned(),
+        argv: vec![
+            "-c".to_owned(),
+            "printf r > \"$1\"; exec cat < \"$2\"".to_owned(),
+            "child".to_owned(),
+            ready.to_string_lossy().into_owned(),
+            blocked.to_string_lossy().into_owned(),
+        ],
+        cwd: dir.path().to_string_lossy().into_owned(),
+        env: None,
+        stdin: Some(vec![b'x'; 1024 * 1024]),
+        timeout_ms: None,
+        activity_lock: None,
+    };
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let options = DeviceFileOptions {
+        signal: Some(controller.signal()),
+    };
+    let run = tokio::spawn(async move { local_device_files().run(request, options).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut fifo = tokio::fs::File::open(ready).await.expect("open ready fifo");
+        let mut byte = [0];
+        fifo.read_exact(&mut byte).await.expect("child ready");
+        assert_eq!(byte, [b'r']);
+    })
+    .await
+    .expect("child starts");
+    controller.abort(None);
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("abort completes")
+        .expect("run task")
+        .expect_err("run is aborted");
+    assert_eq!(error.code, DeviceFileErrorCode::Aborted);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn device_run_reports_stdin_write_failure() {
+    let request = maho_agent::execution::device_files::DeviceRunRequest {
+        exe: "/bin/sh".to_owned(),
+        argv: vec!["-c".to_owned(), "exit 0".to_owned()],
+        cwd: std::env::current_dir()
+            .expect("working directory")
+            .to_string_lossy()
+            .into_owned(),
+        env: None,
+        stdin: Some(vec![b'x'; 1024 * 1024]),
+        timeout_ms: Some(5_000),
+        activity_lock: None,
+    };
+    let error = local_device_files()
+        .run(request, DeviceFileOptions::default())
+        .await
+        .expect_err("stdin write failure is reported");
+    assert_eq!(error.code, DeviceFileErrorCode::Io);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn device_run_timeout_covers_blocked_stdin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let blocked = dir.path().join("blocked");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&blocked)
+            .status()
+            .expect("create fifo")
+            .success()
+    );
+    let request = maho_agent::execution::device_files::DeviceRunRequest {
+        exe: "/bin/sh".to_owned(),
+        argv: vec![
+            "-c".to_owned(),
+            "exec cat < \"$1\"".to_owned(),
+            "child".to_owned(),
+            blocked.to_string_lossy().into_owned(),
+        ],
+        cwd: dir.path().to_string_lossy().into_owned(),
+        env: None,
+        stdin: Some(vec![b'x'; 1024 * 1024]),
+        timeout_ms: Some(500),
+        activity_lock: None,
+    };
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        local_device_files().run(request, DeviceFileOptions::default()),
+    )
+    .await
+    .expect("timeout covers stdin writing")
+    .expect_err("run times out");
+    assert_eq!(error.code, DeviceFileErrorCode::Io);
+    assert!(error.message.contains("timed out"));
+}
+
 #[test]
 fn chain_count_admission_enforces_hops_and_origin() {
     assert_eq!(decode_chain_count(None).expect("origin"), 1);
@@ -189,6 +331,121 @@ fn chain_count_admission_enforces_hops_and_origin() {
     let err = admit_chain_call(4, || Some(3)).expect_err("limit exceeded");
     assert_eq!(err.count, 4);
     assert_eq!(err.limit, 3);
+}
+
+#[tokio::test]
+async fn remote_hand_stops_at_each_refused_admission_step() {
+    use maho_agent::execution::ledger::{
+        ExecutionLedger, LedgerError, LedgerGuard, StoreExecutionLedgerOptions,
+        create_execution_ledger,
+    };
+    use maho_agent::execution::ledger_types::{
+        ExecutionAdmission, ExecutionCommand, ExecutionEntry, ExecutionKey, LedgerRefusal,
+        LedgerReply,
+    };
+    use maho_agent::execution::remote_hand_ledger::{
+        HandAdmission, HandLedgerOptions, create_hand_ledger,
+    };
+    use maho_agent::execution::remote_protocol::RemoteInvoke;
+    use maho_ai::types::BoxFuture;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RefusingLedger {
+        inner: Arc<dyn ExecutionLedger>,
+        reject_at: usize,
+        calls: AtomicUsize,
+    }
+    impl ExecutionLedger for RefusingLedger {
+        fn admit(
+            &self,
+            input: ExecutionAdmission,
+            guard: Option<LedgerGuard>,
+        ) -> BoxFuture<'_, Result<LedgerReply, LedgerError>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == self.reject_at {
+                Box::pin(async {
+                    Ok(LedgerReply::Refused {
+                        reason: LedgerRefusal::Unauthorized,
+                    })
+                })
+            } else {
+                self.inner.admit(input, guard)
+            }
+        }
+        fn apply(
+            &self,
+            input: ExecutionCommand,
+            guard: Option<LedgerGuard>,
+        ) -> BoxFuture<'_, Result<LedgerReply, LedgerError>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == self.reject_at {
+                Box::pin(async {
+                    Ok(LedgerReply::Refused {
+                        reason: LedgerRefusal::Unauthorized,
+                    })
+                })
+            } else {
+                self.inner.apply(input, guard)
+            }
+        }
+        fn read(
+            &self,
+            key: ExecutionKey,
+        ) -> BoxFuture<'_, Result<Option<ExecutionEntry>, LedgerError>> {
+            self.inner.read(key)
+        }
+        fn recover(&self, now: i64) -> BoxFuture<'_, Result<(), LedgerError>> {
+            self.inner.recover(now)
+        }
+        fn scan(&self) -> BoxFuture<'_, Result<Vec<ExecutionEntry>, LedgerError>> {
+            self.inner.scan()
+        }
+    }
+    for reject_at in 0..4 {
+        let store = Arc::new(open_memory_store(
+            create_memory_store_medium(),
+            DurableStoreOptions::default(),
+        ));
+        store.claim(0, 1).await.expect("claim store");
+        let ledger = Arc::new(RefusingLedger {
+            inner: create_execution_ledger(StoreExecutionLedgerOptions {
+                store,
+                epoch: 1,
+                admission: create_admission_line(),
+            }),
+            reject_at,
+            calls: AtomicUsize::new(0),
+        });
+        let hand = create_hand_ledger(HandLedgerOptions {
+            ledger: ledger.clone(),
+            executor: "hand".to_owned(),
+            issuer: "session".to_owned(),
+            workspace: "workspace".to_owned(),
+            now: Arc::new(|| 1_000),
+            lease_ms: 10_000,
+        });
+        let result = hand
+            .admit(
+                RemoteInvoke {
+                    epoch: None,
+                    execution_id: "execution".to_owned(),
+                    batch_id: "batch".to_owned(),
+                    index: 0,
+                    scope: ExecutionScope {
+                        id: "lane".to_owned(),
+                        root: "/workspace".to_owned(),
+                    },
+                    tool_call_id: "call".to_owned(),
+                    name: "tool".to_owned(),
+                    arguments: json!({}),
+                    session_ref: None,
+                    prompt_surface: None,
+                },
+                None,
+            )
+            .await
+            .expect("admission returns a refusal");
+        assert!(matches!(result, HandAdmission::Reply { .. }));
+        assert_eq!(ledger.calls.load(Ordering::SeqCst), reject_at + 1);
+    }
 }
 
 #[tokio::test]

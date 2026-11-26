@@ -14,7 +14,7 @@ use crate::rpc_remote_source::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 const REMOTE_INSTANCE: &str = "remote";
@@ -72,7 +72,8 @@ struct FeedState {
     lost_reported: bool,
     stopped: bool,
     ready: bool,
-    pending: Vec<DeferredStep>,
+    draining: bool,
+    pending: VecDeque<DeferredStep>,
 }
 
 #[derive(Clone)]
@@ -112,7 +113,7 @@ impl FeedState {
 
 impl FeedInner {
     fn run_step(&self, step: DeferredStep) {
-        let queued = {
+        let should_drain = {
             let mut state = self
                 .state
                 .lock()
@@ -120,13 +121,58 @@ impl FeedInner {
             if state.stopped {
                 return;
             }
-            if !state.ready {
-                state.pending.push(step);
-                return;
+            state.pending.push_back(step);
+            if state.ready && !state.draining {
+                state.draining = true;
+                true
+            } else {
+                false
             }
-            step
         };
-        self.execute_step(queued);
+        if should_drain {
+            self.drain();
+        }
+    }
+
+    fn drain(&self) {
+        struct ResetOnPanic<'a> {
+            state: &'a Mutex<FeedState>,
+            armed: bool,
+        }
+        impl Drop for ResetOnPanic<'_> {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .draining = false;
+                }
+            }
+        }
+        let mut reset = ResetOnPanic {
+            state: &self.state,
+            armed: true,
+        };
+        loop {
+            let step = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let next = if state.stopped {
+                    None
+                } else {
+                    state.pending.pop_front()
+                };
+                let Some(step) = next else {
+                    state.draining = false;
+                    reset.armed = false;
+                    return;
+                };
+                step
+            };
+            self.execute_step(step);
+        }
     }
 
     fn execute_step(&self, step: DeferredStep) {
@@ -310,7 +356,8 @@ impl RpcRemoteFeed {
                     lost_reported: false,
                     stopped: false,
                     ready: false,
-                    pending: Vec::new(),
+                    draining: false,
+                    pending: VecDeque::new(),
                 }),
             }),
         }
@@ -415,17 +462,22 @@ impl RpcRemoteFeed {
         }
         let rows = self.inner.host.seed(&device, &initial_rows);
         self.inner.host.checkpoint();
-        let drained = {
+        let should_drain = {
             let mut state = self
                 .inner
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.ready = true;
-            std::mem::take(&mut state.pending)
+            if !state.stopped && !state.draining && !state.pending.is_empty() {
+                state.draining = true;
+                true
+            } else {
+                false
+            }
         };
-        for step in drained {
-            self.inner.execute_step(step);
+        if should_drain {
+            self.inner.drain();
         }
         Ok(rows)
     }
@@ -493,6 +545,8 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    type RecordCallback = Arc<dyn Fn(&Value) + Send + Sync>;
+
     struct TestHost {
         renderer: Mutex<RpcMonitorRenderer>,
         hosts: Mutex<HashMap<String, RpcHostIdentity>>,
@@ -500,6 +554,7 @@ mod tests {
         records: Mutex<Vec<(String, Value)>>,
         ended: Mutex<Vec<String>>,
         checkpoints: Mutex<usize>,
+        on_record: Mutex<Option<RecordCallback>>,
     }
 
     impl TestHost {
@@ -511,6 +566,7 @@ mod tests {
                 records: Mutex::default(),
                 ended: Mutex::default(),
                 checkpoints: Mutex::default(),
+                on_record: Mutex::default(),
             })
         }
     }
@@ -542,6 +598,10 @@ mod tests {
                 .lock()
                 .expect("records")
                 .push((socket.to_owned(), record.clone()));
+            let callback = self.on_record.lock().expect("on record").clone();
+            if let Some(callback) = callback {
+                callback(record);
+            }
             if let Some(line) = self
                 .renderer
                 .lock()
@@ -591,6 +651,50 @@ mod tests {
                 ))
             })
         }
+    }
+
+    #[tokio::test]
+    async fn events_arriving_while_pending_steps_drain_preserve_order() {
+        let source = Arc::new(StubSource {
+            handlers: Mutex::default(),
+            stopped: Arc::new(AtomicBool::new(false)),
+        });
+        let host = TestHost::new();
+        let feed = RpcRemoteFeed::new(
+            RpcRemoteTarget {
+                device: "laptop".to_owned(),
+                session: "*".to_owned(),
+            },
+            RpcRemoteFeedOptions {
+                events: RpcEvents::All,
+                exclude: vec![],
+                source,
+                saved: None,
+            },
+            host.clone(),
+        );
+        let inner = Arc::downgrade(&feed.inner);
+        *host.on_record.lock().expect("on record") = Some(Arc::new(move |record| {
+            if record["id"] == "first" {
+                inner
+                    .upgrade()
+                    .expect("feed alive")
+                    .run_step(DeferredStep::Record(json!({"id":"third"})));
+            }
+        }));
+        feed.inner
+            .run_step(DeferredStep::Record(json!({"id":"first"})));
+        feed.inner
+            .run_step(DeferredStep::Record(json!({"id":"second"})));
+        feed.start().await.expect("start feed");
+        let records = host.records.lock().expect("records");
+        let ids: Vec<_> = records
+            .iter()
+            .map(|(_, record)| record["id"].clone())
+            .collect();
+        assert_eq!(ids, [json!("first"), json!("second"), json!("third")]);
+        drop(records);
+        feed.stop();
     }
 
     #[tokio::test]

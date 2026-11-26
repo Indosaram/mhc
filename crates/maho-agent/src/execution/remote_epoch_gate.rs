@@ -34,12 +34,7 @@ impl EpochGate {
         state.notify.notify_waiters();
     }
 
-    fn ask(&self, lane: &str, state: &mut LaneState) {
-        if state.verdict.is_some() {
-            state.verdict = None;
-        }
-        state.generation += 1;
-        let generation = state.generation;
+    fn ask(&self, lane: &str, generation: u64) {
         let send_fut = (self.send)(lane, self.epoch);
         let lanes = Arc::clone(&self.lanes);
         let lane_owned = lane.to_owned();
@@ -55,29 +50,39 @@ impl EpochGate {
                     }
                 }
             });
+        } else {
+            let mut guard = self.lanes.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(st) = guard.get_mut(lane)
+                && st.generation == generation
+                && st.verdict.is_none()
+            {
+                Self::decide(st, Some("hand_unreachable: no runtime".to_owned()));
+            }
         }
     }
 
     pub async fn open(&self, lane: &str) -> Option<String> {
-        let notify = {
+        let (notify, generation) = {
             let mut guard = self.lanes.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(known) = guard.get(lane) {
                 if let Some(ref verdict) = known.verdict {
                     return verdict.clone();
                 }
-                Arc::clone(&known.notify)
+                (Arc::clone(&known.notify), None)
             } else {
                 let notify = Arc::new(Notify::new());
-                let mut state = LaneState {
-                    generation: 0,
+                let state = LaneState {
+                    generation: 1,
                     verdict: None,
                     notify: Arc::clone(&notify),
                 };
-                self.ask(lane, &mut state);
                 guard.insert(lane.to_owned(), state);
-                notify
+                (notify, Some(1))
             }
         };
+        if let Some(generation) = generation {
+            self.ask(lane, generation);
+        }
 
         loop {
             let notified = notify.notified();
@@ -122,16 +127,20 @@ impl EpochGate {
     }
 
     pub fn resend(&self) {
-        let mut guard = self.lanes.lock().unwrap_or_else(|p| p.into_inner());
-        let lanes: Vec<String> = guard
-            .iter()
-            .filter(|(_, s)| matches!(s.verdict, None | Some(None)))
-            .map(|(l, _)| l.clone())
-            .collect();
-        for lane in lanes {
-            if let Some(state) = guard.get_mut(&lane) {
-                self.ask(&lane, state);
-            }
+        let lanes: Vec<(String, u64)> = {
+            let mut guard = self.lanes.lock().unwrap_or_else(|p| p.into_inner());
+            guard
+                .iter_mut()
+                .filter(|(_, state)| matches!(state.verdict, None | Some(None)))
+                .map(|(lane, state)| {
+                    state.verdict = None;
+                    state.generation += 1;
+                    (lane.clone(), state.generation)
+                })
+                .collect()
+        };
+        for (lane, generation) in lanes {
+            self.ask(&lane, generation);
         }
     }
 }
@@ -142,4 +151,49 @@ pub fn create_epoch_gate(epoch: u64, send: SendFloorFn) -> Arc<EpochGate> {
         send,
         lanes: Arc::new(Mutex::new(HashMap::new())),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn floor_sender_runs_without_the_lane_lock() {
+        let slot = Arc::new(Mutex::new(None::<std::sync::Weak<EpochGate>>));
+        let callback_slot = slot.clone();
+        let (sent, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        let gate = create_epoch_gate(
+            7,
+            Arc::new(move |_, _| {
+                let gate = callback_slot
+                    .lock()
+                    .expect("gate slot")
+                    .as_ref()
+                    .expect("gate bound")
+                    .upgrade()
+                    .expect("gate alive");
+                sent.send(gate.lanes.try_lock().is_ok())
+                    .expect("test observes send");
+                Box::pin(async { Ok(()) })
+            }),
+        );
+        *slot.lock().expect("gate slot") = Some(Arc::downgrade(&gate));
+        let opened_gate = gate.clone();
+        let opened = tokio::spawn(async move { opened_gate.open("lane").await });
+        let unlocked = tokio::time::timeout(std::time::Duration::from_secs(5), observed.recv())
+            .await
+            .expect("sender is called")
+            .expect("sender remains open");
+        assert!(unlocked, "floor sender ran under lane lock");
+        gate.answer("lane", FloorReply::Ack { floor: 7 });
+        assert_eq!(opened.await.expect("open task"), None);
+        gate.resend();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), observed.recv())
+                .await
+                .expect("resend completes")
+                .expect("resend invokes sender"),
+            "resend invoked sender under lane lock"
+        );
+    }
 }
