@@ -19,6 +19,12 @@ This file records only the overlay-side provenance.
 
 `PINS.md` is not modified by this overlay or by either staging mode.
 
+O06 (v5.1.81 behavior only): `skills/ultrawork/SKILL.md` ships the existing
+local MIT default contract with updated metadata. `skills/ultrawork/references/gpt.md`
+is a separately authored MIT directive for GPT and DeepSeek V4.1 Flash, not
+bytes copied from oh-my-openagent. `manifest.json.skills.ultrawork` binds both
+files. This does not advance the overlay-wide pin or its historical `mc:H` inventory.
+
 ## License
 
 omo-derived assets ship under `LicenseRef-SUL-1.0` (`LICENSES/SUL-1.0.md`).

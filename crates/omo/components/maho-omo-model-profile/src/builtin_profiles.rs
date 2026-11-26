@@ -1,4 +1,4 @@
-//! Port of omo-senpi `components/model-profile/builtin-profiles.ts` at omo `v5.1.47`: the named
+//! Port of omo-senpi `components/model-profile/builtin-profiles.ts` at omo `v5.1.81`: the named
 //! model-chain table a human picks by lane.
 //!
 //! A model profile is a named, ordered model chain a human picks by lane ("Daily · Normal",
@@ -9,8 +9,7 @@
 //! use - and NOT a single `provider/model` string, so a Copilot-only, Bedrock-only or gateway-only
 //! user still resolves the model instead of reading "unavailable" while the model sits right there
 //! in the registry. Provider spellings are copied from those chains: senpi-only `kimi-coding` plus
-//! the leftover OpenCode `kimi-for-coding` alias those chains keep, and the engine GLM ids `zai` /
-//! `zai-coding-cn` (not OpenCode's `zai-coding-plan`; #8824).
+//! the leftover OpenCode `kimi-for-coding` alias those chains keep.
 //!
 //! The table is additive data: an `omo.json` `model_profiles.<name>` entry replaces the builtin of
 //! the same name WHOLESALE (see [`crate::resolve`]), so a later change here can never silently
@@ -28,9 +27,10 @@
 //! Every builtin is a lane; the retired `recommended` id starts the same default.
 //!
 //! Each Obsessive lane carries a one-line caution a picker renders in bold, and Obsessive · Normal
-//! heads with GPT-6 Astra on every GPT provider before falling back to the two-lane Sol rungs.
+//! prefers GPT-6.2 Astra where served, retaining GPT-6 Astra for Copilot.
 
 use indexmap::IndexMap;
+use model_core::latest_models;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelProfileFamily {
@@ -103,18 +103,15 @@ const KIMI_PROVIDERS: &[&str] = &[
     "moonshotai",
     "opencode-go",
 ];
-// Engine Z.AI ids. `omo setup` imports OpenCode's `zai-coding-plan` key as `zai` (#8799).
-const GLM_PROVIDERS: &[&str] = &["zai", "zai-coding-cn", "opencode-go"];
 const GPT_PROVIDERS: &[&str] = &[
     "chatgpt-subscription",
     "openai",
     "github-copilot",
     "opencode",
 ];
-// GPT-6.1 Sol and its Fast tier are served only on the two OpenAI lanes (not Copilot or OpenCode Zen),
-// so their rungs list just those; Obsessive · Normal heads with GPT-6 Astra on every GPT provider and
-// falls back through those two-lane rungs to GPT-5.6 Sol, which keeps the profile on every GPT provider.
-const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
+// Copilot serves GPT-6 Astra, not 6.2; Sol tiers are scoped to the two OpenAI lanes.
+const GPT_6_2_ASTRA_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "opencode"];
+const GPT_SOL_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
 
 /// The one-line warning both Obsessive lanes carry: they are for one hard task, not everyday work.
 const OBSESSIVE_CAUTION: &str = "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.";
@@ -122,26 +119,25 @@ const OBSESSIVE_CAUTION: &str = "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.";
 const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
     BuiltinRung {
         providers: CLAUDE_PROVIDERS,
-        model: "claude-opus-5-5",
+        model: latest_models::CLAUDE_OPUS,
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: CLAUDE_PROVIDERS,
+        model: latest_models::CLAUDE_FABLE,
         variant: Some("medium"),
     },
     BuiltinRung {
         providers: KIMI_PROVIDERS,
-        model: "kimi-k3.1-pro",
-        variant: Some("max"),
-    },
-    BuiltinRung {
-        providers: GLM_PROVIDERS,
-        model: "glm-5.3",
+        model: latest_models::KIMI,
         variant: Some("max"),
     },
 ];
-use model_core::{FABLE_55_LAUNCH_ID, FABLE_55_RELEASED};
-const DAILY_HEAVY_LAUNCH_MODELS: &[BuiltinRung] = &[
+const DAILY_HEAVY_MODELS: &[BuiltinRung] = &[
     BuiltinRung {
         providers: CLAUDE_PROVIDERS,
-        model: FABLE_55_LAUNCH_ID,
-        variant: Some("xhigh"),
+        model: latest_models::CLAUDE_FABLE,
+        variant: Some("high"),
     },
     BuiltinRung {
         providers: CLAUDE_PROVIDERS,
@@ -149,23 +145,34 @@ const DAILY_HEAVY_LAUNCH_MODELS: &[BuiltinRung] = &[
         variant: Some("xhigh"),
     },
 ];
-const DAILY_HEAVY_MODELS: &[BuiltinRung] = match DAILY_HEAVY_LAUNCH_MODELS.split_first() {
-    Some((_, released)) if !FABLE_55_RELEASED => released,
-    _ => DAILY_HEAVY_LAUNCH_MODELS,
-};
 const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
+    BuiltinRung {
+        providers: GPT_6_2_ASTRA_PROVIDERS,
+        model: latest_models::GPT_ASTRA,
+        variant: Some("medium"),
+    },
     BuiltinRung {
         providers: GPT_PROVIDERS,
         model: "gpt-6-astra",
         variant: Some("medium"),
     },
     BuiltinRung {
-        providers: GPT_6_1_PROVIDERS,
+        providers: GPT_SOL_PROVIDERS,
+        model: latest_models::GPT_SOL_FAST,
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_SOL_PROVIDERS,
+        model: latest_models::GPT_SOL,
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_SOL_PROVIDERS,
         model: "gpt-6.1-sol-fast",
         variant: Some("medium"),
     },
     BuiltinRung {
-        providers: GPT_6_1_PROVIDERS,
+        providers: GPT_SOL_PROVIDERS,
         model: "gpt-6.1-sol",
         variant: Some("medium"),
     },
@@ -175,11 +182,18 @@ const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
         variant: Some("medium"),
     },
 ];
-const GEEKY_HEAVY_MODELS: &[BuiltinRung] = &[BuiltinRung {
-    providers: GPT_PROVIDERS,
-    model: "gpt-6-astra",
-    variant: Some("high"),
-}];
+const GEEKY_HEAVY_MODELS: &[BuiltinRung] = &[
+    BuiltinRung {
+        providers: GPT_6_2_ASTRA_PROVIDERS,
+        model: latest_models::GPT_ASTRA,
+        variant: Some("high"),
+    },
+    BuiltinRung {
+        providers: GPT_PROVIDERS,
+        model: "gpt-6-astra",
+        variant: Some("high"),
+    },
+];
 
 // Key order is the order a picker renders. `deep` is deliberately NOT an id: builtin delegation
 // categories already carry that name, and the two axes never compete (a profile picks the MAIN
@@ -263,19 +277,5 @@ mod tests {
                 ("geeky", "heavy")
             ]
         );
-    }
-
-    #[test]
-    fn daily_heavy_stages_the_launch_gated_fable_55_rung_but_drops_it_until_released() {
-        assert_eq!(DAILY_HEAVY_LAUNCH_MODELS[0].model, "claude-fable-5-5");
-        let heavy = &builtin_model_profiles()["daily-heavy"];
-        assert!(
-            heavy
-                .models
-                .iter()
-                .all(|rung| rung.model != "claude-fable-5-5")
-        );
-        assert_eq!(heavy.models[0].model, "claude-fable-5-1");
-        assert_eq!(heavy.models[0].variant, Some("xhigh"));
     }
 }

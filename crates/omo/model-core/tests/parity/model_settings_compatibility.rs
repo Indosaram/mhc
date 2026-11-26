@@ -1079,3 +1079,17 @@ fn no_op_when_desired_settings_are_empty() {
         result(None, None, vec![])
     );
 }
+
+#[test]
+fn gpt_62_astra_and_sol_downgrade_none_and_minimal_to_low() {
+    for model in ["gpt-6.2-astra", "gpt-6.2-sol"] {
+        for requested in ["none", "minimal"] {
+            let resolved = settings("chatgpt-subscription", model, effort(requested), None);
+            assert_eq!(
+                resolved.reasoning_effort.as_deref(),
+                Some("low"),
+                "{model} {requested}"
+            );
+        }
+    }
+}

@@ -107,7 +107,7 @@ impl ExtensionUi for TestUi {
     }
 }
 
-fn test_context(session_id: &str) -> ExtensionContext {
+pub(super) fn test_context(session_id: &str) -> ExtensionContext {
     ExtensionContext {
         ui: Arc::new(TestUi),
         mode: ExtensionMode::Tui,

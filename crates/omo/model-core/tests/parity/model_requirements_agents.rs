@@ -1,5 +1,4 @@
 use model_core::AGENT_MODEL_REQUIREMENTS;
-use model_core::FABLE_55_RELEASED;
 use model_core::FallbackEntry;
 use pretty_assertions::assert_eq;
 
@@ -125,12 +124,12 @@ fn assert_fast_agent_chain(agent: &str) {
 }
 
 #[test]
-fn librarian_runs_no_thinking_kimi_highspeed_luna_fast_deepseek_flash_qwen_m2_7_then_haiku() {
+fn librarian_runs_no_thinking_kimi_highspeed_luna_fast_haiku_deepseek_flash_qwen_then_m2_7() {
     assert_fast_agent_chain("librarian");
 }
 
 #[test]
-fn explore_runs_no_thinking_kimi_highspeed_luna_fast_deepseek_flash_qwen_m2_7_then_haiku() {
+fn explore_runs_no_thinking_kimi_highspeed_luna_fast_haiku_deepseek_flash_qwen_then_m2_7() {
     assert_fast_agent_chain("explore");
 }
 
@@ -165,131 +164,72 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max()
- {
-    let full_chain = chain("prometheus");
-
-    // the 5.5 rung exists only once FABLE_55_RELEASED is true
-    let fable_55_rungs = usize::from(FABLE_55_RELEASED);
-    assert_eq!(full_chain.len(), fable_55_rungs + 4);
-    let chain = &full_chain[fable_55_rungs..];
+fn prometheus_leads_with_fable_5_2_then_5_1_at_xhigh() {
+    let claude = &["anthropic", "github-copilot", "opencode"];
     assert_eq!(
-        chain[0],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-fable-5-1",
-            Some("xhigh")
-        )
+        chain("prometheus"),
+        &[
+            entry(claude, "claude-fable-5-2", Some("xhigh")),
+            entry(claude, "claude-fable-5-1", Some("xhigh")),
+            entry(claude, "claude-opus-5-5", Some("max")),
+            entry(
+                &["opencode-go", "kimi-for-coding", "moonshotai"],
+                "kimi-k3.1-pro",
+                Some("max")
+            ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
+        ]
     );
-    assert_eq!(
-        chain[1],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-opus-5-5",
-            Some("max")
-        )
-    );
-    assert_eq!(
-        chain[2],
-        entry(
-            &["opencode-go", "kimi-for-coding", "moonshotai"],
-            "kimi-k3.1-pro",
-            Some("max")
-        )
-    );
-    assert_eq!(chain[3], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
-fn metis_uses_fable_5_5_once_released_then_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max()
- {
-    let full_chain = chain("metis");
-
-    // the 5.5 rung exists only once FABLE_55_RELEASED is true
-    let fable_55_rungs = usize::from(FABLE_55_RELEASED);
-    assert_eq!(full_chain.len(), fable_55_rungs + 4);
-    let chain = &full_chain[fable_55_rungs..];
+fn metis_leads_with_fable_5_2_then_5_1_at_max() {
+    let claude = &["anthropic", "github-copilot", "opencode"];
     assert_eq!(
-        chain[0],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-fable-5-1",
-            Some("max")
-        )
+        chain("metis"),
+        &[
+            entry(claude, "claude-fable-5-2", Some("max")),
+            entry(claude, "claude-fable-5-1", Some("max")),
+            entry(claude, "claude-opus-5-5", Some("max")),
+            entry(
+                &["opencode-go", "kimi-for-coding", "moonshotai"],
+                "kimi-k3.1-pro",
+                Some("max")
+            ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
+        ]
     );
-    assert_eq!(
-        chain[1],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-opus-5-5",
-            Some("max")
-        )
-    );
-    assert_eq!(
-        chain[2],
-        entry(
-            &["opencode-go", "kimi-for-coding", "moonshotai"],
-            "kimi-k3.1-pro",
-            Some("max")
-        )
-    );
-    assert_eq!(chain[3], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
-fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_rungs() {
-    let chain = chain("momus");
-
-    assert!(chain.len() > 1);
+fn momus_prefers_native_astra_6_2_before_older_astra_and_opus() {
+    let native = &["openai", "chatgpt-subscription"];
+    let native_and_opencode = &["openai", "chatgpt-subscription", "opencode"];
     assert_eq!(
-        chain[0],
-        entry(
-            &["openai", "chatgpt-subscription"],
-            "gpt-6-astra",
-            Some("xhigh")
-        )
-    );
-    assert_eq!(
-        chain[1],
-        entry(&["github-copilot"], "gpt-6-astra", Some("high"))
-    );
-    assert_eq!(
-        chain[2],
-        entry(
-            &["openai", "chatgpt-subscription", "opencode"],
-            "gpt-6-astra",
-            Some("high")
-        )
-    );
-    assert_eq!(
-        chain[3],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-opus-5-5",
-            Some("max")
-        )
-    );
-    assert_eq!(
-        chain[5],
-        entry(
-            &["google", "github-copilot", "opencode"],
-            "gemini-3.1-pro",
-            Some("high")
-        )
-    );
-    assert_eq!(
-        chain[4],
-        entry(
-            &["google", "google-vertex", "opencode"],
-            "gemini-4-argon",
-            Some("high")
-        )
-    );
-    assert_eq!(chain[6], entry(&["opencode-go"], "glm-5.2", None));
-    assert!(
-        !chain
-            .iter()
-            .any(|entry| entry.model.starts_with("gpt-5.6-"))
+        chain("momus"),
+        &[
+            entry(native, "gpt-6.2-astra", Some("xhigh")),
+            entry(native, "gpt-6-astra", Some("xhigh")),
+            entry(&["github-copilot"], "gpt-6-astra", Some("high")),
+            entry(native_and_opencode, "gpt-6.2-astra", Some("high")),
+            entry(native_and_opencode, "gpt-6-astra", Some("high")),
+            entry(
+                &["anthropic", "github-copilot", "opencode"],
+                "claude-opus-5-5",
+                Some("max")
+            ),
+            entry(
+                &["google", "google-vertex", "opencode"],
+                "gemini-4-argon",
+                Some("high")
+            ),
+            entry(
+                &["google", "github-copilot", "opencode"],
+                "gemini-3.1-pro",
+                Some("high")
+            ),
+            entry(&["opencode-go"], "glm-5.2", None),
+        ]
     );
 }
 

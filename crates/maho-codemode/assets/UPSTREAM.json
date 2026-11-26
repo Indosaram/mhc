@@ -20,9 +20,10 @@
     },
     {
       "path": "kernels/js/inline-worker-entry.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "3cfbdf41a73b44aaac3685e5080b637c55aabf6e6411d0d1ccdcfbb015fbbf6c",
+      "change": "bind the worker's shutdown exit before OMO #14023 installs its cell prelude",
+      "sha256": "095903b3a217f79a5b584513f516847ae6fef79fb3a94a019007e389ffa9b1d1",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
       "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },
@@ -102,9 +103,10 @@
     },
     {
       "path": "kernels/js/worker-entry.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "f80879f6fba0ede8b767f4038540d81779c71889ee13aec8483686e1eff72339",
+      "change": "bind the worker's shutdown exit before OMO #14023 installs its cell prelude",
+      "sha256": "cbe5cea73253cc80bd598cd5f5b02e50d77f685c91df3c5333f139843239a0c9",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
       "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },

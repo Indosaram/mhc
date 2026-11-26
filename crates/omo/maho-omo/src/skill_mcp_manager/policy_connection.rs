@@ -16,6 +16,11 @@ pub async fn connect_with_policy_signal(
     client: &Arc<McpClient>,
     mut signal: Option<watch::Receiver<bool>>,
 ) -> super::Result<()> {
+    let timeout = if client.is_legacy_sse() {
+        super::request_options::SDK_REQUEST_TIMEOUT
+    } else {
+        Duration::from_secs(30)
+    };
     let cancelled = async {
         match signal.as_mut() {
             Some(signal) => {
@@ -28,6 +33,6 @@ pub async fn connect_with_policy_signal(
     };
     tokio::select! {biased;
         ()=cancelled=>{if let Err(error)=client.close().await {eprintln!("MCP policy close: {error}");}Err(MCP_ENVIRONMENT_POLICY_CHANGED.into())},
-        result=client.initialize(Duration::from_secs(30))=>result.map_err(|e|e.to_string()),
+        result=client.initialize(timeout)=>result.map_err(|e|e.to_string()),
     }
 }

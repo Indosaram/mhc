@@ -129,6 +129,7 @@ mod cell_handler_failures {
                 json!({"type":"object","properties":{"steps":{"type":"array","description":"Canonical steps to run in order.","items":{"type":"object","properties":{"tool":{"type":"string"},"input":{"type":"object"}},"required":["tool"]}}},"required":["steps"]}),
             ),
             kernel_prelude: None,
+            exposure: None,
         }
     }
 

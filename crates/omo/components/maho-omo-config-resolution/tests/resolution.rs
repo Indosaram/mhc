@@ -47,6 +47,32 @@ fn preserves_top_level_configuration() -> Result<(), std::io::Error> {
 }
 
 #[test]
+fn the_native_view_delivers_the_user_chain_without_inserting_builtin_rungs()
+-> Result<(), std::io::Error> {
+    let result = resolve(
+        json!({
+            "model_profile": "daily-normal",
+            "[native]": {
+                "model_profile": "daily-heavy",
+                "model_profiles": {"daily-heavy": {"models": [
+                    {"model": "openai/gpt-6.2-astra", "reasoning": "low"}
+                ]}}
+            }
+        }),
+        None,
+    )?;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.config["model_profile"], "daily-heavy");
+    assert_eq!(
+        result.config["model_profiles"]["daily-heavy"]["models"],
+        json!([
+            {"model": "openai/gpt-6.2-astra", "reasoning": "low"}
+        ])
+    );
+    Ok(())
+}
+
+#[test]
 fn activated_senpi_profile_overrides_base() -> Result<(), std::io::Error> {
     let result = resolve(
         json!({"categories":{"quick":{"model":"base/model"}},"[senpi]":{"categories":{"quick":{"model":"senpi/model"}}},"profiles":{"focused":{"[senpi]":{"categories":{"quick":{"model":"profile/model"}}}}}}),

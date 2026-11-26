@@ -33,6 +33,29 @@ pub struct ResolvedSkillServer {
 
 const OWN_CONFIG_FIX: &str = "declare the server in your own mcp.json instead";
 
+/// Claude skill request deadline in milliseconds (the signed 32-bit timer range).
+pub fn skill_request_timeout_ms(config: &Value) -> Option<f64> {
+    config
+        .get("timeout")?
+        .as_f64()
+        .filter(|ms| ms.is_finite() && *ms > 0.0 && *ms <= f64::from(i32::MAX))
+}
+
+/// Consume the skill-only key before interpolation or native schema validation.
+pub(crate) fn native_skill_declaration(mut raw: Value) -> Value {
+    let timeout = skill_request_timeout_ms(&raw);
+    if let Some(fields) = raw.as_object_mut() {
+        fields.remove("timeout");
+        if let Some(timeout) = timeout {
+            // SDK timers use whole milliseconds and never schedule a valid value at zero.
+            fields
+                .entry("requestTimeoutMs")
+                .or_insert_with(|| timeout.max(1.0).trunc().into());
+        }
+    }
+    raw
+}
+
 /// Resolve a skill-declared MCP server. Exposure is forced to search with no directTools (see
 /// `config::resolve_skill_mcp_server`) so the catalog registers with zero active tools until the owning skill
 /// loads; lifecycle stays lazy. A declaration that does not parse fails like any other skill server.
@@ -44,14 +67,15 @@ pub fn resolve_skill_mcp_server(
     agent_dir: Option<&Path>,
 ) -> Result<ResolvedSkillServer, McpConfigValidationError> {
     let label = format!("Skill '{}' MCP server '{name}'", source.skill_name);
-    let (declaration, warnings) = declare_for_trust(name, raw, &label, source);
+    let raw = native_skill_declaration(raw.clone());
+    let (declaration, warnings) = declare_for_trust(name, &raw, &label, source);
     let Some(declaration) = declaration else {
         return Ok(ResolvedSkillServer {
             server: None,
             warning: Some(warnings.join(" ")),
         });
     };
-    let raw_wire = server_wire(raw.clone())?;
+    let raw_wire = server_wire(raw)?;
     let mut declared = server_wire(declaration)?;
     let mut servers = BTreeMap::from([(name.to_owned(), declared)]);
     crate::config_references::remember_mcp_reference_origins(
@@ -69,9 +93,17 @@ pub fn resolve_skill_mcp_server(
 
 fn server_wire(mut value: Value) -> Result<ServerConfigWire, McpConfigValidationError> {
     let references = crate::config_references::extract_mcp_references(&mut value);
+    let mut wire = plain_skill_wire(value)?;
+    wire.references = references;
+    Ok(wire)
+}
+
+pub(crate) fn plain_skill_wire(value: Value) -> Result<ServerConfigWire, McpConfigValidationError> {
+    let skill_sse = value.get("type").and_then(Value::as_str) == Some("sse");
     let mut wire: ServerConfigWire = serde_json::from_value(value)
         .map_err(|error| McpConfigValidationError(error.to_string()))?;
-    wire.references = references;
+    wire.skill_sse = skill_sse;
+    wire.skill_timeout_explicit = wire.request_timeout_ms.is_some();
     Ok(wire)
 }
 

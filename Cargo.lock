@@ -5263,6 +5263,7 @@ dependencies = [
  "indexmap",
  "libc",
  "maho-ai",
+ "maho-codemode",
  "maho-ext-api",
  "maho-ext-mcp",
  "maho-memory-core",
@@ -5787,6 +5788,7 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "maho-ext-api",
+ "maho-ultrawork",
  "regex",
  "serde_json",
  "tokio",
@@ -6492,6 +6494,7 @@ name = "maho-ultrawork"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "regex",
  "serde_json",
 ]
 

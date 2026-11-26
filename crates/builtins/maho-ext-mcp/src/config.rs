@@ -469,6 +469,13 @@ fn hashable_config(config: &McpServerDeclaredConfig) -> Result<String, McpConfig
         .map_err(|e| McpConfigValidationError(e.to_string()))?;
     if let Some(obj) = value.as_object_mut() {
         obj.remove("startupTimeoutMs");
+        // Reattaching a skill with an explicit (even default-valued) deadline must re-key its pool.
+        if config.skill_timeout_explicit {
+            obj.insert(
+                "skillRequestTimeoutMs".into(),
+                serde_json::json!(config.request_timeout_ms),
+            );
+        }
     }
     Ok(stable_stringify(&value))
 }

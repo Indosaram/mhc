@@ -12,6 +12,7 @@ use serde_json::json;
 use support::{PRIVATE_MARKER, TestRegistry, model};
 
 const OPUS: (&str, &str) = ("anthropic", "claude-opus-5-5");
+const FABLE_52: (&str, &str) = ("anthropic", "claude-fable-5-2");
 const FABLE: (&str, &str) = ("anthropic", "claude-fable-5-1");
 const SUBSCRIPTION_OPUS: (&str, &str) = ("anthropic-subscription", "claude-opus-5-5");
 const KIMI: (&str, &str) = ("moonshotai", "kimi-k3.1-pro");
@@ -158,7 +159,7 @@ async fn unset_chatgpt_only_uses_geeky_normal() {
 async fn retired_profile_defaults_on_each_session_and_logs_once_per_registration() {
     let mut harness = harness_for(
         json!({"model_profile": "recommended"}),
-        Arc::new(TestRegistry::new(fixture(&[SOL_61, GLM]))),
+        Arc::new(TestRegistry::new(fixture(&[SOL_61, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
     );
@@ -174,7 +175,7 @@ async fn retired_profile_defaults_on_each_session_and_logs_once_per_registration
     harness.start(STARTUP, Some("settings")).await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["zai/glm-5.3", "zai/glm-5.3"]
+        ["moonshotai/kimi-k3.1-pro", "moonshotai/kimi-k3.1-pro"]
     );
     assert_eq!(
         harness
@@ -341,32 +342,38 @@ async fn the_claude_subscription_lane_wins_over_the_api_lane() {
 }
 
 #[tokio::test]
-async fn daily_normal_glm_is_applied_ahead_of_gpt_61_sol() {
+async fn daily_normal_kimi_is_applied_ahead_of_gpt_61_sol() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[SOL, SOL_61, GLM, UNRELATED]))),
+        Arc::new(TestRegistry::new(fixture(&[SOL, SOL_61, KIMI, UNRELATED]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
 }
 
 #[tokio::test]
-async fn daily_normal_glm_is_applied_ahead_of_copilot_sol() {
+async fn daily_normal_kimi_is_applied_ahead_of_copilot_sol() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[SOL, GLM, UNRELATED]))),
+        Arc::new(TestRegistry::new(fixture(&[SOL, KIMI, UNRELATED]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
 }
 
 #[tokio::test]
@@ -421,16 +428,19 @@ async fn daily_normal_with_only_the_third_rung_applies_kimi_max_and_names_the_sk
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
     assert_eq!(
         harness.first_details()["skipped"],
-        json!(["anthropic-subscription/claude-opus-5-5"])
+        json!([
+            "anthropic-subscription/claude-opus-5-5",
+            "anthropic-subscription/claude-fable-5-2"
+        ])
     );
     assert!(!harness.agent_dir.join("settings.json").exists());
 }
 
 #[tokio::test]
-async fn daily_heavy_applies_fable_xhigh() {
+async fn daily_heavy_prefers_fable_52_high_to_fable_51_xhigh() {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE, KIMI]))),
+        Arc::new(TestRegistry::new(fixture(&[FABLE, FABLE_52, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -439,11 +449,11 @@ async fn daily_heavy_applies_fable_xhigh() {
     .await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["anthropic/claude-fable-5-1"]
+        ["anthropic/claude-fable-5-2"]
     );
     assert_eq!(
         harness.session_thinking_levels(),
-        [ModelThinkingLevel::Xhigh]
+        [ModelThinkingLevel::High]
     );
 }
 
@@ -744,17 +754,20 @@ async fn a_new_session_id_applies_again() {
 async fn a_rejected_refresh_on_desktop_skips_the_provider_and_applies_the_next_healthy_rung() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, GLM])).dead_provider("anthropic")),
+        Arc::new(TestRegistry::new(fixture(&[OPUS, KIMI])).dead_provider("anthropic")),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic", "zai", "zai/glm-5.3"]
+        ["anthropic", "moonshotai", "moonshotai/kimi-k3.1-pro"]
     );
     assert_eq!(
         harness.first_details()["authFailed"],
@@ -773,14 +786,17 @@ async fn a_rejected_refresh_on_desktop_skips_the_provider_and_applies_the_next_h
 async fn a_rejected_refresh_on_a_headless_run_still_reports_the_interactive_login_guidance() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, GLM])).dead_provider("anthropic")),
+        Arc::new(TestRegistry::new(fixture(&[OPUS, KIMI])).dead_provider("anthropic")),
         "session-print",
         ExtensionMode::Print,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     let lines = harness.logger.lines();
     assert!(lines.iter().any(|line| line.starts_with("warn:")));
     assert!(!lines.iter().any(|line| line.contains(PRIVATE_MARKER)));
@@ -791,9 +807,9 @@ async fn two_distinct_rejected_providers_are_skipped_before_a_healthy_one() {
     let harness = start(
         json!({}),
         Arc::new(
-            TestRegistry::new(fixture(&[OPUS, KIMI, GLM]))
-                .dead_provider("anthropic")
-                .dead_provider("moonshotai"),
+            TestRegistry::new(fixture(&[SUBSCRIPTION_OPUS, FABLE_52, CODING_KIMI]))
+                .dead_provider("anthropic-subscription")
+                .dead_provider("anthropic"),
         ),
         "session-1",
         ExtensionMode::Rpc,
@@ -801,16 +817,24 @@ async fn two_distinct_rejected_providers_are_skipped_before_a_healthy_one() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["kimi-coding/kimi-k3.1-pro"]
+    );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic", "moonshotai", "zai", "zai/glm-5.3"]
+        [
+            "anthropic-subscription",
+            "anthropic",
+            "kimi-coding",
+            "kimi-coding/kimi-k3.1-pro"
+        ]
     );
     assert_eq!(
         harness.first_details()["authFailed"],
         json!([
-            {"provider": "anthropic", "model": "claude-opus-5-5", "reason": "refresh"},
-            {"provider": "moonshotai", "model": "kimi-k3.1-pro", "reason": "refresh"}
+            {"provider": "anthropic-subscription", "model": "claude-opus-5-5", "reason": "refresh"},
+            {"provider": "anthropic", "model": "claude-fable-5-2", "reason": "refresh"}
         ])
     );
 }
@@ -855,7 +879,8 @@ async fn a_failing_model_request_configuration_skips_only_that_candidate_and_the
     let harness = start(
         json!({}),
         Arc::new(
-            TestRegistry::new(fixture(&[OPUS, GLM])).broken_model("anthropic", "claude-opus-5-5"),
+            TestRegistry::new(fixture(&[OPUS, FABLE_52]))
+                .broken_model("anthropic", "claude-opus-5-5"),
         ),
         "session-1",
         ExtensionMode::Rpc,
@@ -863,14 +888,17 @@ async fn a_failing_model_request_configuration_skips_only_that_candidate_and_the
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-fable-5-2"]
+    );
     assert_eq!(
         harness.registry.calls(),
         [
             "anthropic",
             "anthropic/claude-opus-5-5",
-            "zai",
-            "zai/glm-5.3"
+            "anthropic",
+            "anthropic/claude-fable-5-2"
         ]
     );
     assert_eq!(
@@ -890,7 +918,7 @@ async fn rotation_disabled_in_models_json_probes_only_the_flat_credential() {
     let harness = support::harness_in(
         component(json!({})),
         Arc::new(
-            TestRegistry::new(fixture(&[OPUS, GLM]))
+            TestRegistry::new(fixture(&[OPUS, KIMI]))
                 .dead_provider("anthropic")
                 .with_accounts(
                     "anthropic",
@@ -906,10 +934,13 @@ async fn rotation_disabled_in_models_json_probes_only_the_flat_credential() {
         dir,
     );
     harness.start(STARTUP, Some("settings")).await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic", "zai", "zai/glm-5.3"]
+        ["anthropic", "moonshotai", "moonshotai/kimi-k3.1-pro"]
     );
 }
 
@@ -918,7 +949,7 @@ async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider
  {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS, KIMI]))),
+        Arc::new(TestRegistry::new(fixture(&[FABLE_52, OPUS, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -927,11 +958,11 @@ async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider
     .await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["anthropic/claude-fable-5-1"]
+        ["anthropic/claude-fable-5-2"]
     );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic", "anthropic/claude-fable-5-1"]
+        ["anthropic", "anthropic/claude-fable-5-2"]
     );
     assert_eq!(harness.first_details()["authFailed"], json!(null));
 }
@@ -955,7 +986,7 @@ async fn a_literal_pin_with_failing_credentials_is_applied_unprobed() {
 }
 
 #[tokio::test]
-async fn a_glm_only_registry_applies_glm_max() {
+async fn a_glm_only_registry_reports_the_profile_unavailable() {
     let harness = start(
         json!({}),
         Arc::new(TestRegistry::new(fixture(&[GLM, UNRELATED]))),
@@ -965,8 +996,9 @@ async fn a_glm_only_registry_applies_glm_max() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
+    assert!(harness.session_models().is_empty());
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
+    assert!(harness.session_thinking_levels().is_empty());
 }
 
 #[tokio::test]
@@ -1013,7 +1045,10 @@ async fn the_applied_notice_carries_the_profile_model_and_skipped_selector_detai
     assert_eq!(details["reasoning"], json!("max"));
     assert_eq!(
         details["skipped"],
-        json!(["anthropic-subscription/claude-opus-5-5"])
+        json!([
+            "anthropic-subscription/claude-opus-5-5",
+            "anthropic-subscription/claude-fable-5-2"
+        ])
     );
 }
 
@@ -1095,9 +1130,9 @@ async fn the_default_logger_records_skipped_candidates_without_raw_error_text() 
     let harness = start(
         json!({}),
         Arc::new(
-            TestRegistry::new(fixture(&[OPUS, GLM]))
+            TestRegistry::new(fixture(&[OPUS, KIMI]))
                 .dead_provider("anthropic")
-                .broken_model("zai", "glm-5.3"),
+                .broken_model("moonshotai", "kimi-k3.1-pro"),
         ),
         "session-1",
         ExtensionMode::Rpc,
@@ -1178,7 +1213,7 @@ async fn a_pinned_pool_honors_the_pin_and_skips_the_provider_when_the_pin_fails(
     let harness = start(
         json!({}),
         Arc::new(
-            TestRegistry::new(fixture(&[OPUS, GLM]))
+            TestRegistry::new(fixture(&[OPUS, KIMI]))
                 .dead_slot("anthropic", "expired")
                 .with_accounts(
                     "anthropic",
@@ -1196,10 +1231,17 @@ async fn a_pinned_pool_honors_the_pin_and_skips_the_provider_when_the_pin_fails(
     .await;
     // The pin is the ONLY slot rotation may use, so the healthy sibling and the flat credential are
     // both ignored.
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic#expired", "zai", "zai/glm-5.3"]
+        [
+            "anthropic#expired",
+            "moonshotai",
+            "moonshotai/kimi-k3.1-pro"
+        ]
     );
     assert_eq!(
         harness.first_details()["authFailed"],
@@ -1220,7 +1262,7 @@ async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_
     let harness = start(
         json!({}),
         Arc::new(
-            TestRegistry::new(fixture(&[SUBSCRIPTION_OPUS, GLM]))
+            TestRegistry::new(fixture(&[SUBSCRIPTION_OPUS, KIMI]))
                 .dead_provider("anthropic-subscription")
                 .with_accounts(
                     "anthropic-subscription",
@@ -1248,10 +1290,17 @@ async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_
     // The registry reports `source: "runtime"`, which turns rotation off, so the pool's healthy
     // sibling is NOT probed and the flat credential decides. The host must map a REAL runtime API key
     // onto this source; this fixture proves only that the hook honors the port.
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic-subscription", "zai", "zai/glm-5.3"]
+        [
+            "anthropic-subscription",
+            "moonshotai",
+            "moonshotai/kimi-k3.1-pro"
+        ]
     );
 }
 

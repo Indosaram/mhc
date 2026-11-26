@@ -18,6 +18,14 @@ fn regex(pattern: &str) -> Regex {
     Regex::new(pattern).expect("valid regex")
 }
 
+/// V4.1 Flash aliases, excluding V4 Flash and V4 Pro (different weights).
+#[must_use]
+pub fn is_deepseek_v41_flash_model(model: &str) -> bool {
+    static FLASH: LazyLock<Regex> =
+        LazyLock::new(|| regex(r"^deepseek-(?:v4(?:[.-]1|p1)-)?flash(?:$|[-:@])"));
+    FLASH.is_match(&extract_model_name(model).to_lowercase())
+}
+
 #[must_use]
 pub fn is_gpt_model(model: &str) -> bool {
     extract_model_name(model).to_lowercase().contains("gpt")
@@ -43,7 +51,12 @@ pub fn is_gpt6_astra_model(model: Option<&str>) -> bool {
     }
     matches!(
         extract_model_name(&parsed.model_id),
-        "gpt-6-astra" | "gpt-6-astra-fast"
+        "gpt-6-astra"
+            | "gpt-6-astra-fast"
+            | "gpt-6-astra-ultrafast"
+            | "gpt-6.2-astra"
+            | "gpt-6.2-astra-fast"
+            | "gpt-6.2-astra-ultrafast"
     )
 }
 

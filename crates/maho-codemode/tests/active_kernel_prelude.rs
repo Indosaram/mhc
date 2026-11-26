@@ -86,6 +86,7 @@ async fn test_active_tool_kernel_prelude_js_execution() {
     let computer_prelude = create_computer_prelude();
     let all_tools = vec![EvalSchemaToolInfo {
         name: "computer".into(),
+        exposure: None,
         description: Some("Drive desktop GUI".into()),
         parameters: Some(json!({"type": "object"})),
         kernel_prelude: Some(computer_prelude.clone()),

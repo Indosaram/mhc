@@ -12,6 +12,7 @@ use crate::schema::format_on_mutation::{
 use crate::schema::git_master::{
     omo_git_master_settings_layer_schema, omo_git_master_settings_schema,
 };
+use crate::schema::keyword_detector::omo_keyword_detector_settings_schema;
 use crate::schema::memory::{omo_memory_settings_layer_schema, omo_memory_settings_schema};
 use crate::schema::model_catalog::{omo_model_catalog_layer_schema, omo_model_catalog_schema};
 use crate::schema::model_pad::omo_model_pad_schema;
@@ -65,6 +66,7 @@ pub fn omo_typed_harness_config_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
     ])
 }
@@ -87,6 +89,7 @@ pub fn omo_config_profile_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
@@ -114,6 +117,7 @@ pub fn omo_config_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_schema()),
         optional("computer", omo_computer_settings_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
@@ -148,6 +152,7 @@ pub fn omo_config_layer_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),

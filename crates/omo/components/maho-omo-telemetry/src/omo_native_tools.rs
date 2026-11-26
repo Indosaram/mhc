@@ -425,13 +425,13 @@ mod tests {
     #[test]
     fn batch_shared_bucket() {
         let mut t = ToolTelemetry::default();
-        let e = json!({"type":"tool_result","toolName":"omo/task","input":{"category":"deep","run_in_background":true,"tasks":[{},{},{}]}});
+        let e = json!({"type":"tool_result","toolName":"omo/task","input":{"category":"deep-low","run_in_background":true,"tasks":[{},{},{}]}});
         let events = t.record(&e, "s", "hash", Path::new("/"), Path::new("/"));
         assert_eq!(events.len(), 3);
         for (_, p) in events {
             assert_eq!(
                 p,
-                json!({"$session_id":"hash","kind":"category","name":"deep","background":true,"batch_size_bucket":"2_4"})
+                json!({"$session_id":"hash","kind":"category","name":"deep-low","background":true,"batch_size_bucket":"2_4"})
             );
         }
     }

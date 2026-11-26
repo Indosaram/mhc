@@ -10,6 +10,7 @@ pub mod manager;
 pub mod oauth_compat;
 pub mod policy_connection;
 pub mod project_env_policy;
+mod request_options;
 pub mod stdio_client;
 #[cfg(test)]
 mod tests;

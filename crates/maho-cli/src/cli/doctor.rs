@@ -5,19 +5,6 @@ use std::{
     path::Path,
 };
 
-const DEFAULT_CATEGORIES: &[&str] = &[
-    "architect",
-    "artistry",
-    "deep-high",
-    "deep-low",
-    "quick",
-    "ultrabrain",
-    "unspecified-high",
-    "unspecified-low",
-    "visual-engineering",
-    "writing",
-];
-
 fn severity(line: &str) -> bool {
     line.starts_with("FAIL ")
 }
@@ -155,50 +142,6 @@ fn ast_grep_lines() -> Vec<String> {
 }
 
 fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
-    struct Registry(Vec<serde_json::Value>);
-    impl senpi_task::host::SenpiModelRegistry for Registry {
-        fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
-            Ok(serde_json::Value::Array(self.0.clone()))
-        }
-        fn find(&self, provider: &str, id: &str) -> Option<serde_json::Value> {
-            self.0
-                .iter()
-                .find(|model| model["provider"] == provider && model["id"] == id)
-                .cloned()
-        }
-    }
-    fn unlisted_provider_model(
-        chain: &[senpi_task::DelegateFallbackEntry],
-        available: &[String],
-    ) -> Option<String> {
-        let available_models = available.iter().cloned().collect::<indexmap::IndexSet<_>>();
-        let deps = delegate_core::DelegateModelResolutionDeps {
-            connected_providers: None,
-            has_provider_models_cache: true,
-            has_connected_providers_cache: true,
-            log: None,
-        };
-        chain.iter().find_map(|rung| {
-            let result = delegate_core::resolve_model_for_delegate_task(
-                &delegate_core::DelegateModelResolutionInput {
-                    fallback_chain: Some(vec![delegate_core::DelegateFallbackEntry {
-                        providers: rung.providers.clone(),
-                        model: rung.model.clone(),
-                        variant: rung.variant.clone(),
-                    }]),
-                    available_models: available_models.clone(),
-                    ..Default::default()
-                },
-                &deps,
-            );
-            match result {
-                Some(delegate_core::DelegateModelResolutionResult::Resolved(model)) => {
-                    Some(model.model)
-                }
-                _ => None,
-            }
-        })
-    }
     let auth_path = Path::new(agent_dir).join("auth.json");
     let credentials = if auth_path.exists() {
         match maho_core::auth_storage::ReadOnlyAuthStorage::new(&auth_path.to_string_lossy()) {
@@ -267,6 +210,58 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
         .filter(|model| runtime.get_provider_auth_status(&model.provider).configured)
         .map(|model| serde_json::json!(model))
         .collect::<Vec<_>>();
+    category_coverage(config, available, registration_failures)
+}
+
+fn category_coverage(
+    config: &serde_json::Value,
+    available: Vec<serde_json::Value>,
+    registration_failures: Vec<String>,
+) -> Vec<String> {
+    struct Registry(Vec<serde_json::Value>);
+    impl senpi_task::host::SenpiModelRegistry for Registry {
+        fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
+            Ok(serde_json::Value::Array(self.0.clone()))
+        }
+        fn find(&self, provider: &str, id: &str) -> Option<serde_json::Value> {
+            self.0
+                .iter()
+                .find(|model| model["provider"] == provider && model["id"] == id)
+                .cloned()
+        }
+    }
+    fn unlisted_provider_model(
+        chain: &[senpi_task::DelegateFallbackEntry],
+        available: &[String],
+    ) -> Option<String> {
+        let available_models = available.iter().cloned().collect::<indexmap::IndexSet<_>>();
+        let deps = delegate_core::DelegateModelResolutionDeps {
+            connected_providers: None,
+            has_provider_models_cache: true,
+            has_connected_providers_cache: true,
+            log: None,
+        };
+        chain.iter().find_map(|rung| {
+            let result = delegate_core::resolve_model_for_delegate_task(
+                &delegate_core::DelegateModelResolutionInput {
+                    fallback_chain: Some(vec![delegate_core::DelegateFallbackEntry {
+                        providers: rung.providers.clone(),
+                        model: rung.model.clone(),
+                        variant: rung.variant.clone(),
+                    }]),
+                    available_models: available_models.clone(),
+                    ..Default::default()
+                },
+                &deps,
+            );
+            match result {
+                Some(delegate_core::DelegateModelResolutionResult::Resolved(model)) => {
+                    Some(model.model)
+                }
+                _ => None,
+            }
+        })
+    }
     let available_model_names = available
         .iter()
         .filter_map(|model| {
@@ -280,9 +275,9 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
     let registry = Registry(available);
     let mut usable = Vec::new();
     let mut unavailable = Vec::new();
-    let mut names = DEFAULT_CATEGORIES
+    let mut names = senpi_task::category::BUILTIN_CATEGORY_DEFAULTS
         .iter()
-        .map(|name| (*name).to_owned())
+        .map(|definition| definition.name.to_owned())
         .collect::<std::collections::BTreeSet<_>>();
     if let Some(custom) = config
         .get("categories")
@@ -395,4 +390,30 @@ pub fn run_doctor(args: &[String]) -> Result<i32, String> {
     } else {
         0
     })
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::category_coverage;
+    use serde_json::json;
+
+    #[test]
+    fn doctor_counts_all_ten_builtins_and_only_exact_gpt_lanes() {
+        let report = |id| {
+            category_coverage(
+                &json!({}),
+                vec![json!({"provider":"openai", "id": id})],
+                vec![],
+            )
+        };
+        assert_eq!(
+            report("gpt-6.2-astra")[0],
+            "WARN task categories: 2 of 10 usable with your connected providers (deep-high, ultrabrain)"
+        );
+        assert_eq!(
+            report("gpt-6.2-sol")[0],
+            "WARN task categories: 2 of 10 usable with your connected providers (deep-low, unspecified-low)"
+        );
+        assert!(report("gpt-6.2-sol-fast")[0].starts_with("WARN task categories: 0 of 10 "));
+    }
 }

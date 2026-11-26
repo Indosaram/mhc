@@ -2,6 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { createWorkerCore } from "./worker-core.js";
 
 if (!parentPort) throw new Error("JS kernel inline fallback worker missing parentPort");
+const exit = process.exit.bind(process);
 
 const transport = {
 	send(message) {
@@ -13,7 +14,7 @@ const transport = {
 	},
 	close() {
 		parentPort.close();
-		setTimeout(() => process.exit(0), 0);
+		setTimeout(() => exit(0), 0);
 	},
 };
 

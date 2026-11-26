@@ -50,7 +50,7 @@ fn default_category_children_keep_parent_kernel_tool_grants() {
 
 #[test]
 fn every_builtin_category_has_a_real_definition() {
-    assert_eq!(BUILTIN_CATEGORY_DEFAULTS.len(), 9);
+    assert_eq!(BUILTIN_CATEGORY_DEFAULTS.len(), 10);
     assert!(
         BUILTIN_CATEGORY_DEFAULTS
             .iter()

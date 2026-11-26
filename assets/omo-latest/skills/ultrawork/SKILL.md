@@ -1,6 +1,6 @@
 ---
 name: ultrawork
-description: Binding ultrawork mode directive for mhc. When a prompt contains ultrawork or ulw, mhc injects a short bootstrap that points at this file. Read the whole file and follow every rule in it for the rest of the task.
+description: Binding ultrawork mode directive for mhc. A keyword invocation delivers the appropriate full contract for the receiving model; do not load another copy if it is already in the conversation.
 metadata:
   short-description: Binding ultrawork mode directive
 ---

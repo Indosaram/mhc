@@ -80,6 +80,10 @@ fn shipped_reference_set_has_no_extra_files() {
                 .into_owned()
         })
         .collect();
+    // Unlike on-demand modules, the other whole directive lives in the package itself.
+    let mut expected = reference_names();
+    expected.push("gpt.md".to_owned());
+    expected.sort();
     shipped.sort();
-    assert_eq!(shipped, reference_names());
+    assert_eq!(shipped, expected);
 }

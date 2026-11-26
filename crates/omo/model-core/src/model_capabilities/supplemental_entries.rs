@@ -4,10 +4,10 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
+use super::gpt_6_2_entries::gpt_6_2_entries;
 use super::types::ModelCapabilitiesSnapshotEntry;
 use super::types::SnapshotLimit;
 use super::types::SnapshotModalities;
-use crate::fable_55_launch::FABLE_55_LAUNCH;
 
 fn strings(values: &[&str]) -> Option<Vec<String>> {
     Some(values.iter().map(|value| (*value).to_string()).collect())
@@ -16,8 +16,8 @@ fn strings(values: &[&str]) -> Option<Vec<String>> {
 pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
     IndexMap<String, ModelCapabilitiesSnapshotEntry>,
 > = LazyLock::new(|| {
-    IndexMap::from([
-        (FABLE_55_LAUNCH.id.clone(), FABLE_55_LAUNCH.clone()),
+    let mut entries = IndexMap::from(gpt_6_2_entries());
+    entries.extend([
         (
             "kimi-k3".to_string(),
             ModelCapabilitiesSnapshotEntry {
@@ -100,6 +100,25 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
             "claude-fable-5-1".to_string(),
             ModelCapabilitiesSnapshotEntry {
                 id: "claude-fable-5-1".to_string(),
+                family: Some("claude-fable".to_string()),
+                reasoning: Some(true),
+                temperature: Some(false),
+                tool_call: Some(true),
+                modalities: Some(SnapshotModalities {
+                    input: strings(&["text", "image", "pdf"]),
+                    output: strings(&["text"]),
+                }),
+                limit: Some(SnapshotLimit {
+                    context: Some(1000000),
+                    input: None,
+                    output: Some(128000),
+                }),
+            },
+        ),
+        (
+            "claude-fable-5-2".to_string(),
+            ModelCapabilitiesSnapshotEntry {
+                id: "claude-fable-5-2".to_string(),
                 family: Some("claude-fable".to_string()),
                 reasoning: Some(true),
                 temperature: Some(false),
@@ -609,5 +628,6 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
                 }),
             },
         ),
-    ])
+    ]);
+    entries
 });

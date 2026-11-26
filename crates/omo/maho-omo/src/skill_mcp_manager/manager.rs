@@ -2,15 +2,16 @@ use super::{
     env_grant_store::{GrantStore, create_file_grant_store},
     environment_grant_policy::{EnvironmentGrantPolicy, Notice},
     project_env_policy::policy_hash,
+    request_options::build_request_options,
     types::{Environment, McpClient, SharedState, SkillMcpClientInfo, SkillMcpServerContext},
 };
 use serde_json::{Value, json};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 #[derive(Default)]
 pub struct SkillMcpClientOptions {
     pub cdp_url: Option<String>,
     pub env: Environment,
-    /// Caller cancellation: aborting it cancels the in-flight call/read/get request (the server
+    /// Caller cancellation: aborting it cancels the in-flight request (the server
     /// gets `notifications/cancelled` and its HTTP request is dropped) and stops the retry loop.
     pub signal: Option<maho_ext_api::AbortSignal>,
 }
@@ -180,14 +181,17 @@ impl SkillMcpManager {
         let client = self
             .get_or_create_client_with_retry(info, &context.config, options)
             .await?;
+        let (timeout, request_options) = build_request_options(&context.config, options);
         collect_pages(|cursor| {
             let client = client.clone();
+            let request_options = &request_options;
             async move {
                 let result = client
-                    .request(
+                    .request_with_options(
                         method,
                         cursor.map(|c| json!({"cursor":c})).unwrap_or(json!({})),
-                        Duration::from_secs(30),
+                        timeout,
+                        request_options,
                     )
                     .await
                     .map_err(|e| e.to_string())?;
@@ -259,36 +263,26 @@ impl SkillMcpManager {
         method: &str,
         params: Value,
     ) -> super::Result<Value> {
-        let signal = options.and_then(|options| options.signal.as_ref());
+        let (timeout, request_options) = build_request_options(config, options);
         for attempt in 1..=3 {
             let result = async {
                 let client = self
                     .get_or_create_client_with_retry(info, config, options)
                     .await?;
-                match signal {
-                    Some(signal) => {
-                        client
-                            .request_with_signal(
-                                method,
-                                params.clone(),
-                                Duration::from_secs(30),
-                                signal,
-                            )
-                            .await
-                    }
-                    None => {
-                        client
-                            .request(method, params.clone(), Duration::from_secs(30))
-                            .await
-                    }
-                }
-                .map_err(|error| error.to_string())
+                client
+                    .request_with_options(method, params.clone(), timeout, &request_options)
+                    .await
+                    .map_err(|error| error.to_string())
             }
             .await;
             match result {
                 Ok(value) => return Ok(value),
                 Err(error) => {
-                    if signal.is_some_and(maho_ext_api::AbortSignal::is_aborted) {
+                    if request_options
+                        .signal
+                        .as_ref()
+                        .is_some_and(maho_ext_api::AbortSignal::is_aborted)
+                    {
                         return Err(SKILL_MCP_ABORTED_MESSAGE.to_string());
                     }
                     if !error.to_lowercase().contains("not connected") {

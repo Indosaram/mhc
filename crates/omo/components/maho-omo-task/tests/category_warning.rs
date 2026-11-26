@@ -200,7 +200,7 @@ async fn registered_engine_delivers_real_category_failure_without_starting_child
                 .as_array()
                 .expect("providers")
                 .iter()
-                .any(|provider| provider == "openai-codex")
+                .any(|provider| provider == "chatgpt-subscription")
         );
     }
     for name in ["omo.task.send", "omo.task.cancel", "omo.task.output"] {

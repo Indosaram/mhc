@@ -10,6 +10,123 @@ const TOOLS_EXPR: &str = "${SENPI_2345_TOOLS}";
 const SECRET_EXPR: &str = "${SENPI_2345_SECRET}";
 const UNSET_EXPR: &str = "${SENPI_2345_UNSET:-fallback}";
 
+#[test]
+fn skill_timeout_is_numeric_bounded_and_secondary_to_native_policy() {
+    for (value, expected, effective_ms) in [
+        (json!(1e-20), Some(1e-20), 1.0),
+        (json!(9.75), Some(9.75), 9.0),
+        (
+            json!(i32::MAX),
+            Some(f64::from(i32::MAX)),
+            f64::from(i32::MAX),
+        ),
+        (json!(2147483648_u64), None, 30000.0),
+        (json!(-1), None, 30000.0),
+        (json!(0), None, 30000.0),
+        (json!(true), None, 30000.0),
+        (json!("$(invalid)"), None, 30000.0),
+        (json!({"bad":1}), None, 30000.0),
+    ] {
+        let raw = json!({"command":"fixture","timeout":value});
+        assert_eq!(
+            maho_ext_mcp::skill_server::skill_request_timeout_ms(&raw),
+            expected
+        );
+        let (resolved, _) = resolve("fixture", raw, "skill", true, &BTreeMap::new());
+        assert_eq!(
+            resolved.unwrap().config.unwrap().request_timeout_ms,
+            Some(effective_ms)
+        );
+    }
+    let (resolved, _) = resolve(
+        "fixture",
+        json!({"command":"fixture","timeout":2,"requestTimeoutMs":0.25}),
+        "skill",
+        true,
+        &BTreeMap::new(),
+    );
+    assert_eq!(
+        resolved.unwrap().config.unwrap().request_timeout_ms,
+        Some(0.25)
+    );
+}
+
+#[test]
+fn pooled_catalog_deadline_is_scoped_to_explicit_skill_policy() {
+    use maho_ext_mcp::{config::normalize_server, sharing_policy::shared_mcp_key};
+    let url = "http://127.0.0.1:1/mcp";
+    let key = |config: &_| shared_mcp_key("fixture", config, None, None, "agent", "cwd");
+    let dir = tempfile::tempdir().unwrap();
+    let env = BTreeMap::new();
+    let skill = |raw| {
+        resolve_skill_mcp_server(
+            "fixture",
+            &raw,
+            dir.path(),
+            &SkillServerSource {
+                skill_name: "skill",
+                trusted: true,
+                env: &env,
+            },
+            Some(dir.path()),
+        )
+        .unwrap()
+        .server
+        .unwrap()
+    };
+    let implicit = skill(json!({"url":url}));
+    let explicit_default = skill(json!({"url":url,"timeout":30000}));
+    assert_ne!(implicit.config_hash, explicit_default.config_hash);
+    let skill_key = |raw| key(skill(raw).config.as_ref().unwrap());
+    let native_key = |raw| key(&normalize_server(serde_json::from_value(raw).unwrap()));
+    let base = native_key(json!({"url":url}));
+    assert_eq!(base, native_key(json!({"url":url,"requestTimeoutMs":123})));
+    assert_eq!(base, skill_key(json!({"url":url,"timeout":0})));
+    let short = skill_key(json!({"url":url,"timeout":25}));
+    assert_ne!(base, short);
+    assert_ne!(short, skill_key(json!({"url":url,"timeout":50})));
+    assert_eq!(short, skill_key(json!({"url":url,"timeout":25.9})));
+    assert_eq!(
+        short,
+        skill_key(json!({"url":url,"timeout":50,"requestTimeoutMs":25}))
+    );
+}
+
+#[test]
+fn only_an_explicit_skill_sse_declaration_has_a_distinct_transport_identity() {
+    use maho_ext_mcp::{
+        config::normalize_server, config_schema::ServerConfigWire, sharing_policy::shared_mcp_key,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let url = "http://127.0.0.1:1/mcp";
+    let env = BTreeMap::new();
+    let source = SkillServerSource {
+        skill_name: "skill",
+        trusted: true,
+        env: &env,
+    };
+    let resolve =
+        |raw| resolve_skill_mcp_server("server", &raw, dir.path(), &source, Some(dir.path()));
+    let implicit = resolve(json!({"url":url})).unwrap().server.unwrap();
+    let http = resolve(json!({"type":"http","url":url}))
+        .unwrap()
+        .server
+        .unwrap();
+    let sse = resolve(json!({"type":"sse","url":url}))
+        .unwrap()
+        .server
+        .unwrap();
+    assert_eq!(http.config_hash, implicit.config_hash);
+    assert_ne!(http.config_hash, sse.config_hash);
+    let key = |config| shared_mcp_key("server", config, None, None, "agent", "cwd");
+    let native = normalize_server(serde_json::from_value(json!({"type":"sse","url":url})).unwrap());
+    assert_eq!(key(&native), key(http.config.as_ref().unwrap()));
+    assert_ne!(key(&native), key(sse.config.as_ref().unwrap()));
+    assert!(serde_json::from_value::<ServerConfigWire>(json!({"url":url,"timeout":10})).is_err());
+    assert!(resolve(json!({"url":url,"timeout":10,"skillSse":true})).is_err());
+    assert!(resolve(json!({"url":url,"timeout":10,"requestTimeoutMs":"bad"})).is_err());
+}
+
 fn resolve(
     name: &str,
     raw: serde_json::Value,

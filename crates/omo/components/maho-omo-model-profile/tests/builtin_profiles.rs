@@ -14,11 +14,13 @@ fn profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
     builtin_model_profiles()
 }
 
-fn chain_of(profile: &str) -> Vec<String> {
+type ExpectedRung = (&'static [&'static str], &'static str, Option<&'static str>);
+
+fn chain_of(profile: &str) -> Vec<ExpectedRung> {
     profiles()[profile]
         .models
         .iter()
-        .map(|rung| format!("{} {}", rung.model, rung.variant.unwrap_or("default")))
+        .map(|rung| (rung.providers, rung.model, rung.variant))
         .collect()
 }
 
@@ -164,23 +166,6 @@ fn ranks_the_chatgpt_subscription_ahead_of_the_openai_api_lane_on_every_gpt_rung
 }
 
 #[test]
-fn heads_every_glm_rung_with_engine_zai_then_zai_coding_cn() {
-    let glm: Vec<(&str, Vec<&str>, &str)> = rungs()
-        .into_iter()
-        .filter(|(_, _, model)| model.starts_with("glm-"))
-        .collect();
-    assert!(!glm.is_empty());
-    let misordered: Vec<String> = glm
-        .iter()
-        .filter(|(_, providers, _)| {
-            providers.first() != Some(&"zai") || providers.get(1) != Some(&"zai-coding-cn")
-        })
-        .map(|(profile, providers, model)| format!("{profile}: {}/{model}", providers.join("|")))
-        .collect();
-    assert_eq!(misordered, Vec::<String>::new());
-}
-
-#[test]
 fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
     let claude: Vec<(&str, Vec<&str>, &str)> = rungs()
         .into_iter()
@@ -195,99 +180,74 @@ fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
     assert_eq!(misordered, Vec::<String>::new());
 }
 
+const CLAUDE_PROVIDERS: &[&str] = &[
+    "anthropic-subscription",
+    "anthropic",
+    "anthropic-api",
+    "github-copilot",
+    "opencode",
+];
+const KIMI_PROVIDERS: &[&str] = &[
+    "kimi-coding",
+    "kimi-for-coding",
+    "moonshotai",
+    "opencode-go",
+];
+const GPT_PROVIDERS: &[&str] = &[
+    "chatgpt-subscription",
+    "openai",
+    "github-copilot",
+    "opencode",
+];
+const GPT_6_2_ASTRA_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "opencode"];
+const GPT_SOL_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
+
 #[test]
-fn orders_daily_normal_opus_medium_then_kimi_max_then_glm_max() {
+fn daily_normal_orders_models_providers_and_effort() {
     assert_eq!(
         chain_of("daily-normal"),
-        ["claude-opus-5-5 medium", "kimi-k3.1-pro max", "glm-5.3 max"]
-    );
-}
-
-#[test]
-fn runs_daily_heavy_as_fable_xhigh_only() {
-    let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["daily-heavy"]
-        .models
-        .iter()
-        .map(|rung| (rung.providers.to_vec(), rung.model, rung.variant))
-        .collect();
-    assert_eq!(
-        models,
-        [(
-            vec![
-                "anthropic-subscription",
-                "anthropic",
-                "anthropic-api",
-                "github-copilot",
-                "opencode"
-            ],
-            "claude-fable-5-1",
-            Some("xhigh")
-        )]
-    );
-}
-
-#[test]
-fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lanes() {
-    let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["geeky-normal"]
-        .models
-        .iter()
-        .map(|rung| (rung.providers.to_vec(), rung.model, rung.variant))
-        .collect();
-    assert_eq!(
-        models,
         [
-            (
-                vec![
-                    "chatgpt-subscription",
-                    "openai",
-                    "github-copilot",
-                    "opencode"
-                ],
-                "gpt-6-astra",
-                Some("medium")
-            ),
-            (
-                vec!["chatgpt-subscription", "openai"],
-                "gpt-6.1-sol-fast",
-                Some("medium")
-            ),
-            (
-                vec!["chatgpt-subscription", "openai"],
-                "gpt-6.1-sol",
-                Some("medium")
-            ),
-            (
-                vec![
-                    "chatgpt-subscription",
-                    "openai",
-                    "github-copilot",
-                    "opencode"
-                ],
-                "gpt-5.6-sol",
-                Some("medium")
-            ),
+            (CLAUDE_PROVIDERS, "claude-opus-5-5", Some("medium")),
+            (CLAUDE_PROVIDERS, "claude-fable-5-2", Some("medium")),
+            (KIMI_PROVIDERS, "kimi-k3.1-pro", Some("max")),
         ]
     );
 }
 
 #[test]
-fn runs_geeky_heavy_as_astra_high_with_the_same_provider_ranking_as_deep_high() {
-    let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["geeky-heavy"]
-        .models
-        .iter()
-        .map(|rung| (rung.providers.to_vec(), rung.model, rung.variant))
-        .collect();
+fn daily_heavy_orders_models_providers_and_effort() {
     assert_eq!(
-        models,
-        [(
-            vec![
-                "chatgpt-subscription",
-                "openai",
-                "github-copilot",
-                "opencode"
-            ],
-            "gpt-6-astra",
-            Some("high")
-        )]
+        chain_of("daily-heavy"),
+        [
+            (CLAUDE_PROVIDERS, "claude-fable-5-2", Some("high")),
+            (CLAUDE_PROVIDERS, "claude-fable-5-1", Some("xhigh")),
+        ]
+    );
+}
+
+#[test]
+fn geeky_normal_orders_models_providers_and_effort() {
+    assert_eq!(
+        chain_of("geeky-normal"),
+        [
+            (GPT_6_2_ASTRA_PROVIDERS, "gpt-6.2-astra", Some("medium")),
+            (GPT_PROVIDERS, "gpt-6-astra", Some("medium")),
+            (GPT_SOL_PROVIDERS, "gpt-6.2-sol-fast", Some("medium")),
+            (GPT_SOL_PROVIDERS, "gpt-6.2-sol", Some("medium")),
+            (GPT_SOL_PROVIDERS, "gpt-6.1-sol-fast", Some("medium")),
+            (GPT_SOL_PROVIDERS, "gpt-6.1-sol", Some("medium")),
+            (GPT_PROVIDERS, "gpt-5.6-sol", Some("medium")),
+        ]
+    );
+}
+
+#[test]
+fn geeky_heavy_orders_models_providers_and_effort() {
+    assert_eq!(
+        chain_of("geeky-heavy"),
+        [
+            (GPT_6_2_ASTRA_PROVIDERS, "gpt-6.2-astra", Some("high")),
+            (GPT_PROVIDERS, "gpt-6-astra", Some("high")),
+        ]
     );
 }

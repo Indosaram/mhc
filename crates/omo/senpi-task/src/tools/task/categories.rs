@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 
 use crate::agents::AgentDefinition;
-use crate::category::{BUILTIN_CATEGORY_DEFAULTS, category_gate_model};
+use crate::category::{BUILTIN_CATEGORY_DEFAULTS, category_gate_models};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskCategoryInfo {
@@ -113,10 +113,11 @@ pub fn list_task_categories(config: &Value) -> Vec<TaskCategoryInfo> {
 /// A builtin-only gated category stays listed with its required model, because the live registry is
 /// not available when the task tool description is built; the spawn-time resolver owns the real gate.
 fn with_gate_annotation(name: &str, description: Option<String>) -> Option<String> {
-    let Some(gate_model) = category_gate_model(name) else {
+    let gates = category_gate_models(name);
+    if gates.is_empty() {
         return description;
-    };
-    let annotation = format!("(requires {gate_model})");
+    }
+    let annotation = format!("(requires {})", gates.join(" or "));
     Some(match description {
         None => annotation,
         Some(description) => format!("{description} {annotation}"),

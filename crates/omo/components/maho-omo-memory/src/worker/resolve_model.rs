@@ -538,7 +538,7 @@ mod tests {
     fn pinned_model_outside_the_chain_keeps_builtin_rungs_as_fallbacks() {
         let catalog = vec![
             json!({"provider":"omo-mock","id":"mock-1"}),
-            json!({"provider":"deepseek","id":"deepseek-v4-flash"}),
+            json!({"provider":"deepseek","id":"deepseek-flash"}),
         ];
         let registry = Registry {
             available: Value::Array(catalog.clone()),
@@ -552,7 +552,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(result, ReflectionModelResolution::Resolved { model, fallbacks, .. } if model == "omo-mock/mock-1" && fallbacks.iter().any(|fallback| fallback.model == "deepseek/deepseek-v4-flash"))
+            matches!(result, ReflectionModelResolution::Resolved { model, fallbacks, .. } if model == "omo-mock/mock-1" && fallbacks.iter().any(|fallback| fallback.model == "deepseek/deepseek-flash"))
         );
     }
     #[test]

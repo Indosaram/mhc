@@ -1,5 +1,6 @@
 //! Injected texts: contract wrapper, reminder, mass block and the todo advisory.
 
+use crate::variant::Variant;
 use maho_ext_api::{CustomMessage, ToolContent};
 use serde_json::json;
 
@@ -59,13 +60,14 @@ pub fn todo_advisory() -> &'static str {
     TODO_ADVISORY
 }
 
-pub fn wrapped_contract() -> String {
-    format!("{DIRECTIVE_OPEN_TAG}\n{CORE_CONTRACT}\n{DIRECTIVE_CLOSE_TAG}")
+fn wrapped_contract(variant: Variant) -> String {
+    let contract = variant.contract();
+    format!("{DIRECTIVE_OPEN_TAG}\n{contract}\n{DIRECTIVE_CLOSE_TAG}")
 }
 
 /// Hidden custom message that carries the full contract (plus the mass block when asked).
-pub fn directive_message(revision: u64, mass: bool) -> CustomMessage {
-    let mut content = vec![ToolContent::text(wrapped_contract())];
+pub(crate) fn directive_message(variant: Variant, revision: u64, mass: bool) -> CustomMessage {
+    let mut content = vec![ToolContent::text(wrapped_contract(variant))];
     if mass {
         content.push(ToolContent::text(MASS_BLOCK));
     }
@@ -92,9 +94,9 @@ pub fn reminder_message(mass: bool) -> CustomMessage {
 }
 
 /// The same texts as plain prompt text, for inputs that cannot carry a custom message.
-pub fn inline_block(full: bool, mass: bool) -> String {
+pub(crate) fn inline_block(variant: Variant, full: bool, mass: bool) -> String {
     let mut out = if full {
-        wrapped_contract()
+        wrapped_contract(variant)
     } else {
         REMINDER.to_owned()
     };

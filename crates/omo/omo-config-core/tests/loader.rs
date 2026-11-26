@@ -86,6 +86,40 @@ impl OmoConfigReadFileSystem for FakeReadFileSystem {
 }
 
 #[test]
+fn loader_retains_keyword_settings_from_the_native_profile_without_diagnostics() {
+    let root = tempfile::tempdir().expect("isolated config root");
+    let home = root.path().join("home");
+    let cwd = home.join("project");
+    let config = cwd.join(".omo").join("omo.jsonc");
+    write_file(
+        &config.to_string_lossy(),
+        r#"{
+            "profiles": {"selected": {"[native]": {
+                "keyword_detector": {
+                    "enabled_expansions": ["ultrawork", "hyperplan-ultrawork"],
+                    "disabled_keywords": ["team", "hyperplan"],
+                },
+            }}},
+        }"#,
+    );
+    let loaded = load_omo_config(&LoadOmoConfigOptions {
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        env: Some(env_of(&[("HOME", &home.to_string_lossy())])),
+        harness: Some("native".into()),
+        profile: Some("selected".into()),
+        ..Default::default()
+    });
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.config.get("keyword_detector"),
+        Some(&json!({
+            "enabled_expansions": ["ultrawork", "hyperplan-ultrawork"],
+            "disabled_keywords": ["team", "hyperplan"],
+        }))
+    );
+}
+
+#[test]
 fn merge_removes_nested_unsafe_keys_when_assigning_new_objects() {
     let parsed = json!({
         "categories": {
