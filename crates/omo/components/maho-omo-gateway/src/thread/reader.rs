@@ -463,6 +463,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn base64url_short_chunks_match_standard_vectors() {
+        for (input, encoded) in [
+            (&b""[..], ""),
+            (&b"f"[..], "Zg"),
+            (&b"fo"[..], "Zm8"),
+            (&b"foo"[..], "Zm9v"),
+            (&[0xfb, 0xff][..], "-_8"),
+        ] {
+            assert_eq!(base64url_encode(input), encoded);
+            assert_eq!(decode_base64url(encoded).as_deref(), Some(input));
+        }
+    }
+
+    #[test]
     fn tail_read_returns_newest_and_pages_older_entries() {
         let entries: Vec<ThreadTranscriptEntry> = (1..=5)
             .map(|i| {

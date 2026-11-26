@@ -289,3 +289,51 @@ fn pop_next_run(guard: &mut TrackerInner, durable_id: &str) -> Option<SettledRun
     }
     found
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn settlement_callback_and_await_do_not_hold_tracker_mutex() {
+        let inner = Arc::new(Mutex::new(std::sync::Weak::<Mutex<TrackerInner>>::new()));
+        let callback_inner = Arc::clone(&inner);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let started_tx = Mutex::new(Some(started_tx));
+        let release_rx = Mutex::new(Some(release_rx));
+        let settle: SettleFn = Arc::new(move |_, _, _| {
+            let state = callback_inner
+                .lock()
+                .expect("slot")
+                .upgrade()
+                .expect("tracker");
+            assert!(state.try_lock().is_ok(), "callback held tracker mutex");
+            started_tx
+                .lock()
+                .expect("sender")
+                .take()
+                .expect("once")
+                .send(())
+                .expect("receiver");
+            let release = release_rx.lock().expect("receiver").take().expect("once");
+            Box::pin(async move {
+                release.await.expect("release");
+                Ok(Vec::new())
+            })
+        });
+        let tracker = CompletionTracker::new(settle, Arc::new(|| 1), None);
+        *inner.lock().expect("slot") = Arc::downgrade(&tracker.inner);
+        tracker.arm("s1", 1);
+        tracker.agent_end("s1", &AgentEndFacts::default());
+        let running = tracker.clone();
+        let task = tokio::spawn(async move { running.settled("s1").await });
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .expect("callback started")
+            .expect("started");
+        assert!(tracker.inner.try_lock().is_ok(), "await held tracker mutex");
+        release_tx.send(()).expect("release");
+        task.await.expect("task").expect("settled");
+    }
+}

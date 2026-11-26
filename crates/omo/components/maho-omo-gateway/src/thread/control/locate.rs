@@ -5,12 +5,10 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use super::super::address::{ResolveContext, ResolveOptions, ResolveWhere, resolve_address};
-use super::super::addressing::workspace_entries;
+use super::super::addressing::workspace_entries_async;
 use super::super::contracts::results::ThreadSummary;
 use super::super::errors::thread_tool_failure;
-use super::super::tools::internals::{
-    address_book, send_address_book, send_book_entries, target_session,
-};
+use super::super::tools::internals::{send_book_entries_async, target_session};
 use super::super::tools::ports::{ThreadHostView, ThreadToolSurfaceOptions};
 use super::local_control::create_local_control;
 use super::port::SessionControl;
@@ -32,7 +30,7 @@ pub async fn locate_control(
     all_scope: bool,
     caller_id: &str,
 ) -> LocatedControl {
-    let entries = send_book_entries(options, current, address);
+    let entries = send_book_entries_async(options, current, address).await;
     let root = (options.caller_workspace_root)();
     let ctx = ResolveContext {
         remote: options.remote.clone(),
@@ -70,12 +68,12 @@ pub async fn locate_control(
                 let visible_entries: Vec<ThreadSummary> = if all_scope {
                     entries.into_iter().map(|e| e.summary).collect()
                 } else {
-                    workspace_entries(&entries, Some(&root))
+                    workspace_entries_async(&entries, Some(&root))
+                        .await
                         .into_iter()
                         .map(|e| e.summary)
                         .collect()
                 };
-                let _ = (address_book, send_address_book);
                 let title = resolved.entry.summary.name.clone();
                 let control = create_local_control(
                     options,

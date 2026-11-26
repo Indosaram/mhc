@@ -90,6 +90,84 @@ fn test_store(dir: &Path, now_ms: i64) -> Arc<SqliteGatewayStore> {
     create_gateway_store(opts).expect("create gateway store")
 }
 
+#[test]
+fn expired_causal_root_refuses_followup_delivery() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = test_store(tmp.path(), 10_000);
+    let mut request = EnqueueRequest {
+        provenance: Provenance {
+            workspace: "ws".into(),
+            project: "proj".into(),
+            lane: None,
+            session: None,
+            device: None,
+            device_absent: None,
+        },
+        now: 10_000,
+        delivery_id: "original".into(),
+        target_durable_id: "worker-1".into(),
+        sender_principal: "session:caller".into(),
+        rate_principal: None,
+        sender_node: "caller".into(),
+        sender_turn: None,
+        cause_delivery_id: None,
+        inbound_hop: None,
+        authority: None,
+        claimed_root_id: None,
+        origin: EnvelopeOrigin::Session {
+            session: "caller".into(),
+        },
+        actor: "Lead".into(),
+        body: "original".into(),
+        mode: GatewayDeliveryMode::Auto,
+        expected_turn_id: None,
+        binding: None,
+        receipt: ReceiptRef {
+            idempotency_key: "original-key".into(),
+            args_hash: "original-hash".into(),
+        },
+        endpoint_kind: None,
+        collapse_key: None,
+    };
+    let first = store.enqueue(&request).expect("initial enqueue");
+    let EnqueueOutcome::Inserted { row, .. } = first else {
+        panic!("initial delivery was not inserted: {first:?}");
+    };
+    let root_id = row.root_id.clone();
+    let claim = store
+        .claim(&maho_omo_gateway::thread::types::ClaimRequest {
+            now: request.now,
+            delivery_id: request.delivery_id.clone(),
+            self_identity: maho_omo_gateway::thread::types::ProcessIdentity {
+                pid: 1,
+                process_start_time: None,
+                instance_id: "test".into(),
+                runtime_instance: None,
+            },
+            lane: maho_omo_gateway::thread::types::EffectiveLane::Start,
+        })
+        .expect("claim initial delivery");
+    assert!(matches!(
+        claim,
+        maho_omo_gateway::thread::types::ClaimOutcome::Claimed { .. }
+    ));
+    request.now += maho_omo_gateway::thread::constants::ROOT_LIFETIME_MS;
+    request.delivery_id = "followup".into();
+    request.target_durable_id = "worker-2".into();
+    request.sender_node = "worker-1".into();
+    request.cause_delivery_id = Some("original".into());
+    request.receipt.idempotency_key = "followup-key".into();
+    request.receipt.args_hash = "followup-hash".into();
+    let outcome = store.enqueue(&request).expect("followup enqueue");
+    let EnqueueOutcome::Refused { code, details, .. } = outcome else {
+        panic!("expired root should be refused: {outcome:?}");
+    };
+    assert_eq!(code.as_str(), "loop_detected");
+    let details = details.expect("refusal details");
+    assert_eq!(details["guard"], "root_expired");
+    assert_eq!(details["root_id"], root_id);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Call budget (#14130)
 // ---------------------------------------------------------------------------
@@ -239,6 +317,112 @@ fn gateway_store_migrates_to_v16_handles_backlog_collapse_and_answer_shape() {
 // ---------------------------------------------------------------------------
 // 3. Addressing + local resolver + O02 typed refusals
 // ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn git_workspace_lookup_keeps_runtime_responsive() {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mode = std::env::var("MHC_GIT_TEST_MODE").unwrap_or_default();
+    if mode == "git" {
+        let mut stream =
+            std::net::TcpStream::connect(std::env::var("MHC_GIT_TEST_ADDRESS").unwrap()).unwrap();
+        stream.write_all(b"G").unwrap();
+        let mut release = [0; 1];
+        stream.read_exact(&mut release).unwrap();
+        println!("/repo");
+        return;
+    }
+    if mode == "worker" {
+        let mut control =
+            tokio::net::TcpStream::connect(std::env::var("MHC_GIT_TEST_ADDRESS").unwrap())
+                .await
+                .unwrap();
+        control.write_all(b"C").await.unwrap();
+        let entry = ThreadAddressEntry::from_summary(ThreadSummary {
+            thread_id: "worker".into(),
+            name: "worker".into(),
+            alias: None,
+            cwd: "/repo".into(),
+            status: ThreadStatus::Live,
+            created_at: "2026-11-24T00:00:00Z".into(),
+            updated_at: None,
+            error_note: None,
+            endpoint: None,
+            surface: None,
+            alive: Some(true),
+            controls: None,
+            skills: None,
+            device: None,
+        });
+        let lookup = tokio::spawn(async move {
+            let ctx = ResolveContext::local_only("caller", "/repo", vec![entry]);
+            resolve_address(&ctx, "worker", &ResolveOptions::default()).await
+        });
+        let mut probe = [0; 1];
+        control.read_exact(&mut probe).await.unwrap();
+        control.write_all(b"T").await.unwrap();
+        assert_eq!(lookup.await.unwrap().unwrap().thread, "worker");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let git = tmp.path().join("git");
+    std::fs::write(
+        &git,
+        "#!/bin/sh\nMHC_GIT_TEST_MODE=git exec \"$MHC_GIT_TEST_EXE\" --exact local_thread_tests::git_workspace_lookup_keeps_runtime_responsive --nocapture\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let exe = std::env::current_exe().unwrap();
+    let mut child = tokio::process::Command::new(&exe)
+        .args([
+            "--exact",
+            "local_thread_tests::git_workspace_lookup_keeps_runtime_responsive",
+            "--nocapture",
+        ])
+        .env("MHC_GIT_TEST_MODE", "worker")
+        .env("MHC_GIT_TEST_EXE", &exe)
+        .env(
+            "MHC_GIT_TEST_ADDRESS",
+            listener.local_addr().unwrap().to_string(),
+        )
+        .env("PATH", tmp.path())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut control = None;
+        let mut git = None;
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut kind = [0; 1];
+            stream.read_exact(&mut kind).await.unwrap();
+            match kind[0] {
+                b'C' => control = Some(stream),
+                b'G' => git = Some(stream),
+                other => panic!("unexpected test connection: {other}"),
+            }
+        }
+        let mut control = control.expect("runtime control connection");
+        let mut git = git.expect("blocked git connection");
+        control.write_all(b"S").await.unwrap();
+        let mut response = [0; 1];
+        control.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            &response, b"T",
+            "runtime must progress while git is blocked"
+        );
+        git.write_all(b"R").await.unwrap();
+        assert!(child.wait().await.unwrap().success());
+    })
+    .await
+    .expect("workspace lookup blocked the runtime");
+}
 
 #[tokio::test]
 async fn local_addressing_resolves_names_prefixes_and_refuses_remote_without_service() {

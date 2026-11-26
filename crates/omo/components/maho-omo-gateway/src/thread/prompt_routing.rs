@@ -15,6 +15,7 @@ pub enum PromptRoutePolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptRouteError {
+    DuplicatePrompt,
     PromptRouteLocked,
     PromptResponseNotAuthorized,
     PromptNotFound,
@@ -27,6 +28,7 @@ pub enum PromptRouteResponse {
 }
 
 struct PendingPrompt {
+    generation: Arc<()>,
     target_session_id: String,
     driving_session_id: String,
     policy: PromptRoutePolicy,
@@ -57,17 +59,25 @@ impl PromptRouter {
         policy: PromptRoutePolicy,
         request: Value,
         deliver: impl FnOnce(&str, Value),
-    ) -> oneshot::Receiver<Value> {
+    ) -> Result<oneshot::Receiver<Value>, PromptRouteError> {
         let (tx, rx) = oneshot::channel();
+        let generation = Arc::new(());
         {
             let mut guard = self
                 .pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert!(!guard.contains_key(id), "Prompt id already in flight: {id}");
+            if guard.contains_key(id) {
+                return Err(PromptRouteError::DuplicatePrompt);
+            }
+            self.completed_reasons
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(id);
             guard.insert(
                 id.to_owned(),
                 PendingPrompt {
+                    generation: Arc::clone(&generation),
                     target_session_id: target_session_id.to_owned(),
                     driving_session_id: driving_session_id.to_owned(),
                     policy,
@@ -91,10 +101,16 @@ impl PromptRouter {
             let timeout = std::time::Duration::from_millis(self.timeout_ms);
             tokio::spawn(async move {
                 tokio::time::sleep(timeout).await;
-                cancel_in_map(&pending, &completed, &id_owned, "prompt timeout");
+                cancel_in_map(
+                    &pending,
+                    &completed,
+                    &id_owned,
+                    "prompt timeout",
+                    Some(&generation),
+                );
             });
         }
-        rx
+        Ok(rx)
     }
 
     pub fn respond(&self, session_id: &str, id: &str, response: Value) -> PromptRouteResponse {
@@ -164,7 +180,7 @@ impl PromptRouter {
     }
 
     fn cancel(&self, id: &str, reason: &str) {
-        cancel_in_map(&self.pending, &self.completed_reasons, id, reason);
+        cancel_in_map(&self.pending, &self.completed_reasons, id, reason, None);
     }
 }
 
@@ -173,10 +189,18 @@ fn cancel_in_map(
     completed: &Mutex<HashMap<String, String>>,
     id: &str,
     reason: &str,
+    expected: Option<&Arc<()>>,
 ) {
     let mut guard = pending
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if expected.is_some_and(|generation| {
+        !guard
+            .get(id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.generation, generation))
+    }) {
+        return;
+    }
     if let Some(mut entry) = guard.remove(id) {
         completed
             .lock()
@@ -189,5 +213,125 @@ fn cancel_in_map(
                 "cancelled": true,
             }));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn duplicate_prompt_does_not_panic_or_replace_original() {
+        let router = PromptRouter::new(None);
+        let original = router
+            .route(
+                "same",
+                "target",
+                "driver",
+                PromptRoutePolicy::AnswerHere,
+                json!({}),
+                |_, _| {},
+            )
+            .expect("original route");
+        let duplicate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            router.route(
+                "same",
+                "other",
+                "other",
+                PromptRoutePolicy::AnswerHere,
+                json!({}),
+                |_, _| panic!("duplicate must not be delivered"),
+            )
+        }));
+        assert!(matches!(
+            duplicate,
+            Ok(Err(PromptRouteError::DuplicatePrompt))
+        ));
+        assert_eq!(
+            router.respond("driver", "same", json!({"answer":"first"})),
+            PromptRouteResponse::Ok,
+        );
+        assert_eq!(
+            original.await.expect("original response")["answer"],
+            "first"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_timeout_cannot_cancel_reused_prompt_id() {
+        let router = PromptRouter::new(None);
+        let first = router
+            .route(
+                "same",
+                "target",
+                "driver",
+                PromptRoutePolicy::AnswerHere,
+                json!({}),
+                |_, _| {},
+            )
+            .expect("first route");
+        let old_generation = router.pending.lock().expect("pending")["same"]
+            .generation
+            .clone();
+        assert_eq!(
+            router.respond("driver", "same", json!({"answer":"first"})),
+            PromptRouteResponse::Ok
+        );
+        assert_eq!(first.await.expect("first response")["answer"], "first");
+        let second = router
+            .route(
+                "same",
+                "target",
+                "driver",
+                PromptRoutePolicy::AnswerHere,
+                json!({}),
+                |_, _| {},
+            )
+            .expect("second route");
+        cancel_in_map(
+            &router.pending,
+            &router.completed_reasons,
+            "same",
+            "prompt timeout",
+            Some(&old_generation),
+        );
+        assert_eq!(
+            router.respond("driver", "same", json!({"answer":"second"})),
+            PromptRouteResponse::Ok
+        );
+        assert_eq!(second.await.expect("second response")["answer"], "second");
+    }
+
+    #[tokio::test]
+    async fn reused_prompt_id_has_no_previous_cancellation_reason() {
+        let router = PromptRouter::new(None);
+        let first = router
+            .route(
+                "same",
+                "target",
+                "driver",
+                PromptRoutePolicy::AutoCancel,
+                json!({}),
+                |_, _| {},
+            )
+            .expect("first route");
+        assert_eq!(first.await.expect("cancelled")["cancelled"], true);
+        assert!(router.reason("same").is_some());
+        let second = router
+            .route(
+                "same",
+                "target",
+                "driver",
+                PromptRoutePolicy::AnswerHere,
+                json!({}),
+                |_, _| {},
+            )
+            .expect("second route");
+        assert_eq!(router.reason("same"), None);
+        assert_eq!(
+            router.respond("driver", "same", json!({})),
+            PromptRouteResponse::Ok
+        );
+        second.await.expect("second response");
     }
 }

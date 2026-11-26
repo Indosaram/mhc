@@ -1079,32 +1079,22 @@ impl Extension for NativeThreadComponent {
                     let tc_mut_input = &mut tc.input;
                     let resolved_slot = slot.clone();
                     let resolved_target_fut = async move {
-                        let Some(st) = resolved_slot
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .clone()
-                        else {
+                        let state = {
+                            resolved_slot
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .clone()
+                        };
+                        let Some(st) = state else {
                             return MonitorTargetResolution::Keep;
                         };
                         resolve_monitor_target(&st.surface, &raw_target, &caller).await
                     };
-                    let _ = tc_mut_input;
                     Box::pin(async move {
-                        match resolved_target_fut.await {
-                            MonitorTargetResolution::Refused(fail) => {
-                                Ok(EventResult::ToolCall(ToolCallEventResult {
-                                    block: Some(true),
-                                    reason: Some(format!(
-                                        "{}: {} {}",
-                                        fail.code, fail.message, fail.next_action
-                                    )),
-                                    terminate: None,
-                                }))
-                            }
-                            MonitorTargetResolution::Keep | MonitorTargetResolution::Target(_) => {
-                                Ok(EventResult::None)
-                            }
-                        }
+                        Ok(apply_monitor_resolution(
+                            tc_mut_input,
+                            resolved_target_fut.await,
+                        ))
                     })
                 }),
             );
@@ -1212,5 +1202,39 @@ impl Extension for NativeThreadComponent {
                 }),
             );
         }
+    }
+}
+
+fn apply_monitor_resolution(input: &mut Value, resolution: MonitorTargetResolution) -> EventResult {
+    match resolution {
+        MonitorTargetResolution::Refused(fail) => EventResult::ToolCall(ToolCallEventResult {
+            block: Some(true),
+            reason: Some(format!(
+                "{}: {} {}",
+                fail.code, fail.message, fail.next_action
+            )),
+            terminate: None,
+        }),
+        MonitorTargetResolution::Target(target) => {
+            input["target"] = Value::String(target);
+            EventResult::None
+        }
+        MonitorTargetResolution::Keep => EventResult::None,
+    }
+}
+
+#[cfg(test)]
+mod monitor_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn resolved_monitor_target_reaches_tool_input() {
+        let mut input = serde_json::json!({"type":"rpc", "target":"alias"});
+        let result = apply_monitor_resolution(
+            &mut input,
+            MonitorTargetResolution::Target("resolved-id".into()),
+        );
+        assert!(matches!(result, EventResult::None));
+        assert_eq!(input["target"], "resolved-id");
     }
 }

@@ -13,7 +13,7 @@ use super::super::provenance_resolver::{ProvenanceRuntime, resolve_provenance};
 use super::super::relay::{GatewayRelay, GatewayRelayOptions, LocateCallback};
 use super::super::store_api::GatewayStoreApi;
 use super::super::types::Provenance;
-use super::internals::{address_book, host_view, send_address_book};
+use super::internals::{address_book, host_view, send_address_book_async};
 use super::ports::{ThreadHostViewRequest, ThreadToolSurfaceOptions};
 use super::send_view::send_view;
 
@@ -35,9 +35,9 @@ pub fn create_gateway_resolver(options: Arc<ThreadToolSurfaceOptions>) -> Gatewa
             let current = host_view(&options, ThreadHostViewRequest { offline: true })
                 .await
                 .unwrap_or_default();
-            let entries = to_gateway_address_entries(&send_address_book(
-                &options, &current, &address, all_scope,
-            ));
+            let entries = to_gateway_address_entries(
+                &send_address_book_async(&options, &current, &address, all_scope).await,
+            );
             let root_fn = options.caller_workspace_root.clone();
             resolve_from_entries(Arc::new(move || entries.clone()), root_fn)(&address, all_scope)
                 .await
@@ -54,9 +54,9 @@ pub fn create_gateway_services(options: Arc<ThreadToolSurfaceOptions>) -> Gatewa
             let current = send_view(&options, &address, true)
                 .await
                 .unwrap_or_default();
-            let entries = to_gateway_address_entries(&send_address_book(
-                &options, &current, &address, all_scope,
-            ));
+            let entries = to_gateway_address_entries(
+                &send_address_book_async(&options, &current, &address, all_scope).await,
+            );
             let root_fn = options.caller_workspace_root.clone();
             resolve_from_entries(Arc::new(move || entries.clone()), root_fn)(&address, all_scope)
                 .await

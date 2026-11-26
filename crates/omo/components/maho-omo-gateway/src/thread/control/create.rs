@@ -13,8 +13,8 @@ use super::super::errors::thread_tool_failure;
 use super::super::initial_skills::{InitialSkillsCheck, check_initial_skills};
 use super::super::thread_link::thread_link;
 use super::super::tools::internals::{
-    address_book, failure, send_address_book, send_book_entries, summary, target_session,
-    uncertain_failure,
+    address_book, failure, send_address_book_async, send_book_entries_async, summary,
+    target_session, uncertain_failure,
 };
 use super::super::tools::ports::{BoxFuture, ThreadHostView, ThreadToolSurfaceOptions};
 use super::super::tools::thread_row::opened_result;
@@ -66,7 +66,7 @@ async fn existing_here(
     address: &str,
     caller_id: &str,
 ) -> LocalExisting {
-    let entries = send_book_entries(options, current, address);
+    let entries = send_book_entries_async(options, current, address).await;
     let ctx = ResolveContext {
         remote: None,
         caller_workspace_root: (options.caller_workspace_root)(),
@@ -94,7 +94,7 @@ async fn existing_here(
             warnings: None,
         });
     }
-    let book = send_address_book(options, current, &thread, true);
+    let book = send_address_book_async(options, current, &thread, true).await;
     let entry = book.into_iter().find(|c| c.thread_id == thread);
     let Some(entry) = entry else {
         return LocalExisting::Error(failure(
@@ -376,6 +376,11 @@ pub async fn create_thread(
         SessionOpenOutcome::Ok(t) => t,
     };
 
+    let note_thread = thread.clone();
+    let note_cwd = caller_cwd.clone();
+    let note = tokio::task::spawn_blocking(move || workspace_note(&note_thread, &note_cwd))
+        .await
+        .expect("workspace note worker failed");
     let mut made = opened_result(
         &thread.summary,
         thread.worktree.as_ref(),
@@ -386,7 +391,7 @@ pub async fn create_thread(
         if creates && let Some(ref skills) = loaded_skills {
             obj.insert("requested_skills".into(), json!(skills));
         }
-        if let Value::Object(note) = workspace_note(&thread, &caller_cwd) {
+        if let Value::Object(note) = note {
             for (k, v) in note {
                 obj.insert(k, v);
             }

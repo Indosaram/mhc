@@ -81,11 +81,11 @@ use super::types::{DeliveryAuthority, GatewayDeliveryMode, GatewayDeliveryResult
 
 use gateway_services::create_gateway_services;
 use internals::{
-    address_book, degraded_summary, failure, host_view, metadata_entry, send_address_book,
-    send_book_entries, summary, target_session, uncertain_failure,
+    address_book, degraded_summary, failure, host_view, metadata_entry, send_address_book_async,
+    send_book_entries_async, summary, target_session, uncertain_failure,
 };
 use ports::{ThreadHostView, ThreadHostViewRequest, ThreadToolSurfaceOptions};
-use read_ops::{list_threads, read_thread, with_backlog};
+use read_ops::{list_threads_async, read_thread, with_backlog};
 use relay_tools::relay_tool_schemas;
 use reply_permission::{ReplySender, consumed_senders_of};
 use reply_target::reply_target_mismatch;
@@ -301,7 +301,7 @@ async fn locate_delivery_target(
     let entries = if fuzzy {
         to_thread_address_entries(&address_book(options, current, &[]))
     } else {
-        send_book_entries(options, current, address)
+        send_book_entries_async(options, current, address).await
     };
     let is_reply = !senders.is_empty();
     let ctx = ResolveContext {
@@ -422,7 +422,7 @@ async fn deliver_through(
         } => {
             if let Some(by) = resolved_by {
                 let session = target_session(current, &thread_id);
-                let book = send_address_book(options, current, &thread_id, true);
+                let book = send_address_book_async(options, current, &thread_id, true).await;
                 let entry = book.iter().find(|c| c.thread_id == thread_id);
                 let row = match (session, entry) {
                     (Some(s), e) => thread_row(&summary(s, e), None),
@@ -912,12 +912,13 @@ pub fn build_local_thread_tools(surface: Arc<ThreadToolSurfaceOptions>) -> Built
                         false,
                         move |surf_c, current, _, _, _| {
                             Box::pin(async move {
-                                let listed = list_threads(
+                                let listed = list_threads_async(
                                     &surf_c,
                                     &current,
                                     input.all_scope,
                                     input.state.as_deref(),
-                                );
+                                )
+                                .await;
                                 Ok(with_backlog(surf_c.store.as_ref(), listed))
                             })
                         },

@@ -50,7 +50,7 @@ use super::tools::internals::{address_book, host_view};
 use super::tools::ports::{
     ThreadHost, ThreadHostViewRequest, ThreadToolSurfaceOptions, UNKNOWN_CALLER,
 };
-use super::tools::read_ops::{list_threads, read_thread, with_backlog};
+use super::tools::read_ops::{list_threads_async, read_thread, with_backlog};
 use super::types::{GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance};
 use super::wake::host_ensure::{EngineHostEnsureOptions, engine_host_ensure};
 
@@ -226,7 +226,9 @@ impl ThreadSdk {
         let surface = self.surface_options();
         guarded(self.options.store.now(), async {
             let view = host_view(&surface, ThreadHostViewRequest::default()).await?;
-            let listed = list_threads(&surface, &view, request.all_scope, request.state.as_deref());
+            let listed =
+                list_threads_async(&surface, &view, request.all_scope, request.state.as_deref())
+                    .await;
             Ok(with_backlog(surface.store.as_ref(), listed))
         })
         .await

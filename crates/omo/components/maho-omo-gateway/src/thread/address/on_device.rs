@@ -7,7 +7,7 @@ use super::super::address_core::{
 use super::bare::{device_name_of, listed_entry};
 use super::device::device_rows;
 use super::holder::{RemoteTarget, holder_target};
-use super::ladder::{LadderResult, ladder};
+use super::ladder::{LadderResult, ladder_async};
 use super::probe::pinned;
 use super::refusals::{ThreadRefusal, tool_refusal, with_addresses};
 use super::types::{
@@ -60,7 +60,7 @@ pub async fn resolve_on_device(
 ) -> Result<Found, ThreadRefusal> {
     if device.here {
         let local = ctx.local_entries_for(thread);
-        return match ladder(ctx, &local, thread, opts, None) {
+        return match ladder_async(ctx, &local, thread, opts, None).await {
             LadderResult::Ok { entry, resolution } => Ok(Found {
                 entry,
                 resolution,
@@ -131,7 +131,7 @@ pub async fn resolve_on_device(
     let entries: Vec<_> = rows.iter().map(|r| listed_entry(r, None)).collect();
     let mut scoped_opts = opts.clone();
     scoped_opts.all_scope = true;
-    match ladder(ctx, &entries, thread, &scoped_opts, None) {
+    match ladder_async(ctx, &entries, thread, &scoped_opts, None).await {
         LadderResult::Ok { entry, resolution } => {
             return Ok(Found {
                 entry,

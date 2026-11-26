@@ -330,6 +330,7 @@ pub type ProvenanceWorkspacesLoader =
 pub type ProvenanceWarningFn = Arc<dyn Fn(&str) + Send + Sync>;
 pub type CompletionArmedFn = Arc<dyn Fn(&str, i64) + Send + Sync>;
 
+#[derive(Clone)]
 pub struct ThreadToolSurfaceOptions {
     pub host: Arc<dyn ThreadHost>,
     pub store: Arc<dyn GatewayStoreApi>,

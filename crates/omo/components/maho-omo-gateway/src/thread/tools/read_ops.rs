@@ -20,7 +20,7 @@ use super::super::reader::{
 use super::super::store_api::GatewayStoreApi;
 use super::super::thread_link::thread_link;
 use super::internals::{
-    ThreadToolSummary, address_book, degraded_summary, failure, send_address_book, summary,
+    ThreadToolSummary, address_book, degraded_summary, failure, send_address_book_async, summary,
 };
 use super::ports::{ThreadHostSession, ThreadHostView, ThreadToolSurfaceOptions};
 use super::read_item::read_item;
@@ -179,6 +179,22 @@ pub fn list_threads(
     out
 }
 
+pub async fn list_threads_async(
+    options: &ThreadToolSurfaceOptions,
+    current: &ThreadHostView,
+    all_scope: Option<bool>,
+    states: Option<&[ThreadState]>,
+) -> Value {
+    let options = options.clone();
+    let current = current.clone();
+    let states = states.map(<[ThreadState]>::to_vec);
+    tokio::task::spawn_blocking(move || {
+        list_threads(&options, &current, all_scope, states.as_deref())
+    })
+    .await
+    .expect("thread list worker failed")
+}
+
 pub fn with_backlog(store: &dyn GatewayStoreApi, mut listed: Value) -> Value {
     if listed.get("kind").and_then(Value::as_str) != Some("ok") {
         return listed;
@@ -263,7 +279,7 @@ pub async fn read_thread(
     match located {
         LocatedControl::Error(err) => Ok(err),
         LocatedControl::NotLive { thread_id, .. } => {
-            Ok(read_degraded(options, current, &thread_id, value))
+            Ok(read_degraded(options, current, &thread_id, value).await)
         }
         LocatedControl::Control(ctrl) => read_live(ctrl.as_ref(), value).await,
     }
@@ -401,13 +417,13 @@ pub fn live_read_result(
     }
 }
 
-fn read_degraded(
+async fn read_degraded(
     options: &ThreadToolSurfaceOptions,
     current: &ThreadHostView,
     thread_id: &str,
     value: &ThreadReadInput,
 ) -> Value {
-    let book = send_address_book(options, current, thread_id, true);
+    let book = send_address_book_async(options, current, thread_id, true).await;
     let Some(entry) = book.into_iter().find(|c| c.thread_id == thread_id) else {
         return failure(
             "not_resumable",

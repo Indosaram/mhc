@@ -868,7 +868,7 @@ fn place_causally(
         .next(),
         None => None,
     };
-    let mut placement = if let Some(cause) = cause {
+    let placement = if let Some(cause) = cause {
         let valid = cause.target_durable_id == request.sender_node
             && matches!(
                 cause.state,
@@ -904,13 +904,6 @@ fn place_causally(
             Some(serde_json::json!({ "guard": "forged_root" })),
         )));
     }
-    if request.target_durable_id == request.sender_node {
-        return Ok(Err(refused(
-            "loop_detected",
-            "A session cannot deliver to itself through the gateway.",
-            Some(serde_json::json!({ "guard": "self_send" })),
-        )));
-    }
     if !placement.new_root {
         let root = ctx.one(
             "SELECT expires_at FROM causal_roots WHERE root_id = ?",
@@ -920,9 +913,19 @@ fn place_causally(
             .as_ref()
             .is_none_or(|root| row_i64(root, "expires_at") <= request.now)
         {
-            placement.root_id = new_id("root");
-            placement.new_root = true;
+            return Ok(Err(refused(
+                "loop_detected",
+                "This causal chain is older than its lifetime.",
+                Some(serde_json::json!({ "guard": "root_expired", "root_id": placement.root_id })),
+            )));
         }
+    }
+    if request.target_durable_id == request.sender_node {
+        return Ok(Err(refused(
+            "loop_detected",
+            "A session cannot deliver to itself through the gateway.",
+            Some(serde_json::json!({ "guard": "self_send" })),
+        )));
     }
     Ok(Ok(placement))
 }

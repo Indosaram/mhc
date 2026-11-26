@@ -339,6 +339,28 @@ pub fn send_book_entries(
     to_thread_address_entries(&send_address_book(options, view, address, true))
 }
 
+pub async fn send_address_book_async(
+    options: &ThreadToolSurfaceOptions,
+    view: &ThreadHostView,
+    address: &str,
+    all_scope: bool,
+) -> Vec<AddressEntry> {
+    let options = options.clone();
+    let view = view.clone();
+    let address = address.to_owned();
+    tokio::task::spawn_blocking(move || send_address_book(&options, &view, &address, all_scope))
+        .await
+        .expect("address book worker failed")
+}
+
+pub async fn send_book_entries_async(
+    options: &ThreadToolSurfaceOptions,
+    view: &ThreadHostView,
+    address: &str,
+) -> Vec<ThreadAddressEntry> {
+    to_thread_address_entries(&send_address_book_async(options, view, address, true).await)
+}
+
 pub fn session_port(
     options: &ThreadToolSurfaceOptions,
     session: &ThreadHostSession,

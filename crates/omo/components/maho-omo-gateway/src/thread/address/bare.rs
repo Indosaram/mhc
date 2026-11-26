@@ -7,7 +7,7 @@ use super::super::addressing::{ThreadAddressEntry, fuzzy_contenders};
 use super::super::contracts_results::{ThreadStatus, ThreadSummary};
 use super::super::errors::{ThreadToolFailure, thread_tool_failure};
 use super::holder::{RemoteTarget, holder_target};
-use super::ladder::{LadderResult, ladder};
+use super::ladder::{LadderResult, ladder_async};
 use super::probe::probe_across;
 use super::refusals::{ThreadRefusal, as_refusal, tool_refusal, with_addresses};
 use super::types::{
@@ -118,7 +118,7 @@ pub async fn resolve_bare(
             None,
         );
     }
-    let here_hit = ladder(ctx, &ctx.local, text, opts, None);
+    let here_hit = ladder_async(ctx, &ctx.local, text, opts, None).await;
     let exact_here = matches!(
         here_hit,
         LadderResult::Ok {
@@ -250,7 +250,7 @@ pub async fn resolve_bare(
         None
     };
 
-    match ladder(ctx, &all, text, opts, ranked.as_deref()) {
+    match ladder_async(ctx, &all, text, opts, ranked.as_deref()).await {
         LadderResult::Ok { entry, resolution } => {
             let all_scope = if resolution == Resolution::Alias || entry.is_remote() {
                 Some(true)

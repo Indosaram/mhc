@@ -133,3 +133,20 @@ pub fn ladder(
 pub fn default_id_prefix() -> IdPrefixMode {
     IdPrefixMode::Enabled
 }
+
+pub async fn ladder_async(
+    ctx: &ResolveContext,
+    entries: &[ThreadAddressEntry],
+    text: &str,
+    opts: &ResolveOptions,
+    ranked: Option<&[ThreadAddressEntry]>,
+) -> LadderResult {
+    let ctx = ctx.clone();
+    let entries = entries.to_vec();
+    let text = text.to_owned();
+    let opts = opts.clone();
+    let ranked = ranked.map(<[ThreadAddressEntry]>::to_vec);
+    tokio::task::spawn_blocking(move || ladder(&ctx, &entries, &text, &opts, ranked.as_deref()))
+        .await
+        .expect("thread address worker failed")
+}

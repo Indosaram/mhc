@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::super::address::{ResolveContext, ResolveOptions, ResolveWhere, resolve_address};
 use super::super::errors::{ThreadToolFailure, thread_tool_failure};
-use super::internals::{host_view, send_book_entries};
+use super::internals::{host_view, send_book_entries_async};
 use super::ports::{ThreadHostViewRequest, ThreadToolSurfaceOptions};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +54,7 @@ pub async fn resolve_monitor_target(
             ));
         }
     };
-    let entries = send_book_entries(options, &view, trimmed);
+    let entries = send_book_entries_async(options, &view, trimmed).await;
     let ctx = ResolveContext {
         remote: options.remote.clone(),
         caller_workspace_root: (options.caller_workspace_root)(),

@@ -386,6 +386,19 @@ pub fn workspace_entries(
         .collect()
 }
 
+pub async fn workspace_entries_async(
+    entries: &[ThreadAddressEntry],
+    caller_workspace_root: Option<&str>,
+) -> Vec<ThreadAddressEntry> {
+    let entries = entries.to_vec();
+    let caller_workspace_root = caller_workspace_root.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        workspace_entries(&entries, caller_workspace_root.as_deref())
+    })
+    .await
+    .expect("workspace lookup worker failed")
+}
+
 fn scoped_id_hit(
     entry: &ThreadAddressEntry,
     opts: &ThreadResolveOptions,
