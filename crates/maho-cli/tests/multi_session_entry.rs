@@ -139,7 +139,7 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
                 command.env_remove(key);
             }
         }
-        let output = tokio::time::timeout(Duration::from_secs(45), command.output())
+        let output = tokio::time::timeout(Duration::from_secs(180), command.output())
             .await
             .expect("isolated host test completed")
             .expect("spawn isolated host test");
@@ -169,9 +169,10 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
         signals,
         ready,
     ));
+    // Host startup hashes this test executable, which can be large on debug builds.
     tokio::select! {
         result = &mut served => panic!("host exited before listening: {result:?}"),
-        result = tokio::time::timeout(Duration::from_secs(15), listening) => {
+        result = tokio::time::timeout(Duration::from_secs(120), listening) => {
             result.expect("host started listening").expect("readiness sender");
         }
     }
