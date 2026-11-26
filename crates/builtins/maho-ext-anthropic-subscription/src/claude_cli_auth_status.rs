@@ -1,6 +1,8 @@
-//! Port of senpi `anthropic-subscription/claude-cli-auth-status.ts` (v2026.11.19-5). `logoutClaudeCli` serves account
-//! removal, which this port does not carry.
-use crate::claude_cli_process::{ClaudeCliRun, run_claude_cli_to_exit};
+//! Port of senpi `anthropic-subscription/claude-cli-auth-status.ts` (v2026.11.19-5).
+use crate::claude_cli_process::{
+    ClaudeCliRun, DEFAULT_SHORT_COMMAND_TIMEOUT_MS, run_claude_cli_to_exit,
+};
+use maho_ai::utils::abort::AbortSignal;
 use serde_json::Value;
 
 /// The local-only profile a CLI-store account shows; never logged or sent to telemetry.
@@ -75,6 +77,22 @@ pub async fn read_claude_cli_auth_status(
         Some(exit) => parse_claude_cli_auth_status(&exit.stdout, exit.exit_code),
         None => ClaudeCliAuthStatus::Unreadable,
     }
+}
+
+/// Deletes the CLI credential-store entry keyed by this account's config dir.
+pub async fn logout_claude_cli(
+    run: &ClaudeCliRun<'_>,
+    timeout_ms: Option<u64>,
+    signal: Option<&AbortSignal>,
+) -> bool {
+    run_claude_cli_to_exit(
+        run,
+        &["auth", "logout"],
+        timeout_ms.unwrap_or(DEFAULT_SHORT_COMMAND_TIMEOUT_MS),
+        signal,
+    )
+    .await
+    .is_some_and(|exit| exit.exit_code == Some(0))
 }
 
 #[cfg(test)]

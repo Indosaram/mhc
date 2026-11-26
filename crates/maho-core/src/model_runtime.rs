@@ -96,6 +96,36 @@ type ModifyFn = Box<
 
 #[async_trait::async_trait]
 impl CredentialStore for AuthStorageCredentialStore {
+    async fn with_refresh_lock(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        operation: maho_ai::auth::types::RefreshLockOperation,
+        options: Option<AuthOperationOptions>,
+    ) -> Result<Option<Credential>, maho_ai::auth::oauth_refresh::RefreshError> {
+        use maho_ai::auth::oauth_refresh::RefreshError;
+        let signal = operation_signal(options.and_then(|options| options.signal));
+        let auth_path = self
+            .auth_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| self.credentials.storage_path().map(str::to_owned));
+        let Some(auth_path) = auth_path else {
+            let lock = self.credentials.refresh_lock(provider_id, slot_name);
+            let _guard = maho_ai::utils::abort::race_with_abort_signal(lock.lock(), &signal)
+                .await
+                .map_err(|reason| RefreshError::Aborted(reason.to_string()))?;
+            return operation(signal).await;
+        };
+        let path = crate::lockfile_policy::refresh_lock_path(&auth_path, provider_id, slot_name);
+        let acquire = crate::lockfile_policy::acquire_lock_async(&path, 35_000);
+        let _guard = maho_ai::utils::abort::race_with_abort_signal(acquire, &signal)
+            .await
+            .map_err(|reason| RefreshError::Aborted(reason.to_string()))?
+            .map_err(|error| RefreshError::Store(error.message()))?;
+        operation(signal).await
+    }
+
     async fn read(
         &self,
         provider_id: &str,
@@ -309,6 +339,23 @@ fn models_error(error: maho_ai::auth::resolve::ModelsError) -> ModelsError {
     ModelsError::new(code, error.message)
 }
 
+/// The OAuth method a logout revokes through, chosen like `compose_provider_auth`: an extension registration's,
+/// then the provider's own, then the builtin flow; `None` when that method cannot revoke.
+fn revoking_oauth(
+    extensions: &RwLock<IndexMap<String, ProviderConfigInput>>,
+    provider_id: &str,
+    base: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
+) -> Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
+    extensions
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(provider_id)
+        .and_then(|extension| extension.oauth.clone())
+        .or(base)
+        .or_else(|| builtin_oauth(provider_id))
+        .filter(|oauth| oauth.has_revoke())
+}
+
 /// senpi composes provider auth once in `composeProvider` (`composeApiKeyAuth` /
 /// `composeOAuthAuth`); the models.json / extension overlays live in this runtime, so the
 /// composition happens at resolution (and login) time against the provider's own `auth()`.
@@ -426,6 +473,40 @@ impl RuntimeAuth {
 }
 
 impl ModelsAuth for RuntimeAuth {
+    /// senpi v2026.11.19-5 `Models.logout` for a revoking OAuth provider: `revokeStoredOAuth` clears the selected
+    /// local tokens under the same store the refresh uses, then revokes remotely. Non-revoking providers are signed
+    /// out by `ModelRuntime::logout`.
+    fn logout_with_options<'a>(
+        &'a self,
+        provider_id: &'a str,
+        oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
+        options: maho_ai::auth::types::LogoutOptions,
+    ) -> BoxFuture<'a, Result<Option<maho_ai::auth::types::OAuthRevocationResult>, ModelsError>>
+    {
+        Box::pin(async move {
+            let Some(oauth) = revoking_oauth(&self.extensions, provider_id, oauth) else {
+                return Err(ModelsError::new(
+                    ModelsErrorCode::Auth,
+                    format!("Logout is not supported for {provider_id}"),
+                ));
+            };
+            maho_ai::auth::credential_store::revoke_stored_oauth(
+                &*self.store,
+                provider_id,
+                &*oauth,
+                Some(options),
+            )
+            .await
+            .map_err(|error| {
+                ModelsError::with_cause(
+                    ModelsErrorCode::Auth,
+                    format!("Credential store delete failed for {provider_id}"),
+                    &error.to_string(),
+                )
+            })
+        })
+    }
+
     fn resolve<'a>(
         &'a self,
         provider: &'a dyn Provider,
@@ -591,7 +672,6 @@ impl ModelsAuth for RuntimeAuth {
 fn builtin_oauth(id: &str) -> Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
     use maho_ai::auth::oauth;
     match id {
-        "anthropic" | "anthropic-subscription" => Some(oauth::anthropic::anthropic_oauth()),
         "chatgpt-subscription" => Some(oauth::chatgpt_subscription::chatgpt_subscription_oauth()),
         "github-copilot" => Some(oauth::github_copilot::github_copilot_oauth()),
         "openrouter" => Some(oauth::openrouter::open_router_oauth()),
@@ -1522,6 +1602,53 @@ impl ModelRuntime {
         .await
     }
 
+    /// senpi v2026.11.19-5 `logoutProvider` for an OAuth provider with remote revocation (ChatGPT): under the
+    /// provider's credential queue, `Models::logout_with_options` clears the selected local tokens through the shared
+    /// credential store, then revokes; the answer says whether the remote revocation was confirmed.
+    pub async fn logout_with_revocation(
+        &self,
+        provider_id: &str,
+        options: maho_ai::auth::types::LogoutOptions,
+    ) -> Result<Option<maho_ai::auth::types::OAuthRevocationResult>, ModelsError> {
+        let id = normalize_provider_id(provider_id);
+        let signal = maho_ai::utils::abort::operation_signal(options.signal.clone());
+        let revoking = revoking_oauth(
+            &self.extensions,
+            &id,
+            self.models
+                .get_provider(&id)
+                .and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone())),
+        )
+        .is_some();
+        self.enqueue_credential_operation(&id, &signal, async {
+            let result = if revoking {
+                self.models
+                    .logout_with_options(
+                        &id,
+                        Some(maho_ai::auth::types::LogoutOptions {
+                            signal: Some(signal.clone()),
+                            ..options
+                        }),
+                    )
+                    .await?
+            } else {
+                self.logout_unsynchronized(
+                    &id,
+                    options.slot_id.as_deref(),
+                    maho_ai::auth::types::AuthOperationOptions {
+                        signal: Some(signal.clone()),
+                    },
+                )
+                .await?;
+                None
+            };
+            self.synchronize_credential_state(&id, "logout", &signal)
+                .await?;
+            Ok(result)
+        })
+        .await
+    }
+
     /// senpi `setRuntimeApiKey`: a non-persistent key for this process (`--api-key`), then recompose
     /// and refresh the provider so availability reflects it.
     pub async fn set_runtime_api_key(
@@ -2061,6 +2188,38 @@ impl ModelRuntime {
             Err(error) => Err(error),
         }
     }
+    fn stored_oauth_request_slots(
+        &self,
+        model: &Model,
+        request: &maho_ai::types::ProviderRequestOptions,
+    ) -> Option<Vec<String>> {
+        if request.api_key.is_some()
+            || self.credentials.has_runtime_api_key(&model.provider)
+            || self.owns_account_selection(&model.provider)
+        {
+            return None;
+        }
+        let raw = self.credentials.get(&model.provider)?;
+        if raw.get("type")?.as_str()? != "oauth" {
+            return None;
+        }
+        let access = raw.get("access")?.as_str()?;
+        let refresh = raw.get("refresh")?.as_str()?;
+        let accounts = raw.get("accounts").and_then(serde_json::Value::as_array);
+        if accounts.is_none_or(Vec::is_empty) {
+            return Some(vec![maho_ai::auth::pool::slots::DEFAULT_SLOT_NAME.into()]);
+        }
+        let matches: Vec<String> = accounts?
+            .iter()
+            .filter(|account| {
+                account.get("access").and_then(serde_json::Value::as_str) == Some(access)
+                    && account.get("refresh").and_then(serde_json::Value::as_str) == Some(refresh)
+            })
+            .filter_map(|account| account.get("name")?.as_str().map(str::to_owned))
+            .collect();
+        (!matches.is_empty()).then_some(matches)
+    }
+
     fn could_rotate_credentials(
         &self,
         model: &Model,
@@ -2125,11 +2284,11 @@ impl ModelRuntime {
                 let run:crate::credential_pool::rotation_stream::RunRotationAttempt=Arc::new(move |slot:crate::credential_pool::rotation_stream::RotationSlot| -> crate::credential_pool::rotation_stream::RotationAttemptFuture {
                     let (models,semaphores,model,request,call)=(models.clone(),semaphores.clone(),attempt_model.clone(),request.clone(),call.clone());
                     Box::pin(async move {
-                        let (provider,request_model,request)=prepare_slot_request(&models,&model,&slot,request).await.map_err(|message|serde_json::json!({"message":message}))?;
+                        let (provider,request_model,request,link)=prepare_slot_request(&models,&model,&slot,request).await.map_err(|message|serde_json::json!({"message":message}))?;
                         let signal=request.signal.clone();
                         let (stream,permit)=semaphores.bracket(&request_model.provider,signal.as_ref(),|| call(CallTarget::Provider(provider.clone()),&request_model,request)).await
                             .map_err(|reason|serde_json::json!({"name":reason.name,"message":reason.message}))?;
-                        Ok(hold_permit(stream,permit))
+                        Ok(hold_permit(stream,permit,Some(link)))
                     })
                 });
                 return Ok((
@@ -2200,6 +2359,11 @@ impl ModelRuntime {
         }
         let mut options = options.unwrap_or_default();
         let (request_model, config, extension) = self.prepare_request(model, &mut options);
+        if options.request.auth_slots.is_empty() {
+            options.request.auth_slots = self
+                .stored_oauth_request_slots(model, &options.request)
+                .unwrap_or_default();
+        }
         let models = self.models.clone();
         let context = context.clone();
         let original = model.clone();
@@ -2277,6 +2441,11 @@ impl ModelRuntime {
         }
         let mut options = options.unwrap_or_default();
         let (request_model, config, extension) = self.prepare_request(model, &mut options.stream);
+        if options.stream.request.auth_slots.is_empty() {
+            options.stream.request.auth_slots = self
+                .stored_oauth_request_slots(model, &options.stream.request)
+                .unwrap_or_default();
+        }
         let models = self.models.clone();
         let context = context.clone();
         let original = model.clone();
@@ -2561,10 +2730,17 @@ async fn prepare_slot_request(
         Arc<dyn Provider>,
         Model,
         maho_ai::types::ProviderRequestOptions,
+        maho_ai::models::LogoutStreamLink,
     ),
     String,
 > {
     use crate::credential_pool::rotation_stream::RotationLane;
+    let link = models.link_logout_signal(
+        &model.provider,
+        (slot.lane == RotationLane::Stored).then_some(slot.slot.name.as_str()),
+        request.signal.take(),
+    );
+    request.signal = link.signal();
     let provider = models
         .get_provider(&model.provider)
         .ok_or_else(|| format!("Unknown provider: {}", model.provider))?;
@@ -2615,20 +2791,24 @@ async fn prepare_slot_request(
         &request_model.provider,
         &account,
     );
-    Ok((provider, request_model, request))
+    Ok((provider, request_model, request, link))
 }
 
 /// Keeps a provider permit until the attempt's stream settles.
 fn hold_permit(
     source: AssistantMessageEventStream,
     permit: Option<crate::provider_concurrency::ProviderPermit>,
+    link: Option<maho_ai::models::LogoutStreamLink>,
 ) -> AssistantMessageEventStream {
-    let Some(permit) = permit else { return source };
+    if permit.is_none() && link.is_none() {
+        return source;
+    }
     let target = AssistantMessageEventStream::assistant();
     let forwarded = target.clone();
     target.forward_cancellation_from(source.clone());
     let task = tokio::spawn(async move {
         let _permit = permit;
+        let _link = link;
         loop {
             match source.next().await {
                 Ok(Some(event)) => target.push(event),
@@ -2654,6 +2834,191 @@ fn hold_permit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct LogoutFixtureAuth;
+
+    impl ModelsAuth for LogoutFixtureAuth {
+        fn resolve<'a>(
+            &'a self,
+            _: &'a dyn Provider,
+            _: &'a AuthResolutionOverrides,
+        ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
+            Box::pin(async { Ok(Some(AuthResolution::default())) })
+        }
+
+        fn refresh_credential<'a>(
+            &'a self,
+            _: &'a dyn Provider,
+            _: Option<&'a serde_json::Value>,
+            _: &'a AbortSignal,
+        ) -> BoxFuture<'a, Result<Option<serde_json::Value>, ModelsError>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn logout<'a>(
+            &'a self,
+            _: &'a str,
+            _: maho_ai::models::ModelsLogoutOptions,
+        ) -> BoxFuture<'a, Result<(), ModelsError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn rotated_oauth_request_tracks_the_selected_slots_logout() {
+        use crate::credential_pool::failover::RunSlot;
+        use crate::credential_pool::rotation_stream::{RotationLane, RotationSlot};
+
+        let models = create_models(Some(CreateModelsOptions {
+            auth: Some(Arc::new(LogoutFixtureAuth)),
+            ..Default::default()
+        }));
+        let provider =
+            maho_ai::providers::chatgpt_subscription::chatgpt_subscription_provider().unwrap();
+        let model = provider.get_models().into_iter().next().unwrap();
+        models.set_provider(provider);
+        let slot = |name: &str| RotationSlot {
+            slot: RunSlot {
+                name: name.into(),
+                blocked_until: None,
+                block_reason: None,
+                failure_count: None,
+                lease: None,
+                pinned: false,
+            },
+            lane: RotationLane::Stored,
+            env_key: None,
+            env_var_name: None,
+            stored_revision: None,
+        };
+        let (_, _, work, _work_link) =
+            prepare_slot_request(&models, &model, &slot("work"), Default::default())
+                .await
+                .expect("work request");
+        let (_, _, home, _home_link) =
+            prepare_slot_request(&models, &model, &slot("home"), Default::default())
+                .await
+                .expect("home request");
+        models
+            .logout(
+                &model.provider,
+                Some(maho_ai::models::ModelsLogoutOptions {
+                    slot_id: Some("work".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("logout");
+        assert!(work.signal.as_ref().is_some_and(AbortSignal::aborted));
+        assert!(home.signal.as_ref().is_some_and(|signal| !signal.aborted()));
+    }
+
+    #[tokio::test]
+    async fn file_credential_stores_serialize_same_slot_refreshes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        let make_store = || AuthStorageCredentialStore {
+            credentials: Arc::new(crate::auth_storage::AuthStorage::create(
+                &path.to_string_lossy(),
+            )),
+            auth_path: Some(path.clone()),
+        };
+        let first_store = make_store();
+        let second_store = make_store();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = first_store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered.send(()).expect("first observer");
+                    released.await.expect("release first");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        started.await.expect("first entered");
+        let second = second_store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| Box::pin(async { Ok(None) })),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "second store must wait for the first refresh"
+        );
+        release.send(()).expect("release first");
+        first.await.expect("first refresh");
+        tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .expect("second refresh deadline")
+            .expect("second refresh");
+    }
+
+    #[tokio::test]
+    async fn shared_memory_credential_stores_serialize_same_slot_refreshes() {
+        let credentials = Arc::new(crate::auth_storage::AuthStorage::in_memory(
+            serde_json::Map::new(),
+        ));
+        let first_store = AuthStorageCredentialStore {
+            credentials: credentials.clone(),
+            auth_path: None,
+        };
+        let second_store = AuthStorageCredentialStore {
+            credentials,
+            auth_path: None,
+        };
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = first_store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered.send(()).expect("first observer");
+                    released.await.expect("release first");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        started.await.expect("first entered");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            second_store.with_refresh_lock(
+                "fixture",
+                "other",
+                Box::new(|_| Box::pin(async { Ok(None) })),
+                None,
+            ),
+        )
+        .await
+        .expect("other slot must not wait")
+        .expect("other slot refresh");
+        let second = second_store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(|_| Box::pin(async { Ok(None) })),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "second store must wait for the shared memory refresh"
+        );
+        release.send(()).expect("release first");
+        first.await.expect("first refresh");
+        second.await.expect("second refresh");
+    }
+
     #[tokio::test]
     async fn credential_store_conditional_delete_serializes_with_login() {
         // Given deletion suspended inside the shared account mutation transaction.
@@ -2777,7 +3142,7 @@ mod tests {
         }));
         let message = maho_ai::providers::faux::faux_assistant_message("done", Default::default());
         source.end(Some(message));
-        let stream = hold_permit(source, permit);
+        let stream = hold_permit(source, permit, None);
         while let Ok(Some(_)) = stream.next().await {}
         tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
             .await
@@ -2831,6 +3196,44 @@ mod tests {
         .expect("model runtime");
         (dir, runtime)
     }
+
+    #[test]
+    fn oauth_request_slot_matches_stored_identity_without_claiming_overrides() {
+        let (_dir, runtime) = configured_runtime(
+            r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#,
+        );
+        let model = runtime.get_model("p", "sol").expect("model");
+        let credential = serde_json::json!({
+            "type": "oauth", "access": "selected", "refresh": "r1", "expires": 9000000000000000.0,
+            "accounts": [
+                {"name": "work", "access": "selected", "refresh": "r1", "expires": 9000000000000000.0},
+                {"name": "home", "access": "other", "refresh": "r2", "expires": 9000000000000000.0}
+            ]
+        });
+        runtime
+            .credentials
+            .set("p", Some(credential.clone()))
+            .unwrap();
+        assert_eq!(
+            runtime.stored_oauth_request_slots(&model, &Default::default()),
+            Some(vec!["work".into()])
+        );
+        let request = maho_ai::types::ProviderRequestOptions {
+            api_key: Some("explicit".into()),
+            ..Default::default()
+        };
+        assert_eq!(runtime.stored_oauth_request_slots(&model, &request), None);
+
+        let mut ambiguous = credential;
+        ambiguous["accounts"][1]["access"] = "selected".into();
+        ambiguous["accounts"][1]["refresh"] = "r1".into();
+        runtime.credentials.set("p", Some(ambiguous)).unwrap();
+        assert_eq!(
+            runtime.stored_oauth_request_slots(&model, &Default::default()),
+            Some(vec!["work".into(), "home".into()])
+        );
+    }
+
     #[test]
     fn configured_catalog_has_identical_api_and_base_url() {
         let (_dir, runtime) = configured_runtime(
@@ -3539,6 +3942,180 @@ mod tests {
         ) -> AssistantMessageEventStream {
             self.stream(model, context, options.map(|options| options.stream))
         }
+    }
+
+    struct SignalStreams(tokio::sync::mpsc::UnboundedSender<AbortSignal>);
+
+    impl maho_ai::types::ProviderStreams for SignalStreams {
+        fn stream(
+            &self,
+            _: &Model,
+            _: &Context,
+            options: Option<StreamOptions>,
+        ) -> AssistantMessageEventStream {
+            let signal = options
+                .and_then(|options| options.request.signal)
+                .expect("request signal");
+            self.0.send(signal).expect("stream observer");
+            AssistantMessageEventStream::assistant()
+        }
+
+        fn stream_simple(
+            &self,
+            model: &Model,
+            context: &Context,
+            options: Option<SimpleStreamOptions>,
+        ) -> AssistantMessageEventStream {
+            self.stream(model, context, options.map(|options| options.stream))
+        }
+    }
+
+    struct RevokingFixtureOAuth;
+
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::OAuthAuth for RevokingFixtureOAuth {
+        fn name(&self) -> &str {
+            "fixture-oauth"
+        }
+
+        fn has_revoke(&self) -> bool {
+            true
+        }
+
+        async fn login(
+            &self,
+            _: &maho_ai::auth::types::ProviderAuthInteraction,
+        ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+            unreachable!("login is not part of this test")
+        }
+
+        async fn refresh(
+            &self,
+            _: &maho_ai::auth::types::OAuthCredential,
+            _: &AbortSignal,
+        ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+            unreachable!("fixture credential is not expired")
+        }
+
+        async fn to_auth(
+            &self,
+            credential: &maho_ai::auth::types::OAuthCredential,
+        ) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(maho_ai::auth::types::ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
+        }
+
+        async fn revoke(
+            &self,
+            _: &maho_ai::auth::types::OAuthCredential,
+            _: Option<maho_ai::auth::types::LogoutOptions>,
+        ) -> anyhow::Result<maho_ai::auth::types::OAuthRevocationResult> {
+            Ok(maho_ai::auth::types::OAuthRevocationResult::Revoked)
+        }
+    }
+
+    #[tokio::test]
+    async fn single_oauth_account_logout_cancels_its_active_stream() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (signals, mut opened) = tokio::sync::mpsc::unbounded_channel();
+            let model = Model {
+                id: "sol".into(),
+                provider: "single-oauth".into(),
+                api: "openai-completions".into(),
+                base_url: "http://localhost/v1".into(),
+                ..maho_ai::providers::faux::faux_provider(Default::default())
+                    .unwrap()
+                    .get_model(None)
+                    .unwrap()
+            };
+            let provider = maho_ai::models::create_provider(maho_ai::models::CreateProviderOptions {
+                id: model.provider.clone(),
+                name: None,
+                base_url: None,
+                headers: None,
+                auth: Some(ProviderAuth {
+                    api_key: None,
+                    oauth: Some(Arc::new(RevokingFixtureOAuth)),
+                }),
+                models: vec![model.clone()],
+                fetch_models: None,
+                restore_models: None,
+                filter_models: None,
+                api: maho_ai::models::ProviderApi::Single(Arc::new(SignalStreams(signals))),
+                images: IndexMap::new(),
+            })
+            .unwrap();
+            let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+                providers: Some(vec![provider]),
+                ..Default::default()
+            })
+            .unwrap();
+            runtime
+                .credentials
+                .set(
+                    &model.provider,
+                    Some(serde_json::json!({
+                        "type":"oauth", "access":"access", "refresh":"refresh",
+                        "expires": 9000000000000000.0
+                    })),
+                )
+                .unwrap();
+            let stream = runtime.stream(&model, &Context::default(), None);
+            let signal = opened.recv().await.expect("provider stream opened");
+            runtime
+                .models
+                .logout_with_options(
+                    &model.provider,
+                    Some(maho_ai::auth::types::LogoutOptions {
+                        slot_id: Some("default".into()),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .expect("slot logout");
+            let aborted = signal.aborted();
+            stream.cancel().await.expect("stream cleanup");
+            assert!(aborted, "the signed-out account's stream must be cancelled");
+
+            *runtime.config.write().unwrap() = ModelConfig::parse(
+                r#"{"providers":{"single-oauth":{"credentials":{"rotation":false}}}}"#,
+                "fixture",
+            );
+            runtime
+                .credentials
+                .set(
+                    &model.provider,
+                    Some(serde_json::json!({
+                        "type":"oauth", "access":"access", "refresh":"refresh",
+                        "expires": 9000000000000000.0,
+                        "accounts":[
+                            {"name":"work","access":"access","refresh":"refresh","expires":9000000000000000.0},
+                            {"name":"home","access":"access","refresh":"refresh","expires":9000000000000000.0}
+                        ]
+                    })),
+                )
+                .unwrap();
+            let stream = runtime.stream(&model, &Context::default(), None);
+            let signal = opened.recv().await.expect("duplicate credential stream opened");
+            runtime
+                .models
+                .logout_with_options(
+                    &model.provider,
+                    Some(maho_ai::auth::types::LogoutOptions {
+                        slot_id: Some("home".into()),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .expect("duplicate credential logout");
+            let aborted = signal.aborted();
+            stream.cancel().await.expect("stream cleanup");
+            assert!(aborted, "a duplicate token's stream must be cancelled");
+        })
+        .await
+        .expect("bounded account logout");
     }
 
     #[tokio::test]

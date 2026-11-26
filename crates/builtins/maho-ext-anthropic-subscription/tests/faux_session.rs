@@ -124,19 +124,11 @@ async fn retired_account_mutations_cannot_write_after_waiting_for_store_lock() {
                         &Default::default(),
                     )
                 });
-                let oauth = Arc::new(AnthropicSubscriptionOAuth {
-                    store: self.store.clone(),
-                    flow: Arc::new(maho_ai::auth::oauth::anthropic::AnthropicOAuth::new(
-                        maho_ai::auth::oauth::transport::default_transport(),
-                    )),
+                let oauth = Arc::new(AnthropicSubscriptionOAuth::native_with_resolver(
+                    self.store.clone(),
                     settings,
-                    ambient:
-                        maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(
-                            Arc::new(|| Box::pin(async { Ok(false) })),
-                            Arc::new(|| 1),
-                            30_000,
-                        ),
-                });
+                    Arc::new(|| anyhow::bail!("retired command cannot spawn Claude Code")),
+                ));
                 maho_ext_anthropic_subscription::account_command::register(
                     api,
                     oauth,
@@ -282,18 +274,11 @@ async fn native_builtin_command_pins_and_removes_accounts_through_bound_session(
                 &Default::default(),
             )
         });
-        let oauth = Arc::new(AnthropicSubscriptionOAuth {
-            store: store.clone(),
-            flow: Arc::new(maho_ai::auth::oauth::anthropic::AnthropicOAuth::new(
-                maho_ai::auth::oauth::transport::default_transport(),
-            )),
-            settings: settings.clone(),
-            ambient: maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(
-                Arc::new(|| Box::pin(async { Ok(false) })),
-                Arc::new(|| 1),
-                30_000,
-            ),
-        });
+        let oauth = Arc::new(AnthropicSubscriptionOAuth::native_with_resolver(
+            store.clone(),
+            settings.clone(),
+            Arc::new(|| anyhow::bail!("account management fixture has no Claude executable")),
+        ));
         let session = FauxSession::new(FauxScript {
             name: "anthropic-account".into(),
             prompt: prompt.into(),

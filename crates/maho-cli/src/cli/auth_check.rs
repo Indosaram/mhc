@@ -30,6 +30,17 @@ pub struct AuthCheckResult {
     pub auth_type: Option<String>,
 }
 
+pub fn mark_registration_failure(result: &mut AuthCheckResult, failures: &[(String, String)]) {
+    if failures
+        .iter()
+        .any(|(provider, _)| provider == &result.provider)
+    {
+        result.status = AuthCheckStatus::Invalid;
+        result.reason = Some(AuthCheckReason::InvalidState);
+        result.auth_type = None;
+    }
+}
+
 fn resolve_provider(args: &Args, runtime: &ModelRuntime) -> Result<String, String> {
     let (provider, model) =
         super::auth_command::validate_auth_command_args(args, AuthCommandKind::Check)?;
@@ -171,6 +182,16 @@ pub async fn check_provider_auth(
                 auth_type: Some(auth_type.to_owned()),
             })
         }
+        // deviation (docs/divergences.md P2-AUTH): the provider's check reads the flat credential, which a pool
+        // whose tokens live only in `accounts[]` leaves empty; a session serves such a pool through its slots.
+        Ok(None) if has_signed_in_oauth_slot(runtime.credentials.get(&provider).as_ref()) => {
+            Ok(AuthCheckResult {
+                status: AuthCheckStatus::Ready,
+                provider,
+                reason: None,
+                auth_type: Some("oauth".to_owned()),
+            })
+        }
         Ok(None) => Ok(AuthCheckResult {
             status: AuthCheckStatus::NotReady,
             provider,
@@ -184,6 +205,30 @@ pub async fn check_provider_auth(
             auth_type: None,
         }),
     }
+}
+
+/// An OAuth pool with at least one account that holds tokens and is not signed out (rotation-slots.ts).
+fn has_signed_in_oauth_slot(credential: Option<&serde_json::Value>) -> bool {
+    let Some(credential) = credential else {
+        return false;
+    };
+    let filled = |slot: &serde_json::Value, key: &str| {
+        slot.get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    };
+    maho_core::auth_storage::credential_kind(credential)
+        == Some(maho_core::auth_storage::CredentialKind::Oauth)
+        && credential
+            .get("accounts")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|accounts| {
+                accounts.iter().any(|slot| {
+                    filled(slot, "access")
+                        && filled(slot, "refresh")
+                        && slot.get("signedOut") != Some(&serde_json::Value::Bool(true))
+                })
+            })
 }
 
 pub async fn provider_credential(
@@ -226,6 +271,21 @@ fn _kind_is_check(kind: AuthCommandKind) -> bool {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn provider_registration_failure_is_an_invalid_auth_state() {
+        let mut result = AuthCheckResult {
+            status: AuthCheckStatus::NotReady,
+            provider: "fixture".into(),
+            reason: Some(AuthCheckReason::ProviderNotFound),
+            auth_type: None,
+        };
+        mark_registration_failure(&mut result, &[("other".into(), "error".into())]);
+        assert_eq!(result.status, AuthCheckStatus::NotReady);
+        mark_registration_failure(&mut result, &[("fixture".into(), "error".into())]);
+        assert_eq!(result.status, AuthCheckStatus::Invalid);
+        assert_eq!(result.reason, Some(AuthCheckReason::InvalidState));
+    }
 
     struct FixtureOAuth(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     #[async_trait::async_trait]
@@ -326,6 +386,77 @@ pub(super) mod tests {
         .expect("check");
         assert_eq!(result.status, AuthCheckStatus::Ready);
         assert_eq!(result.auth_type.as_deref(), Some("api_key"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_claude_cli_account_makes_anthropic_subscription_ready() {
+        let credential = serde_json::json!({
+            "type":"oauth", "access":"anthropic-subscription-managed",
+            "refresh":"anthropic-subscription-managed", "expires":4102444800000_u64,
+            "accounts":[{"name":"login","source":"login","store":"claude-cli","dirId":"fixture-dir"}]
+        });
+        let data = serde_json::Map::from_iter([("anthropic-subscription".to_owned(), credential)]);
+        let runtime =
+            ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+                credentials: Some(std::sync::Arc::new(
+                    maho_core::auth_storage::AuthStorage::in_memory(data.clone()),
+                )),
+                ..Default::default()
+            })
+            .expect("model runtime");
+        let store = crate::cli::credentials::AuthStorageCredentialStore::new(
+            maho_core::auth_storage::AuthStorage::in_memory(data),
+        )
+        .into_shared();
+        let (runtime, failures) =
+            crate::cli::extension_providers::register_builtin_extension_providers(
+                runtime,
+                Some(store),
+            );
+        assert!(failures.is_empty(), "{failures:?}");
+        let result = check_provider_auth(
+            &Args {
+                provider: Some("anthropic-subscription".into()),
+                ..Default::default()
+            },
+            &runtime,
+            false,
+        )
+        .await
+        .expect("check");
+        assert_eq!(result.status, AuthCheckStatus::Ready, "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_pool_with_tokens_only_in_accounts_is_ready_without_refresh() {
+        let runtime = ModelRuntime::create_sync(Default::default()).expect("model runtime");
+        runtime
+            .credentials
+            .set(
+                "chatgpt-subscription",
+                Some(serde_json::json!({
+                    "type":"oauth", "expires":0, "accountId":"fixture",
+                    "accounts":[
+                        {"name":"gone","source":"login","access":"a","refresh":"r","expires":0,"signedOut":true},
+                        {"name":"login-2","source":"login","access":"a2","refresh":"r2","expires":0,"route":"siwc"}
+                    ]
+                })),
+            )
+            .expect("seed");
+        let result = check_provider_auth(
+            &Args {
+                provider: Some("chatgpt-subscription".into()),
+                ..Default::default()
+            },
+            &runtime,
+            false,
+        )
+        .await
+        .expect("check");
+        assert_eq!(result.status, AuthCheckStatus::Ready, "{result:?}");
+        assert!(!has_signed_in_oauth_slot(Some(&serde_json::json!({
+            "type":"oauth", "accounts":[{"name":"gone","access":"a","refresh":"r","signedOut":true}]
+        }))));
     }
 
     #[tokio::test]

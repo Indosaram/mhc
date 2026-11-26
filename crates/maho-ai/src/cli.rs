@@ -230,6 +230,7 @@ mod tests {
                 .iter()
                 .any(|(oauth_id, _)| oauth_id == id)
         }));
-        assert!(ids.contains(&"anthropic".to_owned()));
+        assert!(!ids.iter().any(|id| id == "anthropic"));
+        assert!(ids.iter().any(|id| id == "chatgpt-subscription"));
     }
 }

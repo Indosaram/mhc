@@ -39,6 +39,34 @@ pub struct CredentialSlot {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+const OAUTH_ACCOUNT_FIELDS: &[&str] = &[
+    "route",
+    "issuer",
+    "subject",
+    "clientId",
+    "email",
+    "idToken",
+    "scopes",
+    "planUsageEnabled",
+    "signedOut",
+];
+
+fn copy_oauth_account_fields(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Map<String, serde_json::Value>,
+) {
+    for &field in OAUTH_ACCOUNT_FIELDS {
+        if let Some(value) = source.get(field) {
+            target.insert(field.to_owned(), value.clone());
+        } else {
+            target.remove(field);
+        }
+    }
+    if let Some(account_id) = source.get("accountId") {
+        target.insert("accountId".into(), account_id.clone());
+    }
+}
+
 /// `Credential` plus the pool bookkeeping (`accounts`, `pinned`). Field order mirrors the TS
 /// intersection type so JSON round-trips keep senpi's key set.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -438,20 +466,33 @@ fn credential_slot_env(credential: &Credential) -> Option<ProviderEnv> {
 
 fn slot_from_flat_credential_named(credential: &Credential, name: &str) -> CredentialSlot {
     match credential {
-        Credential::OAuth(c) => CredentialSlot {
-            name: name.to_string(),
-            source: Some(CredentialSlotSource::Login),
-            access: Some(c.access.clone()),
-            refresh: Some(c.refresh.clone()),
-            expires: Some(c.expires),
-            env: credential_slot_env(credential),
-            ..Default::default()
-        },
+        Credential::OAuth(c) => {
+            let mut extra = serde_json::Map::new();
+            copy_oauth_account_fields(&mut extra, &c.extra);
+            if let Some(id) = c.extra.get("loginId") {
+                extra.insert("loginId".into(), id.clone());
+            }
+            CredentialSlot {
+                name: name.to_string(),
+                source: Some(CredentialSlotSource::Login),
+                access: Some(c.access.clone()),
+                refresh: Some(c.refresh.clone()),
+                expires: Some(c.expires),
+                env: credential_slot_env(credential),
+                extra,
+                ..Default::default()
+            }
+        }
         Credential::ApiKey(c) => CredentialSlot {
             name: name.to_string(),
             source: Some(CredentialSlotSource::Login),
             key: c.key.clone(),
             env: credential_slot_env(credential),
+            extra: c
+                .extra
+                .get("loginId")
+                .map(|id| [("loginId".into(), id.clone())].into_iter().collect())
+                .unwrap_or_default(),
             ..Default::default()
         },
     }
@@ -550,23 +591,33 @@ fn merge_slot(base: &CredentialSlot, over: &CredentialSlot) -> CredentialSlot {
 fn slot_mirrors_flat(credential: &PooledCredential, slot: &CredentialSlot) -> bool {
     match credential.credential_type {
         PooledCredentialType::OAuth => {
-            slot.access == credential.access || slot.refresh == credential.refresh
+            let matches = |slot: Option<&str>, flat: Option<&str>| {
+                slot.is_some_and(|token| !token.is_empty() && Some(token) == flat)
+            };
+            matches(slot.access.as_deref(), credential.access.as_deref())
+                || matches(slot.refresh.as_deref(), credential.refresh.as_deref())
         }
         PooledCredentialType::ApiKey => slot.key == credential.key,
     }
 }
 
-fn project_flat_fields(credential: &PooledCredential, slot: &CredentialSlot) -> PooledCredential {
+pub(crate) fn project_flat_fields(
+    credential: &PooledCredential,
+    slot: &CredentialSlot,
+) -> PooledCredential {
     match credential.credential_type {
         PooledCredentialType::OAuth => {
             if slot.access.is_none() || slot.refresh.is_none() || slot.expires.is_none() {
                 return credential.clone();
             }
+            let mut extra = credential.extra.clone();
+            copy_oauth_account_fields(&mut extra, &slot.extra);
             PooledCredential {
                 access: slot.access.clone(),
                 refresh: slot.refresh.clone(),
                 expires: slot.expires,
                 env: slot.env.clone().or_else(|| credential.env.clone()),
+                extra,
                 ..credential.clone()
             }
         }
@@ -617,11 +668,18 @@ pub fn project_slot(credential: Option<&PooledCredential>, name: &str) -> Option
     let credential = credential?;
     let slot = find_slot(Some(credential), name)?;
     let env = slot.env.clone().or_else(|| credential.env.clone());
+    let mut extra = credential.extra.clone();
+    extra.remove("order");
+    extra.remove("loginId");
+    if let Some(id) = slot.extra.get("loginId") {
+        extra.insert("loginId".into(), id.clone());
+    }
     match credential.credential_type {
         PooledCredentialType::OAuth => {
             let (access, refresh, expires) = (slot.access?, slot.refresh?, slot.expires?);
             let mut cred = OAuthCredential::new(access, refresh, expires);
-            cred.extra = credential.extra.clone();
+            copy_oauth_account_fields(&mut extra, &slot.extra);
+            cred.extra = extra;
             if let Some(env) = env {
                 cred = cred.with_extra("env", serde_json::to_value(env).unwrap_or_default());
             }
@@ -630,7 +688,7 @@ pub fn project_slot(credential: Option<&PooledCredential>, name: &str) -> Option
         PooledCredentialType::ApiKey => Some(Credential::ApiKey(ApiKeyCredential {
             key: slot.key,
             env,
-            extra: credential.extra.clone(),
+            extra,
         })),
     }
 }
@@ -663,21 +721,33 @@ fn merge_provided_pool(
     existing: &[CredentialSlot],
     provided: &[CredentialSlot],
 ) -> PooledCredential {
-    let known: std::collections::HashSet<&str> = existing.iter().map(|s| s.name.as_str()).collect();
-    let added: Vec<CredentialSlot> = provided
+    let by_name = provided
         .iter()
-        .filter(|slot| !known.contains(slot.name.as_str()))
-        .cloned()
+        .map(|slot| (slot.name.as_str(), slot))
+        .collect::<std::collections::HashMap<_, _>>();
+    let known: std::collections::HashSet<&str> = existing.iter().map(|s| s.name.as_str()).collect();
+    let mut accounts: Vec<_> = existing
+        .iter()
+        .map(|slot| {
+            by_name
+                .get(slot.name.as_str())
+                .filter(|candidate| {
+                    candidate
+                        .expires
+                        .is_some_and(|expiry| slot.expires.is_none_or(|old| expiry > old))
+                })
+                .map_or_else(|| slot.clone(), |candidate| (*candidate).clone())
+        })
         .collect();
-    if added.is_empty() {
-        current.clone()
-    } else {
-        let mut accounts = existing.to_vec();
-        accounts.extend(added);
-        PooledCredential {
-            accounts: Some(accounts),
-            ..current.clone()
-        }
+    accounts.extend(
+        provided
+            .iter()
+            .filter(|slot| !known.contains(slot.name.as_str()))
+            .cloned(),
+    );
+    PooledCredential {
+        accounts: Some(accounts),
+        ..current.clone()
     }
 }
 
@@ -685,6 +755,14 @@ fn merge_provided_pool(
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("Refusing to save an empty API key")]
 pub struct EmptyApiKeyError;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Signed in to a different ChatGPT account than '{slot_name}'; nothing was changed. Sign in as that account, or add the other one as a new account."
+)]
+pub struct ReauthorizeAccountMismatchError {
+    pub slot_name: String,
+}
 
 /// True when an API-key credential names a `key` that is blank, whitespace or empty string.
 pub fn has_blank_key(credential: &Credential) -> bool {
@@ -742,9 +820,32 @@ pub enum LoginSlotOrigin {
 pub fn append_login_slot(
     stored: Option<PooledCredential>,
     flat: PooledCredential,
-    mut on_allocated: impl FnMut(&str, LoginSlotOrigin),
+    on_allocated: impl FnMut(&str, LoginSlotOrigin),
 ) -> Result<PooledCredential, String> {
-    assert_login_pooled_key_present(&flat).map_err(|e| e.to_string())?;
+    append_login_slot_with_options(
+        stored,
+        flat,
+        on_allocated,
+        AppendLoginSlotOptions::default(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+type AccountIdentity<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
+
+#[derive(Default)]
+pub struct AppendLoginSlotOptions<'a> {
+    pub account_identity: Option<AccountIdentity<'a>>,
+    pub reauthorize_slot: Option<&'a str>,
+}
+
+pub fn append_login_slot_with_options(
+    stored: Option<PooledCredential>,
+    flat: PooledCredential,
+    mut on_allocated: impl FnMut(&str, LoginSlotOrigin),
+    options: AppendLoginSlotOptions<'_>,
+) -> anyhow::Result<PooledCredential> {
+    assert_login_pooled_key_present(&flat)?;
     // A pool holds one kind: a login of the other kind replaces the credential instead of joining
     // it as a slot nothing can project (senpi#3448). The caller backs up what it replaces.
     let current = stored.filter(|stored| stored.credential_type == flat.credential_type);
@@ -781,22 +882,224 @@ pub fn append_login_slot(
         return Ok(flat);
     };
     let stored_accounts = current.accounts.clone();
+    if provided.is_none()
+        && let Some(target) = options
+            .reauthorize_slot
+            .and_then(|name| find_slot(Some(&current), name))
+    {
+        assert_same_reauthorized_account(&target, &flat, options.account_identity)?;
+        on_allocated(&target.name, LoginSlotOrigin::Generated);
+        if stored_accounts.as_ref().is_none_or(Vec::is_empty) {
+            return Ok(flat);
+        }
+        let fresh = replacement_slot(&flat, &target)?;
+        let mut next = if signed_out(&current) || slot_mirrors_flat(&current, &target) {
+            project_flat_fields(&current, &fresh)
+        } else {
+            current
+        };
+        if let Some(accounts) = &mut next.accounts
+            && let Some(slot) = accounts.iter_mut().find(|slot| slot.name == target.name)
+        {
+            *slot = fresh;
+        }
+        return Ok(next);
+    }
+    if provided.is_none() && signed_out(&current) {
+        let (name, mut next) = if stored_accounts.is_some() {
+            let name = next_login_slot_name(&current).map_err(anyhow::Error::msg)?;
+            let incoming = flat
+                .to_flat_credential()
+                .ok_or_else(|| anyhow::anyhow!("cannot derive flat credential"))?;
+            let fresh = slot_from_flat_credential_named(&incoming, &name);
+            let mut next = upsert_slot(Some(current), fresh.clone()).map_err(anyhow::Error::msg)?;
+            next = project_flat_fields(&next, &fresh);
+            next.extra.extend(flat.extra);
+            (name, next)
+        } else {
+            (DEFAULT_SLOT_NAME.to_owned(), flat)
+        };
+        next.extra.remove("signedOut");
+        on_allocated(&name, LoginSlotOrigin::Generated);
+        return Ok(next);
+    }
     if let Some(provided) = provided {
         return Ok(match stored_accounts {
             Some(stored) => merge_provided_pool(&current, &stored, &provided),
             None => flat,
         });
     }
-    let name = next_login_slot_name(&current)?;
+    if flat.credential_type == PooledCredentialType::OAuth && oauth_route(&flat.extra) == "siwc" {
+        if let Some(target) = list_slots(Some(&current)).into_iter().find(|slot| {
+            oauth_route(&slot.extra) == "siwc"
+                && ["issuer", "subject", "clientId"].into_iter().all(|field| {
+                    let value = flat.extra.get(field);
+                    value
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|s| !s.trim().is_empty())
+                        && slot.extra.get(field) == value
+                })
+        }) {
+            let fresh = replacement_slot(&flat, &target)?;
+            let mut next = if slot_mirrors_flat(&current, &target) {
+                project_flat_fields(&current, &fresh)
+            } else {
+                current
+            };
+            if let Some(accounts) = &mut next.accounts
+                && let Some(slot) = accounts.iter_mut().find(|slot| slot.name == target.name)
+            {
+                *slot = fresh;
+            }
+            on_allocated(&target.name, LoginSlotOrigin::Generated);
+            return Ok(next);
+        }
+    } else if let Some(identity) = options.account_identity
+        && let Some(fresh_access) = flat.access.as_deref()
+        && let Some(identity_value) = identity(fresh_access)
+    {
+        let slots = list_slots(Some(&current));
+        let matches = slots
+            .iter()
+            .filter(|slot| {
+                slot.source != Some(CredentialSlotSource::Env)
+                    && oauth_route(&slot.extra) == oauth_route(&flat.extra)
+                    && slot.access.as_deref().and_then(identity).as_ref() == Some(&identity_value)
+            })
+            .collect::<Vec<_>>();
+        if let Some(kept) = matches.first() {
+            on_allocated(&kept.name, LoginSlotOrigin::Generated);
+            if stored_accounts.as_ref().is_none_or(Vec::is_empty) {
+                return Ok(flat);
+            }
+            let fresh = replacement_slot(&flat, kept)?;
+            let mut next = if matches.iter().any(|slot| slot_mirrors_flat(&current, slot)) {
+                project_flat_fields(&current, &fresh)
+            } else {
+                current
+            };
+            let dropped = matches
+                .iter()
+                .skip(1)
+                .map(|slot| slot.name.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            next.accounts = Some(
+                slots
+                    .iter()
+                    .filter_map(|slot| {
+                        if slot.name == kept.name {
+                            Some(fresh.clone())
+                        } else {
+                            (!dropped.contains(slot.name.as_str())).then(|| slot.clone())
+                        }
+                    })
+                    .collect(),
+            );
+            if next
+                .pinned
+                .as_deref()
+                .is_some_and(|name| dropped.contains(name))
+            {
+                next.pinned = Some(kept.name.clone());
+            }
+            if let Some(order) = next
+                .extra
+                .get_mut("order")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                let mut seen = std::collections::HashSet::new();
+                order.retain_mut(|value| {
+                    if value.as_str().is_some_and(|name| dropped.contains(name)) {
+                        *value = serde_json::Value::String(kept.name.clone());
+                    }
+                    value
+                        .as_str()
+                        .is_none_or(|name| seen.insert(name.to_owned()))
+                });
+            }
+            return Ok(next);
+        }
+    }
+    let name = next_login_slot_name(&current).map_err(anyhow::Error::msg)?;
     let flat_credential = flat
         .to_flat_credential()
-        .ok_or("cannot derive flat credential")?;
+        .ok_or_else(|| anyhow::anyhow!("cannot derive flat credential"))?;
     let next = upsert_slot(
         Some(current),
         slot_from_flat_credential_named(&flat_credential, &name),
-    )?;
+    )
+    .map_err(anyhow::Error::msg)?;
     on_allocated(&name, LoginSlotOrigin::Generated);
     Ok(next)
+}
+
+fn oauth_route(extra: &serde_json::Map<String, serde_json::Value>) -> &str {
+    extra
+        .get("route")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("codex")
+}
+
+fn signed_out(credential: &PooledCredential) -> bool {
+    credential
+        .extra
+        .get("signedOut")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+fn assert_same_reauthorized_account(
+    target: &CredentialSlot,
+    flat: &PooledCredential,
+    account_identity: Option<AccountIdentity<'_>>,
+) -> Result<(), ReauthorizeAccountMismatchError> {
+    if flat.credential_type != PooledCredentialType::OAuth {
+        return Ok(());
+    }
+    let differs = |field| {
+        matches!(
+            (target.extra.get(field).and_then(serde_json::Value::as_str),
+             flat.extra.get(field).and_then(serde_json::Value::as_str)),
+            (Some(stored), Some(fresh)) if !stored.is_empty() && stored != fresh
+        )
+    };
+    let same_route = oauth_route(&target.extra) == oauth_route(&flat.extra);
+    let same_account = if oauth_route(&flat.extra) == "siwc" {
+        !["issuer", "subject", "clientId"].into_iter().any(differs)
+    } else {
+        let identity = |value: Option<&str>| {
+            value
+                .filter(|token| !token.is_empty())
+                .and_then(account_identity?)
+        };
+        match (
+            identity(target.access.as_deref()),
+            identity(flat.access.as_deref()),
+        ) {
+            (Some(stored), Some(fresh)) => stored == fresh,
+            _ => !differs("accountId"),
+        }
+    };
+    if same_route && same_account {
+        Ok(())
+    } else {
+        Err(ReauthorizeAccountMismatchError {
+            slot_name: target.name.clone(),
+        })
+    }
+}
+
+fn replacement_slot(
+    flat: &PooledCredential,
+    target: &CredentialSlot,
+) -> anyhow::Result<CredentialSlot> {
+    let incoming = flat
+        .to_flat_credential()
+        .ok_or_else(|| anyhow::anyhow!("cannot derive flat credential"))?;
+    let mut fresh = slot_from_flat_credential_named(&incoming, &target.name);
+    fresh.display_name.clone_from(&target.display_name);
+    fresh.source = target.source.or(fresh.source);
+    Ok(fresh)
 }
 
 pub fn managed_sentinel_material(provider_id: &str) -> String {
@@ -868,15 +1171,20 @@ pub fn merge_refreshed_slot(
     let Some(target) = accounts.iter().find(|slot| slot.name == name).cloned() else {
         return current.clone();
     };
-    let mirrors_flat = target.access == current.access || target.refresh == current.refresh;
+    let mirrors_flat = slot_mirrors_flat(current, &target);
+    let mut rotation = slot_from_flat_credential_named(refreshed, name);
+    rotation.extra.remove("loginId");
     let rotated_accounts: Vec<CredentialSlot> = accounts
         .iter()
         .map(|slot| {
             if slot.name == target.name {
+                let mut extra = slot.extra.clone();
+                extra.extend(rotation.extra.clone());
                 CredentialSlot {
                     access: Some(refreshed_oauth.access.clone()),
                     refresh: Some(refreshed_oauth.refresh.clone()),
                     expires: Some(refreshed_oauth.expires),
+                    extra,
                     ..slot.clone()
                 }
             } else {
@@ -885,11 +1193,14 @@ pub fn merge_refreshed_slot(
         })
         .collect();
     if mirrors_flat {
+        let mut extra = current.extra.clone();
+        extra.extend(rotation.extra);
         PooledCredential {
             access: Some(refreshed_oauth.access.clone()),
             refresh: Some(refreshed_oauth.refresh.clone()),
             expires: Some(refreshed_oauth.expires),
             accounts: Some(rotated_accounts),
+            extra,
             ..current.clone()
         }
     } else {
@@ -915,17 +1226,22 @@ pub fn merge_refreshed(current: &PooledCredential, refreshed: &Credential) -> Po
     }
     let target = accounts
         .iter()
-        .find(|slot| slot.access == current.access || slot.refresh == current.refresh)
+        .find(|slot| slot_mirrors_flat(current, slot))
         .cloned();
+    let mut rotation = slot_from_flat_credential_named(refreshed, DEFAULT_SLOT_NAME);
+    rotation.extra.remove("loginId");
     let rotated_accounts: Vec<CredentialSlot> = match &target {
         Some(target) => accounts
             .iter()
             .map(|slot| {
                 if slot.name == target.name {
+                    let mut extra = slot.extra.clone();
+                    extra.extend(rotation.extra.clone());
                     CredentialSlot {
                         access: Some(refreshed_oauth.access.clone()),
                         refresh: Some(refreshed_oauth.refresh.clone()),
                         expires: Some(refreshed_oauth.expires),
+                        extra,
                         ..slot.clone()
                     }
                 } else {
@@ -935,11 +1251,14 @@ pub fn merge_refreshed(current: &PooledCredential, refreshed: &Credential) -> Po
             .collect(),
         None => accounts.clone(),
     };
+    let mut extra = current.extra.clone();
+    extra.extend(rotation.extra);
     PooledCredential {
         access: Some(refreshed_oauth.access.clone()),
         refresh: Some(refreshed_oauth.refresh.clone()),
         expires: Some(refreshed_oauth.expires),
         accounts: Some(rotated_accounts),
+        extra,
         ..current.clone()
     }
 }
@@ -1716,6 +2035,25 @@ mod tests {
             stored,
             authoritative.accounts.as_ref().unwrap().first().unwrap()
         );
+    }
+
+    #[test]
+    fn a_provider_owned_pool_accepts_newer_expiry_for_a_named_slot() {
+        let stored = sentinel_pool();
+        let updated = login_slot("default", "fresh-access", "fresh-refresh", f64::MAX);
+        let incoming = PooledCredential {
+            accounts: Some(vec![updated.clone()]),
+            ..stored.clone()
+        };
+        let next = append_login_slot(Some(stored.clone()), incoming, |_, _| {
+            panic!("a refresh of the existing slot does not allocate a new name")
+        })
+        .expect("merge newer material");
+        assert_eq!(
+            next.access, stored.access,
+            "leave the flat sentinel in place"
+        );
+        assert_eq!(list_slots(Some(&next)), vec![updated]);
     }
 
     #[test]

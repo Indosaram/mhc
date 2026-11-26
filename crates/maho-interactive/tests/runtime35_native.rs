@@ -444,6 +444,107 @@ async fn login_api_key_saves_credential_and_logout_removes_it() {
     );
 }
 
+struct UnconfirmedChatGptRevocation;
+
+#[async_trait::async_trait]
+impl maho_ai::auth::types::OAuthAuth for UnconfirmedChatGptRevocation {
+    fn name(&self) -> &str {
+        "Offline ChatGPT"
+    }
+
+    async fn login(
+        &self,
+        _: &maho_ai::auth::types::ProviderAuthInteraction,
+    ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        anyhow::bail!("this fixture cannot log in")
+    }
+
+    async fn refresh(
+        &self,
+        _: &maho_ai::auth::types::OAuthCredential,
+        _: &maho_ai::utils::abort::AbortSignal,
+    ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        anyhow::bail!("this fixture cannot refresh")
+    }
+
+    fn has_revoke(&self) -> bool {
+        true
+    }
+
+    async fn revoke(
+        &self,
+        _: &maho_ai::auth::types::OAuthCredential,
+        _: Option<maho_ai::auth::types::LogoutOptions>,
+    ) -> anyhow::Result<maho_ai::auth::types::OAuthRevocationResult> {
+        Ok(maho_ai::auth::types::OAuthRevocationResult::RemoteRevocationUnconfirmed)
+    }
+
+    async fn to_auth(
+        &self,
+        _: &maho_ai::auth::types::OAuthCredential,
+    ) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+        Ok(Default::default())
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_logout_selector_renders_unconfirmed_remote_revocation() {
+    use maho_core::credential_accounts::CHATGPT_SUBSCRIPTION;
+    use maho_interactive::interactive_mode::AuthLifecycleEvent;
+    use maho_tui::tui::Component;
+
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None,
+        |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+        CHATGPT_SUBSCRIPTION,
+        "faux-1",
+        false,
+    );
+    let mut runtime = session.model_registry().model_runtime.clone();
+    runtime
+        .register_provider(
+            CHATGPT_SUBSCRIPTION,
+            maho_core::provider_composer::ProviderConfigInput {
+                oauth: Some(std::sync::Arc::new(UnconfirmedChatGptRevocation)),
+                ..Default::default()
+            },
+        )
+        .expect("register fake revoker");
+    runtime
+        .credentials
+        .set(
+            CHATGPT_SUBSCRIPTION,
+            Some(serde_json::json!({
+                "type": "oauth", "access": "fixture-access", "refresh": "fixture-refresh",
+                "expires": 4_102_444_800_000_u64, "route": "siwc"
+            })),
+        )
+        .expect("seed isolated auth");
+    let mut events = mode.subscribe_auth_lifecycle();
+    mode.enqueue_submission("/logout", None);
+    mode.dispatch_submission()
+        .await
+        .expect("open logout selector");
+    mode.poll_after_paint(std::task::Waker::noop());
+    mode.handle_input("\r");
+    mode.dispatch_submission().await.expect("submit provider");
+    mode.poll_after_paint(std::task::Waker::noop());
+    let outcome = next_auth_lifecycle_event(&mut mode, &mut events, |event| {
+        matches!(event, AuthLifecycleEvent::LogoutCompleted { .. })
+    })
+    .await;
+    assert!(matches!(
+        outcome,
+        AuthLifecycleEvent::LogoutCompleted {
+            outcome: Ok(()),
+            ..
+        }
+    ));
+    let rendered = mode.render(120).join("\n");
+    assert!(rendered.contains("Remote revocation was not confirmed"));
+    assert!(rendered.contains("disconnect the app in ChatGPT Settings"));
+}
+
 #[tokio::test]
 async fn login_cached_default_is_selected_before_catalog_refresh_completes() {
     use maho_interactive::interactive_mode::{AuthLifecycleEvent, AuthLifecycleOutcome};

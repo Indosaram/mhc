@@ -11,6 +11,17 @@ use std::{
 
 pub const LOGIN_CANCELLED_MESSAGE: &str = "Login cancelled";
 
+#[derive(Debug)]
+pub struct LoginCancelled;
+
+impl std::fmt::Display for LoginCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(LOGIN_CANCELLED_MESSAGE)
+    }
+}
+
+impl std::error::Error for LoginCancelled {}
+
 pub fn platform_open_browser() -> Arc<dyn Fn(&str) + Send + Sync> {
     Arc::new(|url: &str| {
         use std::process::{Command, Stdio};
@@ -116,7 +127,7 @@ impl AuthInteraction for ExtensionLoginInteraction {
         }
         let result = async {
             if signal.aborted() {
-                anyhow::bail!(LOGIN_CANCELLED_MESSAGE);
+                return Err(LoginCancelled.into());
             }
             let options = ExtensionUiDialogOptions {
                 signal: Some(ui_signal),
@@ -154,14 +165,14 @@ impl AuthInteraction for ExtensionLoginInteraction {
                 }
             };
             if signal.aborted() {
-                anyhow::bail!(LOGIN_CANCELLED_MESSAGE);
+                return Err(LoginCancelled.into());
             }
             match answer {
                 Some(answer) => Ok(answer),
                 None => {
                     self.controller
                         .abort(Some(AbortReason::new("Error", LOGIN_CANCELLED_MESSAGE)));
-                    anyhow::bail!(LOGIN_CANCELLED_MESSAGE)
+                    Err(LoginCancelled.into())
                 }
             }
         }

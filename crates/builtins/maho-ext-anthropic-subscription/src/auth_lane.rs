@@ -20,7 +20,7 @@ pub enum TokenInjection {
 /// A stored account that names no account cannot be selected, signed into, or affinity-routed. Refusing keeps the turn
 /// from silently falling back to ambient host credentials (oh-my-openagent#12228).
 const UNUSABLE_STORED_ACCOUNT_ERROR: &str = "claude_account_unusable: a stored Claude account has no name, so no turn can use it; run /login anthropic-subscription to add a named account";
-pub const PROVIDER_ID: &str = "anthropic-subscription";
+pub use crate::provider_id::ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER_ID;
 pub struct ManagedPool {
     pub accounts: Vec<AccountSlot>,
     pub environment: BTreeMap<String, String>,
@@ -372,6 +372,23 @@ pub fn prepared_environment(
         lane,
     })
 }
+/// Prepare a named CLI-store slot without normal turn admission or account selection.
+pub(crate) fn prepare_claude_cli_probe(
+    environment: &BTreeMap<String, String>,
+    slot: &AccountSlot,
+    agent_dir: &Path,
+) -> anyhow::Result<PreparedSlot> {
+    if !slot.is_claude_cli() {
+        anyhow::bail!("authentication_failed: a connection probe requires a Claude CLI account");
+    }
+    if slot.sign_in_required.is_some() {
+        anyhow::bail!("authentication_failed: the Claude CLI account needs to sign in again");
+    }
+    // Use only this account's own login. Unlike turn admission, a probe ignores blocks and has no
+    // store, account pool, or retry path from which it could recover or rotate a slot.
+    prepare_claude_cli_slot(environment, slot, agent_dir)
+}
+
 /// senpi `prepareClaudeCliSlot`: a claude-cli account turn gets no token, only the account's own config dir (its links
 /// repaired first, so the transcript lands in the shared root). Every inherited auth variable is stripped, so the CLI
 /// can only use the login in its own store.

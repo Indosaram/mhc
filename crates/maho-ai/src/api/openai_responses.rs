@@ -24,6 +24,9 @@ use crate::api::openai_responses_shared::{
     ResponsesStreamOptions, convert_responses_messages, convert_responses_tools, get_done_reason,
     process_responses_stream,
 };
+use crate::api::openai_responses_siwc::{
+    shape_request as shape_siwc_request, unsupported_parameter,
+};
 use crate::api::simple_options::{
     OPENAI_RESPONSES_RESERVED_BODY_KEYS, apply_extra_body, build_base_options, clamp_max_for_openai,
 };
@@ -39,6 +42,7 @@ use crate::models::{
     clamp_thinking_level, infer_openai_thinking_level_map, supports_max, supports_xhigh,
 };
 use crate::openai_responses_compat::SessionAffinityFormat;
+use crate::openai_responses_compat::uses_siwc;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model,
     ModelThinkingLevel, ProviderEnv, ProviderHeaders, ProviderResponse, ServiceTierPreference,
@@ -58,7 +62,11 @@ use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::provider_env::get_provider_env_value;
 use crate::utils::provider_retry::{
     ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions,
-    retry_provider_request,
+    retry_provider_request_with_policy,
+};
+use crate::utils::siwc_errors::{
+    SIWC_MISSING_RESPONSES_SCOPE_GUIDANCE, SiwcRecovery, is_siwc_missing_responses_scope,
+    siwc_recovery_from_diagnostic,
 };
 
 pub const OPENAI_TOOL_CALL_PROVIDERS: [&str; 3] = ["openai", "chatgpt-subscription", "opencode"];
@@ -74,6 +82,7 @@ pub(crate) type ResponsesBody = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest:
 pub(crate) struct ResponsesFailureMetadata {
     pub diagnostic: Option<crate::types::ProviderDiagnostic>,
     pub error_cause: Option<crate::types::AssistantErrorCause>,
+    pub unsupported_parameter: Option<String>,
 }
 
 pub(crate) type ResponsesFailureSlot = Arc<Mutex<ResponsesFailureMetadata>>;
@@ -95,11 +104,43 @@ pub(crate) fn observe_responses_events(
         }
         if serde_json::to_vec(event).is_ok_and(|bytes| bytes.len() <= 8192) {
             let mut failure = failure.lock().unwrap_or_else(|poison| poison.into_inner());
-            failure.diagnostic = github_copilot_errors::diagnostic_from_responses_event(event);
-            failure.error_cause =
-                github_copilot_errors::usage_limit_cause(&model.provider, None, event);
+            observe_responses_failure(&mut failure, event, &model.provider, uses_siwc(model));
         }
     })
+}
+
+fn observe_responses_failure(
+    failure: &mut ResponsesFailureMetadata,
+    event: &Value,
+    provider: &str,
+    siwc: bool,
+) {
+    failure.diagnostic = github_copilot_errors::diagnostic_from_responses_event(event);
+    if siwc {
+        if let Some(diagnostic) = &mut failure.diagnostic {
+            diagnostic.mark_siwc();
+        }
+        let error = event
+            .pointer("/response/error")
+            .or_else(|| event.get("error"))
+            .unwrap_or(event);
+        let code = failure
+            .diagnostic
+            .as_ref()
+            .and_then(|diagnostic| diagnostic.code.as_deref());
+        failure.unsupported_parameter =
+            if code == Some("subscription_sharing_unsupported_capability") {
+                error
+                    .get("param")
+                    .or_else(|| event.get("param"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            } else {
+                None
+            };
+    } else {
+        failure.error_cause = github_copilot_errors::usage_limit_cause(provider, None, event);
+    }
 }
 
 pub(crate) fn observe_responses_transport(
@@ -119,10 +160,13 @@ pub(crate) fn observe_responses_transport(
 }
 
 pub(crate) fn responses_stream_error(
-    message: String,
+    mut message: String,
     failure: &ResponsesFailureSlot,
 ) -> ResponsesApiError {
     let mut failure = failure.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(param) = failure.unsupported_parameter.take() {
+        message.push_str(&format!("\nUnsupported parameter: {param}"));
+    }
     ResponsesApiError::Provider {
         message,
         diagnostic: failure.diagnostic.take(),
@@ -168,17 +212,32 @@ pub(crate) fn apply_responses_failure(output: &mut AssistantMessage, error: &Res
     }
 }
 
+fn siwc_http_diagnostic(error: &ResponsesApiError) -> Option<crate::types::ProviderDiagnostic> {
+    let (ResponsesApiError::Http { status_code, body }
+    | ResponsesApiError::HttpWithHeaders {
+        status_code, body, ..
+    }) = error
+    else {
+        return None;
+    };
+    let mut diagnostic =
+        github_copilot_errors::diagnostic_from_openai_error(Some(*status_code), Some(body))?;
+    diagnostic.mark_siwc();
+    Some(diagnostic)
+}
+
 #[cfg(test)]
 async fn prime_responses_body(
     body: ResponsesBody,
 ) -> Result<ResponsesBody, crate::utils::tool_choice_fallback::ForcedToolChoiceFailure> {
-    prime_responses_body_with_provenance(body, &Arc::default(), "").await
+    prime_responses_body_with_provenance(body, &Arc::default(), "", false).await
 }
 
 async fn prime_responses_body_with_provenance(
     mut body: ResponsesBody,
     provenance: &ResponsesFailureSlot,
     provider: &str,
+    siwc: bool,
 ) -> Result<ResponsesBody, crate::utils::tool_choice_fallback::ForcedToolChoiceFailure> {
     let mut buffered = Vec::new();
     let mut pending = Vec::new();
@@ -228,10 +287,7 @@ async fn prime_responses_body_with_provenance(
                         let mut metadata = provenance
                             .lock()
                             .unwrap_or_else(|poison| poison.into_inner());
-                        metadata.diagnostic =
-                            github_copilot_errors::diagnostic_from_responses_event(&event);
-                        metadata.error_cause =
-                            github_copilot_errors::usage_limit_cause(provider, None, &event);
+                        observe_responses_failure(&mut metadata, &event, provider, siwc);
                     }
                     let error = event
                         .get("error")
@@ -341,13 +397,14 @@ pub fn get_compat(model: &Model, env: Option<&ProviderEnv>) -> ResponsesCompat {
         .map(|compat| compat.openai_responses())
         .unwrap_or_default();
     let is_native_endpoint = is_openai_responses_native_endpoint(model, env);
+    let siwc = uses_siwc(model);
     ResponsesCompat {
         supports_developer_role: compat.supports_developer_role.unwrap_or(true),
         session_affinity_format: compat
             .session_affinity_format
             .unwrap_or_else(|| detect_session_affinity_format(model)),
         supports_long_cache_retention: compat.supports_long_cache_retention.unwrap_or(true),
-        supports_web_socket: compat.supports_web_socket.unwrap_or(is_native_endpoint),
+        supports_web_socket: !siwc && compat.supports_web_socket.unwrap_or(is_native_endpoint),
         supports_remote_compaction_v2: compat
             .supports_remote_compaction_v2
             .unwrap_or(is_native_endpoint),
@@ -363,7 +420,7 @@ pub fn get_compat(model: &Model, env: Option<&ProviderEnv>) -> ResponsesCompat {
         supports_strict_mode: compat.supports_strict_mode.unwrap_or(false),
         supports_openai_grammar_tools: compat.supports_openai_grammar_tools.unwrap_or(false),
         supports_additional_tools: compat.supports_additional_tools.unwrap_or(false),
-        supports_tool_search: compat.supports_tool_search.unwrap_or(false),
+        supports_tool_search: !siwc && compat.supports_tool_search.unwrap_or(false),
         supports_explicit_prompt_cache_mode: compat
             .supports_explicit_prompt_cache_mode
             .unwrap_or(false),
@@ -740,8 +797,25 @@ pub fn build_params(
         .collect();
     let reasoning_summary = reasoning_summary(options);
     let summary_is_truthy = matches!(&reasoning_summary, Some(Some(value)) if !value.is_empty());
-    let requested_reasoning_effort = option_str(options, "reasoningEffort")
-        .or_else(|| summary_is_truthy.then(|| String::from("medium")));
+    let configured_effort = (uses_siwc(model)
+        && crate::models::supports_configuration_update(model))
+    .then(|| {
+        context
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                crate::types::Message::ConfigurationUpdate(update) => Some(&update.effort),
+                _ => None,
+            })
+    })
+    .flatten();
+    let requested_reasoning_effort = match configured_effort.map(String::as_str) {
+        Some("off") => None,
+        Some(effort) => Some(effort.to_owned()),
+        None => option_str(options, "reasoningEffort")
+            .or_else(|| summary_is_truthy.then(|| String::from("medium"))),
+    };
     let thinking_level_map = infer_openai_thinking_level_map(model);
     let mapped_reasoning_effort: Option<Option<String>> = requested_reasoning_effort
         .as_deref()
@@ -1882,16 +1956,32 @@ async fn run_stream(
             | ResponsesApiError::Provider { .. } => (None, None),
         };
         if output.stop_reason != StopReason::Aborted {
-            apply_responses_failure(&mut output, &error);
+            if uses_siwc(&model) && status.is_some() {
+                output.provider_diagnostic = siwc_http_diagnostic(&error);
+            } else {
+                apply_responses_failure(&mut output, &error);
+            }
         }
         let error_headers = match &error {
             ResponsesApiError::HttpWithHeaders { headers, .. } => Some(headers),
             _ => None,
         };
-        let message = github_copilot_tool_limit::format_github_copilot_tool_limit_error(
+        let mut message = github_copilot_tool_limit::format_github_copilot_tool_limit_error(
             &output,
             format_openai_responses_error(&error, &model.provider),
         );
+        if uses_siwc(&model) {
+            if let Some(param) = body
+                .and_then(|body| serde_json::from_str::<Value>(body).ok())
+                .and_then(|payload| unsupported_parameter(payload.get("error").unwrap_or(&payload)))
+            {
+                message.push_str(&format!("\nUnsupported parameter: {param}"));
+            }
+            if is_siwc_missing_responses_scope(&message) {
+                message.push('\n');
+                message.push_str(SIWC_MISSING_RESPONSES_SCOPE_GUIDANCE);
+            }
+        }
         output.error_message = Some(github_copilot_errors::with_github_copilot_failure_note(
             message,
             &model.provider,
@@ -1937,6 +2027,7 @@ async fn drive(
         .then(|| options.session_id.clone())
         .flatten();
     let compat = get_compat(model, env);
+    let siwc = uses_siwc(model);
     let declared_tools = crate::types::transcript::get_declared_tools(
         &crate::types::transcript::normalize_context(context).messages,
     );
@@ -1999,7 +2090,14 @@ async fn drive(
             )
         });
     github_copilot_tool_limit::record_github_copilot_tool_limit(output, omitted);
-    let transport = options.transport.unwrap_or(Transport::Sse);
+    if siwc {
+        shape_siwc_request(&mut params);
+    }
+    let transport = if siwc {
+        Transport::Sse
+    } else {
+        options.transport.unwrap_or(Transport::Sse)
+    };
     let mut refused_allowed_tools_over_websocket = false;
     if transport != Transport::Sse && compat.supports_web_socket {
         let mut websocket_started = false;
@@ -2173,6 +2271,7 @@ async fn drive(
                                             observe_responses_transport(Box::pin(response.bytes_stream()), provenance.clone()),
                                             &provenance,
                                             &provider,
+                                            siwc,
                                         )
                                             .await?;
                                     return Ok((metadata, body));
@@ -2235,18 +2334,28 @@ async fn drive(
         max_retry_delay_ms: options.request.max_retry_delay_ms,
         signal: signal.clone(),
     };
-    let (response, body) = match retry_provider_request(attempt, &retry_options).await {
-        Ok(response) => response,
-        Err(ProviderRetryError::Request(error)) => return Err(error),
-        Err(ProviderRetryError::RetryDelay { message, .. }) => {
-            return Err(ResponsesApiError::Message(message));
-        }
-        Err(ProviderRetryError::Aborted) => {
-            return Err(ResponsesApiError::Message(String::from(
-                "Request was aborted",
-            )));
-        }
-    };
+    let (response, body) =
+        match retry_provider_request_with_policy(attempt, &retry_options, |error| {
+            if !siwc {
+                return None;
+            }
+            let diagnostic = siwc_http_diagnostic(error);
+            siwc_recovery_from_diagnostic(diagnostic.as_ref())
+                .map(|recovery| recovery == SiwcRecovery::Transient)
+        })
+        .await
+        {
+            Ok(response) => response,
+            Err(ProviderRetryError::Request(error)) => return Err(error),
+            Err(ProviderRetryError::RetryDelay { message, .. }) => {
+                return Err(ResponsesApiError::Message(message));
+            }
+            Err(ProviderRetryError::Aborted) => {
+                return Err(ResponsesApiError::Message(String::from(
+                    "Request was aborted",
+                )));
+            }
+        };
 
     if retried_allowed_tools.load(Ordering::SeqCst) || refused_allowed_tools_over_websocket {
         crate::api::openai_responses_allowed_tools::remember_allowed_tools_choice_refusal(model);
@@ -2391,6 +2500,11 @@ pub async fn warm_openai_responses_prompt_cache(
     context: &Context,
     options: SimpleStreamOptions,
 ) -> Result<(Usage, Value), String> {
+    if uses_siwc(model) {
+        return Err(
+            "SIWC requires streaming inference; prompt-cache prewarm is unsupported".into(),
+        );
+    }
     let prefix = Context {
         messages: Vec::new(),
         ..context.clone()
@@ -2539,7 +2653,7 @@ mod audit_resp2_tests {
             b"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\ndata: {\"type\":\"response.content_part.added\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"x\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"insufficient_quota\",\"message\":\"failure\"}}}\n\n"
         ))]));
         // When the real processor consumes the stream after priming commits the content.
-        let body = prime_responses_body_with_provenance(body, &provenance, &model.provider)
+        let body = prime_responses_body_with_provenance(body, &provenance, &model.provider, false)
             .await
             .expect("committed stream");
         let error = process_responses_stream(
@@ -2616,7 +2730,7 @@ mod audit_resp2_tests {
         ))]));
         // When priming encounters the refusal.
         assert!(
-            prime_responses_body_with_provenance(body, &provenance, "chatgpt-subscription")
+            prime_responses_body_with_provenance(body, &provenance, "chatgpt-subscription", false)
                 .await
                 .is_err()
         );

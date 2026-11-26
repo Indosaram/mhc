@@ -1,8 +1,9 @@
 //! Port of senpi packages/ai/src/auth/helpers.ts.
 
 use crate::auth::types::{
-    ApiKeyAuth, ApiKeyCredential, AuthContext, AuthPrompt, AuthPromptKind, AuthResult, ModelAuth,
-    OAuthAuth, OAuthCredential, ProviderAuthInteraction,
+    ApiKeyAuth, ApiKeyCredential, AuthContext, AuthPrompt, AuthPromptKind, AuthResult,
+    LoginOptions, LogoutOptions, ModelAuth, OAuthAuth, OAuthCredential, OAuthRevocationResult,
+    ProviderAuthInteraction,
 };
 use crate::utils::abort::AbortSignal;
 use async_trait::async_trait;
@@ -112,6 +113,8 @@ pub struct LazyOAuth {
     is_subscription: bool,
     login_label: Option<String>,
     rejected_token_statuses: Vec<u16>,
+    account_identity: Option<fn(&str) -> Option<String>>,
+    has_revoke: bool,
     load: Arc<dyn Fn() -> LoadFuture + Send + Sync>,
     loaded: Mutex<Option<Arc<dyn OAuthAuth>>>,
 }
@@ -127,12 +130,24 @@ pub fn lazy_oauth(
         is_subscription,
         login_label,
         rejected_token_statuses: Vec::new(),
+        account_identity: None,
+        has_revoke: false,
         load: Arc::new(load),
         loaded: Mutex::new(None),
     }
 }
 
 impl LazyOAuth {
+    pub fn with_account_identity(mut self, account_identity: fn(&str) -> Option<String>) -> Self {
+        self.account_identity = Some(account_identity);
+        self
+    }
+
+    pub fn with_revocation(mut self) -> Self {
+        self.has_revoke = true;
+        self
+    }
+
     pub fn with_rejected_token_statuses(mut self, statuses: &[u16]) -> Self {
         self.rejected_token_statuses = statuses.to_vec();
         self
@@ -176,6 +191,33 @@ impl OAuthAuth for LazyOAuth {
         interaction: &ProviderAuthInteraction,
     ) -> anyhow::Result<OAuthCredential> {
         self.loaded().await?.login(interaction).await
+    }
+
+    async fn login_with_options(
+        &self,
+        interaction: &ProviderAuthInteraction,
+        options: Option<LoginOptions>,
+    ) -> anyhow::Result<OAuthCredential> {
+        self.loaded()
+            .await?
+            .login_with_options(interaction, options)
+            .await
+    }
+
+    fn account_identity(&self, access: &str) -> Option<String> {
+        self.account_identity.and_then(|identify| identify(access))
+    }
+
+    fn has_revoke(&self) -> bool {
+        self.has_revoke
+    }
+
+    async fn revoke(
+        &self,
+        credential: &OAuthCredential,
+        options: Option<LogoutOptions>,
+    ) -> anyhow::Result<OAuthRevocationResult> {
+        self.loaded().await?.revoke(credential, options).await
     }
 
     async fn refresh(

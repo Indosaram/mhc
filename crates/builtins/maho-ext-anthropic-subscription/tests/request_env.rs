@@ -3,41 +3,13 @@ use std::os::unix::fs::PermissionsExt;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use maho_ai::{
-    auth::types::*,
-    types::{
-        ContentBlock, Context, Message, SimpleStreamOptions, StopReason, StreamKind, UserContent,
-        UserMessage,
-    },
+use maho_ai::types::{
+    ContentBlock, Context, Message, SimpleStreamOptions, StopReason, StreamKind, UserContent,
+    UserMessage,
 };
 use maho_ext_anthropic_subscription::{
     extension::AnthropicSubscriptionExtension, oauth_login::AnthropicSubscriptionOAuth,
 };
-
-struct Flow;
-
-#[async_trait::async_trait]
-impl OAuthAuth for Flow {
-    fn name(&self) -> &str {
-        "fixture"
-    }
-
-    async fn login(&self, _: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
-        panic!("no login")
-    }
-
-    async fn refresh(
-        &self,
-        _: &OAuthCredential,
-        _: &maho_ai::utils::abort::AbortSignal,
-    ) -> anyhow::Result<OAuthCredential> {
-        panic!("ambient never refreshes")
-    }
-
-    async fn to_auth(&self, _: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth::default())
-    }
-}
 
 async fn turn_with_request_env(request: BTreeMap<String, String>) -> String {
     let directory = tempfile::tempdir().expect("directory");
@@ -63,16 +35,11 @@ async fn turn_with_request_env(request: BTreeMap<String, String>) -> String {
             &Default::default(),
         )
     });
-    let oauth = Arc::new(AnthropicSubscriptionOAuth {
-        store: Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new()),
-        flow: Arc::new(Flow),
+    let oauth = Arc::new(AnthropicSubscriptionOAuth::native(
+        Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new()),
         settings,
-        ambient: maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(
-            Arc::new(|| Box::pin(async { Ok(false) })),
-            Arc::new(|| 1),
-            30_000,
-        ),
-    });
+        executable.clone(),
+    ));
     let host = BTreeMap::from([("PATH".to_owned(), "/usr/bin".to_owned())]);
     let extension = AnthropicSubscriptionExtension::native(
         oauth,

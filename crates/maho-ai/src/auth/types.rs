@@ -45,8 +45,11 @@ pub struct ApiKeyCredential {
 /// signature.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OAuthCredential {
+    #[serde(default)]
     pub refresh: String,
+    #[serde(default)]
     pub access: String,
+    #[serde(default)]
     pub expires: f64,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -73,6 +76,10 @@ impl OAuthCredential {
     pub fn with_extra(mut self, key: impl Into<String>, value: Value) -> Self {
         self.extra.insert(key.into(), value);
         self
+    }
+
+    pub fn is_signed_out(&self) -> bool {
+        self.extra.get("signedOut").and_then(Value::as_bool) == Some(true)
     }
 }
 
@@ -140,6 +147,57 @@ pub struct AuthOperationOptions {
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Secret-free outcome of ending the renewable session after clearing it locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum OAuthRevocationResult {
+    Revoked,
+    RemoteRevocationUnconfirmed,
+}
+
+pub type LogoutSleep = Arc<dyn Fn(u64) -> BoxFuture<'static, ()> + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct LogoutOptions {
+    pub signal: Option<crate::utils::abort::AbortSignal>,
+    pub slot_id: Option<String>,
+    /// Injectable revocation retry backoff, in milliseconds.
+    pub sleep: Option<LogoutSleep>,
+}
+
+pub type RefreshLockOperation = Box<
+    dyn FnOnce(
+            crate::utils::abort::AbortSignal,
+        ) -> BoxFuture<
+            'static,
+            Result<Option<Credential>, crate::auth::oauth_refresh::RefreshError>,
+        > + Send,
+>;
+
+type DefaultRefreshLocks =
+    std::collections::HashMap<(usize, String, String), std::sync::Weak<tokio::sync::Mutex<()>>>;
+
+fn default_refresh_lock(
+    store: usize,
+    provider_id: &str,
+    slot_name: &str,
+) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<DefaultRefreshLocks>> =
+        std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() != 0);
+    let key = (store, provider_id.to_owned(), slot_name.to_owned());
+    if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
 /// App-owned credential storage, keyed by `Provider.id`, one entry per provider.
 ///
 /// Mutations are serialized per provider, including conditional deletion.
@@ -170,6 +228,28 @@ pub trait CredentialStore: Send + Sync {
         _options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>> {
         anyhow::bail!("Credential store for {provider_id} does not implement readSlot")
+    }
+
+    /// Hold session-scoped exclusion through read, exchange and persistence. The default
+    /// serializes callers on this store within the process. Persistent stores should override
+    /// this with a cross-process lock separate from the global write lock.
+    async fn with_refresh_lock(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        operation: RefreshLockOperation,
+        options: Option<AuthOperationOptions>,
+    ) -> Result<Option<Credential>, crate::auth::oauth_refresh::RefreshError> {
+        let signal =
+            crate::utils::abort::operation_signal(options.and_then(|options| options.signal));
+        let identity = self as *const Self as *const () as usize;
+        let lock = default_refresh_lock(identity, provider_id, slot_name);
+        let _guard = crate::utils::abort::race_with_abort_signal(lock.lock(), &signal)
+            .await
+            .map_err(|reason| {
+                crate::auth::oauth_refresh::RefreshError::Aborted(reason.to_string())
+            })?;
+        operation(signal).await
     }
 
     /// List stored credential metadata without resolving or exposing secrets.
@@ -419,6 +499,19 @@ pub trait ApiKeyAuth: Send + Sync {
 }
 
 /// OAuth auth. The `refresh`/`to_auth` split lets the caller own the locked refresh pattern.
+#[derive(Debug, Clone, Default)]
+pub struct LoginOptions {
+    pub app_name: Option<String>,
+    pub reauthorize: Option<OAuthCredential>,
+    pub reauthorize_slot: Option<String>,
+    pub plan_usage_consent: Option<PlanUsageConsent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanUsageConsent {
+    pub client_id: String,
+}
+
 #[async_trait]
 pub trait OAuthAuth: Send + Sync {
     fn name(&self) -> &str;
@@ -436,12 +529,37 @@ pub trait OAuthAuth: Send + Sync {
     async fn login(&self, interaction: &ProviderAuthInteraction)
     -> anyhow::Result<OAuthCredential>;
 
+    async fn login_with_options(
+        &self,
+        interaction: &ProviderAuthInteraction,
+        _options: Option<LoginOptions>,
+    ) -> anyhow::Result<OAuthCredential> {
+        self.login(interaction).await
+    }
+
+    /// The signed-in account the token belongs to, without I/O or flow loading.
+    fn account_identity(&self, _access: &str) -> Option<String> {
+        None
+    }
+
     /// Exchange the refresh token. Network call; errors on failure (invalid_grant etc.).
     async fn refresh(
         &self,
         credential: &OAuthCredential,
         signal: &crate::utils::abort::AbortSignal,
     ) -> anyhow::Result<OAuthCredential>;
+
+    fn has_revoke(&self) -> bool {
+        false
+    }
+
+    async fn revoke(
+        &self,
+        _credential: &OAuthCredential,
+        _options: Option<LogoutOptions>,
+    ) -> anyhow::Result<OAuthRevocationResult> {
+        Ok(OAuthRevocationResult::RemoteRevocationUnconfirmed)
+    }
 
     async fn check(
         &self,

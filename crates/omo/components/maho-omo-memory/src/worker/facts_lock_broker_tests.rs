@@ -9,6 +9,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_lease_excludes_host_contender_and_rejects_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let auth = root.path().join("auth.json");
+        let settings = root.path().join("settings.json");
+        let broker = std::sync::Arc::new(FactsLockBroker::bind(&auth, &settings).unwrap());
+        let endpoint = broker.endpoint().to_owned();
+        let mut owner = FactsLockBrokerTask::start(broker);
+        let (mut reader, mut writer) = tokio::net::UnixStream::connect(&endpoint)
+            .await
+            .unwrap()
+            .into_split();
+        let identity = "a".repeat(64);
+        let key = format!("refresh:{identity}");
+        let request = serde_json::json!({"acquire": key, "budget_ms": 1000});
+        writer
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        let mut reader = tokio::io::BufReader::new(&mut reader);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader.read_line(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_success(&serde_json::from_str(&response).unwrap());
+        let lock_path = format!("{}.refresh-{identity}", auth.display());
+        assert!(
+            tokio::task::spawn_blocking(
+                move || maho_core::lockfile_policy::acquire_host_lock_sync(&lock_path, 25)
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        let request = serde_json::json!({"key": key, "write": "forbidden"});
+        writer
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        response.clear();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader.read_line(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&response).unwrap()["result"]["Err"]
+                .is_string()
+        );
+        drop(reader);
+        drop(writer);
+        owner.close().await.unwrap();
+        assert!(!auth.exists());
+    }
+
+    #[tokio::test]
     async fn canonical_guard_excludes_native_contender_until_client_disconnect() {
         let root = tempfile::tempdir().unwrap();
         let agent = root.path().join("agent");

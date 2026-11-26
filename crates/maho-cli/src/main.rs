@@ -468,7 +468,18 @@ fn run() -> Result<(), String> {
             let requested = maho_cli::cli::auth_check::requested_provider(&parsed);
             let auth_path = agent.join("auth.json");
             let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: None, auth_path: auth_path.exists().then_some(auth_path.clone()), ..Default::default() }).map_err(|error| error.to_string())?;
+            // deviation (docs/divergences.md P2-AUTH): senpi's check runtime holds only the catalog providers, so an
+            // extension-registered provider reports provider_not_found; this registers the builtin extension providers
+            // as doctor does, so check, doctor and a session agree.
+            let store = maho_cli::cli::credentials::AuthStorageCredentialStore::create(&auth_path.to_string_lossy()).into_shared();
+            let (model_runtime, failures) = maho_cli::cli::extension_providers::register_builtin_extension_providers(model_runtime, Some(store));
+            for (provider, error) in &failures {
+                let mut redactor = maho_ext_api::RedactedStream::default();
+                let safe = redactor.push_bytes(error.as_bytes()) + &redactor.finish_stream();
+                eprintln!("Failed to register auth provider {provider}: {safe}");
+            }
             let mut result = maho_cli::cli::auth_check::check_provider_auth(&parsed, &model_runtime, !command.no_refresh).await.unwrap_or(maho_cli::cli::auth_check::AuthCheckResult { status: maho_cli::cli::auth_check::AuthCheckStatus::Invalid, provider: requested, reason: Some(maho_cli::cli::auth_check::AuthCheckReason::InvalidState), auth_type: None });
+            maho_cli::cli::auth_check::mark_registration_failure(&mut result, &failures);
             let mut credential = None;
             if command.credentials && result.status == maho_cli::cli::auth_check::AuthCheckStatus::Ready {
                 match maho_cli::cli::auth_check::provider_credential(&model_runtime, &result.provider, !command.no_refresh).await {

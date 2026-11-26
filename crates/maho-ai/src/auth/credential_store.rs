@@ -1,20 +1,169 @@
 //! Port of senpi packages/ai/src/auth/credential-store.ts.
 
-use crate::auth::types::{AuthOperationOptions, Credential, CredentialInfo, CredentialStore};
+use crate::auth::oauth_refresh::capture_oauth_refreshes;
+use crate::auth::pool::slots::{PooledCredential, list_slots, project_flat_fields, project_slot};
+use crate::auth::types::{
+    AuthOperationOptions, Credential, CredentialInfo, CredentialStore, LogoutOptions, OAuthAuth,
+    OAuthRevocationResult,
+};
 use crate::utils::abort::{operation_signal, race_with_abort_signal};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+fn clear_tokens(
+    access: &mut Option<String>,
+    refresh: &mut Option<String>,
+    expires: &mut Option<f64>,
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    *access = Some(String::new());
+    *refresh = Some(String::new());
+    *expires = Some(0.0);
+    extra.remove("idToken");
+    extra.insert("signedOut".to_owned(), true.into());
+}
+
+/// Capture and clear locally under the store's write lock before attempting remote revocation.
+pub async fn revoke_stored_oauth(
+    credentials: &dyn CredentialStore,
+    provider_id: &str,
+    oauth: &dyn OAuthAuth,
+    options: Option<LogoutOptions>,
+) -> anyhow::Result<Option<OAuthRevocationResult>> {
+    use OAuthRevocationResult::{RemoteRevocationUnconfirmed, Revoked};
+
+    if !oauth.has_revoke() {
+        return Ok(None);
+    }
+    let capture = capture_oauth_refreshes(credentials, provider_id);
+    let targets = Arc::new(Mutex::new(None));
+    let slot_id = options.as_ref().and_then(|options| options.slot_id.clone());
+    let modified = credentials
+        .modify(
+            provider_id,
+            Box::new({
+                let captured = targets.clone();
+                move |current| {
+                    Box::pin(async move {
+                        let Some(current @ Credential::OAuth(_)) = current else {
+                            return Ok(None);
+                        };
+                        let mut next = PooledCredential::from(current);
+                        let slots: Vec<_> = list_slots(Some(&next))
+                            .into_iter()
+                            .filter(|slot| slot_id.as_ref().is_none_or(|id| slot.name == *id))
+                            .collect();
+                        let mut tokens = Vec::with_capacity(slots.len());
+                        for slot in &slots {
+                            if let Some(Credential::OAuth(mut projected)) =
+                                project_slot(Some(&next), &slot.name)
+                            {
+                                let mut fields = serde_json::to_value(slot)?;
+                                if let Some(fields) = fields.as_object_mut() {
+                                    for field in ["access", "refresh", "expires"] {
+                                        fields.remove(field);
+                                    }
+                                    projected.extra.append(fields);
+                                }
+                                tokens.push(projected);
+                            }
+                        }
+                        *captured.lock().unwrap_or_else(|p| p.into_inner()) = Some(tokens);
+                        if slots.is_empty() {
+                            return Ok(None);
+                        }
+                        if slot_id.is_none()
+                            || slots.iter().any(|slot| {
+                                slot.refresh == next.refresh && slot.access == next.access
+                            })
+                        {
+                            clear_tokens(
+                                &mut next.access,
+                                &mut next.refresh,
+                                &mut next.expires,
+                                &mut next.extra,
+                            );
+                        }
+                        if let Some(accounts) = next.accounts.as_mut() {
+                            for slot in accounts.iter_mut() {
+                                if slots.iter().any(|selected| selected.name == slot.name) {
+                                    clear_tokens(
+                                        &mut slot.access,
+                                        &mut slot.refresh,
+                                        &mut slot.expires,
+                                        &mut slot.extra,
+                                    );
+                                }
+                            }
+                        }
+                        if next
+                            .extra
+                            .get("signedOut")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                            && let Some(active) = next
+                                .accounts
+                                .as_deref()
+                                .and_then(|accounts| {
+                                    accounts.iter().find(|slot| {
+                                        slot.access.as_ref().is_some_and(|s| !s.is_empty())
+                                            && slot.refresh.as_ref().is_some_and(|s| !s.is_empty())
+                                            && slot.expires.is_some()
+                                    })
+                                })
+                                .cloned()
+                        {
+                            next.extra.remove("accountId");
+                            next = project_flat_fields(&next, &active);
+                            if let Some(login_id) = active.extra.get("loginId") {
+                                next.extra.insert("loginId".into(), login_id.clone());
+                            }
+                            next.extra.insert("signedOut".to_owned(), false.into());
+                        }
+                        Ok(Some(next.to_stored_credential()))
+                    })
+                }
+            }),
+            None,
+        )
+        .await;
+    // Close the capture only after the store has published the clear, not in its callback.
+    let refreshes = capture.finish();
+    modified?;
+    let Some(targets) = targets.lock().unwrap_or_else(|p| p.into_inner()).take() else {
+        return Ok(None);
+    };
+    let mut result = if targets.is_empty() {
+        RemoteRevocationUnconfirmed
+    } else {
+        Revoked
+    };
+    for target in &targets {
+        if target.refresh.is_empty()
+            || !matches!(oauth.revoke(target, options.clone()).await, Ok(Revoked))
+        {
+            result = RemoteRevocationUnconfirmed;
+        }
+    }
+    if !refreshes.await {
+        result = RemoteRevocationUnconfirmed;
+    }
+    Ok(Some(result))
+}
+
+type RefreshLocks = Mutex<HashMap<(String, String), std::sync::Arc<AsyncMutex<()>>>>;
 
 #[derive(Default)]
 pub struct InMemoryCredentialStore {
     credentials: Mutex<HashMap<String, Credential>>,
     locks: Mutex<HashMap<String, std::sync::Arc<AsyncMutex<()>>>>,
+    refresh_locks: RefreshLocks,
 }
 
 impl InMemoryCredentialStore {
@@ -51,6 +200,29 @@ impl InMemoryCredentialStore {
 
 #[async_trait]
 impl CredentialStore for InMemoryCredentialStore {
+    async fn with_refresh_lock(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        operation: crate::auth::types::RefreshLockOperation,
+        options: Option<AuthOperationOptions>,
+    ) -> Result<Option<Credential>, crate::auth::oauth_refresh::RefreshError> {
+        let signal = operation_signal(options.and_then(|options| options.signal));
+        let lock = {
+            let mut locks = self.refresh_locks.lock().unwrap_or_else(|p| p.into_inner());
+            locks
+                .entry((provider_id.to_owned(), slot_name.to_owned()))
+                .or_insert_with(|| std::sync::Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _guard = race_with_abort_signal(lock.lock(), &signal)
+            .await
+            .map_err(|reason| {
+                crate::auth::oauth_refresh::RefreshError::Aborted(reason.to_string())
+            })?;
+        operation(signal).await
+    }
+
     async fn read(
         &self,
         provider_id: &str,
@@ -166,7 +338,265 @@ impl CredentialStore for InMemoryCredentialStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::types::{ApiKeyCredential, OAuthCredential};
+    use crate::auth::types::{
+        ApiKeyCredential, ModelAuth, OAuthCredential, ProviderAuthInteraction,
+    };
+    use crate::utils::abort::{AbortController, AbortSignal};
+
+    #[tokio::test]
+    async fn refresh_lock_serializes_operations_for_the_same_slot() {
+        let store = InMemoryCredentialStore::new();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered.send(()).expect("first observer");
+                    released.await.expect("release first");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        started.await.expect("first entered");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.with_refresh_lock(
+                "fixture",
+                "other",
+                Box::new(|_| Box::pin(async { Ok(None) })),
+                None,
+            ),
+        )
+        .await
+        .expect("different slot must not wait")
+        .expect("different slot operation");
+        let controller = AbortController::new();
+        let cancelled = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(|_| Box::pin(async { panic!("cancelled operation must not execute") })),
+            Some(AuthOperationOptions {
+                signal: Some(controller.signal()),
+            }),
+        );
+        tokio::pin!(cancelled);
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        controller.abort(None);
+        assert!(matches!(
+            cancelled.await,
+            Err(crate::auth::oauth_refresh::RefreshError::Aborted(_))
+        ));
+        let (second_entered, second_started) = tokio::sync::oneshot::channel();
+        let second = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    second_entered.send(()).expect("second observer");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "second operation must wait"
+        );
+        release.send(()).expect("release first");
+        first.await.expect("first operation");
+        second.await.expect("second operation");
+        second_started.await.expect("second entered");
+    }
+
+    #[derive(Default)]
+    struct RecordingRevocation(Mutex<Vec<OAuthCredential>>);
+
+    #[async_trait]
+    impl OAuthAuth for RecordingRevocation {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        async fn login(&self, _: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+            unreachable!("not part of local clear")
+        }
+
+        async fn refresh(
+            &self,
+            _: &OAuthCredential,
+            _: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
+            unreachable!("not part of local clear")
+        }
+
+        async fn to_auth(&self, _: &OAuthCredential) -> anyhow::Result<ModelAuth> {
+            unreachable!("not part of local clear")
+        }
+
+        fn has_revoke(&self) -> bool {
+            true
+        }
+
+        async fn revoke(
+            &self,
+            credential: &OAuthCredential,
+            options: Option<LogoutOptions>,
+        ) -> anyhow::Result<OAuthRevocationResult> {
+            self.0.lock().unwrap().push(credential.clone());
+            if options
+                .and_then(|options| options.signal)
+                .is_some_and(|signal| signal.aborted())
+            {
+                anyhow::bail!("cancelled");
+            }
+            Ok(OAuthRevocationResult::Revoked)
+        }
+    }
+
+    async fn seed_oauth(store: &InMemoryCredentialStore, input: serde_json::Value) -> Credential {
+        let credential = serde_json::from_value(input).unwrap();
+        store
+            .modify(
+                "p",
+                Box::new(|_| Box::pin(async move { Ok(Some(credential)) })),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn revokes_issued_client_and_clears_local_tokens_even_when_cancelled() {
+        let store = InMemoryCredentialStore::new();
+        let oauth = RecordingRevocation::default();
+        seed_oauth(
+            &store,
+            serde_json::json!({
+                "type": "oauth", "access": "old-a", "refresh": "old-r", "expires": 20.0,
+                "clientId": "issued", "subject": "one", "idToken": "synthetic-id"
+            }),
+        )
+        .await;
+        let controller = AbortController::new();
+        controller.abort(None);
+        let options = LogoutOptions {
+            signal: Some(controller.signal()),
+            ..Default::default()
+        };
+        assert_eq!(
+            revoke_stored_oauth(&store, "p", &oauth, Some(options))
+                .await
+                .unwrap(),
+            Some(OAuthRevocationResult::RemoteRevocationUnconfirmed)
+        );
+        let cleared = store
+            .read("p", None)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_oauth()
+            .unwrap();
+        assert!(cleared.is_signed_out());
+        assert_eq!(
+            (
+                cleared.access.as_str(),
+                cleared.refresh.as_str(),
+                cleared.expires
+            ),
+            ("", "", 0.0)
+        );
+        assert_eq!(cleared.get_extra_str("clientId"), Some("issued"));
+        assert_eq!(cleared.get_extra_str("subject"), Some("one"));
+        assert!(cleared.get_extra("idToken").is_none());
+        let targets = oauth.0.lock().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].get_extra_str("clientId"), Some("issued"));
+        assert_eq!(targets[0].refresh, "old-r");
+    }
+
+    #[tokio::test]
+    async fn does_not_confirm_revocation_for_an_unknown_slot() {
+        let store = InMemoryCredentialStore::new();
+        let oauth = RecordingRevocation::default();
+        let before = seed_oauth(
+            &store,
+            serde_json::json!({
+                "type": "oauth", "access": "a", "refresh": "r", "expires": 4.0
+            }),
+        )
+        .await;
+        let options = LogoutOptions {
+            slot_id: Some("missing".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            revoke_stored_oauth(&store, "p", &oauth, Some(options))
+                .await
+                .unwrap(),
+            Some(OAuthRevocationResult::RemoteRevocationUnconfirmed)
+        );
+        assert_eq!(store.read("p", None).await.unwrap(), Some(before));
+        assert!(oauth.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn clears_only_selected_registration_and_reprojects_legacy_survivor() {
+        let store = InMemoryCredentialStore::new();
+        let oauth = RecordingRevocation::default();
+        let before = seed_oauth(&store, serde_json::json!({
+            "type": "oauth", "access": "a", "refresh": "r", "expires": 4.0,
+            "route": "siwc", "clientId": "one", "issuer": "issuer-one", "loginId": "one-id",
+            "accounts": [
+                { "name": "first", "access": "a", "refresh": "r", "expires": 4.0,
+                  "route": "siwc", "clientId": "one", "issuer": "issuer-one", "loginId": "one-id", "idToken": "id-a" },
+                { "name": "second", "access": "b", "refresh": "s", "expires": 5.0,
+                  "loginId": "two-id" }
+            ]
+        })).await;
+        let options = LogoutOptions {
+            slot_id: Some("first".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            revoke_stored_oauth(&store, "p", &oauth, Some(options))
+                .await
+                .unwrap(),
+            Some(OAuthRevocationResult::Revoked)
+        );
+        let post = store
+            .read("p", None)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_oauth()
+            .unwrap();
+        assert_eq!(post.refresh, "s");
+        assert!(!post.is_signed_out());
+        assert_eq!(post.get_extra_str("loginId"), Some("two-id"));
+        for field in ["route", "clientId", "issuer", "idToken"] {
+            assert!(post.get_extra(field).is_none(), "stale flat {field}");
+        }
+        let accounts = post.get_extra("accounts").unwrap();
+        assert_eq!(
+            accounts[1],
+            before.as_oauth().unwrap().get_extra("accounts").unwrap()[1]
+        );
+        assert_eq!(accounts[0]["clientId"], "one");
+        assert_eq!(accounts[0]["loginId"], "one-id");
+        assert_eq!(accounts[0]["signedOut"], true);
+        assert!(accounts[0].get("idToken").is_none());
+        assert_eq!(
+            oauth.0.lock().unwrap()[0].get_extra_str("clientId"),
+            Some("one")
+        );
+    }
 
     #[tokio::test]
     async fn conditional_delete_serializes_with_a_concurrent_login() {

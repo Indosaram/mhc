@@ -17,6 +17,9 @@ pub enum SessionAffinityFormat {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAIResponsesCompat {
+    /// This credential uses Sign in with ChatGPT plan usage, not API-key or legacy Codex usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub siwc: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_developer_role: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,6 +81,15 @@ pub fn supports_allowed_tool_choice(model: &crate::types::Model) -> bool {
         url.host_str()
             .is_some_and(|host| host == "api.openai.com" || host.ends_with(".api.openai.com"))
     })
+}
+
+pub(crate) fn uses_siwc(model: &crate::types::Model) -> bool {
+    model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.0.get("siwc"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 #[cfg(test)]

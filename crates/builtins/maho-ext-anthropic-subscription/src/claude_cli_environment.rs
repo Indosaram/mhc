@@ -72,5 +72,18 @@ mod tests {
             ]
             .into()
         );
+        let with_helper =
+            build_claude_cli_environment(&parent, Path::new("/accounts/a"), Some("/helper"));
+        assert_eq!(
+            with_helper.get("BROWSER").map(String::as_str),
+            Some("/helper")
+        );
+        assert_eq!(
+            with_helper
+                .into_iter()
+                .filter(|(key, _)| key != "BROWSER")
+                .collect::<BTreeMap<_, _>>(),
+            environment
+        );
     }
 }

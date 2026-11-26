@@ -18,7 +18,6 @@ pub type RadiusFlowLoader = Arc<dyn Fn(RadiusOAuthOptions) -> FlowFuture + Send 
 
 #[derive(Clone)]
 pub struct OAuthFlowLoaders {
-    pub anthropic: FlowLoader,
     pub chatgpt_subscription: FlowLoader,
     pub openai_chatgpt: FlowLoader,
     pub github_copilot: FlowLoader,
@@ -54,13 +53,6 @@ fn bundled_radius_loader() -> Option<RadiusFlowLoader> {
         .unwrap_or_else(|p| p.into_inner())
         .as_ref()
         .map(|loaders| loaders.radius.clone())
-}
-
-pub async fn load_anthropic_oauth() -> anyhow::Result<Arc<dyn OAuthAuth>> {
-    if let Some(loader) = bundled_loader(|loaders| loaders.anthropic.clone()) {
-        return loader().await;
-    }
-    Ok(crate::auth::oauth::anthropic::anthropic_oauth())
 }
 
 pub async fn load_chatgpt_subscription_oauth() -> anyhow::Result<Arc<dyn OAuthAuth>> {
@@ -137,8 +129,7 @@ pub async fn load_radius_oauth(options: RadiusOAuthOptions) -> anyhow::Result<Ar
     )))
 }
 
-pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 11] = [
-    ("anthropic", "Anthropic (Claude Pro/Max)"),
+pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 10] = [
     ("chatgpt-subscription", "ChatGPT Subscription (Plus/Pro)"),
     ("cursor", "Cursor (Pro/Ultra/Teams)"),
     ("devin", "Devin"),
@@ -153,7 +144,6 @@ pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 11] = [
 
 pub async fn load_builtin_oauth(provider_id: &str) -> anyhow::Result<Option<Arc<dyn OAuthAuth>>> {
     match provider_id {
-        "anthropic" => Ok(Some(load_anthropic_oauth().await?)),
         "chatgpt-subscription" => Ok(Some(load_chatgpt_subscription_oauth().await?)),
         "openai" => Ok(Some(load_openai_chatgpt_oauth().await?)),
         "meta" => Ok(Some(load_meta_oauth().await?)),
@@ -221,7 +211,6 @@ mod tests {
 
     fn all_loaders(prefix: &'static str) -> OAuthFlowLoaders {
         OAuthFlowLoaders {
-            anthropic: loader(prefix),
             chatgpt_subscription: loader(prefix),
             openai_chatgpt: loader(prefix),
             github_copilot: loader(prefix),
@@ -242,7 +231,6 @@ mod tests {
     #[tokio::test]
     async fn bundled_loaders_win_over_the_built_in_flows() {
         register_bundled_oauth_flow_loaders(all_loaders("bundled"));
-        assert_eq!(load_anthropic_oauth().await.unwrap().name(), "bundled");
         assert_eq!(
             load_chatgpt_subscription_oauth().await.unwrap().name(),
             "bundled"
@@ -296,7 +284,6 @@ mod tests {
 /// each flow's `toAuth`/`refresh` derivation.
 #[cfg(test)]
 mod oauth_auth_tests {
-    use crate::auth::oauth::anthropic::{AnthropicOAuth, anthropic_oauth};
     use crate::auth::oauth::chatgpt_subscription::chatgpt_subscription_oauth;
     use crate::auth::oauth::cursor::CursorOAuth;
     use crate::auth::oauth::github_copilot::{GitHubCopilotOAuth, github_copilot_oauth};
@@ -331,7 +318,10 @@ mod oauth_auth_tests {
         let _ = register;
         let credentials: crate::oauth::OAuthCredentials = OAuthCredential::default();
         assert_eq!(credentials.access, "");
-        let loaded = crate::oauth::load_anthropic_oauth().await.unwrap();
+        let loaded = crate::oauth::load_builtin_oauth("chatgpt-subscription")
+            .await
+            .unwrap()
+            .expect("ChatGPT subscription OAuth");
         assert!(
             !loaded.name().is_empty(),
             "the barrel yields flows through the loader"
@@ -341,7 +331,6 @@ mod oauth_auth_tests {
     #[test]
     fn identifies_only_subscription_backed_oauth_flows_as_subscriptions() {
         let flows: Vec<Arc<dyn OAuthAuth>> = vec![
-            anthropic_oauth(),
             chatgpt_subscription_oauth(),
             github_copilot_oauth(),
             kimi_coding_oauth(),
@@ -356,15 +345,6 @@ mod oauth_auth_tests {
             );
         }
         assert!(!open_router_oauth().is_subscription());
-    }
-
-    #[tokio::test]
-    async fn anthropic_to_auth_derives_the_api_key_from_the_access_token() {
-        let auth = anthropic_oauth()
-            .to_auth(&OAuthCredential::new("token", "r", 0.0))
-            .await
-            .unwrap();
-        assert_eq!(auth, api_key_auth("token"));
     }
 
     #[tokio::test]
@@ -441,32 +421,6 @@ mod oauth_auth_tests {
         assert_eq!(
             individual.base_url.as_deref(),
             Some("https://api.individual.githubcopilot.com")
-        );
-    }
-
-    #[tokio::test]
-    async fn anthropic_refresh_exchanges_the_refresh_token_and_returns_a_typed_credential() {
-        let transport = Arc::new(ScriptedTransport::new(vec![(
-            Some("/oauth/token"),
-            ScriptedResponse::Json {
-                status: 200,
-                body: serde_json::json!({"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}),
-            },
-        )]));
-        transport.set_now_ms(1_700_000_000_000.0);
-        let oauth = AnthropicOAuth::new(transport);
-
-        let refreshed = oauth
-            .refresh(&OAuthCredential::new("old", "old-r", 0.0), &signal())
-            .await
-            .unwrap();
-
-        assert_eq!(refreshed.access, "new-access");
-        assert_eq!(refreshed.refresh, "new-refresh");
-        assert!(
-            refreshed.expires > 1_700_000_000_000.0,
-            "{}",
-            refreshed.expires
         );
     }
 

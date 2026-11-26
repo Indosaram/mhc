@@ -1,10 +1,16 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[cfg(unix)]
+#[path = "claude_cli_lifecycle.rs"]
+mod claude_cli_lifecycle;
 #[path = "credential_store_contract.rs"]
 mod credential_store_contract;
 #[path = "faux_session.rs"]
 mod faux_session;
+#[cfg(unix)]
+#[path = "fixtures/credential_store.rs"]
+mod fixture_credential_store;
 #[path = "oauth_login.rs"]
 mod oauth_login;
 #[path = "reconciled_recovery.rs"]

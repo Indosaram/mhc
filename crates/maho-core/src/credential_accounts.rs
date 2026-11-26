@@ -16,6 +16,7 @@ use crate::credential_pool::state_store::{
 pub const SENTINEL_OAUTH_FIELDS_ACCESS: &str = "claude-sdk-oauth-managed";
 pub const SENTINEL_OAUTH_FIELDS_EXPIRES: i64 = 4_102_444_800_000;
 pub const DISPLAY_NAME_MAX_COLUMNS: usize = 32;
+pub const CHATGPT_SUBSCRIPTION: &str = "chatgpt-subscription";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialAccountSource {
@@ -69,6 +70,46 @@ pub struct CredentialAccountSummary {
     pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+    pub route: Option<ChatGptAccountRoute>,
+    pub plan_usage_enabled: Option<bool>,
+    pub signed_out: bool,
+    /// True only for the account that actually served, never merely because it is pinned.
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatGptAccountRoute {
+    Siwc,
+    Legacy,
+}
+
+impl ChatGptAccountRoute {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Siwc => "siwc",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+pub fn account_can_serve(account: &CredentialAccountSummary, model_id: &str, now: i64) -> bool {
+    use crate::credential_pool::model_scope::{ModelBlock, active_model_block_until};
+    if account.blocked || account.signed_out {
+        return false;
+    }
+    let blocks = account
+        .blocked_models
+        .iter()
+        .map(|block| {
+            (
+                block.model.clone(),
+                ModelBlock {
+                    blocked_until: block.until,
+                },
+            )
+        })
+        .collect();
+    active_model_block_until(Some(&blocks), Some(model_id), now).is_none()
 }
 
 /// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
@@ -313,6 +354,26 @@ fn is_anthropic_subscription(provider: &str) -> bool {
     maho_ai::legacy_provider_ids::normalize_provider_id(provider) == "anthropic-subscription"
 }
 
+fn is_chatgpt_subscription(provider: &str) -> bool {
+    maho_ai::legacy_provider_ids::normalize_provider_id(provider) == CHATGPT_SUBSCRIPTION
+}
+
+/// Resolve an immutable slot id, not its display name or position.
+pub fn selected_oauth_account(
+    storage: &AuthStorage,
+    provider: &str,
+    name: &str,
+) -> Result<maho_ai::auth::types::OAuthCredential, String> {
+    use maho_ai::auth::pool::slots::{PooledCredential, project_slot};
+    assert_valid_account_name(name)?;
+    let pool = storage
+        .get(provider)
+        .and_then(|value| serde_json::from_value::<PooledCredential>(value).ok());
+    project_slot(pool.as_ref(), name)
+        .and_then(maho_ai::auth::types::Credential::into_oauth)
+        .ok_or_else(|| format!("OAuth account not found: {name}"))
+}
+
 /// Lists a provider's credential accounts. Stored slots own the listing when a credential exists;
 /// env slots are listed only when nothing is stored, mirroring resolution precedence exactly.
 pub async fn summarize_credential_accounts(
@@ -329,6 +390,10 @@ pub async fn summarize_credential_accounts(
     let mut summaries = Vec::new();
 
     if let Some(credential) = stored {
+        let chatgpt_oauth = is_chatgpt_subscription(provider) && credential["type"] == "oauth";
+        let has_pooled_slots = credential["accounts"]
+            .as_array()
+            .is_some_and(|accounts| !accounts.is_empty());
         let state = repository.list_slots(provider, "stored").await?;
         let accounts = if is_anthropic_subscription(provider)
             && credential.get("accounts").map(Value::is_array) != Some(true)
@@ -360,7 +425,20 @@ pub async fn summarize_credential_accounts(
             // A block belongs to the material that earned it; a re-login starts clean.
             let applicable = persisted
                 .filter(|state| state.credential_revision.as_deref() == Some(revision.as_str()));
-            let block = slot_blocked(&slot, applicable, now);
+            let block = if chatgpt_oauth {
+                // The generic rotation lane overlays sidecar health, not auth.json blocks.
+                sidecar_block(applicable, now)
+            } else {
+                slot_blocked(&slot, applicable, now)
+            };
+            let registration = if has_pooled_slots { &slot } else { credential };
+            let route = chatgpt_oauth.then(|| {
+                if registration["route"] == "siwc" {
+                    ChatGptAccountRoute::Siwc
+                } else {
+                    ChatGptAccountRoute::Legacy
+                }
+            });
             summaries.push(CredentialAccountSummary {
                 name: name.clone(),
                 display_name,
@@ -369,8 +447,14 @@ pub async fn summarize_credential_accounts(
                 blocked_reason: block.blocked_reason,
                 blocked_until: block.blocked_until,
                 pinned: pinned.as_deref() == Some(name.as_str()),
-                blocked_models: blocked_models(&slot, now),
+                blocked_models: blocked_models(registration, now),
                 unused: !usable.contains(&name),
+                route,
+                plan_usage_enabled: (route == Some(ChatGptAccountRoute::Siwc))
+                    .then(|| registration["planUsageEnabled"].as_bool())
+                    .flatten(),
+                signed_out: chatgpt_oauth && registration["signedOut"] == true,
+                active: false,
             });
         }
         if !is_anthropic_subscription(provider) {
@@ -397,6 +481,10 @@ pub async fn summarize_credential_accounts(
             pinned: pinned.as_deref() == Some(slot.name.as_str()),
             blocked_models: Vec::new(),
             unused: false,
+            route: None,
+            plan_usage_enabled: None,
+            signed_out: false,
+            active: false,
         });
     }
     Ok(summaries)
@@ -409,14 +497,37 @@ pub async fn get_credential_accounts(
     repository: &CredentialSlotRepository,
     now: u64,
 ) -> Result<Vec<CredentialAccountSummary>, String> {
-    summarize_credential_accounts(
-        provider,
-        storage.get(provider).as_ref(),
-        env,
-        repository,
-        now,
-    )
-    .await
+    get_credential_accounts_with_active(storage, provider, env, repository, now, None).await
+}
+
+pub async fn get_credential_accounts_with_active(
+    storage: &AuthStorage,
+    provider: &str,
+    env: &(dyn Fn(&str) -> Option<String> + Sync),
+    repository: &CredentialSlotRepository,
+    now: u64,
+    active_name: Option<&str>,
+) -> Result<Vec<CredentialAccountSummary>, String> {
+    let stored = storage.get(provider);
+    let mut accounts =
+        summarize_credential_accounts(provider, stored.as_ref(), env, repository, now).await?;
+    if is_chatgpt_subscription(provider) {
+        if let Some(order) = stored.as_ref().and_then(|value| value["order"].as_array()) {
+            accounts.sort_by_key(|account| {
+                order
+                    .iter()
+                    .position(|name| name == account.name.as_str())
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        for account in &mut accounts {
+            account.active = Some(account.name.as_str()) == active_name
+                && !account.blocked
+                && !account.signed_out
+                && !account.unused;
+        }
+    }
+    Ok(accounts)
 }
 
 pub async fn reset_credential_account(
@@ -685,7 +796,30 @@ pub(crate) async fn remove_credential_account_guarded(
     let Some(current) = storage.get(provider) else {
         return Err(format!("No stored credential for provider: {provider}"));
     };
-    match remove_slot(&current, name) {
+    let remaining = if is_chatgpt_subscription(provider) {
+        use maho_ai::auth::pool::slots::{PooledCredential, remove_slot};
+        let pool = serde_json::from_value::<PooledCredential>(current)
+            .map_err(|_| "Invalid stored ChatGPT credential".to_owned())?;
+        remove_slot(Some(pool), name)
+            .map(|mut remaining| {
+                if let Some(order) = remaining
+                    .extra
+                    .get_mut("order")
+                    .and_then(Value::as_array_mut)
+                {
+                    order.retain(|entry| entry != name);
+                    if order.is_empty() {
+                        remaining.extra.remove("order");
+                    }
+                }
+                serde_json::to_value(remaining.to_stored_credential())
+                    .map_err(|_| "Could not serialize remaining ChatGPT accounts".to_owned())
+            })
+            .transpose()?
+    } else {
+        remove_slot(&current, name)
+    };
+    match remaining {
         None => storage.delete(provider)?,
         Some(remaining) => storage.set(provider, Some(remaining))?,
     }
@@ -790,6 +924,309 @@ mod tests {
 
     fn storage(tmp: &tempfile::TempDir) -> AuthStorage {
         AuthStorage::create(&tmp.path().join("auth.json").to_string_lossy())
+    }
+
+    fn chatgpt_pool() -> Value {
+        json!({
+            "type": "oauth", "expires": NOW_FAR_FUTURE, "accountId": "account-one",
+            "access": "fixture-one", "refresh": "fixture-refresh-one",
+            "route": "siwc", "issuer": "https://auth.openai.com", "subject": "s1", "clientId": "c",
+            "idToken": "fixture-id-one", "scopes": ["openid"], "planUsageEnabled": true,
+            "accounts": [
+                {
+                    "name": "login", "source": "login", "access": "fixture-one",
+                    "refresh": "fixture-refresh-one", "expires": NOW_FAR_FUTURE, "route": "siwc",
+                    "issuer": "https://auth.openai.com", "subject": "s1", "clientId": "c",
+                    "email": "one@example.invalid", "idToken": "fixture-id-one",
+                    "scopes": ["openid"], "planUsageEnabled": true,
+                    "modelBlocks": {"sonnet": {"blockedUntil": 200}}
+                },
+                {
+                    "name": "login-2", "source": "login", "access": "fixture-two",
+                    "refresh": "fixture-refresh-two", "expires": NOW_FAR_FUTURE,
+                    "email": "two@example.invalid"
+                }
+            ]
+        })
+    }
+
+    fn write_chatgpt_pool(tmp: &tempfile::TempDir, pool: Value) {
+        std::fs::write(
+            tmp.path().join("auth.json"),
+            json!({ (CHATGPT_SUBSCRIPTION): pool }).to_string(),
+        )
+        .expect("write isolated auth fixture");
+    }
+
+    #[tokio::test]
+    async fn chatgpt_lists_mixed_routes_and_distinguishes_pin_from_active() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut pool = chatgpt_pool();
+        let flat = pool.as_object_mut().expect("fixture object");
+        flat.remove("access");
+        flat.remove("refresh");
+        write_chatgpt_pool(&tmp, pool);
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        pin_credential_account(
+            &store,
+            CHATGPT_SUBSCRIPTION,
+            Some("login-2"),
+            &env_none(),
+            &repo,
+            100,
+        )
+        .await
+        .expect("pin");
+        let accounts = get_credential_accounts_with_active(
+            &store,
+            CHATGPT_SUBSCRIPTION,
+            &env_none(),
+            &repo,
+            100,
+            Some("login"),
+        )
+        .await
+        .expect("list");
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].name, "login");
+        assert_eq!(accounts[0].route, Some(ChatGptAccountRoute::Siwc));
+        assert_eq!(accounts[0].plan_usage_enabled, Some(true));
+        assert!(accounts[0].active && !accounts[0].pinned);
+        assert_eq!(accounts[1].name, "login-2");
+        assert_eq!(accounts[1].route, Some(ChatGptAccountRoute::Legacy));
+        assert_eq!(accounts[1].plan_usage_enabled, None);
+        assert!(!accounts[1].active && accounts[1].pinned);
+        assert!(!account_can_serve(&accounts[0], "claude-sonnet-4", 100));
+        assert!(account_can_serve(&accounts[0], "claude-opus-4", 100));
+        assert!(account_can_serve(&accounts[0], "claude-sonnet-4", 200));
+        let summary = format!("{accounts:?}");
+        assert!(!summary.contains("fixture-") && !summary.contains("@example.invalid"));
+    }
+
+    #[tokio::test]
+    async fn chatgpt_remove_reprojects_the_survivor_and_clears_pin_and_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_chatgpt_pool(&tmp, chatgpt_pool());
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        let mut pool = store.get(CHATGPT_SUBSCRIPTION).expect("seeded pool");
+        pool["pinned"] = json!("login");
+        pool["order"] = json!(["login", "login-2"]);
+        store.set(CHATGPT_SUBSCRIPTION, Some(pool)).expect("seed");
+        remove_credential_account(
+            &store,
+            CHATGPT_SUBSCRIPTION,
+            "login",
+            &env_none(),
+            &repo,
+            100,
+        )
+        .await
+        .expect("remove account");
+        let remaining = storage(&tmp).get(CHATGPT_SUBSCRIPTION).expect("survivor");
+        assert!(remaining["access"] == "fixture-two");
+        assert!(remaining.get("idToken").is_none());
+        assert!(remaining.get("pinned").is_none());
+        assert_eq!(remaining["order"], json!(["login-2"]));
+        let slots = stored_slots(&remaining);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0]["name"], "login-2");
+    }
+
+    struct ChatGptFixtureOAuth {
+        storage: std::sync::Arc<AuthStorage>,
+        logins: std::sync::atomic::AtomicUsize,
+        revocations: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::OAuthAuth for ChatGptFixtureOAuth {
+        fn name(&self) -> &str {
+            "Offline ChatGPT fixture"
+        }
+
+        async fn login(
+            &self,
+            _: &maho_ai::auth::types::ProviderAuthInteraction,
+        ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+            use maho_ai::auth::types::OAuthCredential;
+            let login = self
+                .logins
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(OAuthCredential::new(
+                format!("fixture-three-{login}"),
+                format!("fixture-refresh-three-{login}"),
+                NOW_FAR_FUTURE as f64,
+            )
+            .with_extra("route", json!("siwc"))
+            .with_extra("issuer", json!("https://auth.openai.com"))
+            .with_extra("subject", json!("s3"))
+            .with_extra("clientId", json!("c")))
+        }
+
+        async fn refresh(
+            &self,
+            _: &maho_ai::auth::types::OAuthCredential,
+            _: &maho_ai::utils::abort::AbortSignal,
+        ) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+            anyhow::bail!("fixture is not expired")
+        }
+
+        fn has_revoke(&self) -> bool {
+            true
+        }
+
+        async fn revoke(
+            &self,
+            credential: &maho_ai::auth::types::OAuthCredential,
+            options: Option<maho_ai::auth::types::LogoutOptions>,
+        ) -> anyhow::Result<maho_ai::auth::types::OAuthRevocationResult> {
+            assert!(credential.refresh == "fixture-refresh-one");
+            assert_eq!(
+                options.and_then(|options| options.slot_id).as_deref(),
+                Some("login")
+            );
+            let stored = self
+                .storage
+                .get(CHATGPT_SUBSCRIPTION)
+                .expect("registration retained");
+            assert_eq!(stored["accounts"][0]["signedOut"], true);
+            assert!(stored["accounts"][0]["refresh"] == "");
+            assert!(stored["accounts"][0].get("idToken").is_none());
+            assert!(stored["accounts"][1]["refresh"] == "fixture-refresh-two");
+            self.revocations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(maho_ai::auth::types::OAuthRevocationResult::RemoteRevocationUnconfirmed)
+        }
+
+        async fn to_auth(
+            &self,
+            _: &maho_ai::auth::types::OAuthCredential,
+        ) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(Default::default())
+        }
+    }
+
+    struct ChatGptFixtureInteraction;
+
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::AuthInteraction for ChatGptFixtureInteraction {
+        fn signal(&self) -> Option<maho_ai::utils::abort::AbortSignal> {
+            None
+        }
+
+        async fn prompt(&self, _: maho_ai::auth::types::AuthPrompt) -> anyhow::Result<String> {
+            anyhow::bail!("fixture does not prompt")
+        }
+
+        fn notify(&self, _: maho_ai::auth::types::AuthEvent) {}
+    }
+
+    fn chatgpt_fixture_runtime(
+        tmp: &tempfile::TempDir,
+    ) -> (
+        crate::model_runtime::ModelRuntime,
+        std::sync::Arc<ChatGptFixtureOAuth>,
+    ) {
+        use crate::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
+        use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider};
+        write_chatgpt_pool(tmp, chatgpt_pool());
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            api: Some("faux".into()),
+            provider: Some(CHATGPT_SUBSCRIPTION.into()),
+            ..Default::default()
+        })
+        .expect("offline provider");
+        let mut runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+            auth_path: Some(tmp.path().join("auth.json")),
+            agent_dir: Some(tmp.path().to_owned()),
+            providers: Some(vec![provider.provider]),
+            allow_model_network: Some(false),
+            refresh_on_create: Some(false),
+            ..Default::default()
+        })
+        .expect("offline runtime");
+        let fake = std::sync::Arc::new(ChatGptFixtureOAuth {
+            storage: runtime.credentials.clone(),
+            logins: Default::default(),
+            revocations: Default::default(),
+        });
+        runtime
+            .register_provider(
+                CHATGPT_SUBSCRIPTION,
+                crate::provider_composer::ProviderConfigInput {
+                    oauth: Some(fake.clone()),
+                    ..Default::default()
+                },
+            )
+            .expect("register fake OAuth provider");
+        (runtime, fake)
+    }
+
+    #[tokio::test]
+    async fn chatgpt_signout_clears_only_the_selected_session_before_remote_revoke() {
+        use maho_ai::auth::types::{LogoutOptions, OAuthRevocationResult};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (runtime, fake) = chatgpt_fixture_runtime(&tmp);
+        let result = runtime
+            .logout_with_revocation(
+                CHATGPT_SUBSCRIPTION,
+                LogoutOptions {
+                    slot_id: Some("login".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("sign out fixture account");
+        assert_eq!(
+            result,
+            Some(OAuthRevocationResult::RemoteRevocationUnconfirmed)
+        );
+        assert_eq!(
+            fake.revocations.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let accounts = get_credential_accounts_with_active(
+            &storage(&tmp),
+            CHATGPT_SUBSCRIPTION,
+            &env_none(),
+            &repository(&tmp),
+            0,
+            Some("login"),
+        )
+        .await
+        .expect("list after sign-out");
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts[0].signed_out && !accounts[0].active);
+        assert!(!account_can_serve(&accounts[0], "gpt-5", 0));
+        assert!(!accounts[1].signed_out);
+    }
+
+    #[tokio::test]
+    async fn chatgpt_oauth_login_appends_then_replaces_the_same_siwc_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (runtime, _) = chatgpt_fixture_runtime(&tmp);
+        for login in 0..2 {
+            runtime
+                .login(
+                    CHATGPT_SUBSCRIPTION,
+                    maho_ai::auth::types::AuthType::OAuth,
+                    std::sync::Arc::new(ChatGptFixtureInteraction),
+                )
+                .await
+                .expect("fake login");
+            let pool = storage(&tmp).get(CHATGPT_SUBSCRIPTION).expect("stored");
+            let names: Vec<_> = pool["accounts"]
+                .as_array()
+                .expect("account slots")
+                .iter()
+                .filter_map(|slot| slot["name"].as_str())
+                .collect();
+            assert_eq!(names, ["login", "login-2", "login-3"]);
+            assert_eq!(pool["accounts"][2]["subject"], "s3");
+            assert!(pool["accounts"][2]["access"] == format!("fixture-three-{login}"));
+        }
     }
 
     fn seed_pool(storage: &mut AuthStorage, provider: &str) {

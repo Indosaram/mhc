@@ -8,6 +8,22 @@ pub const CHATGPT_SUBSCRIPTION_AUTH_CLAIM_PATH: &str = "https://api.openai.com/a
 
 /// Reads the stable ChatGPT account identifier from a Codex access token.
 pub fn extract_chatgpt_subscription_account_id(token: &str) -> Option<String> {
+    claim_string(&auth_claims(token)?, "chatgpt_account_id").map(str::to_owned)
+}
+
+/// Identifies the member of a workspace, rather than the workspace shared by all its members.
+pub fn extract_chatgpt_subscription_identity(token: &str) -> Option<String> {
+    let claims = auth_claims(token)?;
+    if let Some(member) = claim_string(&claims, "chatgpt_account_user_id") {
+        return Some(member.to_owned());
+    }
+    let user =
+        claim_string(&claims, "chatgpt_user_id").or_else(|| claim_string(&claims, "user_id"))?;
+    let workspace = claim_string(&claims, "chatgpt_account_id")?;
+    Some(format!("{user}/{workspace}"))
+}
+
+fn auth_claims(token: &str) -> Option<serde_json::Map<String, Value>> {
     let parts: Vec<&str> = token.split('.').collect();
     let encoded = if parts.len() == 3 {
         parts[1]
@@ -23,15 +39,15 @@ pub fn extract_chatgpt_subscription_account_id(token: &str) -> Option<String> {
         .decode(padded)
         .ok()?;
     let latin1: String = bytes.iter().map(|b| char::from(*b)).collect();
-    let payload: Value = serde_json::from_str(&latin1).ok()?;
-    let account = payload
-        .get(CHATGPT_SUBSCRIPTION_AUTH_CLAIM_PATH)?
-        .as_object()?
-        .get("chatgpt_account_id")?;
-    account
-        .as_str()
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
+    let mut payload: serde_json::Map<String, Value> = serde_json::from_str(&latin1).ok()?;
+    match payload.remove(CHATGPT_SUBSCRIPTION_AUTH_CLAIM_PATH)? {
+        Value::Object(claims) => Some(claims),
+        _ => None,
+    }
+}
+
+fn claim_string<'a>(claims: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
+    claims.get(key)?.as_str().filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -58,5 +74,32 @@ mod tests {
         );
         assert_eq!(extract_chatgpt_subscription_account_id("a.b"), None);
         assert_eq!(extract_chatgpt_subscription_account_id("a.!!!.c"), None);
+    }
+
+    #[test]
+    fn extracts_member_identity_or_scopes_the_user_to_the_workspace() {
+        for (claims, expected) in [
+            (
+                r#""chatgpt_account_user_id":"member","chatgpt_user_id":"user","chatgpt_account_id":"team""#,
+                Some("member"),
+            ),
+            (
+                r#""chatgpt_user_id":"user","user_id":"fallback","chatgpt_account_id":"team""#,
+                Some("user/team"),
+            ),
+            (
+                r#""chatgpt_user_id":"","user_id":"fallback","chatgpt_account_id":"team""#,
+                Some("fallback/team"),
+            ),
+            (r#""chatgpt_account_id":"team""#, None),
+        ] {
+            let access = token(&format!(
+                r#"{{"{CHATGPT_SUBSCRIPTION_AUTH_CLAIM_PATH}":{{{claims}}}}}"#
+            ));
+            assert_eq!(
+                extract_chatgpt_subscription_identity(&access).as_deref(),
+                expected
+            );
+        }
     }
 }

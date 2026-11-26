@@ -86,7 +86,9 @@ pub fn diagnostic_from_openai_error(
             Some(Category::ProviderUnavailable)
         }
         Some("billing_error" | "permission_error" | "not_found_error") => Some(Category::Unknown),
-        _ => None,
+        _ => code.and_then(|code| {
+            crate::utils::siwc_errors::siwc_error_for_code(code).map(|(category, _, _)| category)
+        }),
     };
     if let (Some(category), Some(code)) = (category, code) {
         return crate::types::sanitize_provider_diagnostic(&ProviderDiagnostic {

@@ -1,14 +1,14 @@
-//! Port of senpi packages/ai/src/auth/oauth/authorization-input.ts.
+//! Manual authorization input for ChatGPT subscription OAuth.
 
 use url::Url;
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct AuthorizationInput {
+pub(super) struct AuthorizationInput {
     pub code: Option<String>,
     pub state: Option<String>,
 }
 
-pub fn parse_authorization_input(input: &str) -> AuthorizationInput {
+pub(super) fn parse_authorization_input(input: &str) -> AuthorizationInput {
     let value = input.trim();
     if value.is_empty() {
         return AuthorizationInput::default();

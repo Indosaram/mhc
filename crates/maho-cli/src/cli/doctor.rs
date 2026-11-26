@@ -141,25 +141,40 @@ fn ast_grep_lines() -> Vec<String> {
     }
 }
 
-fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
-    let auth_path = Path::new(agent_dir).join("auth.json");
-    let credentials = if auth_path.exists() {
-        match maho_core::auth_storage::ReadOnlyAuthStorage::new(&auth_path.to_string_lossy()) {
-            Ok(storage) => storage.data().clone(),
-            Err(_) => return vec!["FAIL credentials: invalid auth storage".to_owned()],
-        }
-    } else {
-        Default::default()
-    };
-    let runtime = match maho_core::model_runtime::ModelRuntime::create_sync(
+fn diagnostic_runtime(
+    agent_dir: &Path,
+    credentials: maho_core::auth_storage::AuthStorageData,
+) -> Result<maho_core::model_runtime::ModelRuntime, maho_ai::models::ModelsError> {
+    maho_core::model_runtime::ModelRuntime::create_sync(
         maho_core::model_runtime::CreateModelRuntimeOptions {
-            models_path: Some(Path::new(agent_dir).join("models.json")),
+            models_path: Some(agent_dir.join("models.json")),
+            auth_path: Some(agent_dir.join("auth.json")),
+            agent_dir: Some(agent_dir.to_path_buf()),
             credentials: Some(std::sync::Arc::new(
                 maho_core::auth_storage::AuthStorage::in_memory(credentials),
             )),
             ..Default::default()
         },
-    ) {
+    )
+}
+
+fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
+    let auth_path = Path::new(agent_dir).join("auth.json");
+    // The engine's store reads auth.json with `parse_auth_document`, so pooled entries whose tokens live only in
+    // `accounts[]` count as connected exactly as they do for a session.
+    let credentials = if auth_path.exists() {
+        match std::fs::read_to_string(&auth_path)
+            .ok()
+            .and_then(|content| {
+                maho_core::auth_store_load_error::parse_auth_document(&content).ok()
+            }) {
+            Some(data) => maho_core::auth_storage::repair_poisoned_pool_slots(&data).0,
+            None => return vec!["FAIL credentials: invalid auth storage".to_owned()],
+        }
+    } else {
+        Default::default()
+    };
+    let runtime = match diagnostic_runtime(Path::new(agent_dir), credentials) {
         Ok(runtime) => runtime,
         Err(error) => {
             return vec![format!(
@@ -167,43 +182,14 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
             )];
         }
     };
-    let mut registration_failures = Vec::new();
-    // omo `category-coverage.js` `engineAvailableModels`: anthropic-subscription is the one chain provider a
-    // builtin extension registers instead of the catalog, so its models come from the extension's own
-    // registration, converted exactly as a session converts it.
-    let subscription = maho_ext_anthropic_subscription::auth_lane::PROVIDER_ID;
-    let actions = maho_core::agent_session_runtime::ExtensionModelRuntimeActions(
-        std::sync::Mutex::new(runtime),
-    );
-    if let Err(error) = maho_ext_api::ExtensionProviderActions::register_provider(
-        &actions,
-        maho_ext_api::ProviderRegistration::Config {
-            name: subscription.to_owned(),
-            config: Box::new(
-                maho_ext_anthropic_subscription::extension::catalog_provider_config(
-                    maho_ext_anthropic_subscription::long_context::long_context_available(),
-                ),
-            ),
-        },
-        subscription,
-    ) {
-        registration_failures.push(format!(
-            "WARN task categories: could not register provider {subscription}: {}",
-            error.message
-        ));
-    }
-    let mut runtime = actions
-        .0
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Err(error) = runtime.register_provider(
-        "cursor-cli-oauth",
-        maho_core::provider_composer::ProviderConfigInput::default(),
-    ) {
-        registration_failures.push(format!(
-            "WARN task categories: could not register provider cursor-cli-oauth: {error}"
-        ));
-    }
+    let (runtime, failures) =
+        super::extension_providers::register_builtin_extension_providers(runtime, None);
+    let registration_failures = failures
+        .into_iter()
+        .map(|(provider, error)| {
+            format!("WARN task categories: could not register provider {provider}: {error}")
+        })
+        .collect::<Vec<_>>();
     let available = runtime
         .get_models(None)
         .into_iter()
@@ -394,7 +380,7 @@ pub fn run_doctor(args: &[String]) -> Result<i32, String> {
 
 #[cfg(test)]
 mod routing_tests {
-    use super::category_coverage;
+    use super::{category_coverage, diagnostic_runtime};
     use serde_json::json;
 
     #[test]
@@ -415,5 +401,20 @@ mod routing_tests {
             "WARN task categories: 2 of 10 usable with your connected providers (deep-low, unspecified-low)"
         );
         assert!(report("gpt-6.2-sol-fast")[0].starts_with("WARN task categories: 0 of 10 "));
+    }
+
+    #[tokio::test]
+    async fn diagnostic_runtime_resolves_credentials_relative_to_the_selected_auth_file() {
+        let agent = tempfile::tempdir().expect("agent");
+        let auth_path = agent.path().join("auth.json");
+        let document = json!({"openai":{"type":"api_key","key":{"$file":"key.txt"}}});
+        let auth = serde_json::to_string(&document).unwrap();
+        std::fs::write(&auth_path, &auth).unwrap();
+        std::fs::write(agent.path().join("key.txt"), "fixture-key").unwrap();
+        let credentials = maho_core::auth_store_load_error::parse_auth_document(&auth).unwrap();
+        let runtime = diagnostic_runtime(agent.path(), credentials).unwrap();
+        let resolved = runtime.get_auth("openai").await.unwrap().unwrap();
+        assert_eq!(resolved.auth.api_key.as_deref(), Some("fixture-key"));
+        assert_eq!(std::fs::read_to_string(auth_path).unwrap(), auth);
     }
 }
