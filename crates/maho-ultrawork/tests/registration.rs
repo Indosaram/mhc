@@ -267,6 +267,19 @@ fn queued_mass_directive_changes_with_the_receiving_model_without_rewriting_save
 }
 
 #[test]
+fn quoted_contract_in_user_text_is_not_projected_or_rearmed() {
+    let engine = Engine::new(Default::default());
+    let api = register(engine.clone());
+    let mut ctx = stub::context("quoted-contract");
+    ctx.model = Some(model("gpt-6.2"));
+    let original = user(&format!("Please review this quotation:\n{CORE_CONTRACT}"));
+    let before = engine.sessions().snapshot("quoted-contract");
+
+    assert_eq!(project(&api, &ctx, &original), original);
+    assert_eq!(engine.sessions().snapshot("quoted-contract"), before);
+}
+
+#[test]
 fn replayed_custom_directive_restores_arming_even_without_reselection() {
     let message = |body: &str| -> AgentMessage {
         serde_json::from_value(serde_json::json!({

@@ -140,3 +140,94 @@ async fn skill_service_uses_sse_without_discovery_and_times_out_real_catalog_req
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn sse_server_request_receives_a_json_rpc_response() {
+    use maho_ext_mcp::{
+        log::McpLogger,
+        transport_sdk::{McpClient, McpTransportSpec},
+    };
+
+    let (events, _) = broadcast::channel::<String>(8);
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = Router::new()
+        .route(
+            "/events",
+            get({
+                let events = events.clone();
+                move || async move {
+                    let rx = events.subscribe();
+                    let stream =
+                        futures::stream::unfold((true, rx), |(first, mut rx)| async move {
+                            let event = if first {
+                                Event::default().event("endpoint").data("/rpc")
+                            } else {
+                                Event::default()
+                                    .event("message")
+                                    .data(rx.recv().await.ok()?)
+                            };
+                            Some((Ok::<_, Infallible>(event), (false, rx)))
+                        });
+                    Sse::new(stream)
+                }
+            }),
+        )
+        .route(
+            "/rpc",
+            post({
+                let events = events.clone();
+                move |Json(request): Json<Value>| {
+                    let events = events.clone();
+                    let reply_tx = reply_tx.clone();
+                    async move {
+                        if request["method"] == "initialize" {
+                            events
+                                .send(
+                                    json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                                        "protocolVersion":"2025-03-26","capabilities":{},
+                                        "serverInfo":{"name":"fixture","version":"1"}
+                                    }})
+                                    .to_string(),
+                                )
+                                .unwrap();
+                        } else if request.get("id").is_some() && request.get("method").is_none() {
+                            reply_tx.send(request).unwrap();
+                        }
+                        StatusCode::ACCEPTED
+                    }
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/events", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let root = tempfile::tempdir().unwrap();
+    let logger = Arc::new(Mutex::new(
+        McpLogger::new("fixture", root.path(), None).unwrap(),
+    ));
+    let client = McpClient::materialize_sse(
+        "fixture",
+        &McpTransportSpec::Http {
+            url: url.parse().unwrap(),
+            headers: Default::default(),
+        },
+        logger,
+    )
+    .await
+    .unwrap();
+    let handler = client.install_elicitation(None);
+    client.initialize(Duration::from_secs(3)).await.unwrap();
+
+    events
+        .send(json!({"jsonrpc":"2.0","id":"server-1","method":"unknown/method"}).to_string())
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(3), reply_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response["id"], "server-1");
+    assert_eq!(response["error"]["code"], -32601);
+    client.close().await.unwrap();
+    handler.abort();
+    server.abort();
+}

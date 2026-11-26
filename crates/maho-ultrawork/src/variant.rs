@@ -1,6 +1,8 @@
 //! Model-specific contract selection for model-facing context.
 
-use crate::texts::CORE_CONTRACT;
+use crate::texts::{
+    CORE_CONTRACT, DIRECTIVE_CLOSE_TAG, DIRECTIVE_MESSAGE_TYPE, DIRECTIVE_OPEN_TAG,
+};
 use maho_ext_api::{
     AgentMessage, ContentBlock, CustomAgentMessage, CustomMessageContent, Message, UserContent,
 };
@@ -57,11 +59,22 @@ impl Variant {
         let selected = selected.trim_end();
         let mut found = false;
         let mut replace = |text: &mut String| {
-            if text.contains(previous) {
-                *text = text.replace(previous, selected);
+            let old = format!("{DIRECTIVE_OPEN_TAG}\n{previous}\n\n{DIRECTIVE_CLOSE_TAG}");
+            let new = format!("{DIRECTIVE_OPEN_TAG}\n{selected}\n\n{DIRECTIVE_CLOSE_TAG}");
+            if text.contains(&old) {
+                *text = text.replace(&old, &new);
                 found = true;
-            } else if !found {
-                found = text.contains(selected);
+            } else if text.contains(&new) {
+                found = true;
+            } else if text.starts_with("<skill-instruction name=\"ultrawork\" ")
+                && text.contains("</skill-instruction>")
+            {
+                if text.contains(previous) {
+                    *text = text.replacen(previous, selected, 1);
+                    found = true;
+                } else if text.contains(selected) {
+                    found = true;
+                }
             }
         };
         // Queued and explicit skill text arrives as a user message; idle injection is custom.
@@ -76,6 +89,9 @@ impl Variant {
                     UserContent::Blocks(content) => content,
                 },
                 AgentMessage::Custom(CustomAgentMessage::Custom(custom)) => {
+                    if custom.custom_type != DIRECTIVE_MESSAGE_TYPE {
+                        continue;
+                    }
                     match &mut custom.content {
                         CustomMessageContent::Text(text) => {
                             replace(text);
