@@ -1,6 +1,6 @@
 //! The single-writer destruction port (`lifecycle/destroy.ts`).
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use serde_json::json;
 
@@ -19,7 +19,67 @@ pub fn destroy_resident_task(
     cause: DestroyCause,
     orphan_pid: Option<i64>,
 ) -> Result<(), LifecycleError> {
-    if let Some(handle) = context.registry.get(task_id) {
+    destroy_current(context, task_id, cause, orphan_pid, None)
+}
+
+/// Evicts only the resident that produced this outcome, never a replacement run.
+pub fn evict_managed_if_current(
+    context: &LifecycleContext,
+    task_id: &str,
+    expected: &Arc<dyn crate::manager::ManagedChildHandle>,
+) -> Result<(), LifecycleError> {
+    destroy_current(context, task_id, DestroyCause::Evict, None, Some(expected))
+}
+
+/// Cleans up a child whose start failed before it could become a registered resident.
+pub fn destroy_unregistered(
+    handle: &dyn crate::manager::ManagedChildHandle,
+) -> Result<(), HostError> {
+    let terminated = if handle.has_terminate() {
+        handle.terminate()
+    } else {
+        Ok(())
+    };
+    let disposed = handle.dispose();
+    match (terminated, disposed) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(terminate), Err(dispose)) => Err(HostError {
+            message: format!("{terminate}; {dispose}"),
+        }),
+    }
+}
+
+fn destroy_current(
+    context: &LifecycleContext,
+    task_id: &str,
+    cause: DestroyCause,
+    orphan_pid: Option<i64>,
+    expected: Option<&Arc<dyn crate::manager::ManagedChildHandle>>,
+) -> Result<(), LifecycleError> {
+    let _guard = DestroyGuard::acquire(context, task_id);
+    let resident = context.registry.get(task_id);
+    if let Some(expected) = expected {
+        let Some(resident) = resident.as_ref() else {
+            return Ok(());
+        };
+        let matches = resident.is_same_managed(expected).ok_or_else(|| HostError {
+            message: "lifecycle residency registry must support managed-handle identity for cloud eviction".into(),
+        })?;
+        if !matches {
+            return Ok(());
+        }
+    }
+    if cause == DestroyCause::Evict
+        && resident.is_none()
+        && context
+            .store
+            .load(task_id)?
+            .is_some_and(|record| record.residency_state == crate::state::ResidencyState::Evicted)
+    {
+        return Ok(());
+    }
+    if let Some(handle) = resident {
         teardown_handle(&handle, cause == DestroyCause::CancelWithoutAbort)?;
         if cause != DestroyCause::FallbackHandoff {
             context.registry.forget(task_id);
@@ -46,6 +106,43 @@ pub fn destroy_resident_task(
         record_residency(context, task_id, cause)?;
     }
     Ok(())
+}
+
+pub(crate) struct DestroyGuard<'a> {
+    context: &'a LifecycleContext,
+    task_id: &'a str,
+}
+
+impl<'a> DestroyGuard<'a> {
+    pub(crate) fn acquire(context: &'a LifecycleContext, task_id: &'a str) -> Self {
+        let (active, changed) = &*context.destroying;
+        let mut active = active.lock().unwrap_or_else(PoisonError::into_inner);
+        while active.contains(task_id) {
+            #[cfg(test)]
+            if let Some(on_contended) = context
+                .on_destroy_contended
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                on_contended(task_id);
+            }
+            active = changed.wait(active).unwrap_or_else(PoisonError::into_inner);
+        }
+        active.insert(task_id.to_string());
+        Self { context, task_id }
+    }
+}
+
+impl Drop for DestroyGuard<'_> {
+    fn drop(&mut self) {
+        let (active, changed) = &*self.context.destroying;
+        active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(self.task_id);
+        changed.notify_all();
+    }
 }
 
 fn teardown_handle(

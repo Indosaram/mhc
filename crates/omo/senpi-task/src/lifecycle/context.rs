@@ -109,8 +109,18 @@ impl LifecycleDeps {
     }
 }
 
+#[cfg(test)]
+type DestroyContentionHook = Arc<std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>>;
+
 #[derive(Clone)]
 pub struct LifecycleContext {
+    /// Serializes destruction of the same resident across all lifecycle entry points.
+    pub(crate) destroying: Arc<(
+        std::sync::Mutex<std::collections::HashSet<String>>,
+        std::sync::Condvar,
+    )>,
+    #[cfg(test)]
+    pub(crate) on_destroy_contended: DestroyContentionHook,
     /// Captures one startup generation (TS `reconcileActive`); `None` outside a fenced pass.
     pub reconcile_active: Option<ReconcileActiveFn>,
     pub on_store_mutation: Option<MutationSubscription>,
@@ -185,6 +195,9 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         Arc::new(move |ms: u64| retries.wait(ms))
     });
     LifecycleContext {
+        destroying: Arc::default(),
+        #[cfg(test)]
+        on_destroy_contended: Arc::default(),
         reconcile_active: None,
         on_store_mutation: deps.on_store_mutation,
         teardown_step_deadline_ms: deps.teardown_step_deadline_ms.unwrap_or(10_000),

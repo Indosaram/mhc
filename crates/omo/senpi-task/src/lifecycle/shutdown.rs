@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use super::context::LifecycleContext;
-use super::destroy::{best_effort, destroy_resident_task};
+use super::destroy::{DestroyGuard, best_effort, destroy_resident_task};
 use super::errors::LifecycleError;
 use super::port::{DestroyCause, ResidentHandle, ResidentKind};
 use super::types::{SuspendFailure, SuspendInput, SuspendSummary};
@@ -140,6 +140,15 @@ pub(crate) fn suspend_handle_owned(
     reason: &str,
     owns: &dyn Fn() -> bool,
 ) -> Result<(), LifecycleError> {
+    let _guard = DestroyGuard::acquire(context, handle.task_id());
+    if owns()
+        && context.store.load(handle.task_id())?.is_some_and(|record| {
+            record.execution_mode == "cloud"
+                && record.residency_state == crate::state::ResidencyState::Evicted
+        })
+    {
+        return Ok(());
+    }
     let hosted = handle.is_host_session()
         || context
             .store

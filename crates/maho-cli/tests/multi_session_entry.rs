@@ -113,8 +113,45 @@ fn a_profile_session_path_opens_that_session_with_the_profile_cwd() {
 #[tokio::test]
 async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
     use maho_cli::cli::host_runtime::create_host_core;
-    use maho_rpc::multi_session_host::{HostShutdownSignals, run_multi_session_host_with_signals};
+    use maho_rpc::multi_session_host::{
+        HostShutdownSignals, run_multi_session_host_with_signals_and_ready,
+    };
     use std::time::Duration;
+
+    // A test runner may itself be a supervised host; its private bootstrap must not reach this host.
+    const ISOLATED: &str = "MHC_TEST_ISOLATED_MULTI_SESSION_HOST";
+    if std::env::var_os(ISOLATED).is_none() {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "multi_session_entry::a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window",
+                "--nocapture",
+            ])
+            .env(ISOLATED, "1")
+            .kill_on_drop(true);
+        for (key, _) in std::env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("SENPI_RPC_")
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = tokio::time::timeout(Duration::from_secs(45), command.output())
+            .await
+            .expect("isolated host test completed")
+            .expect("spawn isolated host test");
+        assert!(
+            output.status.success(),
+            "isolated host test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().into_owned();
     let socket = temp.path().join("rpc.sock");
@@ -125,22 +162,23 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
         watchdog: None,
         empty_exit_ms: Some(2_000.0),
     };
-    let served = tokio::spawn(run_multi_session_host_with_signals(
+    let (ready, listening) = tokio::sync::oneshot::channel();
+    let mut served = tokio::spawn(run_multi_session_host_with_signals_and_ready(
         core,
         Some(socket_text.clone()),
         signals,
+        ready,
     ));
-    // Subscribe to the host's answer, then to its exit; the retry is bounded, never a fixed sleep.
-    let protocol = tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if let Some(protocol) =
-                maho_rpc::host_probe::probe_protocol_info(&socket_text, 2_000).await
-            {
-                return protocol;
-            }
-            tokio::task::yield_now().await;
+    tokio::select! {
+        result = &mut served => panic!("host exited before listening: {result:?}"),
+        result = tokio::time::timeout(Duration::from_secs(15), listening) => {
+            result.expect("host started listening").expect("readiness sender");
         }
-    })
+    }
+    let protocol = maho_rpc::host_probe::with_rpc_key_root(
+        temp.path().to_owned(),
+        maho_rpc::host_probe::probe_protocol_info(&socket_text, 2_000),
+    )
     .await
     .expect("the CLI-built host answered the protocol probe");
     assert_eq!(protocol.protocol_version, 1.0);

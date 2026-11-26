@@ -324,6 +324,61 @@ pub(crate) fn lifecycle(
     create_task_lifecycle(LifecycleDeps::new(store.clone(), registry.clone(), config))
 }
 
+pub(crate) struct ManagedResident(pub(crate) Arc<dyn crate::manager::ManagedChildHandle>);
+impl ResidentHandle for ManagedResident {
+    fn task_id(&self) -> &str {
+        self.0.task_id()
+    }
+    fn is_same_managed(
+        &self,
+        handle: &Arc<dyn crate::manager::ManagedChildHandle>,
+    ) -> Option<bool> {
+        Some(Arc::ptr_eq(&self.0, handle))
+    }
+    fn kind(&self) -> ResidentKind {
+        ResidentKind::Rpc
+    }
+    fn pid(&self) -> Option<i64> {
+        self.0.pid()
+    }
+    fn abort(&self) -> Result<(), HostError> {
+        self.0.abort()
+    }
+    fn terminate(&self) -> Result<(), HostError> {
+        self.0.terminate()
+    }
+    fn dispose(&self) -> Result<(), HostError> {
+        self.0.dispose()
+    }
+}
+
+/// Exercise a real managed handle through the lifecycle's resident teardown port.
+pub(crate) fn evict_managed_handle(
+    handle: Arc<dyn crate::manager::ManagedChildHandle>,
+) -> Result<(), super::LifecycleError> {
+    let temp = temp_store();
+    let task_id = handle.task_id().to_owned();
+    seed_record(
+        &temp.store,
+        Seed {
+            task_id: &task_id,
+            status: Some(TaskStatus::Completed),
+            residency_state: Some(ResidencyState::Resident),
+            execution_mode: Some("process"),
+            ..Seed::default()
+        },
+    );
+    let registry = Arc::new(FakeRegistry::default());
+    registry.add(Arc::new(ManagedResident(handle)));
+    lifecycle(&temp.store, &registry, default_settings())
+        .destroy_resident_task(&task_id, super::DestroyCause::Evict)?;
+    assert_eq!(
+        residency(&temp.store, &task_id),
+        Some(ResidencyState::Evicted)
+    );
+    Ok(())
+}
+
 pub(crate) fn residency(store: &TaskRecordStore, task_id: &str) -> Option<ResidencyState> {
     store
         .load(task_id)

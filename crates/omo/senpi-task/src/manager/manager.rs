@@ -3384,6 +3384,25 @@ impl Inner {
             CloudRouteDecision::Cloud { reason } => (ExecutionMode::Cloud, Some(reason)),
             CloudRouteDecision::Local => (base_execution_mode, None),
         };
+        if execution_mode == ExecutionMode::Cloud
+            && self.cloud_runner.is_some()
+            && !self.destruction.supports_fenced_eviction()
+        {
+            if let Some(lease) = &admission_lease {
+                lease.release();
+            }
+            return StartResult::StartFailed(StartFailure {
+                task_id: String::new(),
+                name: normalize_spec_name(spec.name.as_deref()).unwrap_or_default(),
+                category: spec.category.clone().or(plan.category.clone()),
+                subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                execution_mode,
+                model: plan.model.clone(),
+                resolved_model: plan.resolved_model.clone(),
+                run_in_background: spec.run_in_background,
+                error_message: "cloud tasks require lifecycle destruction with fenced eviction; configure TaskManagerOptions.destruction with a TaskLifecycle adapter, or disable cloud offload".into(),
+            });
+        }
         let local_fallback_mode = match base_execution_mode {
             ExecutionMode::Cloud => ExecutionMode::InProcess,
             other => other,
@@ -5411,6 +5430,32 @@ impl OutcomeTrackerPorts for Inner {
 
     fn settle_waiters(&self, task_id: &str) {
         Inner::settle_waiters(self, task_id);
+    }
+
+    fn evict_finished_cloud(
+        &self,
+        task_id: &str,
+        handle: &Arc<dyn ManagedChildHandle>,
+        epoch: i64,
+    ) -> Result<(), crate::host::HostError> {
+        if !handle.evict_after_outcome() {
+            return Ok(());
+        }
+        let Some(record) = self
+            .store
+            .load(task_id)
+            .map_err(|error| crate::host::HostError {
+                message: format!("cannot load cloud task before lifecycle eviction: {error}"),
+            })?
+        else {
+            return Ok(());
+        };
+        if record.execution_mode != ExecutionMode::Cloud.as_str()
+            || record.notification.run_epoch != epoch
+        {
+            return Ok(());
+        }
+        self.destruction.evict_managed_if_current(task_id, handle)
     }
 
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool {

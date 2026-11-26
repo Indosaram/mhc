@@ -253,6 +253,16 @@ impl SteeringEngine {
                 suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
             });
         };
+        if record.status.is_terminal() && handle.evict_after_outcome() {
+            return Ok(SendOutcome::NotContinuable {
+                task_id: record.task_id.clone(),
+                reason: format!(
+                    "Task {} has finished and its cloud workspace is no longer available.",
+                    record.task_id
+                ),
+                suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
+            });
+        }
         let Some(fresh) = self.port.store.load(&record.task_id)? else {
             return Ok(not_found(&record.task_id));
         };

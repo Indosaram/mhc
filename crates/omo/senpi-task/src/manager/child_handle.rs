@@ -85,6 +85,10 @@ pub trait ManagedChildHandle: Send + Sync {
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe;
     fn wait_for_outcome(&self) -> RunnerOutcome;
+    /// A one-shot remote session must leave residency after its current outcome.
+    fn evict_after_outcome(&self) -> bool {
+        false
+    }
     /// `None` when the handle has no session switching (in-process handles).
     fn switch_session(
         &self,
@@ -98,7 +102,7 @@ pub trait ManagedChildHandle: Send + Sync {
     }
     /// Partial assistant text captured so far (interrupt preserves work-in-progress).
     fn last_assistant_text(&self) -> Option<String>;
-    /// Whether [`Self::terminate`] signals an OS process (RPC handles only).
+    /// Whether this handle exposes a termination operation for lifecycle teardown.
     fn has_terminate(&self) -> bool {
         false
     }
@@ -133,11 +137,5 @@ pub trait ManagedChildHandle: Send + Sync {
 
 /// Terminate (when supported) then always dispose.
 pub fn discard_managed_handle(handle: &dyn ManagedChildHandle) -> Result<(), HostError> {
-    let terminated = if handle.has_terminate() {
-        handle.terminate()
-    } else {
-        Ok(())
-    };
-    let disposed = handle.dispose();
-    terminated.and(disposed)
+    crate::lifecycle::destroy::destroy_unregistered(handle)
 }
