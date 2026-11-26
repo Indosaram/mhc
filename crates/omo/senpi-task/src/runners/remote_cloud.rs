@@ -1095,7 +1095,7 @@ mod tests {
         ) -> Result<SyncedWorkspace, String> {
             self.synced_in
                 .lock()
-                .unwrap()
+                .expect("lock fake synced-in records")
                 .push(format!("{machine}:{task_id}"));
             Ok(SyncedWorkspace {
                 machine: machine.into(),
@@ -1115,9 +1115,9 @@ mod tests {
         ) -> Result<SyncOutResult, String> {
             if let Some(patch) = &self.patch_content {
                 if let Some(parent) = patch_out.parent() {
-                    std::fs::create_dir_all(parent).unwrap();
+                    std::fs::create_dir_all(parent).expect("create fake patch directory");
                 }
-                std::fs::write(patch_out, patch).unwrap();
+                std::fs::write(patch_out, patch).expect("write fake cloud patch");
                 Ok(SyncOutResult {
                     machine: machine.into(),
                     task_id: task_id.into(),
@@ -1141,27 +1141,30 @@ mod tests {
         fn release(&self, machine: &str, lease_id: &str, delete: bool) -> Result<(), String> {
             self.released
                 .lock()
-                .unwrap()
+                .expect("lock fake release records")
                 .push((machine.into(), lease_id.into(), delete));
             Ok(())
         }
     }
 
     fn spawn_fake_host_server(socket_path: PathBuf) -> thread::JoinHandle<Vec<Value>> {
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let listener = UnixListener::bind(&socket_path).expect("bind fake cloud host socket");
         thread::spawn(move || {
             let mut received = Vec::new();
-            let (stream, _) = listener.accept().unwrap();
-            let mut writer = stream.try_clone().unwrap();
+            let (stream, _) = listener.accept().expect("accept cloud host connection");
+            let mut writer = stream.try_clone().expect("clone cloud host connection");
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             loop {
                 line.clear();
-                let n = reader.read_line(&mut line).unwrap_or(0);
+                let n = reader
+                    .read_line(&mut line)
+                    .expect("read cloud host command");
                 if n == 0 {
                     break;
                 }
-                let cmd: Value = serde_json::from_str(line.trim()).unwrap();
+                let cmd: Value =
+                    serde_json::from_str(line.trim()).expect("parse cloud host command");
                 let cmd_type = cmd["type"].as_str().unwrap_or("").to_string();
                 let id = cmd["id"].as_str().unwrap_or("").to_string();
                 received.push(cmd.clone());
@@ -1174,7 +1177,7 @@ mod tests {
                             "success": true,
                             "data": { "sessionId": "rpc-cloud-1" }
                         });
-                        writeln!(writer, "{resp}").unwrap();
+                        writeln!(writer, "{resp}").expect("send open-session response");
                     }
                     "prompt" => {
                         let resp = json!({
@@ -1184,7 +1187,7 @@ mod tests {
                             "success": true,
                             "data": { "disposition": "started" }
                         });
-                        writeln!(writer, "{resp}").unwrap();
+                        writeln!(writer, "{resp}").expect("send prompt response");
                         let msg = json!({
                             "type": "message_end",
                             "sessionId": "rpc-cloud-1",
@@ -1194,14 +1197,14 @@ mod tests {
                                 "stopReason": "stop"
                             }
                         });
-                        writeln!(writer, "{msg}").unwrap();
+                        writeln!(writer, "{msg}").expect("send assistant message");
                         let end = json!({
                             "type": "agent_end",
                             "sessionId": "rpc-cloud-1",
                             "willRetry": false,
                             "messages": []
                         });
-                        writeln!(writer, "{end}").unwrap();
+                        writeln!(writer, "{end}").expect("send agent-end event");
                     }
                     "close_session" => {
                         break;
@@ -1211,6 +1214,19 @@ mod tests {
             }
             received
         })
+    }
+
+    #[test]
+    fn fake_host_reports_invalid_utf8_instead_of_treating_it_as_eof() {
+        let dir = tempfile::tempdir().expect("create fake host directory");
+        let socket_path = dir.path().join("invalid-command.sock");
+        let server = spawn_fake_host_server(socket_path.clone());
+        let mut client =
+            std::os::unix::net::UnixStream::connect(socket_path).expect("connect to fake host");
+        client
+            .write_all(&[0xff, b'\n'])
+            .expect("send invalid host command");
+        assert!(server.join().is_err());
     }
 
     #[test]
