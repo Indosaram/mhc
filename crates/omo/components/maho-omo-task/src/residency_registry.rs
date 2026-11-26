@@ -13,8 +13,11 @@ impl ResidentHandle for ManagedResident {
     fn task_id(&self) -> &str {
         self.0.task_id()
     }
+    fn is_same_managed(&self, handle: &Arc<dyn ManagedChildHandle>) -> Option<bool> {
+        Some(Arc::ptr_eq(&self.0, handle))
+    }
     fn kind(&self) -> ResidentKind {
-        if self.0.pid().is_some() {
+        if self.0.pid().is_some() || (self.0.has_terminate() && !self.0.is_host_session()) {
             ResidentKind::Rpc
         } else {
             ResidentKind::InProcess
@@ -77,5 +80,79 @@ impl ResidencyRegistry for ManagerResidencyRegistry {
     }
     fn end_send(&self, task_id: &str) {
         (self.get_manager)().end_send(task_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use senpi_task::{
+        manager::child_handle::{ManagedChildListener, Unsubscribe},
+        runners::RunnerOutcome,
+    };
+
+    struct FakeHandle {
+        pid: Option<i64>,
+        has_terminate: bool,
+        host_session: bool,
+    }
+
+    impl ManagedChildHandle for FakeHandle {
+        fn task_id(&self) -> &str {
+            "task"
+        }
+        fn session_id(&self) -> Option<String> {
+            None
+        }
+        fn pid(&self) -> Option<i64> {
+            self.pid
+        }
+        fn steer(&self, _: &str) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn follow_up(&self, _: &str) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn abort(&self) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn subscribe(&self, _: ManagedChildListener) -> Unsubscribe {
+            Box::new(|| {})
+        }
+        fn wait_for_outcome(&self) -> RunnerOutcome {
+            RunnerOutcome::Cancelled
+        }
+        fn last_assistant_text(&self) -> Option<String> {
+            None
+        }
+        fn has_terminate(&self) -> bool {
+            self.has_terminate
+        }
+        fn is_host_session(&self) -> bool {
+            self.host_session
+        }
+        fn terminate(&self) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn dispose(&self) -> Result<(), HostError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pidless_cloud_handle_uses_rpc_teardown_without_reclassifying_host_sessions() {
+        for (pid, has_terminate, host_session, expected) in [
+            (None, true, false, ResidentKind::Rpc),
+            (None, true, true, ResidentKind::InProcess),
+            (None, false, false, ResidentKind::InProcess),
+            (Some(123), true, false, ResidentKind::Rpc),
+        ] {
+            let handle = ManagedResident(Arc::new(FakeHandle {
+                pid,
+                has_terminate,
+                host_session,
+            }));
+            assert_eq!(handle.kind(), expected);
+        }
     }
 }

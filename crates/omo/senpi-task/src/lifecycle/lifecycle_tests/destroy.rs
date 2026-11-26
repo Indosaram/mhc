@@ -166,6 +166,95 @@ fn destroy_without_handle_is_idempotent() {
     assert_eq!(residency(&temp.store, "st_0000000d"), Some(Disposed));
 }
 
+#[test]
+fn concurrent_evictions_teardown_a_resident_exactly_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct BlockingResident {
+        entered: mpsc::Sender<()>,
+        proceed: Mutex<mpsc::Receiver<()>>,
+        terminated: AtomicUsize,
+        disposed: AtomicUsize,
+    }
+    impl ResidentHandle for BlockingResident {
+        fn task_id(&self) -> &str {
+            "st_0000001a"
+        }
+        fn kind(&self) -> ResidentKind {
+            ResidentKind::Rpc
+        }
+        fn pid(&self) -> Option<i64> {
+            None
+        }
+        fn abort(&self) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn terminate(&self) -> Result<(), HostError> {
+            self.terminated.fetch_add(1, Ordering::SeqCst);
+            self.entered.send(()).unwrap();
+            self.proceed
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        }
+        fn dispose(&self) -> Result<(), HostError> {
+            self.disposed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let (temp, registry) = seeded("st_0000001a", Completed, "cloud");
+    let (entered, first_entered) = mpsc::channel();
+    let (proceed, unblock) = mpsc::channel();
+    let resident = Arc::new(BlockingResident {
+        entered,
+        proceed: Mutex::new(unblock),
+        terminated: AtomicUsize::new(0),
+        disposed: AtomicUsize::new(0),
+    });
+    registry.add(resident.clone());
+    let context = crate::lifecycle::resolve_context(LifecycleDeps::new(
+        temp.store.clone(),
+        registry,
+        default_settings(),
+    ));
+    let (contended, second_contended) = mpsc::channel();
+    *context.on_destroy_contended.lock().unwrap() = Some(Arc::new(move |_| {
+        contended.send(()).unwrap();
+    }));
+    let first_context = context.clone();
+    let first = std::thread::spawn(move || {
+        crate::lifecycle::destroy::destroy_resident_task(
+            &first_context,
+            "st_0000001a",
+            DestroyCause::Evict,
+            None,
+        )
+    });
+    first_entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    let second = std::thread::spawn(move || {
+        crate::lifecycle::destroy::destroy_resident_task(
+            &context,
+            "st_0000001a",
+            DestroyCause::Evict,
+            None,
+        )
+    });
+    second_contended
+        .recv_timeout(Duration::from_secs(5))
+        .expect("second eviction must contend while the first teardown is active");
+    proceed.send(()).unwrap();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    assert_eq!(resident.terminated.load(Ordering::SeqCst), 1);
+    assert_eq!(resident.disposed.load(Ordering::SeqCst), 1);
+    assert_eq!(residency(&temp.store, "st_0000001a"), Some(Evicted));
+}
+
 struct FakeHostSessionProbe {
     live: bool,
 }

@@ -6192,11 +6192,37 @@ pub async fn run_multi_session_host_with_signals(
     listen: Option<String>,
     signals: HostShutdownSignals,
 ) -> std::io::Result<()> {
+    run_multi_session_host_inner(core, listen, signals, None).await
+}
+
+/// Serve a host and notify the caller once its endpoint is bound and published.
+pub async fn run_multi_session_host_with_signals_and_ready(
+    core: std::sync::Arc<HostCore>,
+    listen: Option<String>,
+    signals: HostShutdownSignals,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> std::io::Result<()> {
+    run_multi_session_host_inner(core, listen, signals, Some(ready)).await
+}
+
+async fn run_multi_session_host_inner(
+    core: std::sync::Arc<HostCore>,
+    listen: Option<String>,
+    signals: HostShutdownSignals,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> std::io::Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = signals;
         match listen.as_deref() {
-            None | Some("stdio://") => run_stdio_host(core).await,
+            None | Some("stdio://") => {
+                if let Some(ready) = ready
+                    && ready.send(()).is_err()
+                {
+                    eprintln!("senpi rpc host: readiness observer dropped");
+                }
+                run_stdio_host(core).await
+            }
             Some(_) => Err(std::io::Error::other(
                 "rpc host sockets are not supported on this platform yet",
             )),
@@ -6208,9 +6234,14 @@ pub async fn run_multi_session_host_with_signals(
             None | Some("stdio://") => {
                 // A stdio host serves no socket: it publishes claims only into a told daemon directory.
                 core.install_endpoint_reservations(None).await;
+                if let Some(ready) = ready
+                    && ready.send(()).is_err()
+                {
+                    eprintln!("senpi rpc host: readiness observer dropped");
+                }
                 run_stdio_host(core).await
             }
-            Some(path) => run_socket_host(core, path.to_owned(), signals).await,
+            Some(path) => run_socket_host(core, path.to_owned(), signals, ready).await,
         }
     }
 }
@@ -6415,6 +6446,7 @@ async fn run_socket_host(
     core: std::sync::Arc<HostCore>,
     listen: String,
     signals: HostShutdownSignals,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> std::io::Result<()> {
     #[cfg(unix)]
     let path = crate::host_ensure::normalize_socket_path(&listen).to_owned();
@@ -6667,6 +6699,11 @@ async fn run_socket_host(
         crate::child_reaper::start_host_child_reaper(&env, std::env::consts::OS, |message| {
             eprintln!("senpi rpc host: {message}")
         });
+    if let Some(ready) = ready
+        && ready.send(()).is_err()
+    {
+        eprintln!("senpi rpc host: readiness observer dropped");
+    }
     loop {
         tokio::select! {
             biased;

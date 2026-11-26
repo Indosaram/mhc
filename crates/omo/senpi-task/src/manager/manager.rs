@@ -1506,7 +1506,8 @@ impl TaskManager {
         }
         managed_spec.admission = Some(scope.clone());
         let mode = ExecutionMode::parse(&owned.execution_mode).unwrap_or(ExecutionMode::Process);
-        let (default_runner, fallback_runner) = self.inner.select_runners(mode, ExecutionMode::InProcess);
+        let (default_runner, fallback_runner) =
+            self.inner.select_runners(mode, ExecutionMode::InProcess);
         let context = LaunchContext {
             runner: warm.map_or(default_runner, |warm| warm.runner),
             fallback_runner,
@@ -3383,6 +3384,25 @@ impl Inner {
             CloudRouteDecision::Cloud { reason } => (ExecutionMode::Cloud, Some(reason)),
             CloudRouteDecision::Local => (base_execution_mode, None),
         };
+        if execution_mode == ExecutionMode::Cloud
+            && self.cloud_runner.is_some()
+            && !self.destruction.supports_fenced_eviction()
+        {
+            if let Some(lease) = &admission_lease {
+                lease.release();
+            }
+            return StartResult::StartFailed(StartFailure {
+                task_id: String::new(),
+                name: normalize_spec_name(spec.name.as_deref()).unwrap_or_default(),
+                category: spec.category.clone().or(plan.category.clone()),
+                subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                execution_mode,
+                model: plan.model.clone(),
+                resolved_model: plan.resolved_model.clone(),
+                run_in_background: spec.run_in_background,
+                error_message: "cloud tasks require lifecycle destruction with fenced eviction; configure TaskManagerOptions.destruction with a TaskLifecycle adapter, or disable cloud offload".into(),
+            });
+        }
         let local_fallback_mode = match base_execution_mode {
             ExecutionMode::Cloud => ExecutionMode::InProcess,
             other => other,
@@ -3461,60 +3481,61 @@ impl Inner {
         // Isolation is built BEFORE the record is committed to a launch: a repository that cannot be
         // cloned must refuse the spawn, never silently run the child against the parent checkout,
         // because "isolated" is a safety promise the caller relies on.
-        let prepared: Option<PreparedIsolation> = if wants_isolation && execution_mode != ExecutionMode::Cloud {
-            match self.isolation.prepare(spec, &claimed.task_id) {
-                IsolationPreparation::Prepared {
-                    handle,
-                    baseline,
-                    spec: isolation_spec,
-                } => Some((*handle, *baseline, isolation_spec)),
-                IsolationPreparation::Refused { reason } => {
-                    if Some(registration.name.as_str()) != claimed.name.as_deref() {
-                        lock(&self.names).release(&spec.parent_session_id, &registration.name);
+        let prepared: Option<PreparedIsolation> =
+            if wants_isolation && execution_mode != ExecutionMode::Cloud {
+                match self.isolation.prepare(spec, &claimed.task_id) {
+                    IsolationPreparation::Prepared {
+                        handle,
+                        baseline,
+                        spec: isolation_spec,
+                    } => Some((*handle, *baseline, isolation_spec)),
+                    IsolationPreparation::Refused { reason } => {
+                        if Some(registration.name.as_str()) != claimed.name.as_deref() {
+                            lock(&self.names).release(&spec.parent_session_id, &registration.name);
+                        }
+                        lock(&self.state).background.remove(&claimed.task_id);
+                        let message = format!("isolation_unavailable: {reason}");
+                        let timestamp = self.now_iso();
+                        let started = self.transition(
+                            &claimed.task_id,
+                            &TaskTransition::Start {
+                                timestamp: timestamp.clone(),
+                                pid: None,
+                                child_session_id: None,
+                            },
+                        );
+                        let failed = self.transition(
+                            &claimed.task_id,
+                            &TaskTransition::Fail {
+                                timestamp,
+                                error_message: message.clone(),
+                                killed: false,
+                                run_stats: None,
+                            },
+                        );
+                        assert!(
+                            started && failed,
+                            "isolation refusal transitions were not applied"
+                        );
+                        if let Some(lease) = &admission_lease {
+                            lease.release();
+                        }
+                        return StartResult::StartFailed(StartFailure {
+                            task_id: claimed.task_id.clone(),
+                            name: registration.name.clone(),
+                            category: claimed.category.clone(),
+                            subagent_type: claimed.agent_type.clone(),
+                            execution_mode,
+                            model: claimed.model.clone(),
+                            resolved_model: claimed.resolved_model.clone(),
+                            run_in_background: spec.run_in_background,
+                            error_message: message,
+                        });
                     }
-                    lock(&self.state).background.remove(&claimed.task_id);
-                    let message = format!("isolation_unavailable: {reason}");
-                    let timestamp = self.now_iso();
-                    let started = self.transition(
-                        &claimed.task_id,
-                        &TaskTransition::Start {
-                            timestamp: timestamp.clone(),
-                            pid: None,
-                            child_session_id: None,
-                        },
-                    );
-                    let failed = self.transition(
-                        &claimed.task_id,
-                        &TaskTransition::Fail {
-                            timestamp,
-                            error_message: message.clone(),
-                            killed: false,
-                            run_stats: None,
-                        },
-                    );
-                    assert!(
-                        started && failed,
-                        "isolation refusal transitions were not applied"
-                    );
-                    if let Some(lease) = &admission_lease {
-                        lease.release();
-                    }
-                    return StartResult::StartFailed(StartFailure {
-                        task_id: claimed.task_id.clone(),
-                        name: registration.name.clone(),
-                        category: claimed.category.clone(),
-                        subagent_type: claimed.agent_type.clone(),
-                        execution_mode,
-                        model: claimed.model.clone(),
-                        resolved_model: claimed.resolved_model.clone(),
-                        run_in_background: spec.run_in_background,
-                        error_message: message,
-                    });
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let isolation_cwd = prepared
             .as_ref()
             .map_or_else(|| self.cwd.clone(), |(_, _, spec)| spec.merged_dir.clone());
@@ -3834,7 +3855,8 @@ impl Inner {
                 && fresh.notification.run_epoch == epoch
                 && fresh.host_pid == record.host_pid
         });
-        if !held_creation && !owns_run(&launch_run_of(&effective_context.record), current.as_ref()) {
+        if !held_creation && !owns_run(&launch_run_of(&effective_context.record), current.as_ref())
+        {
             self.discard_stale_launch(&effective_context, handle);
             self.end_launch(&record.task_id);
             return Err(if cancelled {
@@ -5408,6 +5430,32 @@ impl OutcomeTrackerPorts for Inner {
 
     fn settle_waiters(&self, task_id: &str) {
         Inner::settle_waiters(self, task_id);
+    }
+
+    fn evict_finished_cloud(
+        &self,
+        task_id: &str,
+        handle: &Arc<dyn ManagedChildHandle>,
+        epoch: i64,
+    ) -> Result<(), crate::host::HostError> {
+        if !handle.evict_after_outcome() {
+            return Ok(());
+        }
+        let Some(record) = self
+            .store
+            .load(task_id)
+            .map_err(|error| crate::host::HostError {
+                message: format!("cannot load cloud task before lifecycle eviction: {error}"),
+            })?
+        else {
+            return Ok(());
+        };
+        if record.execution_mode != ExecutionMode::Cloud.as_str()
+            || record.notification.run_epoch != epoch
+        {
+            return Ok(());
+        }
+        self.destruction.evict_managed_if_current(task_id, handle)
     }
 
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool {
