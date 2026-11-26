@@ -14,7 +14,10 @@ use std::{
     },
 };
 
-type ScopeAttachRx = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+type ScopeAttachRx = (
+    tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+    bool,
+);
 
 pub fn register_mcp_lifecycle(
     api: &mut ExtensionApi,
@@ -30,7 +33,9 @@ pub fn register_mcp_lifecycle_with_tool_search(
     owner: u64,
     tool_search: Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
 ) -> Arc<tokio::sync::Mutex<McpService>> {
-    let service = Arc::new(tokio::sync::Mutex::new(McpService::new(registry, owner)));
+    let service = McpService::new(registry, owner);
+    let subscriptions = service.wire_status_subscriptions();
+    let service = Arc::new(tokio::sync::Mutex::new(service));
     let publish_events = api.events.clone();
     let attached_session_ids: Arc<Mutex<BTreeSet<String>>> = Arc::default();
     let wire_status_sink: Arc<dyn Fn(&crate::service_types::McpWireStatusSnapshot) + Send + Sync> = {
@@ -45,6 +50,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
         &service,
         attached_session_ids.clone(),
         Some(wire_status_sink),
+        &subscriptions,
     );
     let inventory = Arc::new(Mutex::new(Some(inventory)));
     let registrar: Arc<dyn crate::tool_registrar::McpToolRegistrar> = Arc::new(
@@ -93,6 +99,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
     let attach_started = Arc::new(AtomicBool::new(false));
     let attached_contexts: Arc<Mutex<BTreeSet<String>>> = Arc::default();
     let scope_attaches: Arc<Mutex<BTreeMap<String, ScopeAttachRx>>> = Arc::default();
+    let scope_tasks: Arc<Mutex<BTreeMap<String, tokio::task::AbortHandle>>> = Arc::default();
 
     // Input: rebind presentation for this scope and reveal `/skill:<name>` if present.
     {
@@ -128,8 +135,11 @@ pub fn register_mcp_lifecycle_with_tool_search(
                             &skill_name,
                             &registered,
                         );
-                        if !targets.is_empty() {
-                            service.activate_skill_mcp_tools(&targets);
+                        if !targets.is_empty()
+                            && let Err(error) = service.activate_skill_mcp_tools(&targets)
+                        {
+                            reveal.retry_reveal(&session_id, &skill_name);
+                            return Err(error);
                         }
                     }
                     Ok(EventResult::None)
@@ -146,6 +156,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
         let tc_contexts = attached_contexts.clone();
         let tc_sessions = attached_session_ids.clone();
         let tc_scopes = scope_attaches.clone();
+        let tc_tasks = scope_tasks.clone();
         let tc_service = service.clone();
         let tc_registrar = registrar.clone();
         let tc_search = tool_search.clone();
@@ -161,6 +172,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 let contexts = tc_contexts.clone();
                 let sessions = tc_sessions.clone();
                 let scopes = tc_scopes.clone();
+                let tasks = tc_tasks.clone();
                 let service_handle = tc_service.clone();
                 let registrar = tc_registrar.clone();
                 let tool_search = tc_search.clone();
@@ -187,11 +199,11 @@ pub fn register_mcp_lifecycle_with_tool_search(
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .insert(session_id.clone());
                             let (tx, rx) = tokio::sync::watch::channel(None);
+                            let is_primary = !attach_started.swap(true, Ordering::SeqCst);
                             scopes
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .insert(session_id.clone(), rx);
-                            let is_primary = !attach_started.swap(true, Ordering::SeqCst);
+                                .insert(session_id.clone(), (rx, is_primary));
                             let service_for_task = service_handle.clone();
                             let ctx_for_task = ctx.clone();
                             let registrar = registrar.clone();
@@ -199,7 +211,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
                             let events = events.clone();
                             let binding = binding.clone();
                             let session_id_for_task = session_id.clone();
-                            tokio::spawn(async move {
+                            let task = tokio::spawn(async move {
                                 let outcome = if is_primary {
                                     attach_context(
                                         &service_for_task,
@@ -228,6 +240,10 @@ pub fn register_mcp_lifecycle_with_tool_search(
                                 };
                                 tx.send_replace(Some(outcome));
                             });
+                            tasks
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(session_id.clone(), task.abort_handle());
                         }
                     }
                     if let Some(path) = read_path {
@@ -247,8 +263,11 @@ pub fn register_mcp_lifecycle_with_tool_search(
                                     &name,
                                     &registered,
                                 );
-                                if !targets.is_empty() {
-                                    service.activate_skill_mcp_tools(&targets);
+                                if !targets.is_empty()
+                                    && let Err(error) = service.activate_skill_mcp_tools(&targets)
+                                {
+                                    reveal.retry_reveal(&session_id, &name);
+                                    return Err(error);
                                 }
                             }
                         }
@@ -297,7 +316,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 start_scopes
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(session_id, rx);
+                    .insert(session_id, (rx, true));
                 let start_binding = start_binding.clone();
                 let service_handle = start.clone();
                 let registrar = start_registrar.clone();
@@ -343,6 +362,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
     // SessionShutdown
     {
         let shutdown = service.clone();
+        let shutdown_tasks = scope_tasks.clone();
         api.on(
             EventKind::SessionShutdown,
             Arc::new(move |_, _| {
@@ -359,6 +379,13 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     .take()
                 {
                     publisher.abort();
+                }
+                for (_, task) in std::mem::take(
+                    &mut *shutdown_tasks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                ) {
+                    task.abort();
                 }
                 let service = shutdown.clone();
                 Box::pin(async move {
@@ -380,6 +407,8 @@ pub fn register_mcp_lifecycle_with_tool_search(
         let before = service.clone();
         let before_events = publish_events.clone();
         let before_scopes = scope_attaches;
+        let before_tasks = scope_tasks;
+        let before_contexts = attached_contexts;
         let before_attach_flag = attach_started;
         let before_registrar = registrar;
         let before_search = tool_search;
@@ -391,6 +420,8 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 let service = before.clone();
                 let events = before_events.clone();
                 let scopes = before_scopes.clone();
+                let tasks = before_tasks.clone();
+                let contexts = before_contexts.clone();
                 let attach_flag = before_attach_flag.clone();
                 let registrar = before_registrar.clone();
                 let tool_search = before_search.clone();
@@ -406,23 +437,55 @@ pub fn register_mcp_lifecycle_with_tool_search(
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .get(&session_id)
                         .cloned();
-                    if let Some(mut rx) = own_attach {
-                        let _ = tokio::time::timeout(
+                    if let Some((mut rx, is_primary)) = own_attach {
+                        let outcome = tokio::time::timeout(
                             std::time::Duration::from_millis(
                                 crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
                             ),
                             async {
-                                while rx.borrow().is_none() {
-                                    if rx.changed().await.is_err() {
-                                        break;
+                                loop {
+                                    if let Some(result) = rx.borrow().clone() {
+                                        break result.map_err(ExtensionFailure::new);
                                     }
+                                    rx.changed().await.map_err(|_| {
+                                        ExtensionFailure::new(
+                                            "MCP attach task ended without a result",
+                                        )
+                                    })?;
                                 }
                             },
                         )
-                        .await;
+                        .await
+                        .unwrap_or_else(|_| Err(ExtensionFailure::new("MCP attach timed out")));
+                        if let Err(error) = outcome {
+                            if let Some(task) = tasks
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&session_id)
+                            {
+                                task.abort();
+                            }
+                            scopes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&session_id);
+                            contexts
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&session_id);
+                            if is_primary {
+                                attach_flag.store(false, Ordering::SeqCst);
+                            }
+                            return Err(error);
+                        }
+                        tasks
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&session_id);
                     }
-                    if !event.preview && !attach_flag.swap(true, Ordering::SeqCst) {
-                        attach_context(
+                    if !event.preview
+                        && !attach_flag.swap(true, Ordering::SeqCst)
+                        && let Err(error) = attach_context(
                             &service,
                             ctx,
                             registrar,
@@ -430,7 +493,10 @@ pub fn register_mcp_lifecycle_with_tool_search(
                             events.clone(),
                             binding,
                         )
-                        .await?;
+                        .await
+                    {
+                        attach_flag.store(false, Ordering::SeqCst);
+                        return Err(error);
                     }
                     wait_for_startup_registration(&service).await;
                     if !event.preview {

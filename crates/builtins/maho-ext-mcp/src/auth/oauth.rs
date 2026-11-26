@@ -80,6 +80,12 @@ pub fn normalize_resource_url(server_url: &str) -> String {
     }
     text
 }
+
+fn validated_resource_url(provider: &McpOAuthProvider) -> Result<String, OAuthRequestError> {
+    let resource = normalize_resource_url(&provider.store.server_url);
+    provider.validate_resource_url(&provider.store.server_url, Some(&resource))?;
+    Ok(resource)
+}
 /// Sets `resource` on a form: replaces the first occurrence in place, drops later duplicates, else appends.
 pub fn add_resource_param(form: &mut Vec<(String, String)>, resource: &str) {
     let mut seen = false;
@@ -546,6 +552,7 @@ pub async fn finish_authorization(
     iss: Option<&str>,
     client: &reqwest::Client,
 ) -> Result<(), OAuthRequestError> {
+    let resource = validated_resource_url(provider)?;
     assert_authorization_response_issuer(provider, iss).await?;
     let (info, issuer) = trusted_discover(provider, client).await?;
     let client_info = provider
@@ -560,12 +567,10 @@ pub async fn finish_authorization(
             provider.code_verifier_async().await?,
         ),
     ];
-    let resource = normalize_resource_url(&provider.store.server_url);
     add_resource_param(&mut form, &resource);
     if let Some(redirect) = &provider.redirect_url {
         form.push(("redirect_uri".into(), redirect.clone()));
     }
-    let _ = provider.validate_resource_url(&provider.store.server_url, Some(&resource));
     match provider
         .with_fresh_authorization(|| async {
             let tokens = request_tokens(client, &info, &client_info, form).await?;
@@ -700,6 +705,7 @@ pub async fn client_credentials_grant(
     provider: &McpOAuthProvider,
     client: &reqwest::Client,
 ) -> Result<(), OAuthRequestError> {
+    let resource = validated_resource_url(provider)?;
     let (info, issuer) = trusted_discover(provider, client).await?;
     provider.bind_issuer_async(&issuer).await?;
     let information = provider.client_information_async().await?.ok_or_else(|| {
@@ -715,9 +721,7 @@ pub async fn client_credentials_grant(
     if let Some(scopes) = provider.effective_scopes() {
         form.push(("scope".into(), scopes.join(" ")));
     }
-    let resource = normalize_resource_url(&provider.store.server_url);
     add_resource_param(&mut form, &resource);
-    let _ = provider.validate_resource_url(&provider.store.server_url, Some(&resource));
     provider
         .with_fresh_authorization(|| async {
             let tokens = request_tokens(client, &info, &information, form).await?;

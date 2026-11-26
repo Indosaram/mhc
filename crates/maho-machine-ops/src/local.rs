@@ -68,6 +68,15 @@ struct TouchedFileOps {
 }
 
 impl FileOps for TouchedFileOps {
+    fn canonicalize<'a>(
+        &'a self,
+        path: &'a std::path::Path,
+        ctx: &'a OpContext,
+    ) -> OpFuture<'a, std::path::PathBuf> {
+        self.clock.touch();
+        self.inner.canonicalize(path, ctx)
+    }
+
     fn read<'a>(&'a self, req: ReadRequest, ctx: &'a OpContext) -> OpFuture<'a, ReadResult> {
         self.clock.touch();
         self.inner.read(req, ctx)

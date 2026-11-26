@@ -2,10 +2,150 @@ use maho_tools::{bash::*, bash_executor::*, definition::*};
 use serde_json::json;
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 struct Chunks(Vec<Vec<u8>>);
+
+#[cfg(unix)]
+#[tokio::test]
+async fn core_shell_without_env_provider_preserves_machine_path_with_hook() {
+    let machine = maho_tools::machine::create_tool_machine(None, None);
+    let mut options = maho_tools::bash_core::CoreBashToolOptions::new(machine);
+    options.spawn_hook = Some(Arc::new(Ok));
+    let tool = maho_tools::bash_core::create_core_bash_tool_definition(".".into(), options);
+    let output = (tool.execute)(ToolCall {
+        id: "core-inherited-path",
+        params: json!({"command":"printf '%s' \"$PATH\""}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect("core shell executes with its machine environment");
+    assert_eq!(
+        output.structured_content.unwrap()["output"],
+        std::env::var("PATH").unwrap()
+    );
+}
+
+struct FailingExecution;
+
+impl BashOperations for FailingExecution {
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a Path,
+        options: BashExecOptions,
+    ) -> ToolFuture<'a, BashExit> {
+        Box::pin(async move {
+            (options.on_data)(b"output", BashStream::Stdout)?;
+            Err(ToolError::Message("execution_failure_token".to_owned()))
+        })
+    }
+}
+
+#[tokio::test]
+async fn execution_error_survives_output_finalization_failure() {
+    let tool = create_bash_tool_definition(
+        ".".into(),
+        BashToolOptions {
+            operations: Some(Arc::new(FailingExecution)),
+            ..Default::default()
+        },
+    );
+    let error = (tool.execute)(ToolCall {
+        id: "execution-and-output-failure",
+        params: json!({"command":"ignored"}),
+        signal: AbortSignal::default(),
+        on_update: Some(Arc::new(|update| {
+            if update.content.is_empty() {
+                Ok(())
+            } else {
+                Err(ToolError::Message("output_failure_token".to_owned()))
+            }
+        })),
+        context: None,
+    })
+    .await
+    .expect_err("execution and output finalization must fail");
+    let message = error.to_string();
+    assert!(message.contains("execution_failure_token"), "{message}");
+    assert!(message.contains("output_failure_token"), "{message}");
+    assert!(matches!(
+        &error,
+        ToolError::ExecutionAndFinalization {
+            execution,
+            finalization,
+        } if matches!(execution.as_ref(), ToolError::Message(value) if value == "execution_failure_token")
+            && matches!(finalization.as_ref(), ToolError::Message(value) if value == "output_failure_token")
+    ));
+}
+
+struct ReentrantChunks(Arc<Mutex<Option<maho_tools::shell_operations::BashDataCallback>>>);
+
+impl BashOperations for ReentrantChunks {
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a Path,
+        options: BashExecOptions,
+    ) -> ToolFuture<'a, BashExit> {
+        Box::pin(async move {
+            *self.0.lock().expect("callback lock") = Some(options.on_data.clone());
+            (options.on_data)(b"first", BashStream::Stdout)?;
+            Ok(BashExit { exit_code: Some(0) })
+        })
+    }
+}
+
+#[tokio::test]
+async fn output_observer_can_reenter_the_output_callback() {
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let outcome = runtime.block_on(async {
+            let on_data = Arc::new(Mutex::new(None));
+            let callback = Arc::clone(&on_data);
+            let reentered = AtomicBool::new(false);
+            let tool = create_bash_tool_definition(
+                ".".into(),
+                BashToolOptions {
+                    operations: Some(Arc::new(ReentrantChunks(on_data))),
+                    ..Default::default()
+                },
+            );
+            (tool.execute)(ToolCall {
+                id: "reentrant-output",
+                params: json!({"command":"ignored"}),
+                signal: AbortSignal::default(),
+                on_update: Some(Arc::new(move |result| {
+                    if !result.content.is_empty() && !reentered.swap(true, Ordering::SeqCst) {
+                        let on_data = callback.lock().unwrap().clone().unwrap();
+                        on_data(b"second", BashStream::Stdout)?;
+                    }
+                    Ok(())
+                })),
+                context: None,
+            })
+            .await
+        });
+        let _ = done.send(outcome);
+    });
+    let output = tokio::time::timeout(std::time::Duration::from_secs(2), result)
+        .await
+        .expect("reentrant callback must not deadlock")
+        .expect("worker reports result")
+        .expect("shell succeeds");
+    assert_eq!(output.structured_content.unwrap()["output"], "firstsecond");
+}
+
 impl BashOperations for Chunks {
     fn exec<'a>(
         &'a self,

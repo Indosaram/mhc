@@ -367,6 +367,19 @@ pub struct ListResult {
 }
 
 pub trait FileOps: Send + Sync {
+    /// Resolve symlinks on this machine for a filesystem policy check.
+    fn canonicalize<'a>(
+        &'a self,
+        _path: &'a std::path::Path,
+        _ctx: &'a OpContext,
+    ) -> OpFuture<'a, PathBuf> {
+        Box::pin(async {
+            Err(MachineOpError::new(
+                crate::errors::OpErrorCode::InvalidArgument,
+                "machine does not support canonical path resolution",
+            ))
+        })
+    }
     fn read<'a>(&'a self, req: ReadRequest, ctx: &'a OpContext) -> OpFuture<'a, ReadResult>;
     fn write<'a>(&'a self, req: WriteRequest, ctx: &'a OpContext) -> OpFuture<'a, WriteResult>;
     fn edit<'a>(&'a self, req: EditRequest, ctx: &'a OpContext) -> OpFuture<'a, EditResult>;
@@ -466,6 +479,8 @@ pub struct HandleStatus {
     pub last_seq: u64,
     pub retained_bytes: usize,
     pub omitted_bytes: usize,
+    /// Terminal output chunks lost before the handle could collect them.
+    pub missed_input_chunks: u64,
     pub started_at_ms: u64,
 }
 
@@ -473,6 +488,8 @@ pub struct HandleStatus {
 pub struct OutputChunk {
     pub seq: u64,
     pub bytes: Vec<u8>,
+    /// Nonzero on a gap marker; the number of missing output events is known, not their byte count.
+    pub missed_chunks: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -505,7 +522,7 @@ pub trait ProcessHandle: Send + Sync {
     fn pid(&self) -> u32;
     fn scope_token(&self) -> &str;
     fn status(&self) -> HandleStatus;
-    fn subscribe_output(&self, from_seq: u64) -> tokio::sync::mpsc::UnboundedReceiver<OutputChunk>;
+    fn subscribe_output(&self, from_seq: u64) -> tokio::sync::mpsc::Receiver<OutputChunk>;
     fn screen(&self, history: Option<usize>) -> OpFuture<'_, String>;
     fn write<'a>(
         &'a self,

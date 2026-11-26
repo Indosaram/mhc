@@ -6417,4 +6417,29 @@ async fn mcp_servers_change_and_extension_connects_flag() {
         .await
         .expect("mcp_servers_change emitted");
     assert_eq!(*seen.lock().unwrap(), vec![vec!["dyn".to_string()]]);
+
+    let notified = notify.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    std::thread::spawn(move || {
+        api.register_mcp_server(
+            "outside-runtime",
+            McpServerDeclaration {
+                command: Some("node".into()),
+                ..Default::default()
+            },
+        );
+    })
+    .join()
+    .expect("registration thread completes");
+    tokio::time::timeout(std::time::Duration::from_secs(2), notified)
+        .await
+        .expect("registration outside a Tokio runtime emits the change");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            vec!["dyn".to_string()],
+            vec!["dyn".to_string(), "outside-runtime".to_string()]
+        ]
+    );
 }

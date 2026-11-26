@@ -6,7 +6,7 @@
 //! interleave and on how often a client reads the inventory, so announcing them made the startup event count depend on
 //! timing. When the session's last open window closes it releases what it held exactly once: a `startup-settled`
 //! announcement when any of its attaches started a connect, otherwise the plain change it withheld, if any.
-use futures::future::BoxFuture;
+use futures::{FutureExt, future::BoxFuture};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -29,11 +29,31 @@ pub struct McpStartupWindow {
     session_id: String,
     state: Arc<Mutex<WindowState>>,
     windows: Arc<Mutex<BTreeMap<String, Arc<Mutex<WindowState>>>>>,
+    closed: bool,
 }
 
 impl McpStartupWindow {
     /// Close after `connects` settle; `release` runs once, for the session's last open window, when it held anything.
     pub async fn close<F, Fut>(self, connects: Vec<BoxFuture<'static, ()>>, release: F)
+    where
+        F: FnOnce(StartupWindowRelease) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let task = tokio::spawn(async move {
+            if std::panic::AssertUnwindSafe(self.close_inner(connects, release))
+                .catch_unwind()
+                .await
+                .is_err()
+            {
+                maho_ext_api::diagnostic("MCP startup window close panicked");
+            }
+        });
+        if let Err(error) = task.await {
+            maho_ext_api::diagnostic(&format!("MCP startup window close failed: {error}"));
+        }
+    }
+
+    async fn close_inner<F, Fut>(mut self, connects: Vec<BoxFuture<'static, ()>>, release: F)
     where
         F: FnOnce(StartupWindowRelease) -> Fut,
         Fut: std::future::Future<Output = ()>,
@@ -46,34 +66,45 @@ impl McpStartupWindow {
             state.connects += connects.len();
         }
         let _ = futures::future::join_all(connects).await;
-        let kind = {
-            let mut windows = self
-                .windows
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.open = state.open.saturating_sub(1);
-            let is_owner = windows
-                .get(&self.session_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &self.state));
-            if state.open > 0 || !is_owner {
-                return;
-            }
-            windows.remove(&self.session_id);
-            if state.connects > 0 {
-                Some(StartupWindowRelease::StartupSettled)
-            } else if state.withheld {
-                Some(StartupWindowRelease::Withheld)
-            } else {
-                None
-            }
-        };
-        if let Some(kind) = kind {
+        if let Some(kind) = self.finish() {
             release(kind).await;
         }
+    }
+
+    fn finish(&mut self) -> Option<StartupWindowRelease> {
+        if self.closed {
+            return None;
+        }
+        self.closed = true;
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.open = state.open.saturating_sub(1);
+        let is_owner = windows
+            .get(&self.session_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.state));
+        if state.open > 0 || !is_owner {
+            return None;
+        }
+        windows.remove(&self.session_id);
+        if state.connects > 0 {
+            Some(StartupWindowRelease::StartupSettled)
+        } else if state.withheld {
+            Some(StartupWindowRelease::Withheld)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for McpStartupWindow {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -103,6 +134,7 @@ impl McpStartupWindows {
             session_id: session_id.to_owned(),
             state,
             windows: self.windows.clone(),
+            closed: false,
         }
     }
 

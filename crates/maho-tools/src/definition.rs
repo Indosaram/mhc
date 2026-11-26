@@ -17,6 +17,14 @@ pub enum ToolError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    DeviceUnavailable(#[source] crate::bash::DeviceUnavailableError),
+    #[error("{execution}; output finalization failed: {finalization}")]
+    ExecutionAndFinalization {
+        #[source]
+        execution: Box<ToolError>,
+        finalization: Box<ToolError>,
+    },
     #[error("Operation aborted")]
     Aborted,
 }

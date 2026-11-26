@@ -37,6 +37,7 @@ pub struct FakeMachine {
     os: String,
     pub calls: Mutex<Vec<String>>,
     write_override: Option<WriteOverride>,
+    read_root: Option<(PathBuf, PathBuf)>,
 }
 
 impl FakeMachine {
@@ -47,6 +48,7 @@ impl FakeMachine {
             os: os.to_owned(),
             calls: Mutex::new(Vec::new()),
             write_override: None,
+            read_root: None,
         }
     }
 
@@ -60,6 +62,21 @@ impl FakeMachine {
 
     pub fn call_log(&self) -> Vec<String> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    pub fn with_read_root(mut self, remote: PathBuf, local: PathBuf) -> Self {
+        self.read_root = Some((remote, local));
+        self
+    }
+
+    fn read_path(&self, path: &str) -> PathBuf {
+        let path = std::path::Path::new(path);
+        if let Some((remote, local)) = &self.read_root
+            && let Ok(suffix) = path.strip_prefix(remote)
+        {
+            return local.join(suffix);
+        }
+        path.to_path_buf()
     }
 
     fn record(&self, op: &str) {
@@ -98,10 +115,33 @@ impl MachineOps for FakeMachine {
 }
 
 impl FileOps for FakeMachine {
+    fn canonicalize<'a>(
+        &'a self,
+        path: &'a std::path::Path,
+        _ctx: &'a OpContext,
+    ) -> OpFuture<'a, PathBuf> {
+        Box::pin(async move {
+            let actual = self.read_path(&path.to_string_lossy());
+            let resolved = tokio::fs::canonicalize(&actual)
+                .await
+                .map_err(|error| self.map_io_err(error, "realpath", &actual))?;
+            if let Some((remote, local)) = &self.read_root {
+                let root = tokio::fs::canonicalize(local)
+                    .await
+                    .map_err(|error| self.map_io_err(error, "realpath", local))?;
+                let suffix = resolved.strip_prefix(&root).map_err(|_| {
+                    MachineOpError::new(OpErrorCode::InvalidArgument, "path outside fake root")
+                })?;
+                return Ok(remote.join(suffix));
+            }
+            Ok(resolved)
+        })
+    }
+
     fn read<'a>(&'a self, req: ReadRequest, _ctx: &'a OpContext) -> OpFuture<'a, ReadResult> {
         Box::pin(async move {
             self.record("files.read");
-            let path = PathBuf::from(&req.path);
+            let path = self.read_path(&req.path);
             let whole = tokio::fs::read(&path)
                 .await
                 .map_err(|e| self.map_io_err(e, "open", &path))?;
@@ -187,7 +227,7 @@ impl FileOps for FakeMachine {
     fn stat<'a>(&'a self, req: StatRequest, _ctx: &'a OpContext) -> OpFuture<'a, StatResult> {
         Box::pin(async move {
             self.record("files.stat");
-            let path = PathBuf::from(&req.path);
+            let path = self.read_path(&req.path);
             let meta = tokio::fs::metadata(&path)
                 .await
                 .map_err(|e| self.map_io_err(e, "stat", &path))?;

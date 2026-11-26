@@ -25,6 +25,26 @@ use std::time::Instant;
 
 const STRUCTURED_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 
+fn deliver_output_update(
+    state: &Mutex<Option<ShellOutputState>>,
+    update: Option<(
+        crate::definition::ToolUpdateCallback,
+        crate::definition::ToolResult,
+    )>,
+) -> Result<(), ToolError> {
+    if let Some((callback, result)) = update
+        && let Err(error) = callback(result)
+    {
+        let mut guard = state
+            .lock()
+            .map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?;
+        if let Some(output) = guard.as_mut() {
+            output.record_output_update_error(error);
+        }
+    }
+    Ok(())
+}
+
 /// Optional trust annotation hook (`engine-trust/shell-trust.ts`).
 pub type ShellTrustAnnotator =
     Arc<dyn Fn(i32, &str) -> Option<(Option<String>, Value)> + Send + Sync>;
@@ -271,13 +291,17 @@ pub fn create_shell_tool_core(
                             crate::shell_operations::BashStream::Stdout => "stdout",
                             crate::shell_operations::BashStream::Stderr => "stderr",
                         };
-                        let mut guard = state.lock().map_err(|_| {
-                            ToolError::Message("Output accumulator lock poisoned".into())
-                        })?;
-                        let Some(output_state) = guard.as_mut() else {
-                            return Ok(());
+                        let update = {
+                            let mut guard = state.lock().map_err(|_| {
+                                ToolError::Message("Output accumulator lock poisoned".into())
+                            })?;
+                            let Some(output_state) = guard.as_mut() else {
+                                return Ok(());
+                            };
+                            output_state.handle_data(data, stream_name)?;
+                            output_state.take_due_output_update()
                         };
-                        output_state.handle_data(data, stream_name)?;
+                        deliver_output_update(&state, update)?;
                         data_changed.notify_one();
                         Ok(())
                     },
@@ -333,12 +357,13 @@ pub fn create_shell_tool_core(
                             None => std::future::pending().await,
                         }
                     }, if next_deadline.is_some() => {
-                        let mut guard = state
-                            .lock()
-                            .map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?;
-                        if let Some(output_state) = guard.as_mut() {
-                            output_state.emit_output_update();
-                        }
+                        let update = {
+                            let mut guard = state
+                                .lock()
+                                .map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?;
+                            guard.as_mut().and_then(ShellOutputState::take_output_update)
+                        };
+                        deliver_output_update(&state, update)?;
                     }
                 }
             };
@@ -425,7 +450,15 @@ pub fn create_shell_tool_core(
                     })
                 }
                 Err(err) => {
-                    let snapshot = output_state.finish_output().await?;
+                    let snapshot = match output_state.finish_output().await {
+                        Ok(snapshot) => snapshot,
+                        Err(finalization) => {
+                            return Err(ToolError::ExecutionAndFinalization {
+                                execution: Box::new(err),
+                                finalization: Box::new(finalization),
+                            });
+                        }
+                    };
                     let formatted = output_state.format_output(&snapshot, "");
                     let msg = err.to_string();
                     if msg == "aborted" {

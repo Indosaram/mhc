@@ -75,6 +75,18 @@ async fn files_read_escape_symlink_denied() {
 }
 
 #[tokio::test]
+async fn canonicalize_obeys_machine_scope() {
+    let f = Fixture::create(true).await;
+    let error = f
+        .ops
+        .files()
+        .canonicalize(std::path::Path::new("escape/secret.txt"), &f.ctx())
+        .await
+        .expect_err("canonicalization cannot bypass the scope");
+    assert_code(error, OpErrorCode::PolicyDenied);
+}
+
+#[tokio::test]
 async fn files_read_missing_not_found() {
     let f = Fixture::create(true).await;
     let err = f

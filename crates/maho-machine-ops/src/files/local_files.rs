@@ -332,6 +332,18 @@ fn pattern_has_parent_segment(pattern: &str) -> bool {
 }
 
 impl FileOps for LocalFileOps {
+    fn canonicalize<'a>(&'a self, path: &'a Path, ctx: &'a OpContext) -> OpFuture<'a, PathBuf> {
+        Box::pin(async move {
+            let path = resolve_op_path(&path.to_string_lossy(), ctx)?;
+            check_path(&path, FilesystemOperation::Read, OpName::FilesStat, ctx).await?;
+            let args = json!({ "path": path });
+            gated(OpName::FilesStat, &args, ctx, || async {
+                crate::policy::filesystem::canonicalize_filesystem_path(&path).await
+            })
+            .await
+        })
+    }
+
     fn read<'a>(&'a self, req: ReadRequest, ctx: &'a OpContext) -> OpFuture<'a, ReadResult> {
         Box::pin(async move {
             let path = resolve_op_path(&req.path, ctx)?;

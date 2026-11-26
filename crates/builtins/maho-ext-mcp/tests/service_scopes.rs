@@ -75,9 +75,16 @@ fn skill_reveal_is_isolated_per_execution_scope() {
     assert_eq!(activations.lock().unwrap()[0], vec!["mcp_s_t"]);
 
     // Scope B also listing alpha has its own reveal budget.
-    reveal.start_turn("scope-b", &[alpha]);
+    reveal.start_turn("scope-b", std::slice::from_ref(&alpha));
     reveal.reveal("scope-b", "alpha");
     assert_eq!(activations.lock().unwrap().len(), 2);
+
+    // A failed activation releases only its own scope's claim for retry.
+    reveal.start_turn("scope-c", &[alpha]);
+    assert!(reveal.take_reveal("scope-c", "alpha").is_some());
+    reveal.retry_reveal("scope-c", "alpha");
+    assert!(reveal.take_reveal("scope-c", "alpha").is_some());
+    assert!(reveal.take_reveal("scope-b", "alpha").is_none());
     // Repeated reveal in the same scope does nothing.
     reveal.reveal("scope-b", "alpha");
     assert_eq!(activations.lock().unwrap().len(), 2);

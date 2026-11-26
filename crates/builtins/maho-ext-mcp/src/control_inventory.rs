@@ -1,4 +1,7 @@
-use crate::{service::McpService, service_types::McpWireStatusSnapshot};
+use crate::{
+    service::{McpService, McpWireStatusSubscriptions},
+    service_types::McpWireStatusSnapshot,
+};
 pub use maho_ext_api::mcp_wire::MCP_CONTROL_INVENTORY_REQUEST_EVENT;
 pub const MCP_CONTROL_INVENTORY_CHANGED_EVENT: &str = "senpi.rpc.mcp_inventory.changed";
 pub use maho_ext_api::mcp_wire::McpControlInventoryRequest;
@@ -72,6 +75,7 @@ pub fn forward_mcp_control_inventory(
     service: &Arc<tokio::sync::Mutex<McpService>>,
     attached: Arc<Mutex<BTreeSet<String>>>,
     wire_status_sink: Option<McpWireStatusSink>,
+    subscriptions: &McpWireStatusSubscriptions,
 ) -> ControlInventoryForwarder {
     let disposed = Arc::new(AtomicBool::new(false));
     let request_sub = {
@@ -123,39 +127,34 @@ pub fn forward_mcp_control_inventory(
     let status_unsubscribe = {
         let events = events.clone();
         let disposed = disposed.clone();
-        service
-            .try_lock()
-            .map(|mut service| {
-                service.on_wire_status_changed(Arc::new(
-                    move |session_id, snapshot, startup_settled| {
-                        if disposed.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        let Some(session_id) = session_id else {
-                            return;
-                        };
-                        let is_attached = attached
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .contains(session_id);
-                        if !is_attached {
-                            return;
-                        }
-                        let payload = McpControlInventoryChanged {
-                            session_id: session_id.to_owned(),
-                            snapshot: snapshot.clone(),
-                            startup_settled: startup_settled.then_some(true),
-                        };
-                        if let Ok(value) = serde_json::to_value(&payload) {
-                            events.emit(MCP_CONTROL_INVENTORY_CHANGED_EVENT, &value);
-                        }
-                        if let Some(sink) = &wire_status_sink {
-                            sink(snapshot);
-                        }
-                    },
-                ))
-            })
-            .ok()
+        Some(
+            subscriptions.subscribe(Arc::new(move |session_id, snapshot, startup_settled| {
+                if disposed.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Some(session_id) = session_id else {
+                    return;
+                };
+                let is_attached = attached
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(session_id);
+                if !is_attached {
+                    return;
+                }
+                let payload = McpControlInventoryChanged {
+                    session_id: session_id.to_owned(),
+                    snapshot: snapshot.clone(),
+                    startup_settled: startup_settled.then_some(true),
+                };
+                if let Ok(value) = serde_json::to_value(&payload) {
+                    events.emit(MCP_CONTROL_INVENTORY_CHANGED_EVENT, &value);
+                }
+                if let Some(sink) = &wire_status_sink {
+                    sink(snapshot);
+                }
+            })),
+        )
     };
     ControlInventoryForwarder {
         disposed,

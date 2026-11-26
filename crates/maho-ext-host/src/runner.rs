@@ -3632,18 +3632,13 @@ fn build_mcp_change_hook(
     handle_ledgers: crate::extension_handle_ledger::RunnerHandleLedgers,
     error_sinks: Arc<std::sync::Mutex<(Vec<ErrorListener>, Option<ErrorListener>)>>,
 ) -> crate::mcp_server_registry::McpChangeListener {
-    Arc::new(move |runtime, servers| {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let extensions = Arc::clone(&extensions);
-        let live_bindings = Arc::clone(&live_bindings);
-        let base_context = Arc::clone(&base_context);
-        let context_actions = Arc::clone(&context_actions);
-        let reload = Arc::clone(&reload);
-        let handle_ledgers = handle_ledgers.clone();
-        let error_sinks = Arc::clone(&error_sinks);
-        handle.spawn(async move {
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<(
+        ExtensionRuntime,
+        Vec<maho_ext_api::RegisteredMcpServer>,
+    )>();
+    let send_errors = Arc::clone(&error_sinks);
+    let worker = async move {
+        while let Some((runtime, servers)) = receiver.recv().await {
             let mut ext_event = ExtensionEvent::McpServersChange(McpServersChangeEvent { servers });
             for (path, handler) in
                 raw_handlers_for_extensions(&extensions, &runtime, EventKind::McpServersChange)
@@ -3677,7 +3672,33 @@ fn build_mcp_change_hook(
                     report_detached_error(&error_sinks, &path, EventKind::McpServersChange, error);
                 }
             }
-        });
+        }
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        drop(handle.spawn(worker));
+    } else {
+        drop(
+            std::thread::Builder::new()
+                .name("mcp-change-dispatch".into())
+                .spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("create MCP change dispatch runtime")
+                        .block_on(worker);
+                })
+                .expect("start MCP change dispatch thread"),
+        );
+    }
+    Arc::new(move |runtime, servers| {
+        if sender.send((runtime, servers)).is_err() {
+            report_detached_error(
+                &send_errors,
+                RUNTIME_EXTENSION_PATH,
+                EventKind::McpServersChange,
+                ExtensionFailure::new("MCP change dispatcher stopped"),
+            );
+        }
     })
 }
 

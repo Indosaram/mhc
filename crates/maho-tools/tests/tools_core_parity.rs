@@ -22,6 +22,136 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_read_policy_checks_the_remote_symlink_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let visible_root = dir.path().join("visible");
+    let remote_root = dir.path().join("remote");
+    std::fs::create_dir_all(&visible_root).unwrap();
+    std::fs::create_dir_all(remote_root.join("private")).unwrap();
+    std::fs::write(remote_root.join("private/secret.txt"), b"secret").unwrap();
+    std::os::unix::fs::symlink("private", remote_root.join("link")).unwrap();
+    let denied = visible_root.join("private/secret.txt");
+    let checked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = checked.clone();
+    let policy: maho_tools::filesystem_policy::FilesystemPolicyChecker = Arc::new(move |request| {
+        let denied = denied.clone();
+        let seen = seen.clone();
+        Box::pin(async move {
+            seen.lock().unwrap().push(request.canonical_path.clone());
+            if request.canonical_path == denied {
+                Ok(
+                    maho_tools::filesystem_policy::FilesystemPolicyDecision::Deny {
+                        reason: "denied".to_owned(),
+                    },
+                )
+            } else {
+                Ok(maho_tools::filesystem_policy::FilesystemPolicyDecision::Allow)
+            }
+        })
+    });
+    let remote = FakeMachine::new(HashMap::new(), ErrorMode::Fs, "linux")
+        .with_read_root(visible_root.clone(), remote_root);
+    let read = create_read_tool_definition(
+        visible_root.clone(),
+        ReadToolOptions {
+            machine: Some(create_tool_machine(Some(Arc::new(remote)), None)),
+            filesystem_policy: Some(policy),
+            folder: None,
+            ..Default::default()
+        },
+    );
+    let result = (read.execute)(ToolCall {
+        id: "remote-policy",
+        params: json!({"path": "link/secret.txt"}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    assert!(result.is_err(), "remote symlink target must be denied");
+    assert_eq!(
+        *checked.lock().unwrap(),
+        vec![visible_root.join("private/secret.txt")]
+    );
+}
+
+#[tokio::test]
+async fn default_read_uses_the_supplied_machine_for_paths_and_image_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let visible_root = dir.path().join("visible");
+    let remote_root = dir.path().join("remote");
+    std::fs::create_dir_all(&visible_root).unwrap();
+    std::fs::create_dir_all(&remote_root).unwrap();
+    std::fs::write(remote_root.join("remote report.txt"), b"remote_only_token").unwrap();
+    std::fs::write(visible_root.join("\"remote report.txt\""), b"local shadow").unwrap();
+    std::fs::write(visible_root.join("collision.png"), b"local text").unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    std::fs::write(remote_root.join("collision.png"), png.into_inner()).unwrap();
+
+    let remote = FakeMachine::new(HashMap::new(), ErrorMode::Fs, "linux")
+        .with_read_root(visible_root.clone(), remote_root);
+    let policy_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = policy_calls.clone();
+    let machine = create_tool_machine(
+        Some(Arc::new(remote)),
+        Some(maho_tools::machine::ToolPathPolicy {
+            before_op: Some(Arc::new(move |op, _, _| {
+                let recorded = recorded.clone();
+                Box::pin(async move {
+                    recorded.lock().unwrap().push(op);
+                    Ok(maho_machine_ops::PolicyDecision::Allow)
+                })
+            })),
+        }),
+    );
+    let read = create_read_tool_definition(
+        visible_root,
+        ReadToolOptions {
+            machine: Some(machine),
+            folder: None,
+            auto_resize_images: Some(false),
+            ..Default::default()
+        },
+    );
+    let text = (read.execute)(ToolCall {
+        id: "remote-text",
+        params: json!({"path": "\"remote report.txt\""}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    let image = (read.execute)(ToolCall {
+        id: "remote-image",
+        params: json!({"path": "collision.png"}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    let text = text.expect("quoted remote-only file is readable");
+    assert!(text.content.iter().any(|content| matches!(
+        content,
+        maho_tools::definition::ToolContent::Text { text, .. }
+            if text.contains("remote_only_token")
+    )));
+    let image = image.expect("remote image is readable");
+    assert!(image.content.iter().any(|content| matches!(
+        content,
+        maho_tools::definition::ToolContent::Image { mime_type, .. }
+            if mime_type == "image/png"
+    )));
+    assert_eq!(
+        *policy_calls.lock().unwrap(),
+        vec![maho_machine_ops::OpName::FilesRead; 2]
+    );
+}
+
 fn model_facing_json(def: &ToolDefinition) -> Value {
     json!({
         "name": def.name,

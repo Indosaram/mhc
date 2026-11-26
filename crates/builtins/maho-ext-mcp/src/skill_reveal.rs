@@ -104,4 +104,16 @@ impl McpSkillReveal {
             warnings: state.declarations.warnings.clone(),
         })
     }
+
+    /// Retry a claimed reveal if activation failed.
+    pub fn retry_reveal(&self, scope: &str, skill_name: &str) {
+        if let Some(state) = self
+            .states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(scope)
+        {
+            state.loaded.remove(skill_name);
+        }
+    }
 }

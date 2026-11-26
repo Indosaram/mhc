@@ -102,6 +102,10 @@ async fn bash_via_daemon_seam_routes_bash_and_keeps_powershell_local() {
     .await
     .expect_err("expected DeviceUnavailableError");
     assert!(err.to_string().contains("device is unavailable"), "{err}");
+    let cause = std::error::Error::source(&err)
+        .and_then(|source| source.downcast_ref::<maho_tools::bash::DeviceUnavailableError>())
+        .expect("typed device-unavailable cause");
+    assert_eq!(cause.tool, "bash");
     assert_eq!(local_runs.load(Ordering::SeqCst), 0);
 
     // 3. Flag on still keeps powershell running on its own operations

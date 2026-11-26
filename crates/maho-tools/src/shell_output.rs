@@ -47,11 +47,18 @@ impl ShellOutputState {
     }
 
     pub fn emit_output_update(&mut self) {
-        let Some(on_update) = &self.on_update else {
+        let Some((on_update, result)) = self.take_output_update() else {
             return;
         };
+        if let Err(err) = on_update(result) {
+            self.record_output_update_error(err);
+        }
+    }
+
+    pub fn take_output_update(&mut self) -> Option<(ToolUpdateCallback, ToolResult)> {
+        let on_update = self.on_update.clone()?;
         if !self.update_dirty || self.output_update_error.is_some() {
-            return;
+            return None;
         }
         self.update_dirty = false;
         self.last_update_at = Some(Instant::now());
@@ -70,13 +77,25 @@ impl ShellOutputState {
                     structured_content: None,
                     is_error: None,
                 };
-                if let Err(err) = on_update(result) {
-                    self.output_update_error = Some(err);
-                }
+                Some((on_update, result))
             }
             Err(err) => {
                 self.output_update_error = Some(err);
+                None
             }
+        }
+    }
+
+    pub fn take_due_output_update(&mut self) -> Option<(ToolUpdateCallback, ToolResult)> {
+        let should_emit = self
+            .last_update_at
+            .is_none_or(|prev| prev.elapsed() >= BASH_UPDATE_THROTTLE);
+        should_emit.then(|| self.take_output_update()).flatten()
+    }
+
+    pub fn record_output_update_error(&mut self, error: ToolError) {
+        if self.output_update_error.is_none() {
+            self.output_update_error = Some(error);
         }
     }
 
@@ -92,15 +111,6 @@ impl ShellOutputState {
             self.accumulator.append(data)?;
         }
         self.update_dirty = true;
-        if self.on_update.is_some() {
-            let should_emit_now = match self.last_update_at {
-                None => true,
-                Some(prev) => prev.elapsed() >= BASH_UPDATE_THROTTLE,
-            };
-            if should_emit_now {
-                self.emit_output_update();
-            }
-        }
         Ok(())
     }
 

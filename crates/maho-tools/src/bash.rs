@@ -154,9 +154,9 @@ impl BashOperations for DeviceRoutedBashOperations {
     ) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
             let Some(device) = (self.resolve_device)() else {
-                return Err(ToolError::Message(
-                    DeviceUnavailableError::new(&self.tool_name).to_string(),
-                ));
+                return Err(ToolError::DeviceUnavailable(DeviceUnavailableError::new(
+                    &self.tool_name,
+                )));
             };
             create_local_bash_operations_with_machine(self.shell_path.as_deref(), Some(device))
                 .exec(command, cwd, options)

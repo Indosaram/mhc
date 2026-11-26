@@ -8,7 +8,9 @@ pub use crate::read_core::{
 use crate::definition::{ToolContent, ToolDefinition, ToolError, ToolFuture};
 use crate::filesystem_policy::{FilesystemPolicyChecker, canonicalize_filesystem_path};
 use crate::machine::{ToolMachine, default_tool_machine};
-use crate::read_core::{CoreReadToolOptions, create_core_read_tool_definition};
+use crate::read_core::{
+    CoreReadToolOptions, create_core_read_tool_definition, machine_read_path_with,
+};
 use base64::Engine;
 use maho_agent::harness::utils::{
     read_folders::{prepare::prepare_read_folder, selected_read_folder},
@@ -317,10 +319,24 @@ pub fn process_image(
 
 pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> ToolDefinition {
     let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
+    let supplied_machine = options.machine.is_some();
     let machine = options.machine.unwrap_or_else(default_tool_machine);
+    let canonical_machine = machine.clone();
     let execution_policy = Some(options.execution_policy.unwrap_or_default());
 
     let core_opts = CoreReadToolOptions {
+        resolve_read_path: if supplied_machine {
+            Some(machine_read_path_with(
+                machine.clone(),
+                crate::path_utils::resolve_to_cwd,
+            ))
+        } else {
+            Some(Arc::new(|path, cwd| {
+                Box::pin(async move {
+                    Ok(crate::path_utils::resolve_read_path_async(&path, &cwd).await)
+                })
+            }))
+        },
         machine,
         folder: options.folder,
         auto_resize_images: options.auto_resize_images,
@@ -329,17 +345,30 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
         operations: options.operations,
         filesystem_policy: options.filesystem_policy,
         execution_policy,
-        resolve_read_path: Some(Arc::new(|path, cwd| {
-            Box::pin(
-                async move { Ok(crate::path_utils::resolve_read_path_async(&path, &cwd).await) },
-            )
-        })),
-        canonicalize_path: Some(Arc::new(|path| {
-            Box::pin(async move { canonicalize_filesystem_path(&path).await })
-        })),
-        detect_image_mime_type: Some(Arc::new(|path| {
-            Box::pin(async move { LocalReadOperations.detect_image_mime_type(&path).await })
-        })),
+        canonicalize_path: if supplied_machine {
+            Some(Arc::new(move |path| {
+                let machine = canonical_machine.clone();
+                Box::pin(async move {
+                    let context = machine.context(None, None);
+                    let ops = machine.ops();
+                    ops.files()
+                        .canonicalize(&path, &context)
+                        .await
+                        .map_err(crate::fs_error_code::tool_error_from_machine)
+                })
+            }))
+        } else {
+            Some(Arc::new(|path| {
+                Box::pin(async move { canonicalize_filesystem_path(&path).await })
+            }))
+        },
+        detect_image_mime_type: if supplied_machine {
+            None
+        } else {
+            Some(Arc::new(|path| {
+                Box::pin(async move { LocalReadOperations.detect_image_mime_type(&path).await })
+            }))
+        },
         process_image: Some(Arc::new(process_image)),
     };
 

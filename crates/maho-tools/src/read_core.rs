@@ -245,14 +245,18 @@ fn inline_image_as_is(
 }
 
 fn machine_read_path(machine: ToolMachine) -> AsyncReadPathResolver {
+    machine_read_path_with(machine, resolve_posix_tool_path)
+}
+
+pub(crate) fn machine_read_path_with(
+    machine: ToolMachine,
+    resolve: fn(&str, &Path) -> PathBuf,
+) -> AsyncReadPathResolver {
     Arc::new(move |file_path, cwd| {
         let m = machine.clone();
         Box::pin(async move {
-            let resolved = resolve_read_path_variants(
-                &file_path,
-                &cwd,
-                &resolve_posix_tool_path,
-                |candidate: PathBuf| {
+            let resolved =
+                resolve_read_path_variants(&file_path, &cwd, &resolve, |candidate: PathBuf| {
                     let m = m.clone();
                     async move {
                         let ctx = m.context(None, None);
@@ -268,9 +272,8 @@ fn machine_read_path(machine: ToolMachine) -> AsyncReadPathResolver {
                             .await
                             .is_ok()
                     }
-                },
-            )
-            .await;
+                })
+                .await;
             Ok(resolved)
         })
     })

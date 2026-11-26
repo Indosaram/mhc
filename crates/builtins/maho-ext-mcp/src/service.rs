@@ -93,6 +93,38 @@ pub struct McpRegistrationInputs {
 pub type McpWireStatusListener =
     Arc<dyn Fn(Option<&str>, &crate::service_types::McpWireStatusSnapshot, bool) + Send + Sync>;
 
+type WireStatusNotification = (
+    Option<String>,
+    crate::service_types::McpWireStatusSnapshot,
+    bool,
+    Vec<McpWireStatusListener>,
+);
+
+#[derive(Clone)]
+pub struct McpWireStatusSubscriptions {
+    listeners: Arc<std::sync::Mutex<Vec<(u64, McpWireStatusListener)>>>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl McpWireStatusSubscriptions {
+    pub fn subscribe(&self, listener: McpWireStatusListener) -> Box<dyn FnOnce() + Send> {
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, listener));
+        let listeners = self.listeners.clone();
+        Box::new(move || {
+            listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(entry_id, _)| *entry_id != id);
+        })
+    }
+}
+
 pub struct McpAttachOptions<'a> {
     pub cwd: &'a Path,
     pub agent_dir: &'a Path,
@@ -142,6 +174,10 @@ pub struct McpService {
     registration_events: tokio::sync::watch::Sender<u64>,
     wire_status_listeners: Arc<std::sync::Mutex<Vec<(u64, McpWireStatusListener)>>>,
     next_wire_status_listener_id: Arc<std::sync::atomic::AtomicU64>,
+    wire_status_dispatch: Option<tokio::sync::mpsc::UnboundedSender<WireStatusNotification>>,
+    wire_status_task: Option<tokio::task::JoinHandle<()>>,
+    wire_status_service:
+        Arc<std::sync::Mutex<Option<std::sync::Weak<tokio::sync::Mutex<McpService>>>>>,
     wire_status_by_session: BTreeMap<String, crate::service_types::McpWireStatusSnapshot>,
     latest_wire_status: crate::service_types::McpWireStatusSnapshot,
     startup_windows: Arc<crate::startup_window::McpStartupWindows>,
@@ -495,6 +531,9 @@ impl McpService {
             registration_events: tokio::sync::watch::Sender::new(0),
             wire_status_listeners: Arc::default(),
             next_wire_status_listener_id: Arc::default(),
+            wire_status_dispatch: None,
+            wire_status_task: None,
+            wire_status_service: Arc::default(),
             wire_status_by_session: BTreeMap::new(),
             latest_wire_status: Default::default(),
             startup_windows: Arc::default(),
@@ -543,20 +582,13 @@ impl McpService {
         &mut self,
         listener: McpWireStatusListener,
     ) -> Box<dyn FnOnce() + Send> {
-        let id = self
-            .next_wire_status_listener_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.wire_status_listeners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((id, listener));
-        let listeners = self.wire_status_listeners.clone();
-        Box::new(move || {
-            listeners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retain(|(entry_id, _)| *entry_id != id);
-        })
+        self.wire_status_subscriptions().subscribe(listener)
+    }
+    pub fn wire_status_subscriptions(&self) -> McpWireStatusSubscriptions {
+        McpWireStatusSubscriptions {
+            listeners: self.wire_status_listeners.clone(),
+            next_id: self.next_wire_status_listener_id.clone(),
+        }
     }
     /// Return the attach-time inventory captured for one session.
     pub fn get_wire_status_snapshot(
@@ -636,8 +668,51 @@ impl McpService {
             .iter()
             .map(|(_, listener)| listener.clone())
             .collect();
-        for listener in listeners {
-            listener(session_id, &snapshot, startup_settled);
+        if !listeners.is_empty() {
+            if self.wire_status_dispatch.is_none() {
+                let (sender, mut receiver) =
+                    tokio::sync::mpsc::unbounded_channel::<WireStatusNotification>();
+                let service = self.wire_status_service.clone();
+                self.wire_status_task = Some(tokio::spawn(async move {
+                    while let Some((session_id, snapshot, startup_settled, listeners)) =
+                        receiver.recv().await
+                    {
+                        let weak = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        if let Some(service) = weak.and_then(|weak| weak.upgrade()) {
+                            drop(service.lock().await);
+                        }
+                        if let Err(error) = tokio::task::spawn_blocking(move || {
+                            for listener in listeners {
+                                listener(session_id.as_deref(), &snapshot, startup_settled);
+                            }
+                        })
+                        .await
+                        {
+                            maho_ext_api::diagnostic(&format!(
+                                "MCP wire status listener failed: {error}"
+                            ));
+                        }
+                    }
+                }));
+                self.wire_status_dispatch = Some(sender);
+            }
+            if self
+                .wire_status_dispatch
+                .as_ref()
+                .expect("wire status dispatcher was initialized")
+                .send((
+                    session_id.map(str::to_owned),
+                    snapshot.clone(),
+                    startup_settled,
+                    listeners,
+                ))
+                .is_err()
+            {
+                maho_ext_api::diagnostic("MCP wire status dispatcher stopped unexpectedly");
+            }
         }
         snapshot
     }
@@ -657,10 +732,14 @@ impl McpService {
             })
             .unwrap_or_default()
     }
-    pub fn activate_skill_mcp_tools(&self, targets: &[String]) {
+    pub fn activate_skill_mcp_tools(
+        &self,
+        targets: &[String],
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
         if let Some(reg) = &self.registration {
-            let _ = (reg.registration.activate)(targets);
+            (reg.registration.activate)(targets)?;
         }
+        Ok(())
     }
     /// A further execution scope of the runtime joins its binding (brain/hand S16c) without a rebind,
     /// a config re-sync or an abort; only its own wire status is published.
@@ -679,6 +758,10 @@ impl McpService {
     /// Bind the service's own handle so a deferred startup-race connect can
     /// re-register tools after the attach deadline without holding the session lock.
     pub fn bind_self(&mut self, weak: std::sync::Weak<tokio::sync::Mutex<McpService>>) {
+        *self
+            .wire_status_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(weak.clone());
         self.self_weak = Some(weak);
     }
     /// Bind the registrar + shared tool-search service used by every registration
@@ -799,15 +882,14 @@ impl McpService {
                         })
                         .await;
                 });
-            } else if startup_connects.is_empty() {
-                let mut kind = None;
+            } else {
+                let (released, kind) = tokio::sync::oneshot::channel();
                 startup_window
-                    .close(Vec::new(), |release| {
-                        kind = Some(release);
-                        async {}
+                    .close(startup_connects, move |release| async move {
+                        let _ = released.send(release);
                     })
                     .await;
-                if let Some(release) = kind {
+                if let Ok(release) = kind.await {
                     self.release_startup_window(&window_session_id, release)
                         .await;
                 }
@@ -2101,6 +2183,10 @@ impl McpService {
         self.deferred.clear();
         self.deferred_registration.clear();
         self.startup_windows.clear();
+        self.wire_status_dispatch = None;
+        if let Some(task) = self.wire_status_task.take() {
+            task.abort();
+        }
         self.wire_status_listeners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2121,5 +2207,37 @@ impl McpService {
         self.registration_inputs = None;
         self.self_weak = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_activation_preserves_registrar_failure() {
+        let mut service = McpService::new(Arc::new(HostMcpRegistry::default()), 93);
+        service.registration = Some(crate::expose::session::McpSessionRegistration {
+            registration: crate::expose::tier_b::McpTierBRegistration {
+                searchable: Vec::new(),
+                activate: Arc::new(|_| {
+                    Err(maho_ext_api::ExtensionFailure::classified(
+                        "registration failed",
+                        None,
+                        Some("activation_refused".to_owned()),
+                    ))
+                }),
+            },
+            prompt_servers: Vec::new(),
+            resource_servers: Vec::new(),
+            registered_tools: Vec::new(),
+            wiring_errors: Vec::new(),
+            registered_identities: BTreeMap::new(),
+        });
+        let result = service.activate_skill_mcp_tools(&["mcp_server_tool".to_owned()]);
+        assert_eq!(
+            result.unwrap_err().code.as_deref(),
+            Some("activation_refused")
+        );
     }
 }
