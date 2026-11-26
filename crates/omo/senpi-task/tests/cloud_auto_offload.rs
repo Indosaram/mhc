@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use senpi_task::host::HostError;
@@ -164,7 +164,10 @@ fn auto_offload_routes_isolated_to_cloud_and_keeps_simple_foreground_local() {
         .unwrap();
     assert_eq!(cloud_done.status, TaskStatus::Completed);
     assert_eq!(cloud_done.execution_mode, ExecutionMode::Cloud.as_str());
-    assert_eq!(cloud_done.final_response.as_deref(), Some("cloud:isolated edit task"));
+    assert_eq!(
+        cloud_done.final_response.as_deref(),
+        Some("cloud:isolated edit task")
+    );
     assert_eq!(cloud_calls.load(Ordering::SeqCst), 1);
 }
 

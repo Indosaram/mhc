@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::host::HostError;
-use crate::manager::child_handle::{
-    ManagedChildHandle, ManagedChildListener, Unsubscribe,
-};
+use crate::manager::child_handle::{ManagedChildHandle, ManagedChildListener, Unsubscribe};
 use crate::manager::types::{
     ManagedRunner, ManagedRunnerError, ManagedRunnerResult, ManagedStartSpec,
 };
@@ -352,7 +350,10 @@ impl CloudPoolBackend for FerryxCliCloudBackend {
             .map_err(|error| format!("failed to run {}: {error}", bin.display()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("ferryx-cli cloud release failed: {}", stderr.trim()));
+            return Err(format!(
+                "ferryx-cli cloud release failed: {}",
+                stderr.trim()
+            ));
         }
         Ok(())
     }
@@ -401,11 +402,7 @@ impl RemoteSocketRpcClient {
         Ok(client)
     }
 
-    pub fn open_session(
-        &self,
-        cwd: &str,
-        model: Option<&str>,
-    ) -> Result<String, RpcClientError> {
+    pub fn open_session(&self, cwd: &str, model: Option<&str>) -> Result<String, RpcClientError> {
         let mut command = json!({
             "type": "open_session",
             "cwd": cwd,
@@ -460,9 +457,7 @@ impl RemoteSocketRpcClient {
 
         if let Some(obj) = command.as_object_mut() {
             obj.insert("id".into(), Value::String(req_id.clone()));
-            if attach_session
-                && let Some(sid) = session_id
-            {
+            if attach_session && let Some(sid) = session_id {
                 obj.entry("sessionId".to_string())
                     .or_insert_with(|| Value::String(sid));
             }
@@ -594,8 +589,11 @@ fn handle_socket_frame(client: &RemoteSocketRpcClient, parsed: Value) {
 
     let (expected_sid, listeners) = {
         let state = client.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let listeners: Vec<RpcEventListener> =
-            state.event_listeners.iter().map(|(_, l)| Arc::clone(l)).collect();
+        let listeners: Vec<RpcEventListener> = state
+            .event_listeners
+            .iter()
+            .map(|(_, l)| Arc::clone(l))
+            .collect();
         (state.session_id.clone(), listeners)
     };
     if let (Some(expected), Some(frame_sid)) = (
@@ -630,8 +628,11 @@ fn notify_socket_exit(client: &RemoteSocketRpcClient) {
         };
         state.exited = Some(exit_input.clone());
         let pending: Vec<PendingSender> = state.pending.drain().map(|(_, tx)| tx).collect();
-        let exit_listeners: Vec<RpcExitListener> =
-            state.exit_listeners.iter().map(|(_, l)| Arc::clone(l)).collect();
+        let exit_listeners: Vec<RpcExitListener> = state
+            .exit_listeners
+            .iter()
+            .map(|(_, l)| Arc::clone(l))
+            .collect();
         (pending, exit_listeners, exit_input)
     };
     for tx in pending {
@@ -647,7 +648,9 @@ fn notify_socket_exit(client: &RemoteSocketRpcClient) {
 #[cfg(not(unix))]
 impl RemoteSocketRpcClient {
     pub fn connect(_socket_path: &Path) -> io::Result<Arc<Self>> {
-        Err(io::Error::other("cloud Unix socket transport requires Unix"))
+        Err(io::Error::other(
+            "cloud Unix socket transport requires Unix",
+        ))
     }
 
     pub fn open_session(&self, _cwd: &str, _model: Option<&str>) -> Result<String, RpcClientError> {
@@ -682,7 +685,9 @@ impl RpcClientPort for RemoteSocketRpcClient {
         let shared = Arc::clone(&self.state);
         Box::new(move || {
             let mut state = shared.lock().unwrap_or_else(PoisonError::into_inner);
-            state.event_listeners.retain(|(existing, _)| *existing != id);
+            state
+                .event_listeners
+                .retain(|(existing, _)| *existing != id);
         })
     }
 
@@ -762,9 +767,9 @@ impl CloudChildHandle {
             .state_dir
             .join("cloud-patches")
             .join(format!("{}.patch", ctx.task_id));
-        let sync_res = self
-            .backend
-            .sync_out(&self.acquired.machine, &ctx.task_id, &patch_path, true);
+        let sync_res =
+            self.backend
+                .sync_out(&self.acquired.machine, &ctx.task_id, &patch_path, true);
         let RunnerOutcome::Completed { mut final_response } = outcome else {
             return outcome;
         };
@@ -794,7 +799,8 @@ impl CloudChildHandle {
             }
             Ok(_) => {}
             Err(error) => {
-                let suffix = format!("\n\n[cloud sync] warning: failed to retrieve remote diff: {error}");
+                let suffix =
+                    format!("\n\n[cloud sync] warning: failed to retrieve remote diff: {error}");
                 final_response = format!("{}{suffix}", final_response.trim_end());
             }
         }
@@ -966,10 +972,12 @@ impl ManagedRunner for CloudManagedRunner {
         };
 
         let connect_result = RemoteSocketRpcClient::connect(Path::new(&acquired.socket_path))
-            .or_else(|first_err| match self.backend.ensure_socket(&acquired.machine) {
-                Ok(reopened_path) => RemoteSocketRpcClient::connect(Path::new(&reopened_path)),
-                Err(_) => Err(first_err),
-            });
+            .or_else(
+                |first_err| match self.backend.ensure_socket(&acquired.machine) {
+                    Ok(reopened_path) => RemoteSocketRpcClient::connect(Path::new(&reopened_path)),
+                    Err(_) => Err(first_err),
+                },
+            );
         let client = match connect_result {
             Ok(client) => client,
             Err(error) => {
@@ -980,7 +988,10 @@ impl ManagedRunner for CloudManagedRunner {
                 );
                 return Err(ManagedRunnerError::Runner(RunnerFailure::new(
                     RunnerFailureKind::SessionCreateFailed,
-                    format!("cloud socket connect failed ({}): {error}", acquired.socket_path),
+                    format!(
+                        "cloud socket connect failed ({}): {error}",
+                        acquired.socket_path
+                    ),
                 )));
             }
         };
@@ -1207,12 +1218,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
-        Command::new("git").args(["config", "user.email", "t@t"]).current_dir(&repo).status().unwrap();
-        Command::new("git").args(["config", "user.name", "t"]).current_dir(&repo).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@t"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
         std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(&repo).status().unwrap();
-        Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&repo).status().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
 
         let socket_path = dir.path().join("fake-cloud.sock");
         let server = spawn_fake_host_server(socket_path.clone());
@@ -1250,7 +1281,10 @@ diff --git a/hello.txt b/hello.txt
 
         match outcome {
             RunnerOutcome::Completed { final_response } => {
-                assert!(final_response.contains("REMOTE_SOCKET_OK"), "unexpected text: {final_response}");
+                assert!(
+                    final_response.contains("REMOTE_SOCKET_OK"),
+                    "unexpected text: {final_response}"
+                );
                 assert!(
                     final_response.contains("[cloud sync] applied 1 file change(s)"),
                     "unexpected text: {final_response}"
@@ -1259,8 +1293,14 @@ diff --git a/hello.txt b/hello.txt
             other => panic!("expected Completed, got {other:?}"),
         }
 
-        assert_eq!(std::fs::read_to_string(repo.join("hello.txt")).unwrap(), "after-from-cloud\n");
-        assert_eq!(synced_in.lock().unwrap().as_slice(), &["fx-pool-test:st_cloud_1"]);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("hello.txt")).unwrap(),
+            "after-from-cloud\n"
+        );
+        assert_eq!(
+            synced_in.lock().unwrap().as_slice(),
+            &["fx-pool-test:st_cloud_1"]
+        );
         assert_eq!(
             released.lock().unwrap().as_slice(),
             &[("fx-pool-test".into(), "lease-test-1".into(), false)]

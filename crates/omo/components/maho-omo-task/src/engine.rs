@@ -225,10 +225,13 @@ pub fn compose_task_engine_with_clock(
     options.traceparent_for = Some(Arc::new(telemetry_core::read_turn_traceparent));
     options.isolation = Some(isolation_runtime);
     options.isolation_settings = isolation_settings;
-    let cloud_offload = senpi_task::manager::cloud_router::CloudOffloadConfig::from_config(&settings);
-    let cloud_backend = Arc::new(senpi_task::runners::remote_cloud::FerryxCliCloudBackend::new(
-        cloud_offload.ferryx_cli.as_deref().map(PathBuf::from),
-    ));
+    let cloud_offload =
+        senpi_task::manager::cloud_router::CloudOffloadConfig::from_config(&settings);
+    let cloud_backend = Arc::new(
+        senpi_task::runners::remote_cloud::FerryxCliCloudBackend::new(
+            cloud_offload.ferryx_cli.as_deref().map(PathBuf::from),
+        ),
+    );
     let cloud_runner = Arc::new(senpi_task::runners::remote_cloud::CloudManagedRunner::new(
         cloud_backend,
         senpi_task::runners::remote_cloud::CloudRunnerSettings {
