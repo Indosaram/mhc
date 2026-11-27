@@ -13,11 +13,21 @@ fn wire_auth_status_and_inventory_fields_match_the_rpc_contract() {
     let changed = McpControlInventoryChanged {
         session_id: "session".into(),
         snapshot: McpWireStatusSnapshot::default(),
+        startup_settled: None,
     };
     let wire = serde_json::to_value(changed).unwrap();
     assert_eq!(
         wire,
         json!({"sessionId":"session","snapshot":{"servers":[]}})
+    );
+    let settled = McpControlInventoryChanged {
+        session_id: "session".into(),
+        snapshot: McpWireStatusSnapshot::default(),
+        startup_settled: Some(true),
+    };
+    assert_eq!(
+        serde_json::to_value(settled).unwrap(),
+        json!({"sessionId":"session","snapshot":{"servers":[]},"startupSettled":true})
     );
     assert!(is_mcp_control_inventory_changed(&wire));
     assert!(!is_mcp_control_inventory_changed(

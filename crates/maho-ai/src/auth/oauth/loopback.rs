@@ -116,29 +116,11 @@ pub fn bind_failure_code(error: &std::io::Error) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Test seam mirroring senpi's `__setAnthropicOAuthNodeApisForTests`: forces every
-    /// `bind_loopback` on this thread to fail with the given errno, so a listener's failing-bind
-    /// fallbacks are reachable without a privileged or already-occupied port.
-    static FORCED_BIND_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
-}
-
-/// Sets (or clears) the forced bind failure for the current thread and returns the previous value.
-#[cfg(test)]
-pub fn set_forced_bind_failure(errno: Option<i32>) -> Option<i32> {
-    FORCED_BIND_FAILURE.with(|cell| cell.replace(errno))
-}
-
 pub async fn bind_loopback(
     port: u16,
     host: &str,
     handler: LoopbackHandler,
 ) -> std::io::Result<LoopbackListener> {
-    #[cfg(test)]
-    if let Some(errno) = FORCED_BIND_FAILURE.with(std::cell::Cell::get) {
-        return Err(std::io::Error::from_raw_os_error(errno));
-    }
     let listener = TcpListener::bind((host, port)).await?;
     let bound_port = listener.local_addr()?.port();
     let task = tokio::spawn(async move {

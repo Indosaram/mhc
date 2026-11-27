@@ -55,6 +55,11 @@ pub(crate) fn parse_raw_agent_definition(
             .is_some_and(|number| (0.0..=2.0).contains(&number))
     });
     check(&mut issues, raw, "tools", is_valid_tools_input);
+    check(&mut issues, raw, "models_distribution", |value| {
+        value
+            .as_str()
+            .is_some_and(|s| crate::models_distribution::ModelsDistribution::parse(s).is_some())
+    });
     if let Some(models) = raw.get("models") {
         match models.as_array() {
             Some(entries) => {
@@ -93,6 +98,10 @@ pub(crate) fn parse_raw_agent_definition(
             .get("models")
             .and_then(Value::as_array)
             .map(|entries| entries.iter().filter_map(parse_model_entry).collect()),
+        models_distribution: raw
+            .get("models_distribution")
+            .and_then(Value::as_str)
+            .and_then(crate::models_distribution::ModelsDistribution::parse),
         categories: strings("categories"),
         variant: text("variant"),
         reasoning_effort: text("reasoningEffort"),

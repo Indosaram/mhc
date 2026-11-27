@@ -215,3 +215,53 @@ async fn escaped_static_sources_execute_in_actual_worker() {
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["valueRepr"], "\"answer\"");
 }
+
+#[tokio::test]
+async fn file_url_imports_and_unsupported_scheme_refusal() {
+    use maho_codemode::kernels::{
+        js::context_manager::JavaScriptKernel, shared::subprocess_contract::KernelRunInput,
+    };
+    let dir = tempfile::tempdir().expect("temp dir");
+    let fixture = dir.path().join("answer.mjs");
+    std::fs::write(&fixture, "export const answer = 42;\n").expect("write fixture");
+    let canonical = std::fs::canonicalize(&fixture).expect("canonical fixture");
+    let fixture_url = format!("file://{}", canonical.display());
+
+    let kernel = JavaScriptKernel::start(dir.path(), "file-url-import", 4, None)
+        .await
+        .expect("kernel");
+    let static_import = kernel
+        .run(
+            KernelRunInput {
+                cell_id: "file-url-static".into(),
+                code: format!("import {{ answer }} from \"{fixture_url}\";\nanswer;"),
+                timeout_ms: Some(5000),
+            },
+            |_| {},
+        )
+        .await
+        .expect("static import");
+    let refused = kernel
+        .run(
+            KernelRunInput {
+                cell_id: "bad-scheme".into(),
+                code: "await import(\"nosuchroot://fixture.mjs\");".into(),
+                timeout_ms: Some(5000),
+            },
+            |_| {},
+        )
+        .await
+        .expect("refused import");
+    kernel.close().await.expect("close");
+
+    assert_eq!(static_import["ok"], true, "{static_import}");
+    assert_eq!(static_import["valueRepr"], "42");
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unsupported module protocol: nosuchroot://fixture.mjs"),
+        "{refused}"
+    );
+}

@@ -3,6 +3,7 @@
 pub mod acquire;
 pub mod candidate_sweep;
 pub mod counting_lease;
+pub mod dead_owner_sweep;
 pub mod domains;
 pub mod lock_record;
 pub mod os_file_lock;
@@ -14,7 +15,8 @@ pub mod reflection_run_lease;
 
 pub use acquire::{
     AcquireLockError, AcquireLockOptions, LockContentionError, LockNonce, WithLockError,
-    acquire_lock, delay, is_held, is_lock_owner_proven_dead, release_lock, with_lock,
+    acquire_lock, acquire_without_directory_sweep, delay, is_held, is_lock_owner_proven_dead,
+    release_lock, with_lock,
 };
 pub use candidate_sweep::{
     CANDIDATE_STALE_AGE_MS, CANDIDATE_UNLINK_ATTEMPTS, CandidateSweepOptions,
@@ -26,6 +28,7 @@ pub use counting_lease::{
     CountingLeaseOptions, acquire_counting_lease, counting_lease_lock_path,
     counting_lease_ticket_directory,
 };
+pub use dead_owner_sweep::{DeadOwnerSweepOptions, sweep_dead_owner_locks};
 pub use domains::{
     LOCK_DOMAINS, LockDomain, LockDomainError, facts_queue_lock_path, facts_runs_lock_path,
     memory_writer_lock_path, notice_lock_path, receipts_lock_path, reflection_scheduler_lock_path,

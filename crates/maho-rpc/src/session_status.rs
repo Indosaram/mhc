@@ -94,6 +94,16 @@ fn live_status(runtime: &SessionStatusRuntimeView, fanout_questions: usize) -> S
     }
 }
 
+/// Additive fields carried by `derive_session_status_with_extras` (kept out of `SessionStatusEntryView` /
+/// `SessionStatusRuntimeView` so external struct literals in `maho-interactive` stay backwards compatible).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionStatusExtras {
+    pub archived: bool,
+    pub settled: bool,
+    pub settled_by: Option<Value>,
+    pub waiting: Option<Value>,
+}
+
 /// Derives a session's status record body (everything except subscription, sequence and change) as a JSON object
 /// whose `context` key the stream strips for subscribers that did not ask for it.
 pub fn derive_session_status(
@@ -102,6 +112,24 @@ pub fn derive_session_status(
     fanout_questions: usize,
     terminal: Option<&SessionStatusTerminal>,
     cause: Option<SessionStatusCause>,
+) -> Map<String, Value> {
+    derive_session_status_with_extras(
+        entry,
+        runtime,
+        fanout_questions,
+        terminal,
+        cause,
+        &SessionStatusExtras::default(),
+    )
+}
+
+pub fn derive_session_status_with_extras(
+    entry: &SessionStatusEntryView,
+    runtime: Option<&SessionStatusRuntimeView>,
+    fanout_questions: usize,
+    terminal: Option<&SessionStatusTerminal>,
+    cause: Option<SessionStatusCause>,
+    extras: &SessionStatusExtras,
 ) -> Map<String, Value> {
     let status = match (terminal, entry.state) {
         (Some(terminal), _) => terminal.status,
@@ -138,6 +166,11 @@ pub fn derive_session_status(
             record.insert(key.into(), value.clone().into());
         }
     }
+    record.insert("archived".into(), Value::Bool(extras.archived));
+    record.insert("settled".into(), Value::Bool(extras.settled));
+    if let Some(settled_by) = &extras.settled_by {
+        record.insert("settledBy".into(), settled_by.clone());
+    }
     if let Some((provider, id)) = runtime.and_then(|runtime| runtime.model.as_ref()) {
         record.insert("model".into(), json!({"provider":provider,"id":id}));
     }
@@ -148,6 +181,11 @@ pub fn derive_session_status(
         "pendingQueue".into(),
         json!({"steering":runtime.map_or(0,|runtime|runtime.steering),"followUp":runtime.map_or(0,|runtime|runtime.follow_up)}),
     );
+    if status == SessionStatusValue::Running
+        && let Some(waiting) = &extras.waiting
+    {
+        record.insert("waiting".into(), waiting.clone());
+    }
     record.insert("context".into(), Value::Object(entry.context.clone()));
     record
 }
@@ -162,6 +200,8 @@ pub fn terminal_of_lifecycle(record: &Value) -> Option<SessionStatusTerminal> {
             reason: Some(
                 if reason == Some("unloaded") {
                     "unload_session"
+                } else if reason == Some("host_shutdown") {
+                    "host_shutdown"
                 } else {
                     "idle"
                 }
@@ -190,9 +230,13 @@ pub fn cause_of_record(record: &Value) -> Option<SessionStatusCause> {
         "queue_update" => "queue",
         "model_changed" | "thinking_level_changed" => "set_model",
         "session_replaced" => "replace",
+        "session_info_changed" => "rename",
         "session_parked" => "park",
         "session_closed" => "close",
+        "session_archived_changed" => "archive",
+        "session_settled_changed" => "settle",
         "question_resolved" => "question",
+        "auto_retry_start" | "auto_retry_end" => "retry",
         "extension_ui_request" if record["method"] == "question" => "question",
         "compaction_start" | "compaction_end" => "compaction",
         _ => return None,

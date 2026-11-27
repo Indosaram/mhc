@@ -11,6 +11,24 @@ use crate::store::{StoreError, TaskRecordStore};
 /// Destruction is delegated exclusively to lifecycle's single-writer port.
 pub trait DestructionPort: Send + Sync {
     fn destroy_resident_task(&self, task_id: &str, cause: DestroyCause) -> Result<(), HostError>;
+    fn supports_fenced_eviction(&self) -> bool {
+        false
+    }
+    fn evict_managed_if_current(
+        &self,
+        _task_id: &str,
+        _handle: &Arc<dyn ManagedChildHandle>,
+    ) -> Result<(), HostError> {
+        Err(HostError {
+            message:
+                "cloud tasks require a lifecycle destruction port that supports fenced eviction"
+                    .into(),
+        })
+    }
+    /// Ends a daemon-hosted child this process holds no handle for (`#11765`).
+    fn host_session_cancel(&self) -> Option<crate::lifecycle::host_session::HostSessionCancelPort> {
+        None
+    }
 }
 
 pub type RunStatsSnapshotFn = dyn Fn(&str) -> Option<TaskRunStats> + Send + Sync;

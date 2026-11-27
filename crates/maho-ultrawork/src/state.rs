@@ -61,13 +61,20 @@ impl Sessions {
 
     pub fn mark_armed_at(&self, session: &str, revision: u64) {
         let mut inner = self.lock();
-        inner.active = Some(session.to_owned());
-        let entry = inner.entries.entry(session.to_owned()).or_default();
-        entry.arming = SessionArming {
-            armed: true,
-            compaction_pending: false,
-            revision: Some(revision),
-        };
+        inner.mark_armed_at(session, revision);
+    }
+
+    /// Replay can restore lost owner state, but must not undo an accepted compaction.
+    pub(crate) fn restore_arming_from_context(&self, session: &str) {
+        let revision = crate::contract_revision();
+        let mut inner = self.lock();
+        if inner.entries.get(session).is_some_and(|entry| {
+            entry.arming.compaction_pending
+                || (entry.arming.armed && entry.arming.revision == Some(revision))
+        }) {
+            return;
+        }
+        inner.mark_armed_at(session, revision);
     }
 
     /// Compaction dropped the contract from the conversation: disarm and reset the todo latch.
@@ -115,5 +122,16 @@ impl Sessions {
         let mut inner = self.lock();
         let entry = inner.entries.entry(session.to_owned()).or_default();
         !std::mem::replace(&mut entry.todo_reminded, true)
+    }
+}
+
+impl Inner {
+    fn mark_armed_at(&mut self, session: &str, revision: u64) {
+        self.active = Some(session.to_owned());
+        self.entries.entry(session.to_owned()).or_default().arming = SessionArming {
+            armed: true,
+            compaction_pending: false,
+            revision: Some(revision),
+        };
     }
 }

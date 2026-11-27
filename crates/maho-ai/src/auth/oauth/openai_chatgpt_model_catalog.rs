@@ -10,6 +10,7 @@
 //! scripted transport and production uses the shared reqwest transport.
 
 use crate::auth::oauth::transport::{HttpRequest, OAuthTransport, default_transport};
+use crate::auth::types::OAuthCredential;
 use crate::models::{ModelsError, ModelsErrorCode};
 use crate::types::{InputModality, ModelCost, ThinkingLevelMap};
 use crate::utils::abort::{AbortReason, AbortSignal};
@@ -36,6 +37,30 @@ pub struct OpenAIChatGptModelAccount {
 }
 
 impl OpenAIChatGptModelAccount {
+    /// Read the verified identity of an already-projected and refreshed SIWC slot.
+    ///
+    /// Non-SIWC and signed-out credentials have no account catalog. The subject comes from
+    /// persisted identity verification, not from decoding the current access token.
+    pub fn from_credential(credential: &OAuthCredential) -> Option<Self> {
+        if credential.get_extra_str("route") != Some("siwc")
+            || credential.is_signed_out()
+            || credential.access.trim().is_empty()
+        {
+            return None;
+        }
+        let sub = credential
+            .get_extra_str("subject")
+            .filter(|sub| !sub.trim().is_empty())?;
+        let client_id = credential
+            .get_extra_str("clientId")
+            .filter(|id| !id.trim().is_empty())?;
+        Some(Self {
+            sub: sub.to_owned(),
+            client_id: client_id.to_owned(),
+            access: credential.access.clone(),
+        })
+    }
+
     pub fn identity(&self) -> OpenAIChatGptModelIdentity {
         OpenAIChatGptModelIdentity {
             sub: self.sub.clone(),
@@ -457,6 +482,35 @@ mod tests {
         assert_ne!(
             identity_key(&account_a().identity()),
             identity_key(&account_b().identity())
+        );
+    }
+
+    #[test]
+    fn projected_siwc_credential_uses_the_verified_registration_and_rotated_access() {
+        let credential = OAuthCredential::new("rotated-bearer", "synthetic-refresh", 1.0)
+            .with_extra("subject", json!("verified-sub"))
+            .with_extra("clientId", json!("issued-client"));
+        assert!(OpenAIChatGptModelAccount::from_credential(&credential).is_none());
+        let credential = credential.with_extra("route", json!("siwc"));
+        assert_eq!(
+            OpenAIChatGptModelAccount::from_credential(&credential),
+            Some(OpenAIChatGptModelAccount {
+                sub: "verified-sub".into(),
+                client_id: "issued-client".into(),
+                access: "rotated-bearer".into(),
+            })
+        );
+        assert!(
+            OpenAIChatGptModelAccount::from_credential(
+                &credential.clone().with_extra("subject", json!(" "))
+            )
+            .is_none()
+        );
+        assert!(
+            OpenAIChatGptModelAccount::from_credential(
+                &credential.with_extra("signedOut", json!(true))
+            )
+            .is_none()
         );
     }
 

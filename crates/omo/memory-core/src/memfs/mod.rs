@@ -17,7 +17,8 @@ pub mod paths;
 
 pub use expiry::{is_memory_expired, memory_expires_at_ms};
 pub use frontmatter::{
-    FrontmatterError, MemoryFrontmatter, ParsedMemoryFile, parse_memory_file, render_memory_file,
+    FrontmatterError, MemoryFrontmatter, ParsedMemoryFile, is_missing_description_error,
+    is_missing_frontmatter_error, parse_memory_file, render_memory_file,
     sanitize_frontmatter_value,
 };
 pub use frontmatter_entries::{

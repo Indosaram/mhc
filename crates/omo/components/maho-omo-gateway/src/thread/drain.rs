@@ -6,14 +6,21 @@
 
 pub type LogCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
 pub type OnAdmittedCallback = Option<Arc<dyn Fn(&str, &str) + Send + Sync>>;
-use std::collections::BTreeMap;
+pub type AdmitIntakeFn =
+    Option<Arc<dyn Fn(&str) -> super::intake_admission::IntakeAdmission + Send + Sync>>;
+pub type WakeGatedFn = Option<Arc<dyn Fn() -> bool + Send + Sync>>;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use super::adapter::{
-    Admission, DrainWakeEvent, GatewayAdmissionKind, SessionRuntimePort, WakeReason,
+    Admission, DrainWakeEvent, ExternalAdmissionKind, GatewayAdmissionKind, SessionRuntimePort,
+    WakeReason, to_session_control_drain_result,
 };
-use super::decision::{DeliveryDecision, RefusalKind, TargetState, decide_delivery};
-use super::provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
+use super::decision::{
+    DeliveryDecision, RefusalKind, TargetState, decide_delivery, effective_lane_of,
+};
+use super::intake_admission::IntakeAdmission;
+use super::provenance::{delivery_sender, render_delivery_display_text, render_delivery_text};
 use super::store_api::GatewayStoreApi;
 use super::types::{
     AdmissionLedger, ClaimOutcome, DeliveryRow, GatewayDeliveryMode, OutcomeRecord,
@@ -55,6 +62,10 @@ pub struct InboxDrainOptions {
     pub notify: LogCallback,
     /// A delivery this drain started, steered or queued into the session.
     pub on_admitted: OnAdmittedCallback,
+    /// Asks whether an intake row's sending device is admitted now (`#13037` 5.6); `None` skips intake rows.
+    pub admit_intake: AdmitIntakeFn,
+    /// True while a woken session is opening under a live lease (A3.1.5): admits nothing.
+    pub wake_gated: WakeGatedFn,
 }
 
 /// A held row (the user is composing) costs no store write and stops the pass, so nothing behind it
@@ -127,18 +138,30 @@ impl InboxDrain {
         }
     }
 
-    /// One drain pass; `event.reason` decides whether a held row may be released.
+    /// One drain pass returning host-level admissions (`to_session_control_drain_result`).
     pub fn drain(
         &self,
         event: &DrainWakeEvent,
     ) -> Result<InboxDrainResult, super::store_ops::StoreError> {
+        let raw = self.drain_gateway(event)?;
+        let converted = to_session_control_drain_result(&raw);
+        Ok(InboxDrainResult {
+            admitted: converted.admitted.unwrap_or_default(),
+        })
+    }
+
+    /// One drain pass returning all gateway outcomes (including gateway-only refusals).
+    pub fn drain_gateway(
+        &self,
+        event: &DrainWakeEvent,
+    ) -> Result<Vec<(String, GatewayAdmissionKind)>, super::store_ops::StoreError> {
         let _serialized = self.pass.lock();
         let self_identity = self.identity();
         let ledger: AdmissionLedger = (self.options.runtime.list_admitted_deliveries)();
         let reconciled = self.options.store.reconcile(&ReconcileRequest {
             now: self.now(),
             target_durable_id: self.options.durable_id.clone(),
-            self_identity,
+            self_identity: self_identity.clone(),
             ledger,
             session_path: (self.options.session_path)(),
         })?;
@@ -148,7 +171,7 @@ impl InboxDrain {
                 self.options.durable_id
             ));
         }
-        let mut admitted: Vec<Admission> = Vec::new();
+        let mut admitted: Vec<(String, GatewayAdmissionKind)> = Vec::new();
         {
             let queued_ids: Vec<String> = reconciled
                 .queued
@@ -159,6 +182,13 @@ impl InboxDrain {
                 held.retain(|id, _| queued_ids.contains(id));
             }
         }
+        if self.options.wake_gated.as_ref().is_some_and(|f| f()) {
+            for row in &reconciled.queued {
+                admitted.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
+            }
+            return Ok(admitted);
+        }
+        let mut intake_answers: HashMap<String, IntakeAdmission> = HashMap::new();
         for row in &reconciled.queued {
             let gate = (self.options.runtime.admission_gate)();
             let held_revision = self
@@ -170,6 +200,7 @@ impl InboxDrain {
                 && !releasing_reason(event.reason)
                 && held_revision == gate.editor_revision
             {
+                admitted.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
                 break;
             }
             if !gate.can_admit {
@@ -177,14 +208,40 @@ impl InboxDrain {
                     held.insert(row.delivery_id.clone(), gate.editor_revision);
                 }
                 self.notice_queued(row);
-                admitted.push(Admission {
-                    delivery_id: row.delivery_id.clone(),
-                    kind: super::adapter::ExternalAdmissionKind::HeldDraft,
-                });
+                admitted.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
                 break;
             }
             if let Ok(mut held) = self.held.lock() {
                 held.remove(&row.delivery_id);
+            }
+            if row.ledger_id.is_some() {
+                let device = row
+                    .envelope
+                    .provenance
+                    .as_ref()
+                    .and_then(|p| p.device.as_deref());
+                let verdict = match (device, &self.options.admit_intake) {
+                    (Some(dev), Some(admit_fn)) => *intake_answers
+                        .entry(dev.to_owned())
+                        .or_insert_with(|| admit_fn(dev)),
+                    _ => IntakeAdmission::Unknown,
+                };
+                match verdict {
+                    IntakeAdmission::Unknown => continue,
+                    IntakeAdmission::Refused => {
+                        let _ = self.options.store.refuse_queued(
+                            self.now(),
+                            &row.delivery_id,
+                            RefusalReason::SenderNotAdmitted,
+                        );
+                        admitted.push((
+                            row.delivery_id.clone(),
+                            GatewayAdmissionKind::SenderNotAdmitted,
+                        ));
+                        continue;
+                    }
+                    IntakeAdmission::Admitted => {}
+                }
             }
             let decision = decide_delivery(
                 TargetState::Phase((self.options.runtime.phase)()),
@@ -192,51 +249,75 @@ impl InboxDrain {
                 row.expected_turn_id,
                 Some(gate.turn_epoch),
             );
-            let deliver_as = match decision {
-                DeliveryDecision::Admit { deliver_as, .. } => deliver_as,
+            let (deliver_as, expect, expected_turn_id) = match decision {
+                DeliveryDecision::Admit {
+                    deliver_as,
+                    expect,
+                    expected_turn_id,
+                } => (deliver_as, expect, expected_turn_id),
                 DeliveryDecision::Refuse { reason } => {
-                    let refusal = if reason == RefusalKind::NotSteerable {
-                        RefusalReason::NotSteerable
+                    let (refusal, kind) = if reason == RefusalKind::NotSteerable {
+                        (
+                            RefusalReason::NotSteerable,
+                            GatewayAdmissionKind::NotSteerable,
+                        )
                     } else {
-                        RefusalReason::TurnConflict
+                        (
+                            RefusalReason::TurnConflict,
+                            GatewayAdmissionKind::TurnConflict,
+                        )
                     };
                     let _ = self
                         .options
                         .store
                         .refuse_queued(self.now(), &row.delivery_id, refusal);
-                    admitted.push(Admission {
-                        delivery_id: row.delivery_id.clone(),
-                        kind: super::adapter::ExternalAdmissionKind::TurnConflict,
-                    });
+                    admitted.push((row.delivery_id.clone(), kind));
                     continue;
                 }
-                DeliveryDecision::QueuedOffline => GatewayDeliveryMode::FollowUp,
+                DeliveryDecision::QueuedOffline => (
+                    GatewayDeliveryMode::FollowUp,
+                    super::decision::Expect::Queued,
+                    None,
+                ),
             };
-            let lane = if deliver_as == GatewayDeliveryMode::Steer {
-                super::types::EffectiveLane::Steer
-            } else {
-                super::types::EffectiveLane::FollowUp
-            };
+            let lane = effective_lane_of(deliver_as, expect);
             let claimed = self.options.store.claim(&super::types::ClaimRequest {
                 now: self.now(),
                 delivery_id: row.delivery_id.clone(),
-                self_identity: self.identity(),
+                self_identity: self_identity.clone(),
                 lane,
             })?;
             let ClaimOutcome::Claimed { row: claimed_row } = claimed else {
                 continue;
             };
+            let engine_id = claimed_row
+                .ledger_id
+                .clone()
+                .unwrap_or_else(|| claimed_row.delivery_id.clone());
+            let (text, display_text) = if claimed_row.ledger_id.is_some() {
+                (
+                    claimed_row
+                        .verbatim_text
+                        .clone()
+                        .unwrap_or_else(|| claimed_row.body.clone()),
+                    claimed_row
+                        .verbatim_display_text
+                        .clone()
+                        .unwrap_or_else(|| claimed_row.body.clone()),
+                )
+            } else {
+                (
+                    render_delivery_text(&claimed_row),
+                    render_delivery_display_text(&claimed_row),
+                )
+            };
             let input = super::adapter::AdmitExternalMessageInput {
-                delivery_id: claimed_row.delivery_id.clone(),
-                text: render_delivery_text(&claimed_row),
+                delivery_id: engine_id.clone(),
+                text,
                 deliver_as,
-                expected_turn_id: None,
+                expected_turn_id,
                 sender: Some(delivery_sender(&claimed_row)),
-                display_text: Some(format!(
-                    "{}\n{}",
-                    delivery_provenance_line(claimed_row.envelope.provenance.as_ref()),
-                    claimed_row.body
-                )),
+                display_text: Some(display_text),
             };
             let result = match (self.options.runtime.admit_external_message)(input) {
                 Ok(result) => result,
@@ -244,7 +325,7 @@ impl InboxDrain {
                     let _ = self.options.store.record_outcome(&RecordOutcomeRequest {
                         now: self.now(),
                         delivery_id: row.delivery_id.clone(),
-                        self_identity: self.identity(),
+                        self_identity: self_identity.clone(),
                         outcome: OutcomeRecord::Requeue,
                     });
                     self.log(&format!(
@@ -254,11 +335,11 @@ impl InboxDrain {
                     break;
                 }
             };
-            if result.kind == super::adapter::ExternalAdmissionKind::HeldDraft {
+            if result.kind == ExternalAdmissionKind::HeldDraft {
                 let _ = self.options.store.record_outcome(&RecordOutcomeRequest {
                     now: self.now(),
                     delivery_id: row.delivery_id.clone(),
-                    self_identity: self.identity(),
+                    self_identity: self_identity.clone(),
                     outcome: OutcomeRecord::Requeue,
                 });
                 if let Ok(mut held) = self.held.lock() {
@@ -268,20 +349,17 @@ impl InboxDrain {
                     );
                 }
                 self.notice_queued(row);
-                admitted.push(Admission {
-                    delivery_id: row.delivery_id.clone(),
-                    kind: result.kind,
-                });
+                admitted.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
                 break;
             }
-            if result.kind == super::adapter::ExternalAdmissionKind::Queued {
+            if result.kind == ExternalAdmissionKind::Queued {
                 self.notice_queued(&claimed_row);
             }
-            if result.kind == super::adapter::ExternalAdmissionKind::TurnConflict {
+            if result.kind == ExternalAdmissionKind::TurnConflict {
                 let _ = self.options.store.record_outcome(&RecordOutcomeRequest {
                     now: self.now(),
                     delivery_id: row.delivery_id.clone(),
-                    self_identity: self.identity(),
+                    self_identity: self_identity.clone(),
                     outcome: OutcomeRecord::Refused {
                         reason: RefusalReason::TurnConflict,
                     },
@@ -289,59 +367,65 @@ impl InboxDrain {
             } else {
                 let emitted = (self.options.runtime.list_admitted_deliveries)()
                     .emitted
-                    .contains(&row.delivery_id);
-                let written = result.kind == super::adapter::ExternalAdmissionKind::AlreadyAdmitted
-                    && emitted;
+                    .contains(&engine_id);
+                let written = result.kind == ExternalAdmissionKind::AlreadyAdmitted && emitted;
+                let wait_kind = (result.kind == ExternalAdmissionKind::Queued
+                    && (self.options.runtime.phase)()
+                        == super::adapter::RuntimePhase::WaitingQuestion)
+                    .then(|| "approval".to_owned());
                 let outcome = if written {
                     OutcomeRecord::Applied {
                         admission_kind: kind_label(result.kind).to_owned(),
                         turn_epoch: result.turn_epoch,
+                        wait_kind,
                     }
                 } else {
                     OutcomeRecord::Admitted {
                         admission_kind: kind_label(result.kind).to_owned(),
                         turn_epoch: result.turn_epoch,
+                        wait_kind,
                     }
                 };
                 let _ = self.options.store.record_outcome(&RecordOutcomeRequest {
                     now: self.now(),
                     delivery_id: row.delivery_id.clone(),
-                    self_identity: self.identity(),
+                    self_identity: self_identity.clone(),
                     outcome,
                 });
             }
             if let Some(on_admitted) = &self.options.on_admitted
                 && matches!(
                     result.kind,
-                    super::adapter::ExternalAdmissionKind::Started
-                        | super::adapter::ExternalAdmissionKind::Steered
-                        | super::adapter::ExternalAdmissionKind::Queued
+                    ExternalAdmissionKind::Started
+                        | ExternalAdmissionKind::Steered
+                        | ExternalAdmissionKind::Queued
                 )
             {
                 on_admitted(&row.delivery_id, kind_label(result.kind));
             }
-            admitted.push(Admission {
-                delivery_id: row.delivery_id.clone(),
-                kind: result.kind,
-            });
+            admitted.push((
+                row.delivery_id.clone(),
+                GatewayAdmissionKind::from_external(result.kind),
+            ));
         }
-        Ok(InboxDrainResult { admitted })
+        Ok(admitted)
     }
 }
 
-fn kind_label(kind: super::adapter::ExternalAdmissionKind) -> &'static str {
+fn kind_label(kind: ExternalAdmissionKind) -> &'static str {
     match kind {
-        super::adapter::ExternalAdmissionKind::Started => "started",
-        super::adapter::ExternalAdmissionKind::Queued => "queued",
-        super::adapter::ExternalAdmissionKind::Steered => "steered",
-        super::adapter::ExternalAdmissionKind::TurnConflict => "turn_conflict",
-        super::adapter::ExternalAdmissionKind::HeldDraft => "held_draft",
-        super::adapter::ExternalAdmissionKind::AlreadyAdmitted => "already_admitted",
+        ExternalAdmissionKind::Started => "started",
+        ExternalAdmissionKind::Queued => "queued",
+        ExternalAdmissionKind::Steered => "steered",
+        ExternalAdmissionKind::TurnConflict => "turn_conflict",
+        ExternalAdmissionKind::HeldDraft => "held_draft",
+        ExternalAdmissionKind::Held => "held",
+        ExternalAdmissionKind::AlreadyAdmitted => "already_admitted",
     }
 }
 
 /// The gateway admission kind a drain result reports for one delivery.
-pub fn gateway_kind(kind: super::adapter::ExternalAdmissionKind) -> GatewayAdmissionKind {
+pub fn gateway_kind(kind: ExternalAdmissionKind) -> GatewayAdmissionKind {
     GatewayAdmissionKind::from_external(kind)
 }
 
@@ -367,6 +451,7 @@ mod tests {
                 root_id: "root".into(),
                 hop: 1,
                 delivery_id: "d-1".into(),
+                authority: None,
             },
             body: "hi".into(),
             bytes: 2,
@@ -379,6 +464,7 @@ mod tests {
             claimed_at: None,
             attempt: 0,
             admission_kind: None,
+            wait_kind: None,
             turn_epoch: None,
             root_id: "root".into(),
             hop: 1,
@@ -388,6 +474,10 @@ mod tests {
             binding_id: None,
             binding_revision: None,
             actor_user_id: None,
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: None,
         }
     }
 

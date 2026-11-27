@@ -91,7 +91,6 @@ fn base_record(input: &DagDefinition, node_states: &[(&str, DagNodeState)]) -> R
         name: input.name.clone(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
-        parent_model: None,
         definition_fingerprint: "definition-fingerprint".to_string(),
         definition: crate::dag::manager::DagPersistedDefinition {
             key: input.key.clone(),
@@ -1274,36 +1273,26 @@ fn two_recovery_managers_observe_one_live_claim_and_one_resume() {
     );
 }
 
-// dag/parent-model-rung.test.ts (#10783): a paused run that captured the parent model hands it to
-// a never-dispatched node on recovery, so a spent chain completes on the parent's rung.
+// dag/designated-chain-only.test.ts (#12006): when a category chain runs out during recovery,
+// the node fails with model_chain_exhausted instead of falling back to any parent session model.
 #[test]
-fn given_a_paused_run_that_captured_the_parent_model_when_recovery_starts_its_node_then_it_completes_on_the_parent_rung()
+fn given_a_paused_run_when_recovery_exhausts_its_designated_chain_then_it_fails_without_parent_fallback()
  {
-    const PARENT: &str = "openai/parent";
     let store = temp_store();
     let input = definition(vec![node("only", &[])]);
     let mut record = base_record(&input, &[("only", DagNodeState::Scheduled)]);
-    record.record.parent_model = Some(PARENT.to_string());
     record.previous_lease_holder_pid = Some(9001);
     store
         .write_checkpoint(&run_id(), &record)
         .expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
-    *harness.in_process.hook.lock().unwrap() = Some(Arc::new(|spec, call| {
-        if call == 1 {
-            return Some(Err(crate::manager::types::ManagedRunnerError::Runner(
-                crate::runners::RunnerFailure::new(
-                    crate::runners::RunnerFailureKind::ModelUnavailable,
-                    "weekly limit exhausted",
-                ),
-            )));
-        }
-        let handle = crate::manager::manager_tests::fakes::FakeHandle::new(&spec.task_id, None);
-        handle.complete(&format!(
-            "{} completed",
-            spec.model.clone().unwrap_or_default()
-        ));
-        Some(Ok(handle as Arc<dyn crate::manager::ManagedChildHandle>))
+    *harness.in_process.hook.lock().unwrap() = Some(Arc::new(|_spec, _call| {
+        Some(Err(crate::manager::types::ManagedRunnerError::Runner(
+            crate::runners::RunnerFailure::new(
+                crate::runners::RunnerFailureKind::ModelUnavailable,
+                "weekly limit exhausted",
+            ),
+        )))
     }));
     let runner = Arc::clone(&harness.in_process);
     let manager = Arc::new(harness.manager);
@@ -1311,27 +1300,22 @@ fn given_a_paused_run_that_captured_the_parent_model_when_recovery_starts_its_no
     let result =
         recovered(recovery_for(&store, Arc::clone(&manager)).resume_paused_runs(PARENT_SESSION_ID));
 
-    assert_eq!(result.nodes[0].state, DagNodeState::Completed);
+    assert_eq!(result.nodes[0].state, DagNodeState::Failed);
     let models: Vec<Option<String>> = runner.specs().into_iter().map(|spec| spec.model).collect();
-    assert_eq!(
-        models,
-        vec![
-            Some("anthropic/claude".to_string()),
-            Some(PARENT.to_string())
-        ]
-    );
+    assert_eq!(models, vec![Some("anthropic/claude".to_string())]);
     let task_id = result.nodes[0]
         .task_id
         .clone()
         .expect("recovered node attached a task");
     let task = manager.get(&task_id).expect("task record");
     assert_eq!(
-        task.final_response.as_deref(),
-        Some("openai/parent completed")
+        task.failure_kind.as_deref(),
+        Some(crate::manager::model_refusals::MODEL_CHAIN_EXHAUSTED)
     );
-    assert_eq!(task.parent_model.as_deref(), Some(PARENT));
-    assert_eq!(
-        task.parent_model_fallback.map(|note| note.reason),
-        Some(crate::state::ParentModelFallbackReason::UsageLimit)
+    assert!(
+        task.model_refusals
+            .as_ref()
+            .is_some_and(|refusals| refusals.len() == 1
+                && refusals[0].reason == crate::state::ModelRefusalReason::UsageLimit)
     );
 }

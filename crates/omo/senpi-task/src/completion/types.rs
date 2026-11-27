@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::host::HostError;
 use crate::state::{ResolvedModelRecord, TaskRecord, TaskRunStats, TaskStatus};
@@ -36,44 +36,6 @@ pub enum RoutingDecision {
 /// The run a completion belongs to (`pause/ports.ts` `RunRef`).
 pub use crate::pause::ports::{RunRef, RunRefKind};
 
-/// Why a category child ended up on its parent session's model (`state/record-types.ts`
-/// `PARENT_MODEL_FALLBACK_REASONS`): every rung of its category chain failed first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParentModelFallbackReason {
-    UsageLimit,
-    NotSignedIn,
-    Unavailable,
-    Refused,
-    Error,
-}
-
-/// Derived on read, never persisted: `switching` while the handoff is in flight, `unconfirmed`
-/// once the task ended without a child ever being observed on the parent's model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParentModelFallbackPhase {
-    Switching,
-    Unconfirmed,
-}
-
-/// The parent-model handoff record carried on a task record (`state/record-types.ts`
-/// `ParentModelFallback`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParentModelFallback {
-    pub from_model: String,
-    pub reason: ParentModelFallbackReason,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resets: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interrupted_tools: Option<Vec<String>>,
-    pub at: String,
-    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<ParentModelFallbackPhase>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CompletionDetails {
     /// The DAG run, team run, or task this completion belongs to (`completion/notification.ts`
@@ -94,10 +56,6 @@ pub struct CompletionDetails {
     pub fallback_models: Option<Vec<ResolvedModelRecord>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_model: Option<ResolvedModelRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_model_fallback: Option<ParentModelFallback>,
     pub duration_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,

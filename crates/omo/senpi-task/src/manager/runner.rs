@@ -352,6 +352,7 @@ pub fn to_child_spec(spec: &ManagedStartSpec, context: InProcessSessionContext) 
         tool_denylist: spec.tool_denylist.clone(),
         member_scoped_tool_names: spec.member_scoped_tool_names.clone(),
         member_scoped_tools: spec.member_scoped_tools.clone(),
+        own_approval_mode: None,
     }
 }
 

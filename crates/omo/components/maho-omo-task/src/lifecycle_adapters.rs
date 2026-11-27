@@ -5,12 +5,31 @@ use senpi_task::{
 };
 pub struct TaskLifecycleDestruction(pub TaskLifecycle);
 impl senpi_task::steering::DestructionPort for TaskLifecycleDestruction {
+    fn supports_fenced_eviction(&self) -> bool {
+        true
+    }
     fn destroy_resident_task(&self, id: &str, cause: DestroyCause) -> Result<(), HostError> {
         self.0
             .destroy_resident_task(id, cause)
             .map_err(|error| HostError {
                 message: error.to_string(),
             })
+    }
+    fn evict_managed_if_current(
+        &self,
+        id: &str,
+        handle: &std::sync::Arc<dyn senpi_task::manager::ManagedChildHandle>,
+    ) -> Result<(), HostError> {
+        self.0
+            .evict_managed_if_current(id, handle)
+            .map_err(|error| HostError {
+                message: error.to_string(),
+            })
+    }
+    fn host_session_cancel(
+        &self,
+    ) -> Option<senpi_task::lifecycle::host_session::HostSessionCancelPort> {
+        Some(self.0.host_session_cancel())
     }
 }
 impl senpi_task::team::runtime_types::TeamMemberDestructionPort for TaskLifecycleDestruction {

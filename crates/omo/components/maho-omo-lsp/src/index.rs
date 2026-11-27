@@ -8,12 +8,56 @@ use crate::{
 use lsp_core::post_edit::DiagnosticsRunnerError;
 use maho_ext_api::{
     EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ExtensionFailure,
-    ExtensionWidgetOptions, FlagType, FlagValue, ToolContent, ToolError, ToolResult,
+    ExtensionWidgetOptions, FlagType, FlagValue, ToolContent, ToolError, ToolExposure, ToolResult,
     ToolResultEventResult, WidgetPlacement,
 };
 use std::sync::{Arc, Mutex};
 const TOOLS_FLAG: &str = "omo-senpi-lsp-tools-enabled";
 const POST_EDIT_FLAG: &str = "omo-senpi-lsp-post-edit-diagnostics-enabled";
+// Most sessions never call an LSP tool, so they ride in the tool-search catalog and activate on
+// their first by-name call instead of costing every request their schemas (#11454).
+const LSP_SEARCH_KEYWORDS: &[(&str, &[&str])] = &[
+    (
+        "lsp_diagnostics",
+        &[
+            "type errors",
+            "typecheck",
+            "compiler errors",
+            "lint",
+            "diagnostics",
+        ],
+    ),
+    (
+        "lsp_goto_definition",
+        &[
+            "go to definition",
+            "where is it defined",
+            "symbol definition",
+        ],
+    ),
+    (
+        "lsp_find_references",
+        &["find usages", "callers", "references", "blast radius"],
+    ),
+    (
+        "lsp_symbols",
+        &[
+            "outline",
+            "document symbols",
+            "workspace symbols",
+            "symbol search",
+        ],
+    ),
+    ("lsp_prepare_rename", &["rename check", "can rename"]),
+    ("lsp_rename", &["rename symbol", "refactor rename"]),
+];
+fn lsp_search_keywords(name: &str) -> Vec<String> {
+    LSP_SEARCH_KEYWORDS
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map(|(_, keywords)| keywords.iter().map(|k| (*k).to_owned()).collect())
+        .unwrap_or_default()
+}
 #[derive(Default)]
 pub struct LspComponent;
 pub type DiagnosticsRunner = Arc<
@@ -92,6 +136,10 @@ impl LspComponent {
             notices();
         }
         for mut tool in descriptors() {
+            tool.exposure = Some(ToolExposure::Search);
+            tool.allow_lazy_activation = Some(true);
+            tool.search_group = Some("lsp".into());
+            tool.search_keywords = Some(lsp_search_keywords(&tool.name));
             let name = tool.name.clone();
             let cwd = api.cwd.clone();
             let home = home.clone();
@@ -371,6 +419,26 @@ mod tests {
             assert_eq!(tool.definition.label, legacy.label);
             assert_eq!(tool.definition.execution_mode, legacy.execution_mode);
             assert!(!Arc::ptr_eq(&tool.definition.execute, &legacy.execute));
+        }
+    }
+    #[test]
+    fn tools_ride_in_the_search_catalog_with_lazy_activation() {
+        let mut a = api();
+        LspComponent.register(&mut a);
+        for tool in &a.registered.tools {
+            let definition = &tool.definition;
+            assert_eq!(definition.exposure, Some(ToolExposure::Search));
+            assert_eq!(definition.allow_lazy_activation, Some(true));
+            assert_eq!(definition.search_group.as_deref(), Some("lsp"));
+            assert!(
+                !definition
+                    .search_keywords
+                    .as_deref()
+                    .unwrap_or_default()
+                    .is_empty(),
+                "{} has no search keywords",
+                definition.name
+            );
         }
     }
     #[test]

@@ -364,6 +364,7 @@ async fn resolved_capacity_is_enforced_by_the_detached_manager() {
                 on_timeout: None,
                 reset: None,
                 isolate: None,
+                language_inferred: None,
             };
             let cell = manager
                 .create(format!("cap-{index}"), input)

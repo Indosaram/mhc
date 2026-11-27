@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 maho-ext-api = { path = "../maho-ext-api" }
+regex.workspace = true
 serde_json.workspace = true
 
 [lints]

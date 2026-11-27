@@ -1490,15 +1490,33 @@ pub enum IdleExitDecision {
 pub struct IdleExitDecider {
     pub idle_exit_ms: f64,
     idle_since: Option<f64>,
+    first_client_by: Option<f64>,
 }
 impl IdleExitDecider {
     pub fn new(idle_exit_ms: f64) -> Self {
+        Self::with_first_client_window(idle_exit_ms, 0.0, None)
+    }
+    pub fn with_first_client_window(
+        idle_exit_ms: f64,
+        now_ms: f64,
+        first_client_within_ms: Option<f64>,
+    ) -> Self {
         Self {
             idle_exit_ms,
             idle_since: None,
+            first_client_by: first_client_within_ms.map(|w| now_ms + w),
         }
     }
     pub fn update(&mut self, connections: u64, active_turns: u64, now: f64) -> IdleExitDecision {
+        if connections > 0 {
+            self.first_client_by = None;
+        }
+        if let Some(deadline) = self.first_client_by {
+            if now < deadline {
+                return IdleExitDecision::Active;
+            }
+            self.first_client_by = None;
+        }
         if connections > 0 || active_turns > 0 {
             self.idle_since = None;
             return IdleExitDecision::Active;
@@ -1822,5 +1840,41 @@ mod tests {
             )])),
             DEFAULT_HANDOFF_GRACE_MS
         );
+    }
+
+    #[test]
+    fn idle_window_before_first_client_stays_closed_until_first_client_then_counts_from_release() {
+        const IDLE_MS: f64 = 600.;
+        const LAUNCHER_BUDGET_MS: f64 = 10_000.;
+        let mut now = 0.;
+        let mut decider =
+            IdleExitDecider::with_first_client_window(IDLE_MS, now, Some(LAUNCHER_BUDGET_MS));
+
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Active);
+        assert_eq!(decider.update(0, 1, now), IdleExitDecision::Active);
+        now += LAUNCHER_BUDGET_MS - 1.;
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Active);
+
+        assert_eq!(decider.update(1, 0, now), IdleExitDecision::Active);
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Idle);
+        now += IDLE_MS - 1.;
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Idle);
+        now += 1.;
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Exit);
+    }
+
+    #[test]
+    fn idle_window_before_first_client_opens_once_launcher_budget_passes() {
+        const IDLE_MS: f64 = 600.;
+        const LAUNCHER_BUDGET_MS: f64 = 10_000.;
+        let mut now = 0.;
+        let mut decider =
+            IdleExitDecider::with_first_client_window(IDLE_MS, now, Some(LAUNCHER_BUDGET_MS));
+
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Active);
+        now += LAUNCHER_BUDGET_MS;
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Idle);
+        now += IDLE_MS;
+        assert_eq!(decider.update(0, 0, now), IdleExitDecision::Exit);
     }
 }

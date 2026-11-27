@@ -8,10 +8,16 @@ use std::sync::OnceLock;
 
 /// The engine's own CalVer-style version. maho keeps senpi's version string shape: a release build's
 /// `MHC_BUILD_VERSION` (what `mhc --version` prints), else the crate version.
-pub const ENGINE_VERSION: &str = match option_env!("MHC_BUILD_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
+pub const ENGINE_VERSION: &str = match option_env!("SENPI_ENGINE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => match option_env!("MHC_BUILD_VERSION") {
+        Some(version) => version,
+        None => env!("CARGO_PKG_VERSION"),
+    },
 };
+
+/// No senpi release predates 2000, so a CalVer ordinal's first part is a year at or after it.
+pub const FIRST_CALVER_YEAR: i64 = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineOrdinalScheme {
@@ -118,9 +124,17 @@ pub fn engine_build_identity() -> &'static EngineBuildIdentity {
     built()
 }
 
+/// Whether both ordinals are senpi CalVer, the only vocabulary two builds are ordered in (senpi#7040).
+pub fn comparable_engines(a: &EngineBuildIdentity, b: &EngineBuildIdentity) -> bool {
+    a.ordinal[0] >= FIRST_CALVER_YEAR && b.ordinal[0] >= FIRST_CALVER_YEAR
+}
+
 /// Orders two builds: -1 older, 1 newer, 0 equal OR uncomparable. The build epoch breaks a tie ONLY
 /// when BOTH sides carry one, so a build of unknown age can never outrank a known one.
 pub fn compare_engine_ordinal(a: &EngineBuildIdentity, b: &EngineBuildIdentity) -> i32 {
+    if !comparable_engines(a, b) {
+        return 0;
+    }
     for index in 0..4 {
         if a.ordinal[index] != b.ordinal[index] {
             return if a.ordinal[index] > b.ordinal[index] {
@@ -137,6 +151,49 @@ pub fn compare_engine_ordinal(a: &EngineBuildIdentity, b: &EngineBuildIdentity) 
         return 0;
     }
     if a.ordinal[4] > b.ordinal[4] { 1 } else { -1 }
+}
+
+/// The identity a running host advertises (`engineVersion`, `engineOrdinal`): a non-zero epoch is an `epoch` build.
+pub fn engine_identity_of(text: &str, ordinal: EngineOrdinal) -> EngineBuildIdentity {
+    EngineBuildIdentity {
+        text: text.to_owned(),
+        ordinal,
+        scheme: if ordinal[4] > 0 {
+            EngineOrdinalScheme::Epoch
+        } else {
+            EngineOrdinalScheme::Nodef
+        },
+    }
+}
+
+/// Why handing `running` over to `successor` would DOWNGRADE it (senpi#7018), or `None` when it would not.
+pub fn older_engine_detail(
+    successor: &EngineBuildIdentity,
+    running: &EngineBuildIdentity,
+) -> Option<String> {
+    if !comparable_engines(successor, running) {
+        return Some(format!(
+            "the successor's engine {} [{},{},{},{},{}] cannot be ordered against the running host's {} [{},{},{},{},{}]: only two senpi CalVer engine ordinals are comparable",
+            successor.text,
+            successor.ordinal[0],
+            successor.ordinal[1],
+            successor.ordinal[2],
+            successor.ordinal[3],
+            successor.ordinal[4],
+            running.text,
+            running.ordinal[0],
+            running.ordinal[1],
+            running.ordinal[2],
+            running.ordinal[3],
+            running.ordinal[4],
+        ));
+    }
+    (compare_engine_ordinal(successor, running) < 0).then(|| {
+        format!(
+            "the successor's engine {} is older than the running host's {}",
+            successor.text, running.text
+        )
+    })
 }
 
 #[cfg(test)]
@@ -211,5 +268,20 @@ mod tests {
         assert_eq!(compare_engine_ordinal(&older, &unknown), 0);
         assert_eq!(compare_engine_ordinal(&unknown, &newer), 0);
         assert_eq!(compare_engine_ordinal(&older, &older), 0);
+    }
+
+    #[test]
+    fn non_calver_ordinals_are_uncomparable_and_refuse_handoff() {
+        let calver = identity("2026.11.18", None, None);
+        let semver = engine_identity_of("5.1.78", [5, 1, 78, 0, 0]);
+        assert!(!comparable_engines(&calver, &semver));
+        assert_eq!(compare_engine_ordinal(&calver, &semver), 0);
+        assert!(older_engine_detail(&calver, &semver).is_some());
+        let newer = identity("2026.11.19", None, None);
+        assert_eq!(older_engine_detail(&newer, &calver), None);
+        assert!(
+            older_engine_detail(&calver, &newer)
+                .is_some_and(|msg| msg.contains("is older than the running host's"))
+        );
     }
 }

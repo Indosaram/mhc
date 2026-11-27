@@ -25,7 +25,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SENPI_PIN = "59d58cee59d76bbecc83be828b59ff5420eb74df";
+const SENPI_PIN = "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff";
 
 const BUILTIN_DIR = "packages/coding-agent/src/core/extensions/builtin";
 // The 40 senpi builtin extension directories (plan IS-5); each maps to crates/builtins/maho-ext-<dir>.
@@ -132,7 +132,7 @@ function walkTs(dir) {
 }
 
 /** Non-test .ts files of a crate, as paths relative to their declared root (first root wins). */
-const OMO_PIN = "354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9";
+const OMO_PIN = "5835a98e88438f28a8ae0ee18039fad4d5fd415b";
 let omoChecked = false;
 /** oh-my-openagent checkout for `omo` roots: $OMO_SRC (default /Users/indo/code/oh-my-openagent), pinned like senpi. */
 function omoSrc() {

@@ -25,6 +25,7 @@ pub struct HostSessionHandle {
     recovering: std::sync::atomic::AtomicBool,
     stopped: std::sync::atomic::AtomicBool,
     settled: std::sync::atomic::AtomicBool,
+    host_end_answered: std::sync::atomic::AtomicBool,
     event_subscription: Mutex<Option<Unsubscribe>>,
     outcome: Arc<dyn Fn() -> RunnerOutcome + Send + Sync>,
     input_effects: InputEffects,
@@ -146,6 +147,7 @@ pub fn create_host_session_handle_with_inputs(
         recovering: std::sync::atomic::AtomicBool::new(false),
         stopped: std::sync::atomic::AtomicBool::new(false),
         settled: std::sync::atomic::AtomicBool::new(opened.attached),
+        host_end_answered: std::sync::atomic::AtomicBool::new(false),
         event_subscription: Mutex::new(None),
         outcome,
         input_effects,
@@ -464,6 +466,7 @@ impl HostSessionHandle {
     }
     /// `onGone(true)`: the host confirmed this session is absent.
     fn closed_unresponsive(&self) {
+        self.mark_host_end_answered();
         self.liveness.stop();
         self.unresponsive_close.stop();
         *self
@@ -521,6 +524,7 @@ impl HostSessionHandle {
         {
             return;
         }
+        self.mark_host_end_answered();
         self.session_ended(event.reason.as_deref().unwrap_or("session_closed"));
     }
     pub fn start_initial_prompt(&self, text: &str) -> Result<(), HostError> {
@@ -550,6 +554,11 @@ impl ManagedChildHandle for HostSessionHandle {
     fn mark_stopping(&self) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+    fn host_end_answered(&self) -> bool {
+        self.host_end_answered
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self.teardown.host_end_answered()
     }
     fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
         Some(self.listeners.on_self_resumed(listener))
@@ -701,6 +710,10 @@ impl ManagedChildHandle for HostSessionHandle {
 }
 
 impl HostSessionHandle {
+    fn mark_host_end_answered(&self) {
+        self.host_end_answered
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     fn wake_outcome_waiters(&self) {
         let (generation, changed) = &*self.outcome_changed;
         *generation.lock().expect("outcome generation lock poisoned") += 1;

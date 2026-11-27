@@ -1,5 +1,5 @@
 use crate::bridges::schema_bridge::EvalSchemaToolInfo;
-use maho_tools::definition::KernelPrelude;
+use maho_tools::definition::{KernelPrelude, ToolExposure};
 use std::collections::HashSet;
 
 pub type ActiveToolsSource = std::sync::Arc<dyn Fn() -> Result<Vec<String>, String> + Send + Sync>;
@@ -61,14 +61,19 @@ pub fn active_kernel_preludes(
     let active_set: HashSet<&str> = active_tools.iter().map(|s| s.as_str()).collect();
     all_tools
         .iter()
-        .filter_map(|tool| {
-            if active_set.contains(tool.name.as_str()) {
-                tool.kernel_prelude.clone()
-            } else {
-                None
-            }
+        // Eval-only tools contribute to the kernel even when withheld from the model.
+        .filter(|tool| {
+            tool.exposure == Some(ToolExposure::Eval) || active_set.contains(tool.name.as_str())
         })
+        .filter_map(|tool| tool.kernel_prelude.clone())
         .collect()
+}
+
+/// Identity of the registry-derived parts of the eval description (contribution doc lines and
+/// the eval-only tool names); the eval tool re-registers only when it changes.
+pub fn eval_description_key(preludes: &[KernelPrelude], eval_only_tools: &[String]) -> String {
+    let docs: Vec<&str> = preludes.iter().map(|p| p.documentation.as_str()).collect();
+    serde_json::to_string(&(docs, eval_only_tools)).unwrap_or_default()
 }
 
 pub fn kernel_prelude_docs_key(preludes: &[KernelPrelude]) -> String {
@@ -145,18 +150,24 @@ mod tests {
         let all = vec![
             EvalSchemaToolInfo {
                 name: "t1".into(),
+                exposure: None,
+                eval_only: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p1.clone()),
             },
             EvalSchemaToolInfo {
                 name: "t2".into(),
+                exposure: Some(ToolExposure::Search),
+                eval_only: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p2.clone()),
             },
             EvalSchemaToolInfo {
                 name: "t3".into(),
+                exposure: None,
+                eval_only: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: None,

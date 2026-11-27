@@ -14,6 +14,7 @@ use crate::session_transcript_journal::{
 #[derive(Clone, Debug, Default)]
 pub struct TranscriptFile {
     pub base: Option<PersistedBase>,
+    pub content_fingerprint: Option<String>,
     pub history: usize,
     pub identity: Option<FileIdentity>,
     pub unavailable: Option<TranscriptUnavailableReason>,
@@ -28,6 +29,7 @@ impl TranscriptFile {
     pub fn reset(&mut self) {
         self.generation += 1;
         self.base = None;
+        self.content_fingerprint = None;
         self.history = 0;
         self.identity = None;
         self.unavailable = None;
@@ -36,8 +38,17 @@ impl TranscriptFile {
     /// Install a capture taken by the generation `reset` returned; `entries` (the loaded or written
     /// entries) make it a persisted base. Returns false when a later reset superseded it.
     pub fn capture(&mut self, identity: Option<FileIdentity>, entries: Option<&[Value]>) -> bool {
+        self.capture_with_fingerprint(identity, entries, None)
+    }
+
+    pub fn capture_with_fingerprint(
+        &mut self,
+        identity: Option<FileIdentity>,
+        entries: Option<&[Value]>,
+        content_fingerprint: Option<String>,
+    ) -> bool {
         self.reset();
-        self.install(self.generation, identity, entries)
+        self.install_with_fingerprint(self.generation, identity, entries, content_fingerprint)
     }
 
     pub fn install(
@@ -45,6 +56,16 @@ impl TranscriptFile {
         generation: u64,
         identity: Option<FileIdentity>,
         entries: Option<&[Value]>,
+    ) -> bool {
+        self.install_with_fingerprint(generation, identity, entries, None)
+    }
+
+    pub fn install_with_fingerprint(
+        &mut self,
+        generation: u64,
+        identity: Option<FileIdentity>,
+        entries: Option<&[Value]>,
+        content_fingerprint: Option<String>,
     ) -> bool {
         if generation != self.generation {
             return false;
@@ -62,6 +83,7 @@ impl TranscriptFile {
                         count: captured.count,
                         id_fingerprint: captured.id_fingerprint,
                     });
+                    self.content_fingerprint = content_fingerprint;
                     self.history = captured.history;
                 }
                 self.identity = Some(file_identity);

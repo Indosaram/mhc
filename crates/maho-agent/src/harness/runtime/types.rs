@@ -295,6 +295,7 @@ pub struct Config<TContext> {
     pub to_provider_messages: ToProviderMessagesFn,
     pub entry_projectors:
         std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>,
+    pub on_execution_pipeline: Option<crate::harness::execution::tool_host_call::WitnessSink>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

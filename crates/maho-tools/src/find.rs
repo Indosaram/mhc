@@ -1,4 +1,12 @@
-use crate::{definition::*, filesystem_policy::*, model_only_text::model_only_text, truncate::*};
+use crate::{
+    definition::*,
+    filesystem_policy::*,
+    fs_error_code::tool_error_from_machine,
+    machine::{ToolMachine, default_tool_machine},
+    model_only_text::model_only_text,
+    truncate::*,
+};
+use maho_machine_ops::{GlobRequest, OpName};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -19,6 +27,7 @@ pub trait FindOperations: Send + Sync {
 pub struct FindToolOptions {
     pub operations: Option<Arc<dyn FindOperations>>,
     pub filesystem_policy: Option<FilesystemPolicyChecker>,
+    pub machine: Option<ToolMachine>,
 }
 #[derive(Deserialize)]
 pub struct FindToolInput {
@@ -44,12 +53,26 @@ pub fn relativize_find_result_path(result: &str, root: &Path) -> String {
 }
 pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> ToolDefinition {
     let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
+    let machine = options.machine.unwrap_or_else(default_tool_machine);
+    let custom_ops = options.operations;
+    let policy = options.filesystem_policy;
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone();
-        let options = options.clone();
+        let custom_ops = custom_ops.clone();
+        let machine = machine.clone();
+        let policy = policy.clone();
         Box::pin(async move {
             call.signal.check()?;
             let input: FindToolInput = serde_json::from_value(call.params)?;
+            let gate_args = json!({
+                "pattern": input.pattern,
+                "path": input.path,
+                "limit": input.limit,
+            });
+            if let Some(admitted) = machine.begin(OpName::FilesGlob, gate_args, Some(&call.signal))
+            {
+                admitted.await?;
+            }
             let root = crate::path_utils::resolve_to_cwd(
                 input
                     .path
@@ -60,15 +83,15 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
             );
             let limit = input.limit.unwrap_or(1000);
             check_filesystem_policy(
-                options.filesystem_policy.as_ref(),
+                policy.as_ref(),
                 &root,
                 FilesystemOperation::Enumerate,
                 "find",
             )
             .await?;
             call.signal.check()?;
-            let custom = options.operations.is_some();
-            let results = if let Some(ops) = &options.operations {
+            let custom = custom_ops.is_some();
+            let results = if let Some(ops) = &custom_ops {
                 if !ops.exists(&root).await? {
                     return Err(ToolError::Message(format!(
                         "Path not found: {}",
@@ -87,62 +110,25 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
                 call.signal.check()?;
                 results
             } else {
-                let fd_path =
-                    crate::managed_tools::ensure_tool(crate::managed_tools::ManagedTool::Fd).await;
+                let ctx = machine.context(Some(&call.signal), None);
+                let glob_res = machine
+                    .ops()
+                    .files()
+                    .glob(
+                        GlobRequest {
+                            pattern: input.pattern,
+                            cwd: Some(root.to_string_lossy().into_owned()),
+                            limit: Some(limit),
+                        },
+                        &ctx,
+                    )
+                    .await
+                    .map_err(tool_error_from_machine)?;
                 call.signal.check()?;
-                let fd_path = fd_path.ok_or_else(|| {
-                    ToolError::Message("fd is not available and could not be downloaded".into())
-                })?;
-                let mut command = tokio::process::Command::new(fd_path);
-                command
-                    .kill_on_drop(true)
-                    .args(["--glob", "--color=never", "--hidden"]);
-                let mut inside_git = false;
-                for parent in root.ancestors() {
-                    if crate::path_utils::path_exists(&parent.join(".git")).await {
-                        inside_git = true;
-                        break;
-                    }
-                }
-                if !inside_git {
-                    command.arg("--no-require-git");
-                }
-                command.args(["--max-results", &limit.to_string()]);
-                let mut pattern = input.pattern;
-                if pattern.contains('/') {
-                    command.arg("--full-path");
-                    if !pattern.starts_with('/') && !pattern.starts_with("**/") && pattern != "**" {
-                        pattern = format!("**/{pattern}");
-                    }
-                    #[cfg(windows)]
-                    {
-                        pattern = pattern.replace('/', "[/\\]");
-                    }
-                }
-                command.arg("--").arg(pattern).arg(&root);
-                let output = tokio::select! {
-                    result = command.output() => result.map_err(|e| ToolError::Message(format!("Failed to run fd: {e}")))?,
-                    () = call.signal.cancelled() => return Err(ToolError::Aborted),
-                };
-                let text = String::from_utf8_lossy(&output.stdout);
-                if !output.status.success() && text.is_empty() {
-                    let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    return Err(ToolError::Message(if error.is_empty() {
-                        format!(
-                            "fd exited with code {}",
-                            output
-                                .status
-                                .code()
-                                .map_or("null".into(), |n| n.to_string())
-                        )
-                    } else {
-                        error
-                    }));
-                }
-                text.lines()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
+                glob_res
+                    .entries
+                    .into_iter()
+                    .map(|e| e.path.to_string_lossy().into_owned())
                     .collect()
             };
             if results.is_empty() {

@@ -112,6 +112,18 @@ impl WorkerHost {
         mode: JavaScriptKernelMode,
         env_passthrough: Option<&[String]>,
     ) -> Result<Self, ProcessError> {
+        Self::spawn_scrubbed_with_env(entry, cwd, parallel_pool_width, mode, env_passthrough, &[])
+    }
+
+    /// Like [`Self::spawn_scrubbed`], additionally injecting host-side internal env pairs.
+    pub fn spawn_scrubbed_with_env(
+        entry: &Path,
+        cwd: &Path,
+        parallel_pool_width: u64,
+        mode: JavaScriptKernelMode,
+        env_passthrough: Option<&[String]>,
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self, ProcessError> {
         // senpi worker-slot.ts runs the kernel worker on the host main thread, which also serves Chrome-backed
         // Bun.WebViews (webview-host.ts). Here that main thread is the bun relay process: worker-relay.js forwards the
         // worker's frames and answers its `webview-connect` requests itself.
@@ -127,6 +139,9 @@ impl WorkerHost {
         let mut env = maho_ext_api::process_env::vars()
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
+        for (key, value) in extra_env {
+            env.insert((*key).to_owned(), (*value).to_owned());
+        }
         scrub_host_env(&mut env, env_passthrough);
         let process = SubprocessProcess::spawn("bun", &args, cwd, &env)?;
         Ok(Self { mode, process })
@@ -164,8 +179,25 @@ impl WorkerHost {
         if let Some(environment) = options.session_env {
             frame["sessionEnv"] = serde_json::to_value(environment)?;
         }
+        if self.mode != JavaScriptKernelMode::Process
+            && let Some(inherited) = options.inherited_env
+        {
+            let base: std::collections::HashMap<String, String> =
+                maho_ext_api::process_env::vars().into_iter().collect();
+            let (removed_env, inherited_set) =
+                crate::kernels::session_env::inherited_environment_delta(&base, &inherited());
+            if !removed_env.is_empty() {
+                frame["removedEnv"] = serde_json::to_value(removed_env)?;
+            }
+            if !inherited_set.is_empty() {
+                frame["inheritedSet"] = serde_json::to_value(inherited_set)?;
+            }
+        }
         if let Some(memory) = options.memory {
             frame["memory"] = serde_json::to_value(memory)?;
+        }
+        if let Some((module_url, agent_pid)) = options.kill_guard {
+            frame["killGuard"] = json!({"moduleUrl": module_url, "agentPid": agent_pid});
         }
         self.post_message(&frame).await?;
         loop {

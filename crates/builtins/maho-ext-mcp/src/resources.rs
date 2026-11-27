@@ -212,7 +212,10 @@ pub async fn read_mcp_resource_as_text_with_signal(
             _ => server.client.clone(),
         };
         let options = crate::request_origin::mcp_request_options(
-            server.request_origin.as_ref().and_then(|origin| origin()),
+            server
+                .request_origin
+                .as_ref()
+                .and_then(|origin| origin(None)),
             signal.cloned(),
         );
         client

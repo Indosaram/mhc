@@ -377,6 +377,8 @@ enum TerminalSessionBackend {
     PipeFallback(PipeFallbackSession),
 }
 
+type DisposeListener = Box<dyn FnOnce() + Send>;
+
 pub struct TerminalRuntimeSession {
     pub command: String,
     /// Upstream `startedAtMs`: wall-clock instant the child was spawned.
@@ -391,6 +393,7 @@ pub struct TerminalRuntimeSession {
     exit_signal: tokio::sync::watch::Receiver<Option<Result<PtyExit, String>>>,
     exit_sender: tokio::sync::watch::Sender<Option<Result<PtyExit, String>>>,
     observers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    dispose_listeners: Mutex<(usize, Vec<(usize, DisposeListener)>)>,
     screen: Arc<Mutex<Option<crate::screen::TerminalScreen>>>,
     final_screen: Arc<Mutex<Option<TerminalScreenSnapshot>>>,
     redaction: Option<Redaction>,
@@ -525,6 +528,7 @@ impl TerminalRuntimeSession {
             exit_signal,
             exit_sender,
             observers,
+            dispose_listeners: Mutex::new((0, Vec::new())),
             screen,
             final_screen,
             redaction,
@@ -576,6 +580,37 @@ impl TerminalRuntimeSession {
         TerminalCompletionHandle {
             exit: self.exit_signal.clone(),
             output: Arc::clone(&self.output),
+        }
+    }
+    /// Called once when the wrapper is disposed (registry eviction or teardown). Returns a token
+    /// that can be passed to `remove_dispose_listener`.
+    pub fn on_dispose(&self, listener: impl FnOnce() + Send + 'static) -> usize {
+        let mut guard = self
+            .dispose_listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.0 += 1;
+        let id = guard.0;
+        guard.1.push((id, Box::new(listener)));
+        id
+    }
+    pub fn remove_dispose_listener(&self, id: usize) {
+        let mut guard = self
+            .dispose_listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.1.retain(|(entry_id, _)| *entry_id != id);
+    }
+    fn fire_dispose_listeners(&self) {
+        let listeners = {
+            let mut guard = self
+                .dispose_listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut guard.1)
+        };
+        for (_, listener) in listeners {
+            listener();
         }
     }
     pub fn subscribe_output(
@@ -776,6 +811,7 @@ impl TerminalRuntimeSession {
         {
             thread.join().map_err(|_| RuntimeError::WaiterPanicked)?;
         }
+        self.fire_dispose_listeners();
         Ok(())
     }
     pub(crate) fn settle_cancelled(&self) {
@@ -807,6 +843,7 @@ impl Drop for TerminalRuntimeSession {
             }
         }
         self.settle_cancelled();
+        self.fire_dispose_listeners();
     }
 }
 
@@ -1533,6 +1570,27 @@ mod tests {
         let view = handle.exit_view();
         assert_eq!(view.exit_result.as_ref().and_then(|e| e.exit_code), Some(0));
         assert!(view.full_output().contains("handle_output"));
+        Ok(())
+    }
+
+    #[test]
+    fn on_dispose_fires_once_and_respects_removal() -> Result<(), RuntimeError> {
+        let runtime =
+            TerminalRuntimeSession::start("echo", crate::shared::test_sh_options("exit 0"))?;
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let skipped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fired_clone = Arc::clone(&fired);
+        let skipped_clone = Arc::clone(&skipped);
+        runtime.on_dispose(move || {
+            fired_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let removed_id = runtime.on_dispose(move || {
+            skipped_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        runtime.remove_dispose_listener(removed_id);
+        runtime.dispose()?;
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(skipped.load(std::sync::atomic::Ordering::SeqCst), 0);
         Ok(())
     }
 }

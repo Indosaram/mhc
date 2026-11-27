@@ -3,9 +3,6 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::fable_55_launch::FABLE_55_LAUNCH;
-use crate::fable_55_launch::FABLE_55_LAUNCH_ID;
-
 const DEFAULT_ANTHROPIC_ACTUAL_LIMIT: i64 = 200_000;
 const ANTHROPIC_GA_1M_LIMIT: i64 = 1_000_000;
 
@@ -55,7 +52,14 @@ fn has_ga_1m_context(model_id: &str) -> bool {
         Regex::new(r"^(?:anthropic/|(?:(?:us|eu|global|jp|au)\.)?anthropic\.)?claude-opus-5(?:-fast|(?:-|\.)5)?(?:-[0-9]{8})?(?:@default)?$")
             .expect("valid regex")
     });
-    CLAUDE_4X.is_match(model_id) || CLAUDE_5.is_match(model_id) || CLAUDE_OPUS_5.is_match(model_id)
+    static CLAUDE_FABLE_52: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:anthropic/|(?:(?:us|eu|global|jp|au)\.)?anthropic\.)?claude-(?:fable|mythos)-5[.-]2(?:-[0-9]{8})?(?:@default)?$")
+            .expect("valid regex")
+    });
+    CLAUDE_FABLE_52.is_match(model_id)
+        || CLAUDE_4X.is_match(model_id)
+        || CLAUDE_5.is_match(model_id)
+        || CLAUDE_OPUS_5.is_match(model_id)
 }
 
 /// Context limit using the process environment switches.
@@ -86,14 +90,6 @@ pub fn resolve_actual_context_limit_with_env(
         .and_then(|cache| cache.get(&format!("{provider_id}/{model_id}")))
         .copied();
 
-    if model_id == FABLE_55_LAUNCH_ID {
-        return cached_limit.or_else(|| {
-            FABLE_55_LAUNCH
-                .limit
-                .as_ref()
-                .and_then(|limit| limit.context)
-        });
-    }
     if !is_anthropic_provider(provider_id, model_id) {
         return cached_limit;
     }

@@ -50,12 +50,14 @@ pub fn recover_pending_reflection(
         },
     );
     let recovered_run_id = if recovery.notice.is_none() {
-        match &recovery.verdict {
-            crate::reflection_stale_active_sync::ActiveHolderVerdict::Dead { run_id } => {
-                Some(run_id.clone())
-            }
-            _ => None,
-        }
+        recovery
+            .recovered_run_id
+            .or_else(|| match &recovery.verdict {
+                crate::reflection_stale_active_sync::ActiveHolderVerdict::Dead { run_id } => {
+                    Some(run_id.clone())
+                }
+                _ => None,
+            })
     } else {
         None
     };

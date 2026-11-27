@@ -48,6 +48,12 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     fn run_stats_snapshot(&self, task_id: &str) -> Option<TaskRunStats>;
     fn release_slot(&self, task_id: &str, model: &str, epoch: i64);
     fn settle_waiters(&self, task_id: &str);
+    fn evict_finished_cloud(
+        &self,
+        task_id: &str,
+        handle: &Arc<dyn ManagedChildHandle>,
+        epoch: i64,
+    ) -> Result<(), crate::host::HostError>;
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool;
     /// Merges (or retains) an isolated child's clone. Called BEFORE the terminal transition is
     /// written, so every result builder reads one record that already carries merge_result.
@@ -251,13 +257,28 @@ fn settle_outcome(
         },
     };
     ports.release_slot(task_id, model, epoch);
-    settle_isolation_for(ports, task_id, merge);
-    if let Err(error) = ports.store().transition(task_id, &transition) {
+    if let Err(error) = ports.evict_finished_cloud(task_id, handle, epoch) {
         log_failure(
-            "senpi-task manager outcome tracking failed",
+            "senpi-task cloud completion eviction failed",
             task_id,
             &error,
         );
+    }
+    if !run_still_current(ports, task_id, epoch) {
+        return;
+    }
+    settle_isolation_for(ports, task_id, merge);
+    match ports
+        .store()
+        .transition_expected_epoch(task_id, &transition, Some(epoch))
+    {
+        Ok(None) => return,
+        Err(error) => log_failure(
+            "senpi-task manager outcome tracking failed",
+            task_id,
+            &error,
+        ),
+        Ok(Some(_)) => {}
     }
     ports.settle_waiters(task_id);
 }
@@ -366,25 +387,78 @@ fn settle_error_outcome(
         return;
     }
     ports.release_slot(&input.task_id, &input.model, input.epoch);
-    settle_isolation_for(ports, &input.task_id, false);
-    let owned = ports.try_load(&input.task_id);
-    let transition = TaskTransition::Fail {
-        timestamp: ports.now_iso(),
-        error_message: crate::manager::credential_failure::terminal_failure_message(
-            owned.as_ref(),
-            &input.failure.message,
-        ),
-        killed: input.killed,
-        run_stats: input.run_stats.clone(),
-    };
-    if let Err(error) = ports.store().transition(&input.task_id, &transition) {
+    if let Err(error) = ports.evict_finished_cloud(&input.task_id, &input.handle, input.epoch) {
         log_failure(
-            "senpi-task manager error outcome tracking failed",
+            "senpi-task cloud completion eviction failed",
             &input.task_id,
             &error,
         );
     }
+    if !run_still_current(ports, &input.task_id, input.epoch) {
+        return;
+    }
+    settle_isolation_for(ports, &input.task_id, false);
+    let owned = ports.try_load(&input.task_id);
+    let fields = owned.as_ref().map(|record| {
+        crate::manager::model_refusals::terminal_failure_fields(
+            record,
+            &input.failure,
+            crate::manager::model_refusals::is_model_turn_failure(input.killed, &input.failure),
+        )
+    });
+    let error_message = fields.as_ref().map_or_else(
+        || {
+            crate::manager::credential_failure::terminal_failure_message(
+                None,
+                &input.failure.message,
+            )
+        },
+        |fields| fields.error_message.clone(),
+    );
+    let transition = TaskTransition::Fail {
+        timestamp: ports.now_iso(),
+        error_message,
+        killed: input.killed,
+        run_stats: input.run_stats.clone(),
+    };
+    match ports
+        .store()
+        .transition_expected_epoch(&input.task_id, &transition, Some(input.epoch))
+    {
+        Ok(None) => return,
+        Err(error) => log_failure(
+            "senpi-task manager error outcome tracking failed",
+            &input.task_id,
+            &error,
+        ),
+        Ok(Some(_)) => {
+            if let Some(failure_kind) = fields.and_then(|fields| fields.failure_kind)
+                && let Err(error) = ports.store().mutate(&input.task_id, |fresh| {
+                    let mut updated = fresh.clone();
+                    if fresh.notification.run_epoch == input.epoch {
+                        updated.failure_kind = Some(failure_kind.clone());
+                    }
+                    updated
+                })
+            {
+                log_failure(
+                    "senpi-task manager error outcome failure_kind update failed",
+                    &input.task_id,
+                    &error,
+                );
+            }
+        }
+    }
     ports.settle_waiters(&input.task_id);
+}
+
+fn run_still_current(ports: &dyn OutcomeTrackerPorts, task_id: &str, epoch: i64) -> bool {
+    ports.try_load(task_id).is_some_and(|record| {
+        record.status == TaskStatus::Running
+            && record.notification.run_epoch == epoch
+            && record.residency_state != ResidencyState::PersistedOnly
+            && record.residency_state != ResidencyState::RpcDetached
+    })
 }
 
 /// Settle an isolated child's clone before the terminal record is written. A non-isolated child is

@@ -17,9 +17,17 @@ pub enum EvalNotifyMode {
 #[derive(Default)]
 pub struct EvalNotifier {
     notified: HashSet<String>,
+    loop_remote: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl EvalNotifier {
+    pub fn with_loop_remote(loop_remote: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self {
+            notified: HashSet::new(),
+            loop_remote: Some(loop_remote),
+        }
+    }
+
     pub fn reset(&mut self) {
         self.notified.clear();
     }
@@ -33,9 +41,12 @@ impl EvalNotifier {
         if mode == EvalNotifyMode::Off {
             return None;
         }
-        let (context_mode, has_model) = context?;
-        if matches!(context_mode, ExtensionMode::Print | ExtensionMode::Json) || !has_model {
-            return None;
+        let is_remote = self.loop_remote.as_ref().is_some_and(|check| check());
+        if !is_remote {
+            let (context_mode, has_model) = context?;
+            if matches!(context_mode, ExtensionMode::Print | ExtensionMode::Json) || !has_model {
+                return None;
+            }
         }
         let pending: Vec<_> = cells
             .iter()

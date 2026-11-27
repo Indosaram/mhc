@@ -262,4 +262,11 @@ impl crate::tool::eval_tool_options::EvalKernelManager for SessionManagerProxy {
             .ok()?
             .set_invocation_context(cell_id, context)
     }
+    fn bind_cell_tool_updates(
+        &self,
+        token: &str,
+        sink: Arc<dyn crate::tool::nested_tool_output::CellToolUpdateSink>,
+    ) -> Option<Box<dyn FnOnce() + Send + Sync>> {
+        self.current().ok()?.bind_cell_tool_updates(token, sink)
+    }
 }

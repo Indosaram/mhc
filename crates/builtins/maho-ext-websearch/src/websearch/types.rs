@@ -89,10 +89,12 @@ pub struct WebsearchConfig {
     pub native_model: Option<String>,
     pub providers: Vec<SearchProviderEntry>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SearchRequest {
     pub query: String,
     pub max_results: f64,
+    /// Set when a call chose its own count, so it outranks a provider entry's `maxResults`.
+    pub max_results_from_call: bool,
     pub allowed_domains: Option<Vec<String>>,
     pub blocked_domains: Option<Vec<String>>,
 }

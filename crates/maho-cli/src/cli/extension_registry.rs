@@ -22,8 +22,9 @@ use maho_ext_host::loader::{LoadExtensionsResult, NativeExtensionFactory, load_e
 pub const GLOBAL_DEFAULT_EXTENSION_IDS: [&str; 4] = ["diff", "files", "prompt-url-widget", "tps"];
 
 /// Builtin order, with search fallback routing before provider payload injection.
-pub const BUILTIN_EXTENSION_IDS: [&str; 48] = [
+pub const BUILTIN_EXTENSION_IDS: [&str; 49] = [
     "loop-guard",
+    "kill-guard",
     "hooks",
     "permission-system",
     "gpt-apply-patch",
@@ -89,6 +90,9 @@ pub struct DeferredExtension {
 
 fn loop_guard() -> Box<dyn Extension> {
     Box::new(maho_ext_loop_guard::LoopGuardExtension)
+}
+fn kill_guard() -> Box<dyn Extension> {
+    Box::new(maho_ext_kill_guard::KillGuardExtension)
 }
 fn hooks() -> Box<dyn Extension> {
     Box::new(maho_ext_hooks::HooksExtension)
@@ -240,11 +244,16 @@ fn vertex_model_garden() -> Box<dyn Extension> {
 }
 
 /// Linked builtin factories, in the pinned `builtinExtensions` relative order.
-static BUILTIN_FACTORIES: [NativeExtension; 30] = [
+static BUILTIN_FACTORIES: [NativeExtension; 31] = [
     NativeExtension {
         id: "loop-guard",
         crate_name: "maho-ext-loop-guard",
         factory: loop_guard,
+    },
+    NativeExtension {
+        id: "kill-guard",
+        crate_name: "maho-ext-kill-guard",
+        factory: kill_guard,
     },
     NativeExtension {
         id: "hooks",

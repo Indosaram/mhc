@@ -93,6 +93,7 @@ mod tests {
             max_results: 5.,
             allowed_domains: None,
             blocked_domains: None,
+            ..Default::default()
         };
         let built = build_search_request(&config, &request).unwrap();
         assert_eq!(built.method, "POST");
@@ -117,6 +118,7 @@ mod tests {
                 max_results: 5.,
                 allowed_domains: None,
                 blocked_domains: None,
+                ..Default::default()
             },
         )
         .unwrap();

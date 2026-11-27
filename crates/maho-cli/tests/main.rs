@@ -95,6 +95,8 @@ pub mod kibitzer_child;
 #[cfg(feature = "omo")]
 #[path = "kibitzer_tools.rs"]
 pub mod kibitzer_tools;
+#[path = "kill_guard_command.rs"]
+pub mod kill_guard_command;
 #[path = "lane38_process_boundary_probe.rs"]
 pub mod lane38_process_boundary_probe;
 #[path = "list_models.rs"]

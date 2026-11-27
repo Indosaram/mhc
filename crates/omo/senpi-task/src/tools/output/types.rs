@@ -125,10 +125,6 @@ pub struct TaskSnapshot {
     pub execution_mode: String,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_model_fallback: Option<crate::completion::ParentModelFallback>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_model: Option<crate::state::EffectiveModelRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_model: Option<ResolvedModelRecord>,
@@ -194,6 +190,12 @@ pub enum TaskOutputDetails {
     InvalidArguments {
         reason: String,
     },
+    NoProgress {
+        task_id: String,
+        #[serde(serialize_with = "serialize_task_status")]
+        status: TaskStatus,
+        reason: String,
+    },
 }
 
 impl TaskOutputDetails {
@@ -203,6 +205,7 @@ impl TaskOutputDetails {
             Self::Transcript { .. } => "transcript",
             Self::NotFound { .. } => "not_found",
             Self::InvalidArguments { .. } => "invalid_arguments",
+            Self::NoProgress { .. } => "no_progress",
         }
     }
 }

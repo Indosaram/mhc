@@ -216,3 +216,99 @@ pub fn rewrite_imports(code: &str) -> String {
     }
     output
 }
+
+fn callee_name<'a>(node: Node<'_>, code: &'a str) -> Option<&'a str> {
+    match node.kind() {
+        "identifier" => Some(text(node, code)),
+        "member_expression" => {
+            let object = node.child_by_field_name("object")?;
+            let property = node.child_by_field_name("property")?;
+            if object.kind() == "identifier"
+                && text(object, code) == "globalThis"
+                && property.kind() == "property_identifier"
+            {
+                Some(text(property, code))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn is_bun_plugin_access(node: Node<'_>, code: &str) -> bool {
+    if node.kind() != "member_expression" {
+        return false;
+    }
+    let Some(property) = node.child_by_field_name("property") else {
+        return false;
+    };
+    if property.kind() != "property_identifier" || text(property, code) != "plugin" {
+        return false;
+    }
+    let Some(object) = node.child_by_field_name("object") else {
+        return false;
+    };
+    match object.kind() {
+        "identifier" => text(object, code) == "Bun",
+        "member_expression" => {
+            let Some(outer) = object.child_by_field_name("object") else {
+                return false;
+            };
+            let Some(inner) = object.child_by_field_name("property") else {
+                return false;
+            };
+            outer.kind() == "identifier"
+                && text(outer, code) == "globalThis"
+                && inner.kind() == "property_identifier"
+                && text(inner, code) == "Bun"
+        }
+        _ => false,
+    }
+}
+
+/// Host-side preflight: worker assets stay dependency-free, and direct `eval` keeps native
+/// lexical scope.
+pub fn has_dynamic_code_capability(code: &str) -> bool {
+    if !code.contains("eval") && !code.contains("Function") && !code.contains("plugin") {
+        return false;
+    }
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+        .is_err()
+    {
+        return false;
+    }
+    let Some(tree) = parser.parse(code, None) else {
+        return false;
+    };
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if is_bun_plugin_access(node, code) {
+            return true;
+        }
+        if matches!(node.kind(), "call_expression" | "new_expression")
+            && let Some(function) = node.child_by_field_name("function")
+            && matches!(callee_name(function, code), Some("eval" | "Function"))
+            && let Some(args_node) = node.child_by_field_name("arguments")
+        {
+            let mut cursor = args_node.walk();
+            let args: Vec<Node<'_>> = args_node.named_children(&mut cursor).collect();
+            for argument in &args {
+                if argument.kind() != "string" {
+                    return true;
+                }
+            }
+            if let Some(last) = args.last()
+                && let Some(body) = string_value(*last, code)
+                && has_dynamic_code_capability(&body)
+            {
+                return true;
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    false
+}

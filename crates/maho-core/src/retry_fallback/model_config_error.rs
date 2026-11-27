@@ -41,7 +41,9 @@ impl ModelConfigErrorReporter {
         if !self.reported.insert(format!("{session_id}\u{0}{model}")) {
             return None;
         }
-        let error_message = message.error_message.as_deref().unwrap_or("");
+        let error_message = crate::sensitive_output::redact_sensitive_output(
+            message.error_message.as_deref().unwrap_or(""),
+        );
         Some(ModelConfigErrorEvent {
             model,
             provider: message.provider.clone(),

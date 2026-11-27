@@ -82,7 +82,7 @@ type PendingLoad = Shared<BoxFuture<'static, Result<(), String>>>;
 struct WarmerState {
     /// Insertion-ordered warm keys; the front is the oldest.
     warm: VecDeque<String>,
-    loading: HashMap<String, PendingLoad>,
+    loading: HashMap<String, (String, PendingLoad)>,
 }
 
 /// Coalesces concurrent warms of one profile and answers repeats without loading again.
@@ -110,22 +110,43 @@ impl HostWarmer {
 
     pub async fn run(&self, profile: HostWarmProfile) -> Result<HostWarmState, String> {
         let key = profile_key(&profile);
+        let cwd = profile.cwd.clone();
         // The guard is released before the shared load is awaited.
         let pending = {
             let mut state = self.lock();
             if state.warm.contains(&key) {
                 return Ok(HostWarmState::AlreadyWarm);
             }
-            if let Some(pending) = state.loading.get(&key).cloned() {
+            if let Some((_, pending)) = state.loading.get(&key).cloned() {
                 pending
             } else {
                 let pending = self.load_once(key.clone(), profile).boxed().shared();
-                state.loading.insert(key, pending.clone());
+                state.loading.insert(key, (cwd, pending.clone()));
                 pending
             }
         };
         pending.await?;
         Ok(HostWarmState::Warmed)
+    }
+
+    /// Snapshot future settling once every in-flight warm of `cwd` finishes, or `None` when idle.
+    pub fn in_flight(&self, cwd: &str) -> Option<BoxFuture<'static, ()>> {
+        let pending: Vec<PendingLoad> = self
+            .lock()
+            .loading
+            .values()
+            .filter(|(load_cwd, _)| load_cwd == cwd)
+            .map(|(_, p)| p.clone())
+            .collect();
+        if pending.is_empty() {
+            return None;
+        }
+        Some(
+            async move {
+                let _ = futures::future::join_all(pending).await;
+            }
+            .boxed(),
+        )
     }
 
     fn load_once(
@@ -189,6 +210,31 @@ pub fn create_registry_warm(prepare: PrepareRuntime, agent_dir: PathBuf) -> Host
         let warmer = warmer.clone();
         async move { warmer.run(profile).await }.boxed()
     })
+}
+
+/// How an open's wait for the warms of its cwd ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmWaitOutcome {
+    Settled,
+    WarmWaitDeadline,
+}
+
+pub async fn wait_for_warms(
+    warming: BoxFuture<'static, ()>,
+    bound_ms: u64,
+    cwd: &str,
+) -> WarmWaitOutcome {
+    if tokio::time::timeout(std::time::Duration::from_millis(bound_ms), warming)
+        .await
+        .is_ok()
+    {
+        WarmWaitOutcome::Settled
+    } else {
+        eprintln!(
+            "senpi rpc open: warm_wait_deadline: a warm of {cwd} still loading after {bound_ms} ms; opening anyway"
+        );
+        WarmWaitOutcome::WarmWaitDeadline
+    }
 }
 
 fn refusal(command: &Value, code: &str) -> Value {

@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use super::types::{AvailableTool, ToolCategory};
-use crate::system_prompt::get_eval_only_grep_guideline;
+use super::types::{AvailableTool, SharedSections, ToolCategory};
+use crate::system_prompt::get_eval_only_grep_guideline_for_sections;
 
 /// `CATEGORY_ORDER`.
 pub const CATEGORY_ORDER: [ToolCategory; 4] = [
@@ -29,6 +29,21 @@ pub fn build_tool_section(
     tool_snippets: &HashMap<String, String>,
     prompt_guidelines: &[String],
 ) -> String {
+    build_tool_section_for_sections(
+        tools,
+        tool_snippets,
+        prompt_guidelines,
+        SharedSections::Diet,
+    )
+}
+
+pub fn build_tool_section_for_sections(
+    tools: &[AvailableTool],
+    tool_snippets: &HashMap<String, String>,
+    prompt_guidelines: &[String],
+    shared_sections: SharedSections,
+) -> String {
+    let full = shared_sections == SharedSections::Full;
     let mut grouped_tools: Vec<(ToolCategory, Vec<(String, String)>)> = Vec::new();
 
     for tool in tools {
@@ -52,7 +67,11 @@ pub fn build_tool_section(
         }
     }
 
-    let mut lines: Vec<String> = vec!["## Available Tools".to_string(), String::new()];
+    let mut lines: Vec<String> = if full {
+        vec!["## Available Tools".to_string(), String::new()]
+    } else {
+        Vec::new()
+    };
     let mut has_visible_tools = false;
 
     for category in CATEGORY_ORDER {
@@ -66,6 +85,10 @@ pub fn build_tool_section(
             continue;
         }
 
+        if lines.is_empty() {
+            lines.push("## Available Tools".to_string());
+            lines.push(String::new());
+        }
         has_visible_tools = true;
         lines.push(format!("### {}", category_label(category)));
         for (name, snippet) in category_tools {
@@ -74,7 +97,7 @@ pub fn build_tool_section(
         lines.push(String::new());
     }
 
-    if !has_visible_tools {
+    if full && !has_visible_tools {
         lines.push("(none)".to_string());
         lines.push(String::new());
     }
@@ -87,7 +110,7 @@ pub fn build_tool_section(
         .collect();
     let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
     if let Some(eval_only_grep_guideline) =
-        get_eval_only_grep_guideline(&names, Some(tool_snippets))
+        get_eval_only_grep_guideline_for_sections(&names, Some(tool_snippets), shared_sections)
     {
         guidelines.insert(0, eval_only_grep_guideline);
     }
@@ -151,8 +174,11 @@ mod tests {
 
     #[test]
     fn an_empty_selection_renders_none() {
-        let section = build_tool_section(&[], &snippets(&[]), &[]);
-        assert_eq!(section, "## Available Tools\n\n(none)");
+        assert_eq!(build_tool_section(&[], &snippets(&[]), &[]), "");
+        assert_eq!(
+            build_tool_section_for_sections(&[], &snippets(&[]), &[], SharedSections::Full),
+            "## Available Tools\n\n(none)"
+        );
     }
 
     #[test]
@@ -165,7 +191,7 @@ mod tests {
         );
         let guidelines_start = section.find("## Tool Guidelines").expect("guidelines");
         let guidelines = &section[guidelines_start..];
-        assert!(guidelines.contains("- Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell"));
+        assert!(guidelines.contains("- Content search: tool.grep({ pattern, path }) in eval, not rg/grep in shell; page full -> skip, narrow with glob/path."));
         assert!(guidelines.contains("- first rule"));
         let eval_rule = guidelines.find("tool.grep").expect("eval rule");
         let first_rule = guidelines.find("- first rule").expect("first rule");
@@ -218,6 +244,9 @@ mod tests {
             selected_tools: vec!["read".to_string(), "eval".to_string()],
             tool_snippets,
             prompt_guidelines: Vec::new(),
+            full_tool_prompt: None,
+            shared_sections: Default::default(),
+            native_search_available: false,
             context_files: Vec::new(),
             skills: Vec::new(),
             tuning_section: None,

@@ -366,6 +366,7 @@ fn preview_unsafe_handlers_are_reported_by_extension_path() {
         vec![ExtensionHandlerOptions {
             preview_safe: true,
             mutates_messages: None,
+            ..Default::default()
         }],
     );
     let unsafe_ext = extension("unsafe", EventKind::BeforeAgentStart, none());
@@ -1402,6 +1403,7 @@ fn context_with_mutation_option(
         vec![ExtensionHandlerOptions {
             preview_safe: false,
             mutates_messages,
+            ..Default::default()
         }],
     );
     ext
@@ -5295,6 +5297,13 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     );
     scope.commit_registration().unwrap();
     Arc::make_mut(&mut runner.extensions).push(api.registered.clone());
+    runner
+        .runtime
+        .mcp_registry()
+        .bind(vec![maho_ext_api::mcp_server_registry::McpRegistrar {
+            path: api.registered.identity.path.clone(),
+            declarations: api.registered.mcp_servers.clone(),
+        }]);
     api.register_command_with_context(
         "late",
         None,
@@ -5634,6 +5643,13 @@ fn retained_context_observes_live_mcp_declarations() {
     );
     scope.commit_registration().unwrap();
     Arc::make_mut(&mut runner.extensions).push(api.registered.clone());
+    runner
+        .runtime
+        .mcp_registry()
+        .bind(vec![maho_ext_api::mcp_server_registry::McpRegistrar {
+            path: api.registered.identity.path.clone(),
+            declarations: api.registered.mcp_servers.clone(),
+        }]);
     runner
         .bind_context_actions(Arc::new(ContextActions {
             revision: std::sync::atomic::AtomicU64::new(0),
@@ -6138,4 +6154,292 @@ async fn invalid_handler_budget_keeps_awaiting_handlers_in_order() {
         .unwrap();
     assert_eq!(*order.lock().unwrap(), ["slow", "next"]);
     assert!(runner.errors.is_empty());
+}
+
+// senpi#7069: a hung tool_result handler stops at the deadline and lets later handlers run.
+#[tokio::test(start_paused = true)]
+async fn tool_result_handler_deadline_and_abort_stop_waiting_and_continue_loop() {
+    let ran_after = Arc::new(Mutex::new(false));
+    let seen = Arc::clone(&ran_after);
+    let hung = extension("hung", EventKind::ToolResult, never());
+    let next = extension(
+        "next",
+        EventKind::ToolResult,
+        Arc::new(move |_, _| {
+            *seen.lock().unwrap() = true;
+            Box::pin(async {
+                Ok(EventResult::ToolResult(ToolResultEventResult {
+                    is_error: Some(true),
+                    ..Default::default()
+                }))
+            })
+        }),
+    );
+    let mut runner = runner(vec![hung, next]);
+    let result = runner
+        .emit_tool_result(ToolResultEvent {
+            tool_call_id: "call-1".into(),
+            tool_name: "bash".into(),
+            input: JsonValue::Null,
+            content: Vec::new(),
+            details: None,
+            is_error: false,
+            usage: None,
+        })
+        .await
+        .unwrap();
+    assert!(*ran_after.lock().unwrap());
+    assert_eq!(result.unwrap().is_error, Some(true));
+    assert_eq!(runner.errors.len(), 1);
+    assert_eq!(runner.errors[0].event, "tool_result");
+    assert!(
+        runner.errors[0]
+            .error
+            .contains("the tool result continues without it")
+    );
+}
+
+// senpi#4438: provider_login_start fires before provider oauth.login and reports handler failures.
+#[tokio::test]
+async fn provider_login_start_fires_before_oauth_login() {
+    use maho_ai::auth::types::{
+        AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential,
+        ProviderAuthInteraction,
+    };
+    struct DummyOAuth(Arc<Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl OAuthAuth for DummyOAuth {
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
+            self.0.lock().unwrap().push("login".into());
+            Ok(OAuthCredential::new("a", "r", 1000.0))
+        }
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _: &maho_ai::utils::abort::AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
+            Ok(credential.clone())
+        }
+        async fn to_auth(&self, _: &OAuthCredential) -> anyhow::Result<ModelAuth> {
+            Ok(ModelAuth::default())
+        }
+    }
+    struct DummyInteraction;
+    #[async_trait::async_trait]
+    impl AuthInteraction for DummyInteraction {
+        fn signal(&self) -> Option<maho_ai::utils::abort::AbortSignal> {
+            None
+        }
+        async fn prompt(&self, _: AuthPrompt) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+        fn notify(&self, _: AuthEvent) {}
+    }
+    let events_seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_hook = Arc::clone(&events_seen);
+    let runtime = ExtensionRuntime::default();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("login-ext", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        runtime.clone(),
+    );
+    api.on(
+        EventKind::ProviderLoginStart,
+        Arc::new(move |event, _| {
+            let seen = Arc::clone(&seen_hook);
+            Box::pin(async move {
+                if let ExtensionEvent::ProviderLoginStart(start) = event {
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("start:{}", start.provider));
+                    start.progress.report("checking");
+                }
+                Ok(EventResult::None)
+            })
+        }),
+    );
+    let runner = ExtensionRunner::new(
+        vec![api.registered],
+        runtime.clone(),
+        EventBus::default(),
+        context(),
+    );
+    let captured_oauth: Arc<Mutex<Option<Arc<dyn OAuthAuth>>>> = Arc::default();
+    struct CaptureProvider(Arc<Mutex<Option<Arc<dyn OAuthAuth>>>>);
+    impl ExtensionProviderActions for CaptureProvider {
+        fn register_provider(
+            &self,
+            registration: ProviderRegistration,
+            _: &str,
+        ) -> Result<(), ExtensionFailure> {
+            if let ProviderRegistration::Config { config, .. } = registration {
+                *self.0.lock().unwrap() = config.oauth;
+            }
+            Ok(())
+        }
+        fn unregister_provider(&self, _: &str, _: &str) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+    }
+    runtime
+        .bind_providers(Arc::new(CaptureProvider(Arc::clone(&captured_oauth))))
+        .unwrap();
+    let config = ProviderConfig {
+        oauth: Some(Arc::new(DummyOAuth(Arc::clone(&events_seen)))),
+        ..Default::default()
+    };
+    runtime
+        .register_provider(
+            ProviderRegistration::Config {
+                name: "dummy".into(),
+                config: Box::new(config),
+            },
+            "login-ext",
+        )
+        .unwrap();
+    let oauth = captured_oauth.lock().unwrap().take().unwrap();
+    let interaction = ProviderAuthInteraction::new(
+        maho_ai::utils::abort::AbortController::new().signal(),
+        Arc::new(DummyInteraction),
+    );
+    oauth.login(&interaction).await.unwrap();
+    assert_eq!(*events_seen.lock().unwrap(), ["start:dummy", "login"]);
+    drop(runner);
+}
+
+#[tokio::test]
+async fn before_agent_start_run_last_orders_ordinary_then_third_party_then_builtin() {
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+    let make = |path: &str, run_last: bool| {
+        let log = Arc::clone(&order);
+        let label = path.to_owned();
+        let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo::default());
+        ext.handlers.insert(
+            EventKind::BeforeAgentStart,
+            vec![Arc::new(move |_, _| {
+                log.lock().unwrap().push(label.clone());
+                Box::pin(async { Ok(EventResult::None) })
+            })],
+        );
+        ext.handler_options.insert(
+            EventKind::BeforeAgentStart,
+            vec![ExtensionHandlerOptions {
+                run_last,
+                ..Default::default()
+            }],
+        );
+        ext
+    };
+    let mut runner = runner(vec![
+        make("<builtin:mcp>", true),
+        make("third-party-last", true),
+        make("ordinary", false),
+    ]);
+    runner.emit_before_agent_start(before()).await.unwrap();
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["ordinary", "third-party-last", "<builtin:mcp>"]
+    );
+}
+
+#[tokio::test]
+async fn mcp_servers_change_and_extension_connects_flag() {
+    let seen = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let seen_cb = Arc::clone(&seen);
+    let runtime = ExtensionRuntime::default();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("ext", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        runtime.clone(),
+    );
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let notify_cb = Arc::clone(&notify);
+    api.on(
+        EventKind::McpServersChange,
+        Arc::new(move |event, _| {
+            if let ExtensionEvent::McpServersChange(change) = event {
+                seen_cb
+                    .lock()
+                    .unwrap()
+                    .push(change.servers.iter().map(|s| s.name.clone()).collect());
+                notify_cb.notify_one();
+            }
+            Box::pin(async { Ok(EventResult::None) })
+        }),
+    );
+    let mut runner = ExtensionRunner::new(
+        vec![api.registered.clone()],
+        runtime,
+        EventBus::default(),
+        context(),
+    );
+    assert!(runner.extension_connects_mcp_servers());
+    struct NoopActions;
+    impl ExtensionActions for NoopActions {
+        fn send_message(
+            &self,
+            _: CustomMessage,
+            _: SendMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn send_user_message(
+            &self,
+            _: UserMessageContent,
+            _: SendUserMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+            Ok(Vec::new())
+        }
+    }
+    runner.bind_core(Arc::new(NoopActions), context());
+    api.register_mcp_server(
+        "dyn",
+        McpServerDeclaration {
+            command: Some("node".into()),
+            ..Default::default()
+        },
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
+        .await
+        .expect("mcp_servers_change emitted");
+    assert_eq!(*seen.lock().unwrap(), vec![vec!["dyn".to_string()]]);
+
+    let notified = notify.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    std::thread::spawn(move || {
+        api.register_mcp_server(
+            "outside-runtime",
+            McpServerDeclaration {
+                command: Some("node".into()),
+                ..Default::default()
+            },
+        );
+    })
+    .join()
+    .expect("registration thread completes");
+    tokio::time::timeout(std::time::Duration::from_secs(2), notified)
+        .await
+        .expect("registration outside a Tokio runtime emits the change");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            vec!["dyn".to_string()],
+            vec!["dyn".to_string(), "outside-runtime".to_string()]
+        ]
+    );
 }

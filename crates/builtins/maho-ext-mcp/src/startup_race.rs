@@ -90,6 +90,56 @@ pub async fn connect_and_refresh_mcp_catalog(
     }
     Ok(())
 }
+pub async fn prepare_mcp_authentication(
+    entry: &std::sync::Arc<tokio::sync::Mutex<crate::service_types::McpConnectionEntry>>,
+    is_current: Option<&(dyn Fn() -> bool + Send + Sync)>,
+    credentials_current: Option<&(dyn Fn() -> bool + Send + Sync)>,
+    on_credentials_changed: Option<
+        &(dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync),
+    >,
+) -> Result<bool, crate::errors::McpError> {
+    if is_current.is_some_and(|check| !check()) {
+        return Ok(false);
+    }
+    let (auth, connection, logger) = {
+        let entry = entry.lock().await;
+        (
+            crate::auth::context::ServerAuthPlan {
+                mode: entry.auth_plan.mode,
+                provider: entry.auth_plan.provider.clone(),
+                refresh: entry.auth_plan.refresh.clone(),
+            },
+            entry.connection.clone(),
+            entry.logger.clone(),
+        )
+    };
+    if let Err(error) = auth.ensure_fresh().await {
+        if is_current.is_some_and(|check| !check())
+            || connection.state() == crate::connection_types::ServerConnectionState::Disabled
+        {
+            return Ok(false);
+        }
+        if let Some(auth_error) = crate::health::mark_mcp_connection_needs_auth(&connection, &error)
+        {
+            let _ = logger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .log("warning", &auth_error.message, None, None);
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    if is_current.is_some_and(|check| !check()) {
+        return Ok(false);
+    }
+    if credentials_current.is_some_and(|check| !check()) {
+        if let Some(changed) = on_credentials_changed {
+            changed().await;
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
 pub fn is_current_startup_attempt(
     connection: &crate::connection::ServerConnection,
     generation: u64,

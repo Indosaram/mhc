@@ -59,6 +59,15 @@ pub async fn get_or_create_client(
         {
             return Err("Session disconnected during MCP policy resolution.".into());
         }
+        // The GET owns a legacy SSE session. Never reuse its advertised endpoint
+        // after EOF; only a subsequent operation may establish a new session.
+        if state
+            .clients
+            .get(&key)
+            .is_some_and(|entry| entry.client.is_legacy_sse() && *entry.client.closed.borrow())
+        {
+            state.clients.remove(&key);
+        }
         if let Some(existing) = state.clients.get_mut(&key) {
             existing.last_used_at = Instant::now();
             return Ok(existing.client.clone());

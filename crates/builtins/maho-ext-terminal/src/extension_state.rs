@@ -1,16 +1,36 @@
 //! Port of extension-state.ts: the terminal extension's per-generation state, the bundle event
 //! sinks it binds, and the tool context over it.
+use crate::job_widget_tap::{JobWidgetBrief, tap_background_session, untap_background_session};
 use crate::monitor_registry::{
     MonitorEndedEvent, MonitorEndedReason, MonitorEvent, MonitorSnapshotEntry,
 };
-use crate::session_bundle::{BackgroundSession, TerminalEventSinks, TerminalSessionBundle};
+use crate::notify::describe_background_age;
+use crate::session_bundle::{
+    BackgroundSession, BackgroundStartDetails, TerminalEventSinks, TerminalSessionBundle,
+};
 use crate::tools::context::{TerminalConfiguration, TerminalExitView, TerminalToolContext};
 use maho_ext_api::types::{ExtensionApi, ExtensionContext};
+use maho_ext_builtin_loose::monitor_state_event::{
+    TerminalBackgroundAgeEvent, TerminalBackgroundAgeKind,
+};
 use maho_tools::definition::ToolContent;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+/// Injectable run-background-job registration hook (`senpi#6675`) until `maho_ext_api` exposes
+/// `ctx.register_run_background_job` directly.
+pub type RunJobStopFn = Arc<
+    dyn Fn(
+            String,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+pub type RegisterRunJobFn =
+    Arc<dyn Fn(&str, &str, RunJobStopFn) -> Option<Box<dyn FnOnce() + Send>> + Send + Sync>;
 
 /// The live background sessions, in start order (upstream `bundle.backgrounds`).
 pub type Backgrounds = Arc<Mutex<indexmap::IndexMap<String, BackgroundSession>>>;
@@ -91,6 +111,10 @@ pub struct TerminalExtensionState {
     pub recorded_background_ids: RecordedBackgroundIds,
     /// Upstream `state.ensurePersistence`.
     pub ensure_persistence: EnsurePersistence,
+    /// Live session bundle when attached (carries age schedule, interrupt-stop map, and run-job releases).
+    pub bundle: Arc<Mutex<Option<TerminalSessionBundle>>>,
+    /// Optional host hook for registering background jobs with the active turn's interrupt controller.
+    pub register_run_job: Arc<Mutex<Option<RegisterRunJobFn>>>,
 }
 
 pub fn manifest_now_ms() -> f64 {
@@ -148,41 +172,75 @@ pub fn send_completion_notice(
     delivery: &Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
     notifier: &Arc<Mutex<crate::notify::TerminalNotifier>>,
 ) {
+    let delivery_mode = *delivery.lock().expect("terminal delivery");
     notifier
         .lock()
         .expect("terminal notifier")
-        .notify_completion(
-            id,
-            *delivery.lock().expect("terminal delivery"),
-            view,
-            |content, delivery| {
-                use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
-                sender
-                    .send_message_with_receipt(
-                        CustomMessage {
-                            custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
-                                .to_owned(),
-                            content: vec![ToolContent::text(content)],
-                            display: false,
-                            details: None,
-                        },
-                        SendMessageOptions {
-                            trigger_turn: true,
-                            deliver_as: Some(
-                                if delivery == crate::notify::NotificationDelivery::Steer {
-                                    DeliverAs::Steer
-                                } else {
-                                    DeliverAs::FollowUp
-                                },
-                            ),
-                        },
-                    )
-                    .map_err(|error| {
-                        maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
-                        error.to_string()
-                    })
-            },
-        );
+        .notify_completion_with_details(id, delivery_mode, view, |content, mode, details| {
+            use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
+            let (trigger_turn, deliver_as) = match mode {
+                crate::notify::NotificationDelivery::NextTurn => (false, DeliverAs::NextTurn),
+                crate::notify::NotificationDelivery::Steer => (true, DeliverAs::Steer),
+                crate::notify::NotificationDelivery::FollowUp => (true, DeliverAs::FollowUp),
+            };
+            sender
+                .send_message_with_receipt(
+                    CustomMessage {
+                        custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
+                        content: vec![ToolContent::text(content)],
+                        display: false,
+                        details,
+                    },
+                    SendMessageOptions {
+                        trigger_turn,
+                        deliver_as: Some(deliver_as),
+                    },
+                )
+                .map_err(|error| {
+                    maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
+                    error.to_string()
+                })
+        });
+}
+
+/// Deliver an age notice event to the UI/RPC bus and model notification channel (`senpi#6212`).
+pub fn send_age_notice(
+    event: &TerminalBackgroundAgeEvent,
+    sender: &Arc<ExtensionApi>,
+    delivery: &Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
+    notifier: &Arc<Mutex<crate::notify::TerminalNotifier>>,
+) {
+    let delivery_mode = *delivery.lock().expect("terminal delivery");
+    notifier.lock().expect("terminal notifier").notify_age(
+        event,
+        delivery_mode,
+        |content, mode, details| {
+            use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
+            let (trigger_turn, deliver_as) = match mode {
+                crate::notify::NotificationDelivery::NextTurn => (false, DeliverAs::NextTurn),
+                crate::notify::NotificationDelivery::Steer => (true, DeliverAs::Steer),
+                crate::notify::NotificationDelivery::FollowUp => (true, DeliverAs::FollowUp),
+            };
+            sender
+                .send_message_with_receipt(
+                    CustomMessage {
+                        custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
+                        content: vec![ToolContent::text(content)],
+                        display: false,
+                        details,
+                    },
+                    SendMessageOptions {
+                        trigger_turn,
+                        deliver_as: Some(deliver_as),
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| {
+                    maho_ext_api::diagnostic(&format!("terminal age notification failed: {error}"));
+                    error.to_string()
+                })
+        },
+    );
 }
 
 pub fn monitor_state_payload(snapshot: &[MonitorSnapshotEntry]) -> Value {
@@ -313,6 +371,21 @@ pub fn monitor_ended_payload(event: &MonitorEndedEvent) -> Value {
     json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
 }
 
+pub fn retire_notifiers(state: &TerminalExtensionState) {
+    drop(
+        state
+            .monitor_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take(),
+    );
+    state
+        .notifier
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retire();
+}
+
 /// Upstream `bundleSinks`: the sinks read the live state at call time, so notifier swaps need no
 /// re-bind. Manifest writes run on the async runtime when one is current; without one (or without a
 /// bound writer) nothing is recorded.
@@ -322,6 +395,7 @@ pub fn bundle_sinks(state: &TerminalExtensionState) -> TerminalEventSinks {
     let monitor_state = state.clone();
     let background_state = state.clone();
     let background_exit = state.clone();
+    let background_age = state.clone();
     TerminalEventSinks {
         on_monitor_event: Arc::new(move |event: MonitorEvent| {
             if let Some(notifier) = event_notifier.lock().expect("monitor notifier").as_ref()
@@ -387,6 +461,40 @@ pub fn bundle_sinks(state: &TerminalExtensionState) -> TerminalEventSinks {
                 record_background_starts(&lifecycle, &recorded, snapshot).await;
             });
         }),
+        on_background_age: Some(Arc::new(move |event: &TerminalBackgroundAgeEvent| {
+            let payload = crate::background_age::terminal_background_age_to_json(event);
+            background_age
+                .sender
+                .events
+                .emit(crate::shared::TERMINAL_BACKGROUND_AGE_EVENT, &payload);
+            if let Err(error) = background_age
+                .sender
+                .rpc_emit(crate::shared::TERMINAL_BACKGROUND_AGE_EVENT, &payload)
+            {
+                maho_ext_api::diagnostic(&format!("background age RPC delivery failed: {error}"));
+            }
+            let ctx = background_age
+                .ctx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(ctx) = ctx.as_ref() {
+                let kind = if event.kind == TerminalBackgroundAgeKind::Running {
+                    maho_ext_api::types::NotificationType::Info
+                } else {
+                    maho_ext_api::types::NotificationType::Warning
+                };
+                ctx.ui.notify(&describe_background_age(event), kind);
+            }
+            if event.kind != TerminalBackgroundAgeKind::Reaped {
+                send_age_notice(
+                    event,
+                    &background_age.sender,
+                    &background_age.delivery,
+                    &background_age.notifier,
+                );
+            }
+        })),
         on_background_exit: Arc::new(move |id: &str, view: &TerminalExitView| {
             let state = &background_exit;
             state
@@ -441,9 +549,38 @@ pub async fn record_background_starts(
     }
 }
 
+fn record_run_job(state: &TerminalExtensionState, id: &str, description: &str) {
+    let Some(bundle) = state
+        .bundle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    else {
+        return;
+    };
+    let register = state
+        .register_run_job
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(register) = register else {
+        return;
+    };
+    let stop_bundle = bundle.clone();
+    let stop_id = id.to_owned();
+    let stop: RunJobStopFn = Arc::new(move |turn_id: String| {
+        let stop_bundle = stop_bundle.clone();
+        let stop_id = stop_id.clone();
+        Box::pin(async move { stop_bundle.stop_for_interrupt(&stop_id, &turn_id).await })
+    });
+    if let Some(release) = register(id, description, stop) {
+        bundle.track_run_job(id, release);
+    }
+}
+
 /// Upstream `buildToolContext`: the live configuration, the session cwd, the shell environment, and
 /// the background hooks, which dispatch through the bundle sinks (`notifyBackgroundStart` /
-/// `notifyBackgroundExit`).
+/// `notifyBackgroundExit` / `notifyBackgroundReapFailed`).
 pub fn build_tool_context(state: &TerminalExtensionState) -> TerminalToolContext {
     let mut context = TerminalToolContext::new(
         state.configuration.clone(),
@@ -451,37 +588,120 @@ pub fn build_tool_context(state: &TerminalExtensionState) -> TerminalToolContext
     );
     context.session_cwd = state.session_cwd.clone();
     let sinks = bundle_sinks(state);
-    let (backgrounds, on_state) = (state.backgrounds.clone(), sinks.on_background_state.clone());
+    let start_state = state.clone();
+    let on_state = sinks.on_background_state.clone();
     context.on_background_start = Some(Arc::new(
-        move |id: &str, description: &str, started_at_ms: f64| {
-            let snapshot = {
-                let mut backgrounds = backgrounds
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                backgrounds.insert(
-                    id.to_owned(),
-                    BackgroundSession {
-                        id: id.to_owned(),
-                        description: description.to_owned(),
-                        started_at_ms,
+        move |id: &str,
+              description: &str,
+              started_at_ms: f64,
+              command: Option<&str>,
+              auto_reap_minutes: Option<u64>| {
+            let mut bundle = start_state
+                .bundle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(bundle) = bundle.as_mut() {
+                bundle.notify_background_start_with_details(
+                    id,
+                    description,
+                    started_at_ms,
+                    BackgroundStartDetails {
+                        command: command.map(str::to_owned),
+                        auto_reap_minutes,
                     },
                 );
-                backgrounds.values().cloned().collect::<Vec<_>>()
-            };
-            on_state(snapshot.as_slice());
+                let session_key = session_key_of(
+                    start_state
+                        .ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref(),
+                );
+                if let Some(runtime) = bundle
+                    .manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(id)
+                {
+                    tap_background_session(
+                        session_key.as_deref(),
+                        id,
+                        runtime,
+                        JobWidgetBrief {
+                            command: command.unwrap_or(description).to_owned(),
+                            description: description.to_owned(),
+                        },
+                    );
+                }
+            } else {
+                let snapshot = {
+                    let mut backgrounds = start_state
+                        .backgrounds
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    backgrounds.insert(
+                        id.to_owned(),
+                        BackgroundSession {
+                            id: id.to_owned(),
+                            description: description.to_owned(),
+                            started_at_ms,
+                        },
+                    );
+                    backgrounds.values().cloned().collect::<Vec<_>>()
+                };
+                on_state(snapshot.as_slice());
+            }
+            record_run_job(&start_state, id, description);
         },
     ));
-    let backgrounds = state.backgrounds.clone();
-    context.on_background_exit = Some(Arc::new(move |id: &str, view: TerminalExitView| {
-        let snapshot = {
-            let mut backgrounds = backgrounds
+    let input_state = state.clone();
+    context.on_session_input = Some(Arc::new(move |id: &str| {
+        let bundle = input_state
+            .bundle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bundle) = bundle {
+            let mut manager = bundle
+                .manager
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            backgrounds.shift_remove(id);
-            backgrounds.values().cloned().collect::<Vec<_>>()
-        };
-        (sinks.on_background_state)(snapshot.as_slice());
-        (sinks.on_background_exit)(id, &view);
+            untap_background_session(manager.get(id).map(|rt| &*rt));
+        }
+    }));
+    let exit_state = state.clone();
+    context.on_background_exit = Some(Arc::new(move |id: &str, view: TerminalExitView| {
+        let mut bundle = exit_state
+            .bundle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bundle) = bundle.as_mut() {
+            bundle.notify_background_exit_with_view(id, Some(view));
+        } else {
+            let snapshot = {
+                let mut backgrounds = exit_state
+                    .backgrounds
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                backgrounds.shift_remove(id);
+                backgrounds.values().cloned().collect::<Vec<_>>()
+            };
+            (sinks.on_background_state)(snapshot.as_slice());
+            (sinks.on_background_exit)(id, &view);
+        }
+    }));
+    let reap_fail_state = state.clone();
+    context.on_background_reap_failed = Some(Arc::new(move |id: &str, age: u64, reason: &str| {
+        if let Some(bundle) = reap_fail_state
+            .bundle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            bundle.notify_background_reap_failed(id, age, reason);
+        }
     }));
     context
 }
@@ -514,6 +734,8 @@ mod tests {
             delivery: Arc::default(),
             recorded_background_ids: Arc::default(),
             ensure_persistence: Arc::default(),
+            bundle: Arc::default(),
+            register_run_job: Arc::default(),
         }
     }
 
@@ -667,8 +889,8 @@ mod tests {
         let (seen, _subscriptions) = record(&state, &[crate::shared::WAKE_SOURCE_STATE_EVENT]);
         let context = build_tool_context(&state);
         let start = context.on_background_start.clone().unwrap();
-        start("bash_1", "build", 1.0);
-        start("bash_2", "serve", 2.0);
+        start("bash_1", "build", 1.0, Some("cargo build"), None);
+        start("bash_2", "serve", 2.0, None, None);
         (context.on_background_exit.clone().unwrap())(
             "bash_1",
             TerminalExitView::new(None, String::new()),
@@ -934,5 +1156,38 @@ mod tests {
     #[test]
     fn a_missing_context_has_no_session_key() {
         assert_eq!(session_key_of(None), None);
+    }
+
+    #[test]
+    fn on_background_age_emits_event_and_retire_stops_notifier() {
+        use crate::background_age::{BackgroundAgeSubject, background_age_event};
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        let (seen, _subscriptions) =
+            record(&state, &[crate::shared::TERMINAL_BACKGROUND_AGE_EVENT]);
+        let sinks = bundle_sinks(&state);
+        let age_sink = sinks.on_background_age.expect("age sink");
+
+        let running = background_age_event(
+            TerminalBackgroundAgeKind::Running,
+            &BackgroundAgeSubject {
+                id: "bash_1".to_owned(),
+                description: "soak".to_owned(),
+                command: Some("./soak.sh".to_owned()),
+                started_at_ms: 0.0,
+                auto_reap_minutes: Some(45.0),
+            },
+            600_000.0,
+        );
+        age_sink(&running);
+        let emitted = seen.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0, crate::shared::TERMINAL_BACKGROUND_AGE_EVENT);
+        assert_eq!(emitted[0].1["kind"], "running");
+        assert_eq!(emitted[0].1["ageMinutes"].as_f64(), Some(10.0));
+        drop(emitted);
+
+        retire_notifiers(&state);
+        assert!(state.notifier.lock().unwrap().is_retired());
     }
 }

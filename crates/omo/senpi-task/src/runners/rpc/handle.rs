@@ -18,6 +18,7 @@ use crate::runners::input_effects::{
     IdentifiedInput, InputCommand, InputCommandType, InputEffectError, InputEffects,
     InputEffectsOptions, InputWriteError, create_input_effects,
 };
+use crate::runners::remote_cloud::CloudChildHandle;
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::classify_child_exit;
 use crate::runners::rpc::heartbeat::{
@@ -551,6 +552,124 @@ impl RpcChildHandle {
         match resumed {
             Some((path, result)) if path == session_path => Ok(result),
             _ => self.client.switch_session(session_path),
+        }
+    }
+}
+
+// Cloud handles wrap an RPC handle. Only lifecycle teardown invokes their termination
+// and disposal ports; completed turns are evicted by the manager through lifecycle.
+impl ManagedChildHandle for CloudChildHandle {
+    fn task_id(&self) -> &str {
+        self.inner.task_id()
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.inner.session_id()
+    }
+
+    fn pid(&self) -> Option<i64> {
+        None
+    }
+
+    fn steer(&self, text: &str) -> Result<(), HostError> {
+        if self.finished.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(HostError {
+                message: "cloud task has finished; its workspace is no longer available".into(),
+            });
+        }
+        let operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.finished.load(std::sync::atomic::Ordering::Acquire) || operation.closing {
+            return Err(HostError {
+                message: "cloud task has finished; its workspace is no longer available".into(),
+            });
+        }
+        self.inner.steer(text)
+    }
+
+    fn follow_up(&self, text: &str) -> Result<(), HostError> {
+        if self.finished.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(HostError {
+                message: "cloud task has finished; its workspace is no longer available".into(),
+            });
+        }
+        let operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.finished.load(std::sync::atomic::Ordering::Acquire) || operation.closing {
+            return Err(HostError {
+                message: "cloud task has finished; its workspace is no longer available".into(),
+            });
+        }
+        self.inner.follow_up(text)
+    }
+
+    fn abort(&self) -> Result<(), HostError> {
+        self.inner.abort()
+    }
+
+    fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe {
+        self.inner.subscribe(listener)
+    }
+
+    fn wait_for_outcome(&self) -> RunnerOutcome {
+        let outcome = self.inner.wait_for_outcome();
+        self.finished
+            .store(true, std::sync::atomic::Ordering::Release);
+        let operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if operation.closing {
+            outcome
+        } else {
+            self.settle_workspace_changes(outcome)
+        }
+    }
+
+    fn evict_after_outcome(&self) -> bool {
+        true
+    }
+
+    fn get_entries(
+        &self,
+        since: Option<&str>,
+    ) -> Option<Result<crate::runners::types::RpcEntriesResult, HostError>> {
+        self.inner.get_entries(since)
+    }
+
+    fn last_assistant_text(&self) -> Option<String> {
+        self.inner.last_assistant_text()
+    }
+
+    fn has_terminate(&self) -> bool {
+        true
+    }
+
+    fn terminate(&self) -> Result<(), HostError> {
+        let mut operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        operation.closing = true;
+        self.inner.terminate()
+    }
+
+    fn dispose(&self) -> Result<(), HostError> {
+        let mut operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        operation.closing = true;
+        match (self.inner.dispose(), self.ensure_released()) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(dispose), Err(release)) => Err(HostError {
+                message: format!("{dispose}; {release}"),
+            }),
         }
     }
 }

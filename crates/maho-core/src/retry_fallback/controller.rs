@@ -14,6 +14,12 @@ pub enum FallbackReason {
     HardError,
     Billing,
 }
+#[derive(Debug, Clone, Default)]
+pub struct EpisodeRecoveryMeta {
+    pub recovery_revision: Option<String>,
+    pub pinned_until: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActiveFallbackState {
     pub chain_key: String,
@@ -275,6 +281,15 @@ pub trait RetryFallbackDeps {
     fn emit(&mut self, event: FallbackEvent);
     /// senpi `deps.logger`: the fallback decision trail in `logs/fallback.log`.
     fn log(&mut self, _level: FallbackLogLevel, _event: &str, _data: &[(&str, Option<&str>)]) {}
+    /// The `loginId` the last sign-in stored for `provider` ("" when none did) (senpi#4099).
+    fn recovery_revision(&self, _provider: &str) -> Option<String> {
+        None
+    }
+    fn close_circuit(&mut self, _selector: &str) {}
+    fn fast_sibling(&self, _model: &Model) -> Option<Model> {
+        None
+    }
+    fn emit_scope_probe(&mut self, _probe: &super::unusable::UsageLimitScopeProbe) {}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackLogLevel {
@@ -285,14 +300,17 @@ pub struct RetryFallbackController<D> {
     pub deps: D,
     pub cooldowns: SelectorCooldowns,
     pub state: Option<ActiveFallbackState>,
+    pub episode_meta: EpisodeRecoveryMeta,
     pub exhausted_chain_key: Option<String>,
     tried: HashSet<String>,
+    refusals: Vec<super::controller_types::FallbackRungRefusal>,
     cache: Option<(FallbackChains, FallbackChains)>,
     /// Conservatively skip the refused provider for this turn: this synchronous scan cannot resolve
     /// asynchronously prepared request credentials, including per-model endpoints or keys (senpi#2491).
     refused_providers: HashSet<String>,
     /// senpi `UnusableEntries.accountErrors`: the raw provider error that spent each account.
     account_errors: HashMap<String, String>,
+    unusable_extra: super::unusable::UnusableExtraState,
 }
 impl<D: RetryFallbackDeps> RetryFallbackController<D> {
     pub fn new(deps: D, cooldowns: SelectorCooldowns) -> Self {
@@ -300,20 +318,25 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
             deps,
             cooldowns,
             state: None,
+            episode_meta: EpisodeRecoveryMeta::default(),
             exhausted_chain_key: None,
             tried: HashSet::new(),
+            refusals: Vec::new(),
             cache: None,
             refused_providers: HashSet::new(),
             account_errors: HashMap::new(),
+            unusable_extra: super::unusable::UnusableExtraState::default(),
         }
     }
     pub fn reset_turn(&mut self) {
         self.tried.clear();
         self.refused_providers.clear();
+        self.refusals.clear();
         self.exhausted_chain_key = None;
     }
     pub fn clear(&mut self) {
         self.state = None;
+        self.episode_meta = EpisodeRecoveryMeta::default();
         self.cache = None;
         self.reset_turn();
     }
@@ -351,8 +374,21 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         }
         let (current, thinking) = self.deps.current()?;
         let chains = self.canonical_chains();
-        let Some((key, entries)) = resolve_chain_key(&current, thinking, &chains)
-            .or_else(|| self.state.as_ref().map(|s| s.chain_key.clone()))
+        let fast_sibling = self.deps.fast_sibling(&current);
+        let active_key = self
+            .state
+            .as_ref()
+            .map(|s| s.chain_key.clone())
+            .filter(|key| chains.contains_key(key));
+        let Some((key, entries)) = active_key
+            .or_else(|| {
+                resolve_chain_key_with_fast_sibling(
+                    &current,
+                    thinking,
+                    &chains,
+                    fast_sibling.as_ref(),
+                )
+            })
             .and_then(|key| chains.get(&key).cloned().map(|entries| (key, entries)))
         else {
             if log_decision {
@@ -439,7 +475,10 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         let Some((model, thinking)) = self.deps.current() else {
             return false;
         };
-        resolve_chain_key(&model, thinking, &self.canonical_chains()).is_some()
+        let fast_sibling = self.deps.fast_sibling(&model);
+        let chains = self.canonical_chains();
+        resolve_chain_key_with_fast_sibling(&model, thinking, &chains, fast_sibling.as_ref())
+            .is_some()
     }
     pub async fn try_fallback(
         &mut self,
@@ -454,8 +493,18 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         };
         let from = format_selector(&current, None);
         let to = format_selector(&model, None);
-        // senpi `usageLimitScope(failure.errorMessage)`: who the limit that caused the switch binds.
-        let limit = super::usage_limit::usage_limit_scope_text(failure.error_message);
+        if let Some(probe) = self.unusable().note_with_probe(&current, failure) {
+            self.emit_probe(&probe);
+        }
+        let scope_of_text = super::usage_limit::usage_limit_scope_text(failure.error_message);
+        let limit = if scope_of_text == Some(maho_ai::types::UsageLimitScope::Account)
+            && !self.is_provider_spent(&current.provider)
+            && self.held_family(&current).is_some()
+        {
+            Some(maho_ai::types::UsageLimitScope::Model)
+        } else {
+            scope_of_text
+        };
         if matches!(
             reason,
             FallbackReason::Transient | FallbackReason::HardError | FallbackReason::Billing
@@ -480,10 +529,20 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         self.deps.switch_model(model, thinking, false).await?;
         self.tried.insert(base_selector(&selector));
         let prior = self.state.take();
+        if prior.is_none() {
+            self.episode_meta.recovery_revision = self.deps.recovery_revision(&current.provider);
+        }
         let refusal = prior.as_ref().is_some_and(|s| s.pinned_by_refusal)
             || reason == FallbackReason::Refusal;
         let billing = prior.as_ref().is_some_and(|s| s.pinned_by_billing)
             || reason == FallbackReason::Billing;
+        let prior_pinned_by_billing = prior.as_ref().is_some_and(|s| s.pinned_by_billing);
+        if billing && !prior_pinned_by_billing {
+            self.episode_meta.pinned_until = self
+                .cooldowns
+                .stated_reset_at(&from)
+                .or_else(|| self.account_reset_at(&current.provider));
+        }
         self.state = Some(ActiveFallbackState {
             chain_key: key.clone(),
             original_selector: prior
@@ -524,12 +583,76 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         Ok(true)
     }
     fn unusable(&mut self) -> super::unusable::UnusableEntries<'_> {
-        super::unusable::UnusableEntries::new(&mut self.cooldowns, &mut self.account_errors)
+        super::unusable::UnusableEntries::with_state(
+            &mut self.cooldowns,
+            &mut self.account_errors,
+            &mut self.unusable_extra,
+        )
+    }
+    fn emit_probe(&mut self, probe: &super::unusable::UsageLimitScopeProbe) {
+        let outcome = probe.outcome.as_str();
+        self.deps.log(
+            FallbackLogLevel::Info,
+            "usage_limit_scope_probe",
+            &[
+                ("provider", Some(probe.provider.as_str())),
+                ("heldFamily", Some(probe.held_family.as_str())),
+                ("probeFamily", Some(probe.probe_family.as_str())),
+                ("outcome", Some(outcome)),
+            ],
+        );
+        self.deps.emit_scope_probe(probe);
+    }
+    /// The weekly-limit family hold on `model`, while it lasts (senpi#5596).
+    pub fn held_family(&mut self, model: &Model) -> Option<(String, String)> {
+        self.unusable().held_family(model)
+    }
+    /// The families a no-family limit was confirmed on before it held the whole provider (senpi#5596).
+    pub fn widened_families_of(&mut self, provider: &str) -> Option<Vec<String>> {
+        self.unusable().widened_families_of(provider)
+    }
+    pub fn turn_refusals(&self) -> &[super::controller_types::FallbackRungRefusal] {
+        &self.refusals
+    }
+    pub fn record_refusal(&mut self, model: String, detail: String) {
+        self.refusals
+            .push(super::controller_types::FallbackRungRefusal { model, detail });
+    }
+    pub fn account_reset_at(&mut self, provider: &str) -> Option<f64> {
+        self.unusable().account_reset_at(provider)
+    }
+    pub fn release_guessed_account_hold(&mut self, provider: &str) -> bool {
+        self.unusable().release_guessed_account_hold(provider)
+    }
+    pub fn release_account_hold(&mut self, provider: &str) -> bool {
+        self.unusable().release_account_hold(provider)
+    }
+    pub fn release_account_hold_shown_servable(
+        &mut self,
+        provider: &str,
+        usage: &[crate::subscription_limits::limit_store::AccountLimits],
+    ) -> bool {
+        self.unusable()
+            .release_account_hold_shown_servable(provider, usage)
+    }
+    pub fn note_provider_accounts_changed(&mut self, provider: &str) {
+        let models = self.deps.models();
+        self.unusable().clear_provider(provider, &models);
+    }
+    pub fn note_served(&mut self, selector: &str) {
+        if let Some((provider, rest)) = selector.split_once('/') {
+            let model_id = rest.split(':').next().unwrap_or("");
+            if let Some(probe) = self.unusable().note_served(provider, model_id) {
+                self.emit_probe(&probe);
+            }
+        }
     }
     /// senpi `noteHealthFailure` (unusable half): an account limit spends the whole provider, a model limit
     /// or billing/quota exhaustion parks that entry, on the session's own cooldown clock.
     pub fn note_unusable(&mut self, model: &Model, failure: SelectorFailure<'_>) {
-        self.unusable().note(model, failure);
+        if let Some(probe) = self.unusable().note_with_probe(model, failure) {
+            self.emit_probe(&probe);
+        }
     }
     /// senpi `isProviderSpent`: the provider's account hit a usage limit that has not yet reset.
     pub fn is_provider_spent(&mut self, provider: &str) -> bool {
@@ -580,6 +703,7 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
             );
         }
         self.state = None;
+        self.episode_meta = EpisodeRecoveryMeta::default();
         self.cooldowns.clear(&selector);
         self.unusable().clear(model);
     }
@@ -587,25 +711,51 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         &mut self,
         policy: FallbackRevertPolicy,
     ) -> Result<bool, String> {
-        let Some(state) = self.state.clone() else {
+        self.maybe_restore_primary_at(policy, false).await
+    }
+
+    pub async fn maybe_restore_primary_at(
+        &mut self,
+        policy: FallbackRevertPolicy,
+        turn_boundary: bool,
+    ) -> Result<bool, String> {
+        let Some(mut state) = self.state.clone() else {
             return Ok(false);
         };
-        if state.pinned {
-            return Ok(false);
-        }
         let models = self.deps.models();
         let Some(selector) = parse_fallback_selector(&state.original_selector, &models) else {
             return Ok(false);
         };
-        if !self.deps.is_auth_available(&selector.provider) {
-            return Ok(false);
-        }
         let Some(model) = models
             .into_iter()
             .find(|m| m.provider == selector.provider && m.id == selector.id)
         else {
             return Ok(false);
         };
+        if turn_boundary {
+            super::credential_recovery::release_on_credential_change(
+                &mut state,
+                &mut self.episode_meta,
+                &model,
+                &mut self.deps,
+                &mut self.cooldowns,
+                &mut self.account_errors,
+                &mut self.unusable_extra,
+            );
+        }
+        super::credential_recovery::release_on_limit_reset(
+            &mut state,
+            &mut self.episode_meta,
+            &model,
+            &mut self.deps,
+            &mut self.cooldowns,
+            &mut self.account_errors,
+            &mut self.unusable_extra,
+        );
+        self.state = Some(state.clone());
+        if state.pinned || !self.deps.is_auth_available(&model.provider) {
+            return Ok(false);
+        }
         let Some((current, level)) = self.deps.current() else {
             return Ok(false);
         };
@@ -615,6 +765,7 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
             self.unusable().is_unusable(&current) && !self.unusable().is_unusable(&model);
         if !stranded
             && (policy != FallbackRevertPolicy::CooldownExpiry
+                || self.unusable().is_unusable(&model)
                 || self.cooldowns.is_suppressed(&state.original_selector))
         {
             return Ok(false);
@@ -628,6 +779,7 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         self.deps.switch_model(model, thinking, true).await?;
         let from = format_selector(&current, None);
         self.state = None;
+        self.episode_meta = EpisodeRecoveryMeta::default();
         self.deps.log(
             FallbackLogLevel::Info,
             "fallback_reverted",

@@ -291,7 +291,8 @@ async fn exec_local(
                 redact_secrets_in_output: false,
                 signal: AbortSignal::default(),
                 timeout: None,
-                env,
+                env: Some(env),
+                session_id: None,
             },
         )
         .await;

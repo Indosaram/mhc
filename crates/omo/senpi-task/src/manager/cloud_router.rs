@@ -147,20 +147,32 @@ pub fn decide_cloud_offload(input: &CloudRouteInput<'_>) -> CloudRouteDecision {
     ) {
         return CloudRouteDecision::Local;
     }
-    if input.base_mode == ExecutionMode::Cloud || input.explicit_spec_mode == Some(ExecutionMode::Cloud) {
-        return CloudRouteDecision::Cloud { reason: "explicit_cloud" };
+    if input.base_mode == ExecutionMode::Cloud
+        || input.explicit_spec_mode == Some(ExecutionMode::Cloud)
+    {
+        return CloudRouteDecision::Cloud {
+            reason: "explicit_cloud",
+        };
     }
     if input.config.mode == CloudOffloadMode::Always {
-        return CloudRouteDecision::Cloud { reason: "always_cloud" };
+        return CloudRouteDecision::Cloud {
+            reason: "always_cloud",
+        };
     }
     if input.active_children >= input.config.local_threshold {
-        return CloudRouteDecision::Cloud { reason: "concurrent_overflow" };
+        return CloudRouteDecision::Cloud {
+            reason: "concurrent_overflow",
+        };
     }
     if input.isolated && input.config.offload_isolated {
-        return CloudRouteDecision::Cloud { reason: "isolated_offload" };
+        return CloudRouteDecision::Cloud {
+            reason: "isolated_offload",
+        };
     }
     if input.run_in_background && input.active_children >= 1 {
-        return CloudRouteDecision::Cloud { reason: "background_fanout" };
+        return CloudRouteDecision::Cloud {
+            reason: "background_fanout",
+        };
     }
     CloudRouteDecision::Local
 }
@@ -193,7 +205,10 @@ mod tests {
     #[test]
     fn single_foreground_task_stays_local_under_auto() {
         let cfg = CloudOffloadConfig::default();
-        assert_eq!(decide_cloud_offload(&base_input(&cfg)), CloudRouteDecision::Local);
+        assert_eq!(
+            decide_cloud_offload(&base_input(&cfg)),
+            CloudRouteDecision::Local
+        );
     }
 
     #[test]
@@ -204,7 +219,9 @@ mod tests {
         overflow.active_children = 2;
         assert_eq!(
             decide_cloud_offload(&overflow),
-            CloudRouteDecision::Cloud { reason: "concurrent_overflow" }
+            CloudRouteDecision::Cloud {
+                reason: "concurrent_overflow"
+            }
         );
 
         let mut bg = base_input(&cfg);
@@ -212,14 +229,18 @@ mod tests {
         bg.active_children = 1;
         assert_eq!(
             decide_cloud_offload(&bg),
-            CloudRouteDecision::Cloud { reason: "background_fanout" }
+            CloudRouteDecision::Cloud {
+                reason: "background_fanout"
+            }
         );
 
         let mut iso = base_input(&cfg);
         iso.isolated = true;
         assert_eq!(
             decide_cloud_offload(&iso),
-            CloudRouteDecision::Cloud { reason: "isolated_offload" }
+            CloudRouteDecision::Cloud {
+                reason: "isolated_offload"
+            }
         );
     }
 

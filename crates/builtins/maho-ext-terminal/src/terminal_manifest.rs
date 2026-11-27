@@ -436,14 +436,18 @@ impl TerminalManifestWriter {
                     if remaining_ms.is_some()
                         && monitor.runtime_kind == MonitorRuntimeKind::Command =>
                 {
-                    crate::durable_command::restore_configured_command_in(
-                        &monitor,
-                        manager,
-                        shell,
-                        settings,
-                        &restore_environment,
-                        |_, runtime, record| registry.register(runtime, record),
-                    )
+                    let (outcome, lost_reason) =
+                        crate::durable_command::restore_configured_command_in_with_deps(
+                            &monitor,
+                            manager,
+                            shell,
+                            settings,
+                            &restore_environment,
+                            &crate::durable_command::RestartableCommandDeps::default(),
+                            |_, runtime, record| registry.register(runtime, record),
+                        );
+                    reason = lost_reason;
+                    outcome
                 }
                 MonitorDurabilityClass::Ephemeral if remaining_ms.is_some() => {
                     crate::durable_file::restore_file_in(
@@ -457,14 +461,18 @@ impl TerminalManifestWriter {
                 }
                 MonitorDurabilityClass::Ephemeral => RestoreOutcome::Lost,
                 MonitorDurabilityClass::RestartableCommand => {
-                    crate::durable_command::restore_configured_command_in(
-                        &monitor,
-                        manager,
-                        shell,
-                        settings,
-                        &restore_environment,
-                        |_, runtime, record| registry.register(runtime, record),
-                    )
+                    let (outcome, lost_reason) =
+                        crate::durable_command::restore_configured_command_in_with_deps(
+                            &monitor,
+                            manager,
+                            shell,
+                            settings,
+                            &restore_environment,
+                            &crate::durable_command::RestartableCommandDeps::default(),
+                            |_, runtime, record| registry.register(runtime, record),
+                        );
+                    reason = lost_reason;
+                    outcome
                 }
                 MonitorDurabilityClass::CheckpointedFile => {
                     crate::durable_file::restore_file(&monitor, registry, manager, None, now)
@@ -637,6 +645,25 @@ impl TerminalManifestWriter {
             entry.suspended = true;
         }
         self.persist(now).await;
+    }
+    /// Graceful close (`oh-my-openagent#14313`): the session ended on request, so monitors and
+    /// background jobs stop for good and the manifest file is removed.
+    pub async fn record_closed(&mut self) {
+        self.pending.clear();
+        self.pending_rpc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.entries.clear();
+        self.backgrounds.clear();
+        self.store.clear();
+        match tokio::fs::remove_file(self.store.file_path()).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.persist_failure = Some(SidecarError::Io(error.to_string()));
+            }
+        }
     }
     pub async fn record_background_start(
         &mut self,
@@ -1463,5 +1490,19 @@ mod debounce_tests {
             state.monitors[0].last_checkpoint.as_ref().unwrap().size,
             2.0
         );
+    }
+
+    #[tokio::test]
+    async fn record_closed_clears_state_and_removes_manifest_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut writer = TerminalManifestWriter::new(dir.path(), "s");
+        let file = writer.store.file_path().to_owned();
+        writer
+            .record_background_start("bash_1", "sleep 10", 1.0, 2.0)
+            .await;
+        assert!(std::path::Path::new(&file).exists());
+        writer.record_closed().await;
+        assert!(!std::path::Path::new(&file).exists());
+        assert!(writer.store.read().await.expect("read").is_none());
     }
 }

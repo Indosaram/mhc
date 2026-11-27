@@ -209,6 +209,11 @@ pub fn validate_provider_config(
         ));
     }
     let missing = |message: String| Err((ConfigLoadFailureReason::MissingApiKey, message));
+    if config.provider == SearchProvider::Public
+        && config.base_url.as_ref().is_some_and(|url| !url.is_empty())
+    {
+        return invalid("Provider public searches the built-in engines and takes no baseUrl.");
+    }
     if config.provider == SearchProvider::Searxng
         && config.base_url.as_ref().is_none_or(String::is_empty)
     {
@@ -243,6 +248,14 @@ pub fn validate_provider_config(
                 ));
             }
         }
+    }
+    // The web plugin runs on a chat model, so an entry without one would post an unusable request.
+    if config.provider == SearchProvider::OpenRouter
+        && config.model.as_ref().is_none_or(String::is_empty)
+    {
+        return invalid(
+            "Provider openrouter requires model, the OpenRouter chat model the web plugin runs on.",
+        );
     }
     Ok(())
 }

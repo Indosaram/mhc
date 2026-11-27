@@ -35,13 +35,16 @@ pub enum DeliveryCertainty {
     Uncertain,
 }
 
-/// Why an input was retired by removal; an explicit user or owner action every time.
+/// Why an input was retired by removal: an explicit user or owner action, or `turn_conflict` - a
+/// steer refused at its enqueue because the turn it named was no longer running (senpi#5776); it was
+/// never queued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemovalCause {
     Remove,
     Stop,
     ChildCancel,
+    TurnConflict,
 }
 
 /// How delivery was proven: a committed user entry with this identity, or a durable handled-command receipt.
@@ -151,6 +154,7 @@ pub struct MutationTarget {
 pub enum CancelCause {
     Stop,
     ChildCancel,
+    TurnConflict,
 }
 
 impl From<CancelCause> for RemovalCause {
@@ -158,6 +162,7 @@ impl From<CancelCause> for RemovalCause {
         match cause {
             CancelCause::Stop => Self::Stop,
             CancelCause::ChildCancel => Self::ChildCancel,
+            CancelCause::TurnConflict => Self::TurnConflict,
         }
     }
 }

@@ -17,3 +17,5 @@ mod native_render;
 mod provider_source_config;
 #[path = "public_and_paged_search.rs"]
 mod public_and_paged_search;
+#[path = "sync_v2026_11_19_5.rs"]
+mod sync_v2026_11_19_5;

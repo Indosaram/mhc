@@ -51,11 +51,15 @@ pub struct InterruptOutcome {
     pub interrupted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// Present when the caller asked `background: "stop"`: the interrupted turn's background jobs it stopped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<Value>,
 }
 
-/// `interrupt { turnId? }`: stops the running turn and only that. An idle session answers
+/// `interrupt { turnId?, background? }`: stops the running turn and only that. An idle session answers
 /// `interrupted: false`; so does a `turnId` naming a turn that is no longer the running one, which then
-/// answers the running turn's id. `stop` resolves once the turn has stopped.
+/// answers the running turn's id. `stop` resolves once the turn has stopped; with `background: "stop"` the
+/// background jobs that turn started are stopped after it, and the answer names them.
 pub async fn interrupt_running_turn<F, Fut>(
     session: &AgentSession,
     requested_turn_id: Option<&Value>,
@@ -65,18 +69,11 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
-    let turn_id = session.external_admission().turn_epoch().to_string();
-    decide_interrupt(
-        session.is_streaming() || session.retry_attempt() != 0,
-        turn_id,
-        requested_turn_id,
-        stop,
-    )
-    .await
+    interrupt_running_turn_with_background(session, requested_turn_id, stop, None).await
 }
 
-async fn decide_interrupt<F, Fut>(
-    running: bool,
+pub async fn decide_interrupt<F, Fut>(
+    active: bool,
     turn_id: String,
     requested_turn_id: Option<&Value>,
     stop: F,
@@ -85,10 +82,27 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
-    if !running {
+    decide_interrupt_with_background(active, turn_id, requested_turn_id, stop, None).await
+}
+
+async fn decide_interrupt_with_background<F, Fut>(
+    active: bool,
+    turn_id: String,
+    requested_turn_id: Option<&Value>,
+    stop: F,
+    background: Option<&Value>,
+) -> InterruptOutcome
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let stops_background = background == Some(&Value::String("stop".into()));
+    let nothing = || stops_background.then(|| json!({ "stopped": [], "failed": [] }));
+    if !active {
         return InterruptOutcome {
             interrupted: false,
             turn_id: None,
+            background: nothing(),
         };
     }
     if let Some(Value::String(requested)) = requested_turn_id
@@ -97,13 +111,30 @@ where
         return InterruptOutcome {
             interrupted: false,
             turn_id: Some(turn_id),
+            background: nothing(),
         };
     }
     stop().await;
     InterruptOutcome {
         interrupted: true,
         turn_id: Some(turn_id),
+        background: nothing(),
     }
+}
+
+pub async fn interrupt_running_turn_with_background<F, Fut>(
+    session: &AgentSession,
+    requested_turn_id: Option<&Value>,
+    stop: F,
+    background: Option<&Value>,
+) -> InterruptOutcome
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let turn_id = session.external_admission().turn_epoch().to_string();
+    let active = session.is_streaming() || session.retry_attempt() != 0;
+    decide_interrupt_with_background(active, turn_id, requested_turn_id, stop, background).await
 }
 
 #[cfg(test)]
@@ -130,7 +161,8 @@ mod tests {
             idle,
             InterruptOutcome {
                 interrupted: false,
-                turn_id: None
+                turn_id: None,
+                background: None,
             }
         );
         let stale = decide_interrupt(true, "3".into(), Some(&json!("2")), || async {
@@ -141,7 +173,8 @@ mod tests {
             stale,
             InterruptOutcome {
                 interrupted: false,
-                turn_id: Some("3".into())
+                turn_id: Some("3".into()),
+                background: None,
             }
         );
         assert!(!stopped.load(Ordering::SeqCst));

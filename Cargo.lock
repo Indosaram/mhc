@@ -3414,8 +3414,10 @@ dependencies = [
 name = "maho-agent"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "ignore",
+ "libc",
  "maho-ai",
  "maho-chord",
  "maho-test-support",
@@ -3434,6 +3436,7 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-typescript",
  "unicode-normalization",
+ "uuid",
  "winsafe",
 ]
 
@@ -3472,6 +3475,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-build",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
  "ring",
@@ -3625,6 +3629,7 @@ dependencies = [
  "maho-ext-host",
  "maho-ext-html-render",
  "maho-ext-imagegen",
+ "maho-ext-kill-guard",
  "maho-ext-look-at",
  "maho-ext-loop",
  "maho-ext-loop-guard",
@@ -3737,6 +3742,7 @@ dependencies = [
  "hyper-util",
  "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
@@ -3835,6 +3841,7 @@ dependencies = [
  "filetime",
  "flate2",
  "futures",
+ "gethostname",
  "globset",
  "hex",
  "ignore",
@@ -3862,6 +3869,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "unicode-normalization",
  "uuid",
  "windows-sys 0.61.2",
  "winsafe",
@@ -3920,6 +3928,8 @@ dependencies = [
  "maho-ext-builtin-loose",
  "maho-ext-host",
  "maho-test-support",
+ "nix 0.28.0",
+ "notify",
  "regex",
  "serde",
  "serde_json",
@@ -3927,6 +3937,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 
@@ -3946,6 +3957,8 @@ dependencies = [
 name = "maho-ext-api"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "maho-agent",
  "maho-ai",
  "maho-tools",
@@ -4003,6 +4016,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "maho-agent",
  "maho-ai",
  "maho-core",
@@ -4308,6 +4322,18 @@ dependencies = [
  "libc",
  "maho-ai",
  "maho-ext-api",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "maho-ext-kill-guard"
+version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-test-support",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4667,13 +4693,16 @@ dependencies = [
 name = "maho-ext-prompt-preset"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "maho-ai",
  "maho-core",
+ "maho-ext-anthropic-web-search",
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
  "regex",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]
@@ -4768,6 +4797,9 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-bash-timeout",
+ "maho-ext-builtin-loose",
+ "maho-ext-goal",
  "maho-ext-host",
  "maho-pty",
  "maho-rpc",
@@ -4891,8 +4923,10 @@ version = "0.0.0"
 dependencies = [
  "dom_query 0.27.0",
  "futures",
+ "getrandom 0.4.2",
  "html5ever 0.38.0",
  "hyper",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
@@ -4900,6 +4934,8 @@ dependencies = [
  "maho-tui",
  "regex",
  "reqwest 0.13.2",
+ "rustix 1.1.6",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
@@ -5155,6 +5191,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-machine-ops"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "maho-pty",
+ "nix 0.28.0",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "unicode-normalization",
+ "vt100",
+]
+
+[[package]]
 name = "maho-mcp-builtins"
 version = "0.0.0"
 dependencies = [
@@ -5263,6 +5317,7 @@ dependencies = [
  "indexmap",
  "libc",
  "maho-ai",
+ "maho-codemode",
  "maho-ext-api",
  "maho-ext-mcp",
  "maho-memory-core",
@@ -5573,11 +5628,16 @@ dependencies = [
 name = "maho-omo-gateway"
 version = "0.0.0"
 dependencies = [
+ "chrono",
+ "dirs",
  "futures",
+ "hex",
+ "maho-core",
  "maho-ext-api",
  "maho-omo-agent-home",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
+ "maho-rpc",
  "regex",
  "rusqlite",
  "serde",
@@ -5586,6 +5646,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]
@@ -5787,6 +5849,7 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "maho-ext-api",
+ "maho-ultrawork",
  "regex",
  "serde_json",
  "tokio",
@@ -5819,6 +5882,8 @@ dependencies = [
  "maho-ext-api",
  "maho-model-core",
  "maho-omo-bundled-skills",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
  "maho-omo-git-master",
  "maho-omo-idle-injection",
  "maho-omo-lsp",
@@ -5951,6 +6016,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-machine-ops",
  "maho-test-support",
  "maho-tool-child",
  "maho-tools",
@@ -5965,6 +6031,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "url",
  "uuid",
 ]
 
@@ -6326,6 +6393,7 @@ dependencies = [
  "dirs",
  "filetime",
  "libc",
+ "maho-memory-core",
  "maho-tmux-core",
  "maho-utils",
  "pretty_assertions",
@@ -6441,10 +6509,12 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "dunce",
+ "getrandom 0.3.4",
  "image 0.25.10",
  "maho-agent",
  "maho-ai",
  "maho-grep",
+ "maho-machine-ops",
  "maho-process-env",
  "nix 0.28.0",
  "percent-encoding",
@@ -6492,6 +6562,7 @@ name = "maho-ultrawork"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "regex",
  "serde_json",
 ]
 

@@ -42,6 +42,7 @@ pub mod guard;
 #[cfg(test)]
 #[path = "guard_raw_target_tests.rs"]
 mod guard_raw_target_tests;
+pub mod hook_work;
 pub mod identity_adoption;
 pub mod identity_runtime;
 pub mod in_process_memory_child;
@@ -94,11 +95,13 @@ pub mod memory_maintenance;
 pub mod memory_notice_spec;
 pub mod memory_reporter;
 pub mod memory_retention;
+pub mod memory_retention_pass;
 #[cfg(test)]
 mod memory_retention_tests;
 pub mod memory_rpc_bridge;
 pub mod memory_rpc_snapshot_state;
 pub mod memory_rpc_sync;
+pub mod memory_runtime_retention;
 pub mod memory_tool_provenance;
 pub mod memory_tool_renderers;
 pub mod memory_usage;
@@ -162,6 +165,7 @@ pub mod tool_metadata;
 pub mod tool_receipts;
 pub mod tools;
 pub mod transient_identity;
+pub mod transient_sweep_once;
 pub mod trigger_wiring;
 pub mod user_activity;
 pub mod wiring;
@@ -170,6 +174,7 @@ pub mod wiring_memory_write;
 pub mod wiring_notice_inputs;
 pub mod wiring_reflection_live;
 pub mod wiring_runtime;
+pub mod wiring_shutdown;
 pub mod wiring_static;
 pub mod wiring_types;
 pub mod worker;

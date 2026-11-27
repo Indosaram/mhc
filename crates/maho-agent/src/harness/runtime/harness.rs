@@ -62,6 +62,7 @@ pub fn default_drive_config() -> Config<()> {
             Box::pin(async move { crate::harness::messages::convert_to_llm(messages) })
         }),
         entry_projectors: Default::default(),
+        on_execution_pipeline: None,
     }
 }
 
@@ -963,6 +964,7 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
             .clone()
             .unwrap_or_else(|| default_drive_config().to_provider_messages),
         entry_projectors: options.entry_projectors.clone().unwrap_or_default(),
+        on_execution_pipeline: options.on_execution_pipeline.clone(),
     };
     let events = HarnessEventBus::new();
     let harness = Harness {

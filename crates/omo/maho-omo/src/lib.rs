@@ -6,6 +6,8 @@ pub mod component_list;
 pub mod compose;
 pub mod coordinator;
 pub mod entry;
+mod js_kernel_guard;
+mod keyword_detector_settings;
 pub mod logger;
 pub mod onboarding_memory_applier;
 pub mod provisioning;

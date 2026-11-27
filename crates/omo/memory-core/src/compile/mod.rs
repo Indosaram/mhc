@@ -9,6 +9,7 @@ pub mod expiry_slot;
 pub mod external_projection;
 pub mod external_projection_dirs;
 pub mod external_projection_names;
+pub mod in_flight_reads;
 pub mod render;
 pub mod stored_block;
 
@@ -27,6 +28,7 @@ pub use compile::{
     now_ms,
 };
 pub use expiry_slot::expiry_slot;
+pub use in_flight_reads::{InFlightReadGuard, InFlightReads};
 pub use render::{
     CompiledSystemFile, RenderError, mark_memory_block, render_external_projection,
     render_system_tree, replace_memory_block, strip_memory_block,

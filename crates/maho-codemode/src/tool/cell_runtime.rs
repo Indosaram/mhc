@@ -1,11 +1,15 @@
 use super::{
     call_capture::EvalToolCallMetric,
     image::{EvalOutputCollector, EvalOutputOptions, EvalOutputResult},
+    nested_tool_output::{CellToolUpdateSink, NestedToolOutput},
     types::{EvalRuntimeInfo, EvalToolInput},
 };
 use maho_ext_api::{AgentToolResult, ContentBlock, ImageContent};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub struct CellState {
     pub input: EvalToolInput,
@@ -25,12 +29,43 @@ pub struct CellState {
     pub status: String,
 }
 
+#[derive(Clone)]
+pub struct CellToolUpdateHandle {
+    nested_tools: Arc<Mutex<NestedToolOutput>>,
+    finished: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl CellToolUpdateSink for CellToolUpdateHandle {
+    fn nested_tool_update(&self, call_id: &str, partial: &AgentToolResult) {
+        if self.finished.load(Ordering::SeqCst) {
+            return;
+        }
+        let changed = self
+            .nested_tools
+            .lock()
+            .expect("nested tool output lock")
+            .update(call_id, partial);
+        if changed {
+            self.notify.notify_one();
+        }
+    }
+
+    fn nested_tool_settled(&self, call_id: &str) {
+        let mut nested_tools = self.nested_tools.lock().expect("nested tool output lock");
+        let _ = NestedToolOutput::drop(&mut nested_tools, call_id);
+    }
+}
+
 // `state.output` holds the finished output only; while running, `details` reads the collector's
 // aggregate directly instead of copying it into `state.output` on every frame.
 pub struct CellResultBuilder {
     pub state: CellState,
     output: EvalOutputCollector,
+    nested_tools: Arc<Mutex<NestedToolOutput>>,
     finished: bool,
+    finished_flag: Arc<AtomicBool>,
+    nested_update_notify: Arc<tokio::sync::Notify>,
     coalesce_updates: bool,
     update_pending: bool,
     memory: Option<Value>,
@@ -46,7 +81,10 @@ impl CellResultBuilder {
         let mut builder = Self {
             state,
             output: EvalOutputCollector::new(options),
+            nested_tools: Arc::new(Mutex::new(NestedToolOutput::default())),
             finished: false,
+            finished_flag: Arc::new(AtomicBool::new(false)),
+            nested_update_notify: Arc::new(tokio::sync::Notify::new()),
             coalesce_updates: false,
             update_pending: false,
             memory: None,
@@ -55,6 +93,48 @@ impl CellResultBuilder {
         };
         builder.emit_update(false);
         builder
+    }
+
+    pub fn tool_update_sink(&self) -> Arc<dyn CellToolUpdateSink> {
+        Arc::new(CellToolUpdateHandle {
+            nested_tools: Arc::clone(&self.nested_tools),
+            finished: Arc::clone(&self.finished_flag),
+            notify: Arc::clone(&self.nested_update_notify),
+        })
+    }
+
+    pub fn nested_update_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.nested_update_notify)
+    }
+
+    /// A nested tool's partial result streams through the same throttled live update as the
+    /// cell's own output (`#6167`).
+    pub fn nested_tool_update(&mut self, call_id: &str, partial: &AgentToolResult) {
+        if self.finished {
+            return;
+        }
+        let changed = self
+            .nested_tools
+            .lock()
+            .expect("nested tool output lock")
+            .update(call_id, partial);
+        if changed {
+            self.request_update();
+        }
+    }
+
+    /// Marks a call settled without emitting: its lines stay in the live view until the cell's own
+    /// next output or its completion replaces them (`#6257`).
+    pub fn drop_nested_tool(&mut self, call_id: &str) -> bool {
+        let mut nested_tools = self.nested_tools.lock().expect("nested tool output lock");
+        NestedToolOutput::drop(&mut nested_tools, call_id)
+    }
+
+    fn live_cell_output(&self) -> String {
+        self.nested_tools
+            .lock()
+            .expect("nested tool output lock")
+            .append_to(self.output.aggregate_text())
     }
 
     /// Frame-driven updates (output, phase, status) only mark an update pending; the run loop
@@ -79,6 +159,10 @@ impl CellResultBuilder {
     }
 
     pub async fn push(&mut self, text: &str) -> Result<(), String> {
+        self.nested_tools
+            .lock()
+            .expect("nested tool output lock")
+            .release_settled();
         self.output.push(text).await?;
         self.request_update();
         Ok(())
@@ -131,9 +215,14 @@ impl CellResultBuilder {
     }
 
     async fn finish(&mut self, is_error: bool) -> Result<AgentToolResult, String> {
+        self.finished = true;
+        self.finished_flag.store(true, Ordering::SeqCst);
+        self.nested_tools
+            .lock()
+            .expect("nested tool output lock")
+            .clear();
         let output = self.output.finish().await?;
         self.state.output = output.output.clone();
-        self.finished = true;
         let details = self.details(Some(&output), is_error);
         self.emit_update(is_error);
         let shown = if !output.output.is_empty() {
@@ -215,10 +304,12 @@ impl CellResultBuilder {
 
     fn details(&self, output: Option<&EvalOutputResult>, is_error: bool) -> Value {
         let state = &self.state;
+        let live_output;
         let cell_output = if self.finished {
             state.output.as_str()
         } else {
-            self.output.aggregate_text()
+            live_output = self.live_cell_output();
+            live_output.as_str()
         };
         let mut cell = json!({"index":0,"summary":state.input.summary,"code":state.input.code,"language":state.input.language,"output":cell_output,"status":state.status,"durationMs":state.duration_ms});
         if state.status != "queued" {
@@ -305,6 +396,11 @@ impl CellResultBuilder {
             .nth(7)
             .map_or(0, |(index, _)| index + 1);
         let output = format!("{}{}", &body[start..], if trailing { "\n" } else { "" });
+        let output = self
+            .nested_tools
+            .lock()
+            .expect("nested tool output lock")
+            .append_lines(&output, 8);
         // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the language string directly; this port matches the enum (serde rename "js") instead of round-tripping through serde_json::to_value per update. Output is identical.
         let language = match state.input.language {
             super::types::EvalLanguage::Js => "js",
@@ -363,6 +459,7 @@ mod tests {
                 on_timeout: None,
                 reset: None,
                 isolate: None,
+                language_inferred: None,
             },
             runtime: None,
             started_at: 0.0,

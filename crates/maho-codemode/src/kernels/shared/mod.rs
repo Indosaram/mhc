@@ -1,8 +1,12 @@
+pub mod cell_authority_registry;
 pub mod cell_source_at_start;
+pub mod invocation_authority;
 pub mod kernel_death;
 pub mod kernel_memory;
 pub mod kernel_prelude_plan;
+pub mod path_identity;
 pub mod runtime_asset;
+pub mod session_spawn_attestation;
 pub mod subprocess_contract;
 pub mod subprocess_process;
 pub mod subprocess_queue;

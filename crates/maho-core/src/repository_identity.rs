@@ -1,5 +1,7 @@
 //! Git repository identity used by session moves (senpi core/repository-identity.ts).
 use crate::session_move::bundle::RepositoryIdentity;
+
+pub const REPOSITORY_IDENTITY_ENTRY_TYPE: &str = "repository-identity";
 async fn git(dir: &str, args: &[&str]) -> Option<String> {
     let mut command = tokio::process::Command::new("git");
     command.arg("-C").arg(dir).args(args).kill_on_drop(true);

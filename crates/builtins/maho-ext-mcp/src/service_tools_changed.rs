@@ -126,130 +126,141 @@ pub async fn refresh_mcp_tools_on_list_changed(
     if connect_only && scope.startup_owns_registration {
         return Ok(());
     }
-    let registered_catalog = entry.lock().await.cached_catalog.clone();
-    if let Some(shared) = &scope.shared {
-        let refreshed = shared.catalog().await?;
+    let result: Result<(), McpError> = async {
+        let registered_catalog = entry.lock().await.cached_catalog.clone();
+        if let Some(shared) = &scope.shared {
+            let refreshed = shared.catalog().await?;
+            if !owns_catalog() {
+                return Ok(());
+            }
+            entry.lock().await.cached_catalog = Some(refreshed);
+        }
+        let timeout = std::time::Duration::from_secs_f64(
+            server.request_timeout_ms.unwrap_or(30000.0) / 1000.0,
+        );
+        let catalog =
+            crate::catalog::collect_tool_catalog(&name, connection.client()?, timeout).await?;
         if !owns_catalog() {
             return Ok(());
         }
-        entry.lock().await.cached_catalog = Some(refreshed);
-    }
-    let timeout =
-        std::time::Duration::from_secs_f64(server.request_timeout_ms.unwrap_or(30000.0) / 1000.0);
-    let catalog =
-        crate::catalog::collect_tool_catalog(&name, connection.client()?, timeout).await?;
-    if !owns_catalog() {
-        return Ok(());
-    }
-    let mapped_names = |entries: &[crate::catalog::McpToolCatalogEntry]| {
-        crate::expose::register::map_mcp_catalog_names(entries)
+        let mapped_names = |entries: &[crate::catalog::McpToolCatalogEntry]| {
+            crate::expose::register::map_mcp_catalog_names(entries)
+                .into_iter()
+                .map(|named| named.name)
+                .collect::<Vec<_>>()
+        };
+        let new_names = mapped_names(&catalog);
+        // Before the first refresh, the registered names are the catalog the startup pass registered.
+        let known = entry.lock().await.known_tool_names.clone();
+        let known_names = match known {
+            Some(known) => known,
+            None => match &registered_catalog {
+                None => new_names.clone(),
+                Some(registered) => mapped_names(&crate::catalog::cached_tools_to_catalog_entries(
+                    &name,
+                    &registered.tools,
+                    connection.client()?,
+                    timeout,
+                )),
+            },
+        };
+        let diff = diff_mcp_tool_names(&known_names, &new_names);
+        let cached = entry.lock().await.cached_catalog.clone();
+        let identity = crate::catalog::mcp_registration_identity(&catalog, cached.as_ref());
+        let stale = targets
             .into_iter()
-            .map(|named| named.name)
-            .collect::<Vec<_>>()
-    };
-    let new_names = mapped_names(&catalog);
-    // Before the first refresh, the registered names are the catalog the startup pass registered.
-    let known = entry.lock().await.known_tool_names.clone();
-    let known_names = match known {
-        Some(known) => known,
-        None => match &registered_catalog {
-            None => new_names.clone(),
-            Some(registered) => mapped_names(&crate::catalog::cached_tools_to_catalog_entries(
-                &name,
-                &registered.tools,
-                connection.client()?,
-                timeout,
-            )),
-        },
-    };
-    let diff = diff_mcp_tool_names(&known_names, &new_names);
-    let cached = entry.lock().await.cached_catalog.clone();
-    let identity = crate::catalog::mcp_registration_identity(&catalog, cached.as_ref());
-    let stale = targets
-        .into_iter()
-        .filter(|target| {
-            !connect_only || target.registered_identity.as_deref() != Some(identity.as_str())
-        })
-        .collect::<Vec<_>>();
-    if !stale.is_empty() {
-        // Registration reads the entry's cached catalog. A shared lease refreshed it above; nothing else
-        // refreshes a non-shared connection's catalog after its startup connect (#2188).
-        if scope.shared.is_none() {
-            let (config_hash, agent_dir) = {
-                let entry = entry.lock().await;
-                (entry.config_hash.clone(), entry.agent_dir.clone())
-            };
-            let refreshed = crate::catalog_cache::collect_server_catalog_for_cache_in(
-                &connection,
-                timeout,
-                &config_hash,
-                agent_dir.as_deref(),
-            )
-            .await?;
-            if !owns_catalog() {
-                return Ok(());
-            }
-            entry.lock().await.cached_catalog = Some(refreshed.clone());
-            if let Some(agent_dir) = &agent_dir
-                && owns_catalog()
-            {
-                crate::catalog_cache::write_mcp_cached_server(agent_dir, &name, refreshed)
-                    .map_err(|error| {
-                        McpError::new(crate::errors::McpErrorKind::Connect, error.to_string())
-                    })?;
-            }
-        }
-        if !owns_catalog() {
-            return Ok(());
-        }
-        // Tombstone removed tools BEFORE re-registration so the subsequent active-set write (which excludes
-        // them) leaves the tombstones inactive.
-        let total = stale.len();
-        let mut failures = Vec::new();
-        for target in stale {
-            if !owns_catalog() {
-                return Ok(());
-            }
-            let mut result = Ok(());
-            for removed in &diff.removed {
-                if let Err(error) = target.registrar.register_tool_with_renderers(
-                    crate::notifications::build_mcp_tombstone_definition(removed, &name),
-                    crate::notifications::mcp_tombstone_renderers(removed),
-                ) {
-                    result = Err(McpError::new(
-                        crate::errors::McpErrorKind::ToolExec,
-                        error.to_string(),
-                    ));
-                    break;
+            .filter(|target| {
+                !connect_only || target.registered_identity.as_deref() != Some(identity.as_str())
+            })
+            .collect::<Vec<_>>();
+        if !stale.is_empty() {
+            // Registration reads the entry's cached catalog. A shared lease refreshed it above; nothing else
+            // refreshes a non-shared connection's catalog after its startup connect (#2188).
+            if scope.shared.is_none() {
+                let (config_hash, agent_dir) = {
+                    let entry = entry.lock().await;
+                    (entry.config_hash.clone(), entry.agent_dir.clone())
+                };
+                let refreshed = crate::catalog_cache::collect_server_catalog_for_cache_in(
+                    &connection,
+                    timeout,
+                    &config_hash,
+                    agent_dir.as_deref(),
+                )
+                .await?;
+                if !owns_catalog() {
+                    return Ok(());
+                }
+                entry.lock().await.cached_catalog = Some(refreshed.clone());
+                if let Some(agent_dir) = &agent_dir
+                    && owns_catalog()
+                {
+                    crate::catalog_cache::write_mcp_cached_server(agent_dir, &name, refreshed)
+                        .map_err(|error| {
+                            McpError::new(crate::errors::McpErrorKind::Connect, error.to_string())
+                        })?;
                 }
             }
-            if result.is_ok() {
-                result = (target.register)().await;
+            if !owns_catalog() {
+                return Ok(());
             }
-            if let Err(error) = result {
-                failures.push(error);
+            // Tombstone removed tools BEFORE re-registration so the subsequent active-set write (which excludes
+            // them) leaves the tombstones inactive.
+            let total = stale.len();
+            let mut failures = Vec::new();
+            for target in stale {
+                if !owns_catalog() {
+                    return Ok(());
+                }
+                let mut result = Ok(());
+                for removed in &diff.removed {
+                    if let Err(error) = target.registrar.register_tool_with_renderers(
+                        crate::notifications::build_mcp_tombstone_definition(removed, &name),
+                        crate::notifications::mcp_tombstone_renderers(removed),
+                    ) {
+                        result = Err(McpError::new(
+                            crate::errors::McpErrorKind::ToolExec,
+                            error.to_string(),
+                        ));
+                        break;
+                    }
+                }
+                if result.is_ok() {
+                    result = (target.register)().await;
+                }
+                if let Err(error) = result {
+                    failures.push(error);
+                }
+            }
+            if !failures.is_empty() {
+                let mut entry = entry.lock().await;
+                entry.known_tool_names = Some(new_names);
+                entry.last_list_changed_delta = Some(format_mcp_list_changed_delta(&diff));
+                return Err(McpError::new(
+                    crate::errors::McpErrorKind::ToolExec,
+                    format!(
+                        "MCP {name} tool refresh failed in {} of {total} session(s): {}",
+                        failures.len(),
+                        failures
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                ));
             }
         }
-        if !failures.is_empty() {
-            let mut entry = entry.lock().await;
-            entry.known_tool_names = Some(new_names);
-            entry.last_list_changed_delta = Some(format_mcp_list_changed_delta(&diff));
-            return Err(McpError::new(
-                crate::errors::McpErrorKind::ToolExec,
-                format!(
-                    "MCP {name} tool refresh failed in {} of {total} session(s): {}",
-                    failures.len(),
-                    failures
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ),
-            ));
-        }
+        let mut entry = entry.lock().await;
+        entry.known_tool_names = Some(new_names);
+        entry.last_list_changed_delta = Some(format_mcp_list_changed_delta(&diff));
+        Ok(())
     }
-    let mut entry = entry.lock().await;
-    entry.known_tool_names = Some(new_names);
-    entry.last_list_changed_delta = Some(format_mcp_list_changed_delta(&diff));
+    .await;
+    if let Err(error) = result {
+        if !owns_catalog() {
+            return Ok(());
+        }
+        return Err(error);
+    }
     Ok(())
 }

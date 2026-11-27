@@ -161,12 +161,12 @@ fn handle_command(command: &Value) {
         }
         "get_protocol_info" => match std::env::var("FAKE_FALLBACK").as_deref() {
             Ok("silent") => {}
-            Ok("supported") | Ok("refused") => respond(
+            Ok("unsupported") => respond(kind, &id, Some(json!({"data":{"capabilities":[]}}))),
+            _ => respond(
                 kind,
                 &id,
                 Some(json!({"data":{"capabilities":["retry_fallback_command"]}})),
             ),
-            _ => respond(kind, &id, Some(json!({"data":{"capabilities":[]}}))),
         },
         "set_retry_fallback" => {
             if std::env::var("FAKE_FALLBACK").as_deref() == Ok("refused") {

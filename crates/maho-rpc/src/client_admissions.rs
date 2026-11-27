@@ -50,10 +50,20 @@ impl AdmissionHooks {
 
     /// The input was accepted with `disposition`; returns the admission snapshot answered to the client.
     pub fn accepted(&self, disposition: AdmissionDisposition) -> Option<Value> {
+        self.accepted_with_turn(disposition, None)
+    }
+
+    /// Same as [`Self::accepted`], recording the started engine `turn_id` when available.
+    pub fn accepted_with_turn(
+        &self,
+        disposition: AdmissionDisposition,
+        turn_id: Option<&str>,
+    ) -> Option<Value> {
         let (admissions, base) = (self.admissions.as_ref()?, self.base.as_ref()?);
         let existing = admissions.record(&base.client_message_id);
         let record = existing.clone().unwrap_or_else(|| ClientAdmissionRecord {
             disposition,
+            turn_id: turn_id.map(str::to_owned),
             state: if disposition == AdmissionDisposition::Handled {
                 AdmissionState::Completed { outcome: None }
             } else {
@@ -464,7 +474,7 @@ impl ClientAdmissions {
         restored
     }
 
-    fn save(&self, record: ClientAdmissionRecord) {
+    pub(crate) fn save(&self, record: ClientAdmissionRecord) {
         let data = serde_json::to_value(&record).unwrap_or(Value::Null);
         self.session
             .append_custom_entry(CLIENT_ADMISSION_ENTRY, data);
@@ -595,6 +605,7 @@ impl ClientAdmissions {
             durable_session_id: self.session.durable_session_id(),
             fingerprint,
             disposition: AdmissionDisposition::Queued,
+            turn_id: None,
             host_minted: host_minted.then_some(true),
             state: AdmissionState::Running,
         };

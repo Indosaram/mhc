@@ -25,7 +25,6 @@ fn given_a_reused_run_when_its_stored_key_fingerprint_differs_then_reuse_is_reje
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -46,7 +45,6 @@ fn given_a_reused_run_when_its_stored_key_fingerprint_differs_then_reuse_is_reje
         .expect("rewrite key");
     let error = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -140,7 +138,6 @@ fn given_a_pending_run_when_amended_with_a_changed_node_then_dependents_are_inva
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -176,7 +173,6 @@ fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_inva
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: diamond("build b", vec![]),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -215,7 +211,6 @@ fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_inva
     );
     let reused = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: diamond("changed b", vec![]),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -224,7 +219,6 @@ fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_inva
     assert!(reused.reused);
     let conflict = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: diamond("build b", vec![]),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -241,7 +235,6 @@ fn given_changed_running_and_removed_graph_members_when_amended_then_unsafe_node
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: diamond("build b", vec![]),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -325,7 +318,6 @@ fn given_a_completed_run_when_a_node_is_added_then_compiled_graph_projections_in
     let base = diamond("build b", vec![]);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: base.clone(),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -395,7 +387,6 @@ fn given_a_materialized_run_when_changed_and_added_nodes_are_amended_then_only_t
     let base = diamond("build b", vec![]);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: base.clone(),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -503,7 +494,6 @@ fn given_amended_and_retried_events_when_replayed_from_old_checkpoint_then_the_r
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: diamond("build b", vec![]),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -565,7 +555,6 @@ fn given_a_durable_amendment_with_stale_preconditions_when_replayed_then_the_red
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: diamond("build b", vec![]),
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),
@@ -655,7 +644,6 @@ fn given_a_valid_two_node_definition_when_started_then_a_run_a_key_file_and_one_
 
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -754,7 +742,6 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
     let dag = manager_over(&store);
     let first = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -763,7 +750,6 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
 
     let second = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -798,7 +784,6 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
     let dag = manager_over(&store);
     let first = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -820,7 +805,6 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
         load_skills: None,
     }];
     let conflicting = dag.start(DagStartParams {
-        parent_model: None,
         definition: conflicting_definition,
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -868,7 +852,6 @@ fn given_a_key_file_whose_run_record_was_pruned_when_a_changed_definition_reuses
     let dag = manager_over(&store);
     let first = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -880,7 +863,6 @@ fn given_a_key_file_whose_run_record_was_pruned_when_a_changed_definition_reuses
     changed_definition.nodes[0].prompt = "a different plan".to_string();
     let second = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: changed_definition,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -911,7 +893,6 @@ fn given_a_definition_with_a_cyclic_dependency_when_started_then_invalid_definit
     cyclic.nodes[1].depends_on = Some(vec!["plan".to_string()]);
 
     let rejected = dag.start(DagStartParams {
-        parent_model: None,
         definition: cyclic,
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -959,7 +940,6 @@ fn given_a_configured_node_ceiling_when_a_definition_exceeds_it_then_invalid_def
     });
 
     let rejected = dag.start(DagStartParams {
-        parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -987,7 +967,6 @@ fn given_the_same_run_key_in_two_different_sessions_when_both_start_then_each_se
 
     let mine = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -995,7 +974,6 @@ fn given_the_same_run_key_in_two_different_sessions_when_both_start_then_each_se
         .expect("mine");
     let theirs = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: OTHER_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1014,7 +992,6 @@ fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_r
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1036,7 +1013,6 @@ fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_r
 
     let error = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1076,7 +1052,6 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
 
     let materialized = with_skills
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1084,7 +1059,6 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
         .expect("materialized start");
     let bare = plain
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: OTHER_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1131,7 +1105,6 @@ fn given_a_run_owned_by_one_session_when_another_session_attaches_then_run_not_o
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1178,7 +1151,6 @@ fn given_a_run_owned_by_one_session_when_a_foreign_session_reads_history_then_ru
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1229,7 +1201,6 @@ fn given_journaled_events_when_history_pages_with_an_exclusive_since_and_a_throu
     let dag = manager_over(&store);
     let started = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1305,7 +1276,6 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     alpha.key = "alpha".to_string();
     let first = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: alpha,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1315,7 +1285,6 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     beta.key = "beta".to_string();
     let second = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: beta,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1326,7 +1295,6 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     gamma.key = "gamma".to_string();
     let third = dag
         .start(DagStartParams {
-            parent_model: None,
             definition: gamma,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1335,7 +1303,6 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut delta = plan_build_definition();
     delta.key = "delta".to_string();
     dag.start(DagStartParams {
-        parent_model: None,
         definition: delta,
         parent_session_id: OTHER_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1370,7 +1337,6 @@ fn given_more_runs_than_the_requested_limit_when_listed_then_the_limit_is_clampe
         let mut definition = plan_build_definition();
         definition.key = format!("key-{index}");
         dag.start(DagStartParams {
-            parent_model: None,
             definition,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1418,7 +1384,6 @@ fn given_two_threads_starting_the_same_run_key_concurrently_when_both_race_then_
                 });
                 barrier.wait();
                 dag.start(DagStartParams {
-                    parent_model: None,
                     definition: plan_build_definition(),
                     parent_session_id: PARENT_SESSION_ID.to_string(),
                     root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1467,7 +1432,6 @@ fn given_two_threads_racing_the_same_key_with_different_prompts_when_both_race_t
                 definition.nodes[0].prompt = prompt;
                 barrier.wait();
                 dag.start(DagStartParams {
-                    parent_model: None,
                     definition,
                     parent_session_id: PARENT_SESSION_ID.to_string(),
                     root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1521,32 +1485,4 @@ fn given_two_threads_racing_the_same_key_with_different_prompts_when_both_race_t
             .collect::<Vec<_>>(),
         vec!["dag.run.created"]
     );
-}
-
-// dag/parent-model-rung.test.ts (#10783): the parent's model is captured once at run start and
-// persisted, so admission, retry and recovery all hand it to the node as its last rung.
-#[test]
-fn given_a_parent_model_when_the_run_starts_then_the_checkpoint_keeps_it_for_every_node_start() {
-    let project = temp_project();
-    let store = open_store(&project);
-    let dag = manager_over(&store);
-    let started = dag
-        .start(DagStartParams {
-            parent_model: Some("openai/parent".to_string()),
-            definition: plan_build_definition(),
-            parent_session_id: PARENT_SESSION_ID.to_string(),
-            root_session_id: ROOT_SESSION_ID.to_string(),
-        })
-        .expect("start");
-    let record = dag
-        .record(&started.snapshot.run_id, PARENT_SESSION_ID)
-        .expect("owned run record");
-    assert_eq!(record.parent_model.as_deref(), Some("openai/parent"));
-    let persisted = store
-        .read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id)
-        .expect("checkpoint read")
-        .expect("checkpoint exists");
-    assert_eq!(persisted.parent_model.as_deref(), Some("openai/parent"));
-    let spec = crate::dag::recovery::start_spec_for_tests(&persisted, &"plan".to_string(), 0);
-    assert_eq!(spec.parent_model.as_deref(), Some("openai/parent"));
 }

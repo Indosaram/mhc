@@ -130,6 +130,7 @@ pub struct TaskComponent {
     pause_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     /// The latest session start's reconcile gate and recovery chain (`EventBridge`).
     pub bridge: crate::event_bridge::EventBridge,
+    output_cache: Arc<senpi_task::tools::output::output::TaskOutputStatusCache>,
 }
 impl TaskComponent {
     /// `event-bridge.ts` pause custody: restored on session start, applied on the host's Resume edge.
@@ -345,6 +346,7 @@ impl TaskComponent {
             pause_custody: Mutex::new(None),
             pause_subscription: Mutex::new(None),
             bridge: crate::event_bridge::EventBridge::default(),
+            output_cache: Arc::new(senpi_task::tools::output::output::TaskOutputStatusCache::new()),
         });
         let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
         *component
@@ -356,9 +358,14 @@ impl TaskComponent {
         component.set_pause_custody(
             api,
             crate::event_bridge::TaskPauseCustody {
-                bridge: Arc::new(crate::run_pause_bridge::EngineRunPauseBridge::new(
-                    component.engine.pause.clone(),
-                )),
+                bridge: Arc::new(
+                    crate::run_pause_bridge::EngineRunPauseBridge::new(
+                        component.engine.pause.clone(),
+                    )
+                    .with_lost_recovery(Some(
+                        crate::run_pause_bridge::LostParticipantRecovery::production(),
+                    )),
+                ),
                 session_id: custody_session,
                 fail_resume: {
                     let store = component.engine.store.clone();
@@ -500,6 +507,39 @@ impl TaskComponent {
             }),
         )?;
         *component.rpc.lock().unwrap_or_else(PoisonError::into_inner) = Some(rpc);
+        if let Some(wiring) = crate::engine::lookup_engine_live_wiring(&component.engine.manager) {
+            let register_cwd = component
+                .engine
+                .runtime
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .cwd()
+                .to_path_buf();
+            let agents: Vec<_> = component
+                .engine
+                .agents
+                .iter()
+                .map(|(name, def)| (name.clone(), def.clone()))
+                .collect();
+            if let Err(error) = crate::model_routing_rpc::register_model_routing_rpc(
+                api,
+                crate::model_routing_rpc::ModelRoutingRpcDeps {
+                    cwd: Arc::new(move || register_cwd.clone()),
+                    load_config: Arc::new(crate::engine::load_senpi_config_for_cwd),
+                    registry: wiring.resolve_registry,
+                    planner: Arc::new(move || {
+                        crate::model_routing_rows::ModelRoutingPlannerInputs {
+                            agents: agents.clone(),
+                            parent_service_tier: None,
+                        }
+                    }),
+                },
+            ) {
+                maho_ext_api::diagnostic(&format!(
+                    "model routing RPC registration failed: {error}"
+                ));
+            }
+        }
         let tracker = crate::skill_invocation_tracker::SkillInvocationTracker::new()
             .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let dag_policy: Arc<
@@ -519,7 +559,7 @@ impl TaskComponent {
             }),
         );
         let weak = Arc::downgrade(&component);
-        crate::tools::register_task_tools_with_sync(
+        crate::tools::register_task_tools_with_sync_and_cache(
             api,
             TaskToolsDeps {
                 manager: component.engine.manager.clone(),
@@ -540,6 +580,7 @@ impl TaskComponent {
                     component.sync();
                 }
             }),
+            component.output_cache.clone(),
         );
         crate::reload_guard::wire_reload_guard(api, component.engine.manager.clone());
         let usage = api.get_flag("omo-task-usage-hint") != Some(FlagValue::Boolean(false));
@@ -650,8 +691,31 @@ impl TaskComponent {
                                 .mark(TransitionReason::Compacting, Some(session)),
                             // SAFETY-DIVERGENCE(senpi session-transition-bridge.ts): upstream subscribes only to
                             // session_before_compact/session_compact; resolve failed compactions so transitions clear and flush.
-                            ExtensionEvent::SessionCompact(_)
-                            | ExtensionEvent::SessionCompactFailed { .. } => {
+                            ExtensionEvent::SessionCompact(compact) => {
+                                if matches!(
+                                    compact,
+                                    maho_ext_api::SessionCompactEvent::Accepted { .. }
+                                ) {
+                                    component.output_cache.forget_session(session);
+                                    if let Some(rpc) = &*component
+                                        .rpc
+                                        .lock()
+                                        .unwrap_or_else(PoisonError::into_inner)
+                                    {
+                                        rpc.forget_output_reads(session);
+                                    }
+                                }
+                                component
+                                    .transitions
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .resolve(Some(session))
+                                    .map_err(|error| {
+                                        maho_ext_api::ExtensionFailure::new(error.to_string())
+                                    })?;
+                                component.sync();
+                            }
+                            ExtensionEvent::SessionCompactFailed { .. } => {
                                 component
                                     .transitions
                                     .lock()

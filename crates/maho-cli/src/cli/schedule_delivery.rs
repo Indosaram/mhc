@@ -42,6 +42,10 @@ pub struct ProcessDelivery {
     pub executable: PathBuf,
 }
 
+/// Exit code of a startup refused because another live process holds the session (`senpi#5756`).
+pub const SESSION_HELD_EXIT_CODE: i32 = 76;
+pub const SESSION_HELD_ERROR_PREFIX: &str = "\0senpi_session_held:";
+
 pub fn moved_job_paths(job: &ScheduledJob) -> ScheduledJob {
     ScheduledJob {
         session_file: job
@@ -243,6 +247,19 @@ impl ProcessDelivery {
         };
         match tokio::time::timeout(Duration::from_millis(timeout_ms), delivery).await {
             Ok(Ok((status, _))) if status.success() => Ok(()),
+            Ok(Ok((status, tail)))
+                if self.exec.is_none() && status.code() == Some(SESSION_HELD_EXIT_CODE) =>
+            {
+                let trimmed = tail.trim();
+                let reason = if trimmed.is_empty() {
+                    "the session is open in another process"
+                } else {
+                    trimmed
+                };
+                Err(ScheduleError::Invalid(format!(
+                    "{SESSION_HELD_ERROR_PREFIX}{reason}"
+                )))
+            }
             Ok(Ok((status, tail))) => Err(ScheduleError::Invalid(delivery_failure(
                 exit_status_label(&status),
                 &tail,

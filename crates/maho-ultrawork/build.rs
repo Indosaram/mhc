@@ -32,6 +32,9 @@ fn main() {
     println!("cargo:rerun-if-changed=contract");
     println!("cargo:rerun-if-changed=build.rs");
     check(&contract.join("core.md"), CORE_CAP_BYTES);
+    let gpt = Path::new("../../assets/omo-latest/skills/ultrawork/references/gpt.md");
+    println!("cargo:rerun-if-changed={}", gpt.display());
+    check(gpt, CORE_CAP_BYTES);
     let references = fs::read_dir(contract.join("references"))
         .unwrap_or_else(|error| panic!("cannot list contract/references: {error}"));
     for entry in references {

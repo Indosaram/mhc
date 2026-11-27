@@ -13,11 +13,20 @@ globalThis.packages = Object.freeze({
 globalThis.__senpi_import__ = async (source, options) => {
   const context = globalThis.__senpi_module_context__;
   const specifier = String(source);
+  const permissionImport = globalThis[Symbol.for('senpi.kernel.permissionImport')];
+  permissionImport?.(specifier, new URL('__cell__.js', context.cwdUrl).href);
   const kernelBun = globalThis[Symbol.for('senpi.kernel.bun')];
-  if (specifier === 'bun' && kernelBun) return { ...(await import('bun')), WebView: kernelBun.WebView, default: kernelBun };
+  if (specifier === 'bun' && kernelBun) return { ...kernelBun, default: kernelBun };
+  const patched = /^(?:node:)?(child_process|fs|fs\/promises|path)$/.exec(specifier);
+  if (patched && typeof process.getBuiltinModule === 'function') {
+    const builtin = process.getBuiltinModule('node:' + patched[1]);
+    if (builtin) return { ...builtin, default: builtin };
+  }
   const match = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i.exec(specifier);
   let target = specifier;
-  if (match) {
+  if (match && match[1].toLowerCase() === 'file') {
+    target = new URL(specifier).href;
+  } else if (match) {
     const scheme = match[1].toLowerCase();
     const root = context.localRootUrls[scheme];
     if (!root) throw new Error('Unsupported module protocol: ' + specifier);
@@ -37,5 +46,7 @@ globalThis.__senpi_import__ = async (source, options) => {
     await globalThis.__senpi_package_resolver_ready__;
     target = globalThis[Symbol.for('senpi.kernel.resolvePackage')](specifier, [context.cwdUrl, context.packageRootUrl]) ?? specifier;
   }
-  return options === undefined ? import(target) : import(target, options);
+  const permissionLoad = globalThis[Symbol.for('senpi.kernel.permissionLoad')];
+  const run = (resolved) => (options === undefined ? import(resolved) : import(resolved, options));
+  return permissionLoad ? permissionLoad(() => run(target)) : run(target);
 };

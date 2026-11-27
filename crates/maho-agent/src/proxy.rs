@@ -8,18 +8,17 @@ use std::collections::BTreeMap;
 use futures::StreamExt;
 use maho_ai::model::Model;
 use maho_ai::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, ErrorReason, StopReason,
-    TextContent, ThinkingContent, ToolCall, Usage,
+    AssistantMessage, AssistantMessageEvent, Context, ErrorReason, StopReason, ToolCall, Usage,
 };
 use maho_ai::utils::abort::AbortSignal;
 use maho_ai::utils::event_stream::{
     AssistantMessageEventStream, create_assistant_message_event_stream,
 };
-use maho_ai::utils::json_parse::parse_streaming_json;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::assistant_terminal_state::now_ms;
+use crate::proxy_event_reducer::process_proxy_event;
 
 /// Proxy event types - server sends these with partial field stripped to reduce bandwidth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +61,12 @@ pub enum ProxyAssistantMessageEvent {
     ToolcallDelta {
         content_index: usize,
         delta: String,
+    },
+    /// Replaces the call's raw arguments with `rawArgumentPrefix`; the next delta continues from it (senpi#5300).
+    MessageToolArgumentsReset {
+        content_index: usize,
+        raw_argument_prefix: String,
+        parsed_through: usize,
     },
     /// Servers SHOULD send the final ToolCall; flagged incomplete calls emit no argument deltas, so
     /// delta reconstruction alone cannot represent them, and metadata such as `namespace` only
@@ -443,253 +448,9 @@ fn process_line(
         serde_json::from_str(data).map_err(|error| ProxyError {
             message: error.to_string(),
         })?;
-    process_proxy_event(proxy_event, partial, partial_json)
-}
-
-/// TS assigns into a possibly-sparse content array (`content[i] = block`). This port pads any gap
-/// with an empty text block: a JSON hole would serialize as `null` and no proxy server emits
-/// out-of-order content indices.
-fn ensure_block(content: &mut Vec<ContentBlock>, index: usize) {
-    while content.len() <= index {
-        content.push(ContentBlock::Text(TextContent::default()));
-    }
-}
-
-/// Process a proxy event and update the partial message.
-fn process_proxy_event(
-    proxy_event: ProxyAssistantMessageEvent,
-    partial: &mut AssistantMessage,
-    partial_json: &mut BTreeMap<usize, String>,
-) -> Result<Option<AssistantMessageEvent>, ProxyError> {
-    Ok(match proxy_event {
-        ProxyAssistantMessageEvent::Start => Some(AssistantMessageEvent::Start {
-            partial: partial.clone(),
-        }),
-
-        ProxyAssistantMessageEvent::TextStart { content_index } => {
-            ensure_block(&mut partial.content, content_index);
-            partial.content[content_index] = ContentBlock::Text(TextContent::default());
-            Some(AssistantMessageEvent::TextStart {
-                content_index,
-                partial: partial.clone(),
-            })
-        }
-
-        ProxyAssistantMessageEvent::TextDelta {
-            content_index,
-            delta,
-        } => {
-            let invalid = || ProxyError {
-                message: "Received text_delta for non-text content".to_owned(),
-            };
-            let content = partial.content.get_mut(content_index).ok_or_else(invalid)?;
-            match content {
-                ContentBlock::Text(text) => {
-                    text.text.push_str(&delta);
-                    Some(AssistantMessageEvent::TextDelta {
-                        content_index,
-                        delta,
-                        partial: partial.clone(),
-                    })
-                }
-                _ => return Err(invalid()),
-            }
-        }
-
-        ProxyAssistantMessageEvent::TextEnd {
-            content_index,
-            content_signature,
-        } => {
-            let invalid = || ProxyError {
-                message: "Received text_end for non-text content".to_owned(),
-            };
-            let content = partial.content.get_mut(content_index).ok_or_else(invalid)?;
-            match content {
-                ContentBlock::Text(text) => {
-                    text.text_signature = content_signature;
-                    let text = text.text.clone();
-                    Some(AssistantMessageEvent::TextEnd {
-                        content_index,
-                        content: text,
-                        partial: partial.clone(),
-                    })
-                }
-                _ => return Err(invalid()),
-            }
-        }
-
-        ProxyAssistantMessageEvent::ThinkingStart { content_index } => {
-            ensure_block(&mut partial.content, content_index);
-            partial.content[content_index] = ContentBlock::Thinking(ThinkingContent::default());
-            Some(AssistantMessageEvent::ThinkingStart {
-                content_index,
-                partial: partial.clone(),
-            })
-        }
-
-        ProxyAssistantMessageEvent::ThinkingDelta {
-            content_index,
-            delta,
-        } => {
-            let invalid = || ProxyError {
-                message: "Received thinking_delta for non-thinking content".to_owned(),
-            };
-            let content = partial.content.get_mut(content_index).ok_or_else(invalid)?;
-            match content {
-                ContentBlock::Thinking(thinking) => {
-                    thinking.thinking.push_str(&delta);
-                    Some(AssistantMessageEvent::ThinkingDelta {
-                        content_index,
-                        delta,
-                        partial: partial.clone(),
-                    })
-                }
-                _ => return Err(invalid()),
-            }
-        }
-
-        ProxyAssistantMessageEvent::ThinkingEnd {
-            content_index,
-            content_signature,
-        } => {
-            let invalid = || ProxyError {
-                message: "Received thinking_end for non-thinking content".to_owned(),
-            };
-            let content = partial.content.get_mut(content_index).ok_or_else(invalid)?;
-            match content {
-                ContentBlock::Thinking(thinking) => {
-                    thinking.thinking_signature = content_signature;
-                    let text = thinking.thinking.clone();
-                    Some(AssistantMessageEvent::ThinkingEnd {
-                        content_index,
-                        content: text,
-                        partial: partial.clone(),
-                    })
-                }
-                _ => return Err(invalid()),
-            }
-        }
-
-        ProxyAssistantMessageEvent::ToolcallStart {
-            content_index,
-            id,
-            tool_name,
-        } => {
-            ensure_block(&mut partial.content, content_index);
-            partial.content[content_index] = ContentBlock::ToolCall(ToolCall {
-                id,
-                name: tool_name,
-                arguments: Map::new(),
-                incomplete: None,
-                error_message: None,
-                thought_signature: None,
-                namespace: None,
-            });
-            partial_json.insert(content_index, String::new());
-            Some(AssistantMessageEvent::ToolcallStart {
-                content_index,
-                partial: partial.clone(),
-            })
-        }
-
-        ProxyAssistantMessageEvent::ToolcallDelta {
-            content_index,
-            delta,
-        } => {
-            let invalid = || ProxyError {
-                message: "Received toolcall_delta for non-toolCall content".to_owned(),
-            };
-            let content = partial.content.get_mut(content_index).ok_or_else(invalid)?;
-            match content {
-                ContentBlock::ToolCall(tool_call) => {
-                    let entry = partial_json.entry(content_index).or_default();
-                    entry.push_str(&delta);
-                    let parsed = parse_streaming_json(Some(entry));
-                    tool_call.arguments = parsed.as_object().cloned().unwrap_or_default();
-                    Some(AssistantMessageEvent::ToolcallDelta {
-                        content_index,
-                        delta,
-                        partial: partial.clone(),
-                    })
-                }
-                _ => return Err(invalid()),
-            }
-        }
-
-        ProxyAssistantMessageEvent::ToolcallEnd {
-            content_index,
-            tool_call,
-        } => {
-            let Some(content) = partial.content.get_mut(content_index) else {
-                return Ok(None);
-            };
-            match content {
-                ContentBlock::ToolCall(current) => {
-                    let tool_call = tool_call.unwrap_or_else(|| current.clone());
-                    partial.content[content_index] = ContentBlock::ToolCall(tool_call.clone());
-                    partial_json.remove(&content_index);
-                    Some(AssistantMessageEvent::ToolcallEnd {
-                        content_index,
-                        tool_call,
-                        partial: partial.clone(),
-                    })
-                }
-                _ => None,
-            }
-        }
-
-        ProxyAssistantMessageEvent::Done {
-            reason,
-            usage,
-            provider_thinking_level,
-        } => {
-            partial.stop_reason = reason;
-            partial.usage = usage;
-            if provider_thinking_level.is_some() {
-                partial.provider_thinking_level = provider_thinking_level;
-            }
-            Some(AssistantMessageEvent::Done {
-                reason: done_reason(reason),
-                message: partial.clone(),
-            })
-        }
-
-        ProxyAssistantMessageEvent::Error {
-            reason,
-            error_message,
-            error_cause,
-            usage,
-            provider_thinking_level,
-        } => {
-            partial.stop_reason = error_stop_reason(reason);
-            partial.error_message = error_message;
-            partial.error_cause = error_cause;
-            partial.usage = usage;
-            if provider_thinking_level.is_some() {
-                partial.provider_thinking_level = provider_thinking_level;
-            }
-            Some(AssistantMessageEvent::Error {
-                reason,
-                error: partial.clone(),
-            })
-        }
+    process_proxy_event(proxy_event, partial, partial_json).map_err(|err| ProxyError {
+        message: err.message,
     })
-}
-
-fn done_reason(reason: StopReason) -> maho_ai::types::DoneReason {
-    match reason {
-        StopReason::Length => maho_ai::types::DoneReason::Length,
-        StopReason::ToolUse => maho_ai::types::DoneReason::ToolUse,
-        StopReason::Deferred => maho_ai::types::DoneReason::Deferred,
-        _ => maho_ai::types::DoneReason::Stop,
-    }
-}
-
-fn error_stop_reason(reason: ErrorReason) -> StopReason {
-    match reason {
-        ErrorReason::Aborted => StopReason::Aborted,
-        ErrorReason::Error => StopReason::Error,
-    }
 }
 
 #[cfg(test)]

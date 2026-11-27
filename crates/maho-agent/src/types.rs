@@ -18,6 +18,10 @@ use maho_ai::utils::abort::AbortSignal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Opens a fresh `DurableStore` for one batch on the prepared pipeline.
+pub type BatchStoreFactory =
+    Arc<dyn Fn() -> Arc<dyn crate::durable::store::DurableStore> + Send + Sync>;
+
 /// Stream function used by the agent loop. `Models.streamSimple` satisfies this shape.
 ///
 /// Contract:
@@ -303,6 +307,8 @@ pub struct AgentLoopConfig {
     pub cursor_exec_handlers: Option<CursorExecHandlersConfig>,
     /// Maximum time in milliseconds to wait for the FIRST provider stream event.
     pub stream_start_timeout_ms: Option<u64>,
+    /// Keep-alive silence cap (senpi#4608).
+    pub stream_keep_alive_timeout_ms: Option<u64>,
     /// Provider/SDK timeout override for only the first request in this loop invocation.
     pub initial_request_timeout_ms: Option<u64>,
     /// Stream-start timeout override for only the first request in this loop invocation.
@@ -314,6 +320,7 @@ pub struct AgentLoopConfig {
     /// Resolves an API key dynamically for each LLM call.
     pub get_api_key: Option<GetApiKey>,
     pub finish_turn: Option<FinishTurn>,
+    pub commit_step: Option<crate::step_commit::StepCommitFn>,
     pub prepare_request: Option<PrepareRequest>,
     pub commit_queued_consumption: Option<CommitQueuedConsumption>,
     /// Called after each turn fully completes and `turn_end` has been emitted.
@@ -328,6 +335,14 @@ pub struct AgentLoopConfig {
     pub restore_pending_messages: Option<RestorePendingMessages>,
     /// Tool execution mode. Default: "parallel".
     pub tool_execution: Option<ToolExecutionMode>,
+    /// Unprepared batch boundary. Omitted selects the prepared pipeline in this process.
+    pub tool_host: Option<Arc<dyn crate::execution::tool_host::ToolHost>>,
+    /// Opens each batch's execution ledger for the default (prepared) pipeline.
+    pub batch_store_factory: Option<BatchStoreFactory>,
+    /// Runs once per call on the prepared pipeline after the call is frozen and before it executes.
+    pub after_tool_freeze: Option<crate::execution::tool_host::AfterToolFreeze>,
+    pub execution_scope: Option<crate::execution::tool_host::ExecutionScope>,
+    pub on_execution_pipeline: Option<crate::execution::tool_host::WitnessRecorder>,
     /// Optional migration guidance for tool names intentionally removed by an extension.
     pub removed_tool_hints: Option<BTreeMap<String, String>>,
     /// Called when a model names a tool absent from the current context snapshot.
@@ -353,12 +368,14 @@ impl AgentLoopConfig {
             options: SimpleStreamOptions::default(),
             cursor_exec_handlers: None,
             stream_start_timeout_ms: None,
+            stream_keep_alive_timeout_ms: None,
             initial_request_timeout_ms: None,
             initial_request_stream_start_timeout_ms: None,
             convert_to_llm,
             transform_context: None,
             get_api_key: None,
             finish_turn: None,
+            commit_step: None,
             prepare_request: None,
             commit_queued_consumption: None,
             should_stop_after_turn: None,
@@ -367,6 +384,11 @@ impl AgentLoopConfig {
             get_follow_up_messages: None,
             restore_pending_messages: None,
             tool_execution: None,
+            tool_host: None,
+            batch_store_factory: None,
+            after_tool_freeze: None,
+            execution_scope: None,
+            on_execution_pipeline: None,
             removed_tool_hints: None,
             resolve_unknown_tool_call: None,
             before_tool_call: None,
@@ -505,6 +527,7 @@ impl From<Message> for AgentMessage {
 #[derive(Debug, Clone)]
 pub struct AgentState {
     pub system_prompt: String,
+    pub system_prompt_stable_prefix: Option<String>,
     pub model: Model,
     pub thinking_level: ModelThinkingLevel,
     pub thinking_selection: Option<ThinkingSelection>,
@@ -523,6 +546,7 @@ impl AgentState {
     pub fn new(system_prompt: String, model: Model) -> Self {
         Self {
             system_prompt,
+            system_prompt_stable_prefix: None,
             model,
             thinking_level: ModelThinkingLevel::Off,
             thinking_selection: None,
@@ -675,6 +699,8 @@ impl std::fmt::Debug for AgentTool {
 pub struct AgentContext {
     /// System prompt included with the request.
     pub system_prompt: String,
+    /// Leading part of `system_prompt` that is the same across sessions (senpi#4447).
+    pub system_prompt_stable_prefix: Option<String>,
     /// Transcript visible to the model.
     pub messages: Vec<AgentMessage>,
     /// Tools available for this run.

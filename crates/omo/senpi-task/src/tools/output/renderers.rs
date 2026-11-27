@@ -156,32 +156,6 @@ fn task_output_result_row(details: &TaskOutputDetails) -> ResultRow {
                 fallback_count: None,
             })
             .unwrap_or_else(|| format!("model:{}", normalize_renderer_text(&snapshot.model)));
-            let target = match snapshot.parent_model_fallback.as_ref() {
-                Some(note) => {
-                    use crate::completion::{
-                        ParentModelFallbackPhase as P, ParentModelFallbackReason as R,
-                    };
-                    let reason = match note.reason {
-                        R::UsageLimit => "usage limit",
-                        R::NotSignedIn => "not signed in",
-                        R::Unavailable => "unavailable",
-                        R::Refused => "refused",
-                        R::Error => "error",
-                    };
-                    let phase = match note.phase {
-                        Some(P::Switching) => "switching, ",
-                        Some(P::Unconfirmed) => "unconfirmed, ",
-                        None => "",
-                    };
-                    let resets = note
-                        .resets
-                        .as_deref()
-                        .map(|time| format!(", resets {time}"))
-                        .unwrap_or_default();
-                    format!("{target} · parent-model:{phase}{reason}{resets}")
-                }
-                None => target,
-            };
             let status_label = if snapshot.suspended.is_some() {
                 "suspended".to_string()
             } else {
@@ -232,6 +206,16 @@ fn task_output_result_row(details: &TaskOutputDetails) -> ResultRow {
             color: ThemeColor::Error,
             text: format!("task_output invalid: {reason}"),
         },
+        TaskOutputDetails::NoProgress {
+            task_id, status, ..
+        } => ResultRow {
+            color: status_theme_color(status.as_str()),
+            text: format!(
+                "task_output {} {} · no new progress; await notification",
+                normalize_renderer_text(task_id),
+                normalize_renderer_text(status.as_str()),
+            ),
+        },
     }
 }
 
@@ -272,7 +256,7 @@ pub fn task_output_model_text(snapshot: &TaskSnapshot) -> String {
         .as_ref()
         .filter(|m| m.switched_by_operator == Some(true))
         .map_or("", |_| " (switched by operator)");
-    let route = match snapshot.effective_model.as_ref() {
+    match snapshot.effective_model.as_ref() {
         Some(effective)
             if !snapshot.resolved_model.as_ref().is_some_and(|m| {
                 m.provider == effective.provider && m.model_id == effective.model_id
@@ -281,13 +265,6 @@ pub fn task_output_model_text(snapshot: &TaskSnapshot) -> String {
             format!("model {}{operator} (planned {planned})", effective.display)
         }
         _ => format!("model {planned}{operator}"),
-    };
-    match crate::completion::describe_parent_model_fallback(
-        snapshot.parent_model_fallback.as_ref(),
-        snapshot.parent_model.as_deref(),
-    ) {
-        Some(note) => format!("{route}; {note}"),
-        None => route,
     }
 }
 

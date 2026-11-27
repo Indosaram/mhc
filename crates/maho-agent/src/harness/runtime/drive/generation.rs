@@ -293,6 +293,9 @@ pub async fn run_generation(
         maho_ai::types::ModelThinkingLevel::Max => Some(maho_ai::types::ThinkingLevel::Max),
     };
     options.stream.request.signal = Some(drive.gate.signal());
+    if let Some(cwd) = &lane.session().metadata().cwd {
+        options.stream.request.cwd = Some(cwd.clone());
+    }
     options.stream.request.telemetry_context =
         crate::harness::context::provider_telemetry_context(&drive.context);
     options.stream.session_id = Some(format!("{}:{}", lane.session().metadata().id, lane.name()));

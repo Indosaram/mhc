@@ -65,6 +65,8 @@ pub struct LifecycleDeps {
     pub host_session_probe: Option<Arc<dyn HostSessionProbe>>,
     /// The ONLY way a session this process does not hold is ended; defaults to the production closer.
     pub host_session_close: Option<HostSessionCloser>,
+    /// What a cancel reads once the serving generation does not list a child (`#11765`).
+    pub host_generation_view: Option<Arc<dyn super::host_session::HostGenerationView>>,
     pub host_retry: Option<HostSessionRetryPolicy>,
     // API-DIVERGENCE(omo lifecycle/host-session.ts): TS carries `wait` inside the retry policy; the
     // native policy stays a plain comparable value, so the wait is its own dependency.
@@ -100,6 +102,7 @@ impl LifecycleDeps {
             host_transport: None,
             host_session_probe: None,
             host_session_close: None,
+            host_generation_view: None,
             host_retry: None,
             host_retry_wait: None,
             host_endpoint: None,
@@ -109,8 +112,18 @@ impl LifecycleDeps {
     }
 }
 
+#[cfg(test)]
+type DestroyContentionHook = Arc<std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>>;
+
 #[derive(Clone)]
 pub struct LifecycleContext {
+    /// Serializes destruction of the same resident across all lifecycle entry points.
+    pub(crate) destroying: Arc<(
+        std::sync::Mutex<std::collections::HashSet<String>>,
+        std::sync::Condvar,
+    )>,
+    #[cfg(test)]
+    pub(crate) on_destroy_contended: DestroyContentionHook,
     /// Captures one startup generation (TS `reconcileActive`); `None` outside a fenced pass.
     pub reconcile_active: Option<ReconcileActiveFn>,
     pub on_store_mutation: Option<MutationSubscription>,
@@ -134,6 +147,8 @@ pub struct LifecycleContext {
     /// session path. `host_session_close` is the ONLY way a session this process does not hold is ended.
     pub host_session_probe: Arc<dyn HostSessionProbe>,
     pub host_session_close: Option<HostSessionCloser>,
+    pub host_generation_view: Option<Arc<dyn super::host_session::HostGenerationView>>,
+    pub(crate) host_session_end_flights: Arc<super::host_session_end::HostSessionEndFlights>,
     pub host_retry: HostSessionRetryPolicy,
     pub host_retry_wait: RetryWaitFn,
     /// Sessions whose deferred retries were stopped (TS `deferred-revival.ts` WeakMaps).
@@ -185,6 +200,9 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         Arc::new(move |ms: u64| retries.wait(ms))
     });
     LifecycleContext {
+        destroying: Arc::default(),
+        #[cfg(test)]
+        on_destroy_contended: Arc::default(),
         reconcile_active: None,
         on_store_mutation: deps.on_store_mutation,
         teardown_step_deadline_ms: deps.teardown_step_deadline_ms.unwrap_or(10_000),
@@ -215,6 +233,8 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         host_session_close: deps
             .host_session_close
             .or_else(|| Some(default_host_session_closer(host_transport))),
+        host_generation_view: deps.host_generation_view,
+        host_session_end_flights: Arc::default(),
         host_retry: deps
             .host_retry
             .unwrap_or_else(default_host_session_retry_policy),

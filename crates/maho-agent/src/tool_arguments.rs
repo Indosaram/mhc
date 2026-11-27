@@ -1,8 +1,105 @@
 //! Port of senpi packages/agent/src/tool-arguments.ts.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::types::{AgentTool, AgentToolCall, ToolArgumentShim};
+
+fn schema_types(schema: &Map<String, Value>) -> Vec<&str> {
+    match schema.get("type") {
+        Some(Value::String(name)) => vec![name.as_str()],
+        Some(Value::Array(names)) => names.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn accepted_json_types(schema: &Value) -> Option<Vec<String>> {
+    let obj = schema.as_object()?;
+    let types = schema_types(obj);
+    if !types.is_empty() {
+        return Some(types.into_iter().map(str::to_owned).collect());
+    }
+    let members = obj
+        .get("anyOf")
+        .or_else(|| obj.get("oneOf"))
+        .and_then(Value::as_array)?;
+    if members.is_empty() {
+        return None;
+    }
+    let mut accepted = Vec::new();
+    for member in members {
+        let member_types = accepted_json_types(member)?;
+        for t in member_types {
+            if !accepted.contains(&t) {
+                accepted.push(t);
+            }
+        }
+    }
+    Some(accepted)
+}
+
+fn decode_value_against_schema(value: Value, schema: &Value) -> Value {
+    let Some(obj) = schema.as_object() else {
+        return value;
+    };
+    if let Value::String(ref text) = value {
+        let Some(accepted) = accepted_json_types(schema) else {
+            return value;
+        };
+        if accepted.iter().any(|t| t == "string") {
+            return value;
+        }
+        let trimmed = text.trim();
+        let wants_array = accepted.iter().any(|t| t == "array") && trimmed.starts_with('[');
+        let wants_object = accepted.iter().any(|t| t == "object") && trimmed.starts_with('{');
+        if (wants_array || wants_object)
+            && let Ok(parsed) = serde_json::from_str::<Value>(trimmed)
+            && ((wants_array && parsed.is_array()) || (wants_object && parsed.is_object()))
+        {
+            return decode_value_against_schema(parsed, schema);
+        }
+        return value;
+    }
+    let types = schema_types(obj);
+    match value {
+        Value::Array(items) if types.contains(&"array") => Value::Array(match obj.get("items") {
+            Some(Value::Array(tuple)) => items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| match tuple.get(i) {
+                    Some(s) => decode_value_against_schema(item, s),
+                    None => item,
+                })
+                .collect(),
+            Some(item_schema) if item_schema.is_object() => items
+                .into_iter()
+                .map(|item| decode_value_against_schema(item, item_schema))
+                .collect(),
+            _ => items,
+        }),
+        Value::Object(mut record) if types.contains(&"object") => {
+            let props = obj.get("properties").and_then(Value::as_object);
+            let additional = obj.get("additionalProperties").filter(|v| v.is_object());
+            for (k, slot) in &mut record {
+                let prop_schema = props.and_then(|p| p.get(k)).or(additional);
+                if let Some(s) = prop_schema {
+                    let taken = slot.take();
+                    *slot = decode_value_against_schema(taken, s);
+                }
+            }
+            Value::Object(record)
+        }
+        other => other,
+    }
+}
+
+/// Decodes JSON-stringified array/object tool call arguments when the declared JSON schema expects
+/// an array or object rather than a string (`senpi#6265`).
+pub fn decode_json_encoded_structures(arguments: &mut Map<String, Value>, schema: &Value) {
+    let taken = std::mem::take(arguments);
+    if let Value::Object(decoded) = decode_value_against_schema(Value::Object(taken), schema) {
+        *arguments = decoded;
+    }
+}
 
 /// The shim runs against a detached copy because several shims normalize by mutating the object
 /// they were handed (eval's summary clamp, the harness edit shim's `edits` coercion) and return

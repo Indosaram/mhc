@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::constants::GATEWAY_RECEIPT_RETENTION_MS;
 use super::store_ops::{
     SqlAccess, StoreContext, StoreError, parse_rfc3339_millis, rfc3339, row_i64, row_opt_i64,
     row_opt_str, row_str, transaction, v_i64, v_opt_i64, v_opt_str, v_str,
@@ -459,6 +460,156 @@ pub fn decode_cursor(cursor: &str) -> Option<(i64, String)> {
         .map(|index| u8::from_str_radix(&encoded[index * 2..index * 2 + 2], 16).ok())
         .collect();
     Some((seq, String::from_utf8(bytes?).ok()?))
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolReceiptBegin {
+    Accepted,
+    Replay { result: Value },
+    Conflict,
+    InProgress,
+    Uncertain { error_note: Option<String> },
+}
+
+pub fn tool_receipt_begin(
+    ctx: &StoreContext,
+    now: i64,
+    principal: &str,
+    operation: &str,
+    idempotency_key: &str,
+    args_hash: &str,
+) -> Result<ToolReceiptBegin, StoreError> {
+    transaction(ctx, "tool_receipt_begin", || {
+        let _ = ctx.run(
+            "DELETE FROM receipts WHERE principal = ? AND operation = ? AND idempotency_key = ? AND expires_at <= ?",
+            &[v_str(principal), v_str(operation), v_str(idempotency_key), v_i64(now)],
+        )?;
+        let existing = ctx.one(
+            "SELECT args_hash, status, owner_instance, result, error_note FROM receipts WHERE principal = ? AND operation = ? AND idempotency_key = ?",
+            &[v_str(principal), v_str(operation), v_str(idempotency_key)],
+        )?;
+        let Some(receipt) = existing else {
+            ctx.run(
+                "INSERT INTO receipts (principal, operation, idempotency_key, args_hash, status, delivery_id, owner_instance, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, 'prepared', NULL, ?, ?, ?, ?)",
+                &[
+                    v_str(principal),
+                    v_str(operation),
+                    v_str(idempotency_key),
+                    v_str(args_hash),
+                    v_str(&ctx.config.instance_id),
+                    v_i64(now),
+                    v_i64(now),
+                    v_i64(now + GATEWAY_RECEIPT_RETENTION_MS),
+                ],
+            )?;
+            return Ok(ToolReceiptBegin::Accepted);
+        };
+        if row_str(&receipt, "args_hash") != args_hash {
+            return Ok(ToolReceiptBegin::Conflict);
+        }
+        let status = row_str(&receipt, "status");
+        if status == "completed" {
+            let parsed = row_opt_str(&receipt, "result")
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .unwrap_or(Value::Null);
+            return Ok(ToolReceiptBegin::Replay { result: parsed });
+        }
+        if status == "prepared" && row_str(&receipt, "owner_instance") == ctx.config.instance_id {
+            return Ok(ToolReceiptBegin::InProgress);
+        }
+        let mut note = row_opt_str(&receipt, "error_note");
+        if status == "prepared" {
+            let msg = "the process that began this call ended before recording its outcome";
+            ctx.run(
+                "UPDATE receipts SET status = 'uncertain', error_note = ?, updated_at = ? WHERE principal = ? AND operation = ? AND idempotency_key = ?",
+                &[v_str(msg), v_i64(now), v_str(principal), v_str(operation), v_str(idempotency_key)],
+            )?;
+            note = Some(msg.to_owned());
+        }
+        Ok(ToolReceiptBegin::Uncertain { error_note: note })
+    })
+}
+
+pub fn tool_receipt_settle(
+    ctx: &StoreContext,
+    now: i64,
+    principal: &str,
+    operation: &str,
+    idempotency_key: &str,
+    result_or_error: Result<&Value, &str>,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "tool_receipt_settle", || {
+        let (status, col, val) = match result_or_error {
+            Ok(res) => (
+                "completed",
+                "result",
+                serde_json::to_string(res).unwrap_or_else(|_| "null".to_owned()),
+            ),
+            Err(note) => ("uncertain", "error_note", note.to_owned()),
+        };
+        let sql = format!(
+            "UPDATE receipts SET status = ?, {col} = ?, updated_at = ? WHERE principal = ? AND operation = ? AND idempotency_key = ? AND status = 'prepared' AND owner_instance = ?"
+        );
+        let changed = ctx.run(
+            &sql,
+            &[
+                v_str(status),
+                v_str(val),
+                v_i64(now),
+                v_str(principal),
+                v_str(operation),
+                v_str(idempotency_key),
+                v_str(&ctx.config.instance_id),
+            ],
+        )?;
+        Ok(changed == 1)
+    })
+}
+
+pub fn tool_receipt_revise(
+    ctx: &StoreContext,
+    now: i64,
+    principal: &str,
+    operation: &str,
+    idempotency_key: &str,
+    result: &Value,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "tool_receipt_revise", || {
+        let val = serde_json::to_string(result).unwrap_or_else(|_| "null".to_owned());
+        let changed = ctx.run(
+            "UPDATE receipts SET result = ?, updated_at = ? WHERE principal = ? AND operation = ? AND idempotency_key = ? AND status = 'completed' AND owner_instance = ?",
+            &[
+                v_str(val),
+                v_i64(now),
+                v_str(principal),
+                v_str(operation),
+                v_str(idempotency_key),
+                v_str(&ctx.config.instance_id),
+            ],
+        )?;
+        Ok(changed == 1)
+    })
+}
+
+pub fn tool_receipt_release(
+    ctx: &StoreContext,
+    principal: &str,
+    operation: &str,
+    idempotency_key: &str,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "tool_receipt_release", || {
+        let changed = ctx.run(
+            "DELETE FROM receipts WHERE principal = ? AND operation = ? AND idempotency_key = ? AND status = 'prepared' AND owner_instance = ?",
+            &[
+                v_str(principal),
+                v_str(operation),
+                v_str(idempotency_key),
+                v_str(&ctx.config.instance_id),
+            ],
+        )?;
+        Ok(changed == 1)
+    })
 }
 
 pub fn bind_thread(

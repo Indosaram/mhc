@@ -75,6 +75,13 @@ pub enum RelocationRequestResult {
     Refused { reason: String, detail: String },
 }
 
+/// The builtin tools the agent asks a host through; a run ends only after each such call has
+/// handed back its answer.
+pub const RELOCATION_TOOL_NAMES: &[&str] = &["list_relocation_targets", "relocate_session"];
+
+pub const RELOCATION_NOT_OFFERED_REASON: RelocationUnavailableReason =
+    RelocationUnavailableReason::NotOffered;
+
 pub fn relocation_not_offered() -> RelocationUnavailable {
     RelocationUnavailable {
         status: "unavailable".into(),

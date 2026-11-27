@@ -71,6 +71,8 @@ impl SubprocessProcess {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
         let mut child = command.spawn()?;
         let group_pid = child.id();
         let mut input = child

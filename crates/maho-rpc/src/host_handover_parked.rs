@@ -74,6 +74,15 @@ pub struct HandoverParkedEntry {
     /// generation (senpi#3485). Absent on entries an older generation wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_by: Option<String>,
+    /// The session's own caller env (senpi#4381); it follows the session, never the generation's process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_env: Option<crate::session_caller_env::SessionEnv>,
+    /// Present while the session is open on its host (senpi#6190); a park drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_writer: Option<crate::host_handover_resident_writer::ResidentWriter>,
+    /// The session was loaded when the host that wrote this entry ended (senpi#7020).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<bool>,
 }
 
 const PERMISSION_PRESET_NAMES: [&str; 7] = [
@@ -121,6 +130,13 @@ pub fn parse_entry(value: &Value) -> Option<HandoverParkedEntry> {
         && absent_or(record, "durableSessionId", Value::is_string)
         && absent_or(record, "cwd", Value::is_string)
         && absent_or(record, "parkedBy", Value::is_string)
+        && absent_or(
+            record,
+            "residentWriter",
+            crate::host_handover_resident_writer::is_resident_writer,
+        )
+        && absent_or(record, "live", |v| v == &Value::Bool(true))
+        && crate::session_caller_env::session_env_shape_error(record.get("sessionEnv")).is_none()
         && absent_or(record, "thinkingLevel", Value::is_string)
         && absent_or(record, "permissionPreset", |preset| {
             preset
@@ -243,6 +259,25 @@ pub async fn clear_handover_parked_session(daemon_dir: &Path, session_path: &str
     let _ = std::fs::remove_file(entry_file(daemon_dir, session_path));
 }
 
+/// Clears an inherited entry after its reopen, unless the reopen re-recorded it as resident on
+/// `holder` (a retained session is recorded by the host it is open on, so the next start reopens it).
+pub async fn clear_inherited_parked_session(
+    daemon_dir: &Path,
+    session_path: &str,
+    holder: Option<&str>,
+) {
+    let _guard = MUTATIONS.lock().await;
+    let file = entry_file(daemon_dir, session_path);
+    if let Some(holder) = holder
+        && let Ok(bytes) = std::fs::read(&file)
+        && let Ok(parsed) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes))
+        && parse_entry(&parsed).is_some_and(|entry| entry.parked_by.as_deref() == Some(holder))
+    {
+        return;
+    }
+    let _ = std::fs::remove_file(file);
+}
+
 /// `dropHandoverParkedSessionIfFileGone`.
 pub async fn drop_handover_parked_session_if_file_gone(daemon_dir: &Path, session_path: &str) {
     if Path::new(session_path).exists() {
@@ -275,10 +310,55 @@ impl HandoverParkedStore for FileHandoverParkedStore {
             async move { clear_handover_parked_session(&self.daemon_dir, &session_path).await },
         )
     }
+    fn clear_inherited(&self, session_path: &str, holder: Option<&str>) -> BoxFuture<'_, ()> {
+        let session_path = session_path.to_owned();
+        let holder = holder.map(str::to_owned);
+        Box::pin(async move {
+            clear_inherited_parked_session(&self.daemon_dir, &session_path, holder.as_deref()).await
+        })
+    }
     fn drop_if_file_gone(&self, session_path: &str) -> BoxFuture<'_, ()> {
         let session_path = session_path.to_owned();
         Box::pin(async move {
             drop_handover_parked_session_if_file_gone(&self.daemon_dir, &session_path).await
+        })
+    }
+    fn predecessor_alive(&self, self_instance: Option<&str>) -> BoxFuture<'_, bool> {
+        let self_instance = self_instance.map(str::to_owned);
+        let generations_dir = self.daemon_dir.join("generations");
+        Box::pin(async move {
+            let Ok(entries) = std::fs::read_dir(&generations_dir) else {
+                return false;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if self_instance.as_deref() == Some(name.as_str()) {
+                    continue;
+                }
+                let mut daemon_paths = crate::host_daemon_paths::host_daemon_directory_paths(
+                    generations_dir
+                        .parent()
+                        .unwrap_or(generations_dir.as_path()),
+                );
+                daemon_paths.generations_dir = generations_dir.clone();
+                let generation = crate::host_daemon_paths::generation_paths(&daemon_paths, &name);
+                if let Ok(Some(text)) =
+                    crate::host_daemon_state::read_file_or_undefined(&generation.pid_file)
+                    && let Some(parsed) = crate::host_daemon_state::parse_json(Some(&text))
+                    && let Some(pid) = parsed
+                        .get("pid")
+                        .and_then(Value::as_u64)
+                        .and_then(|pid| u32::try_from(pid).ok())
+                    && crate::host_reservations::process_is_live(pid)
+                {
+                    return true;
+                }
+                if crate::host_stalled_evidence::host_child_alive(&generation, |_| {}) == Some(true)
+                {
+                    return true;
+                }
+            }
+            false
         })
     }
 }

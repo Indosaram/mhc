@@ -92,6 +92,7 @@ pub fn restore_checkpointed_rpc(
             .unwrap_or_else(|| maho_core::config::get_agent_dir().into()),
         endpoints: None,
         opener: None,
+        remote_source: None,
         restored_from: monitor.rpc_checkpoint.clone(),
         on_checkpoint: deps.writer,
     };

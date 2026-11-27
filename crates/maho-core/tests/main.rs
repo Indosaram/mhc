@@ -9,6 +9,12 @@ mod context_selection;
 mod extension_lock_release;
 #[path = "keyword_paint_arm_parity.rs"]
 mod keyword_paint_arm_parity;
+#[path = "kill_guard_check_and_shims.rs"]
+mod kill_guard_check_and_shims;
+#[path = "kill_guard_judge.rs"]
+mod kill_guard_judge;
+#[path = "kill_guard_runtime_delivery.rs"]
+mod kill_guard_runtime_delivery;
 #[path = "sdk_accounts.rs"]
 mod sdk_accounts;
 #[path = "sdk_async_hook_contract.rs"]

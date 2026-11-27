@@ -107,11 +107,51 @@ fn enriched_calls_stop_at_cap_but_metrics_continue() {
     };
     let mut calls = Vec::new();
     for _ in 0..31 {
-        record_tool_call(&mut calls, true, &mut capture, Some("result"), None, 20.0);
+        record_tool_call(
+            &mut calls,
+            true,
+            &mut capture,
+            Some("result"),
+            None,
+            None,
+            20.0,
+        );
     }
     assert_eq!(calls.len(), 31);
     assert!(calls[29].get("args").is_some());
     assert!(calls[30].get("callId").is_none());
     assert_eq!(calls[30]["durationMs"], 10.0);
     assert_eq!(capture.metric.duration_ms, Some(10.0));
+}
+
+#[test]
+fn captured_details_fit_under_budget_and_preserve_structured_values() {
+    let mut small = maho_ext_api::AgentToolResult::text("ok");
+    small.details = json!({"threads": [{"name": "planner"}]});
+    let details = tool_call_result_details(&small).expect("details");
+    assert_eq!(details["threads"][0]["name"], "planner");
+
+    let mut oversized = maho_ext_api::AgentToolResult::text("ok");
+    oversized.details = json!({"blob": "x".repeat(MAX_CAPTURED_DETAILS_CHARACTERS + 100)});
+    assert!(tool_call_result_details(&oversized).is_none());
+
+    let mut capture = ToolCallCapture {
+        call_id: "c1".into(),
+        args: Some(json!({})),
+        started_at: 0.0,
+        metric: create_tool_call_metric("thread_list", 0.0),
+        include_details: true,
+        args_truncated: false,
+    };
+    let mut calls = Vec::new();
+    record_tool_call(
+        &mut calls,
+        true,
+        &mut capture,
+        Some("preview"),
+        None,
+        Some(&details),
+        5.0,
+    );
+    assert_eq!(calls[0]["details"]["threads"][0]["name"], "planner");
 }

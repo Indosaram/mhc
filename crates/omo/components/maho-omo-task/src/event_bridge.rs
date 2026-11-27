@@ -66,9 +66,32 @@ impl TaskPauseCustody {
         event: &crate::run_pause_bridge::RunHoldChangeEvent,
     ) -> crate::run_pause_bridge::BridgeOutcome {
         match (self.session_id)() {
-            Some(session) => self.bridge.apply(&session, event),
+            Some(session) => self.bridge.apply_arc(&session, event),
             None => crate::run_pause_bridge::BridgeOutcome::Ignored,
         }
+    }
+
+    pub fn release_stale_in_background(&self, pause_state: serde_json::Value) {
+        let Some(parsed) = crate::engine_hold_reader::parse_engine_pause_state(&pause_state) else {
+            return;
+        };
+        let Some(session) = (self.session_id)() else {
+            return;
+        };
+        let bridge = self.bridge.clone();
+        let _ = std::thread::Builder::new()
+            .name("run-pause-release-stale".into())
+            .spawn(move || {
+                let outcome = bridge.release_stale(
+                    &session,
+                    &crate::engine_hold_reader::EngineHoldState::Native(parsed),
+                );
+                if let crate::run_pause_bridge::BridgeOutcome::Failed(error) = outcome {
+                    maho_ext_api::diagnostic(&format!(
+                        "omo-senpi task stale run Stop release failed: {error}"
+                    ));
+                }
+            });
     }
 
     /// The host released its held wakes (real input or an explicit Resume): resume the restored Stop.
@@ -180,6 +203,22 @@ impl TaskPauseCustody {
                     }
                     Ok(maho_ext_api::EventResult::None)
                 })
+            }),
+        );
+        let custody_turn = self.clone();
+        api.on(
+            maho_ext_api::EventKind::BeforeAgentStart,
+            std::sync::Arc::new(move |event, ctx| {
+                let maho_ext_api::ExtensionEvent::BeforeAgentStart(start) = event else {
+                    return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
+                };
+                if start.preview {
+                    return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
+                }
+                if let Ok(state) = ctx.get_pause_state() {
+                    custody_turn.release_stale_in_background(state);
+                }
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }),
         );
         stop

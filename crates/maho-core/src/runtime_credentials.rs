@@ -74,6 +74,18 @@ fn throw_if_aborted(options: &Option<AuthOperationOptions>) -> anyhow::Result<()
 
 #[async_trait::async_trait]
 impl CredentialStore for RuntimeCredentials {
+    async fn with_refresh_lock(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        operation: maho_ai::auth::types::RefreshLockOperation,
+        options: Option<AuthOperationOptions>,
+    ) -> Result<Option<Credential>, maho_ai::auth::oauth_refresh::RefreshError> {
+        self.store
+            .with_refresh_lock(provider_id, slot_name, operation, options)
+            .await
+    }
+
     async fn read(
         &self,
         provider_id: &str,
@@ -186,6 +198,108 @@ impl CredentialStore for RuntimeCredentials {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn default_refresh_lock_serializes_same_store_and_slot() {
+        let store = MemoryStore::default();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered.send(()).expect("first observer");
+                    released.await.expect("release first");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        started.await.expect("first entered");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.with_refresh_lock(
+                "fixture",
+                "other",
+                Box::new(|_| Box::pin(async { Ok(None) })),
+                None,
+            ),
+        )
+        .await
+        .expect("other slot must not wait")
+        .expect("other slot refresh");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let cancelled = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(|_| Box::pin(async { panic!("cancelled operation must not run") })),
+            Some(AuthOperationOptions {
+                signal: Some(controller.signal()),
+            }),
+        );
+        tokio::pin!(cancelled);
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        controller.abort(None);
+        assert!(matches!(
+            cancelled.await,
+            Err(maho_ai::auth::oauth_refresh::RefreshError::Aborted(_))
+        ));
+        let second = store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(|_| Box::pin(async { Ok(None) })),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "default lock must serialize the same store and slot"
+        );
+        release.send(()).expect("release first");
+        first.await.expect("first refresh");
+        second.await.expect("second refresh");
+    }
+
+    #[tokio::test]
+    async fn refresh_lock_is_forwarded_to_the_underlying_store() {
+        let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
+        let first_store = RuntimeCredentials::new(store.clone());
+        let second_store = RuntimeCredentials::new(store);
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = first_store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered.send(()).unwrap();
+                    released.await.unwrap();
+                    Ok(None)
+                })
+            }),
+            None,
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        started.await.unwrap();
+        let second = second_store.with_refresh_lock(
+            "fixture",
+            "work",
+            Box::new(|_| Box::pin(async { Ok(None) })),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "wrapper must forward the lock"
+        );
+        release.send(()).unwrap();
+        first.await.unwrap();
+        second.await.unwrap();
+    }
 
     #[derive(Default)]
     struct MemoryStore {

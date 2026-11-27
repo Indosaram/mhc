@@ -3,7 +3,7 @@ pub type OwnedSessionsCallback = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 use crate::{
     lifecycle_adapters::{TaskLifecycleDestruction, admit_lifecycle},
     parent_notifier::{CompletionCoordinator, TaskParentNotifier},
-    planner::create_task_child_planner,
+    planner::create_config_scoped_task_child_planner,
     residency_registry::ManagerResidencyRegistry,
     runtime_context::TaskRuntimeContext,
 };
@@ -18,9 +18,68 @@ use senpi_task::{
 };
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock, PoisonError},
+    sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
 };
+
+#[derive(Clone)]
+pub struct EngineLiveWiring {
+    pub live_config: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub resolve_registry: crate::planner::ResolveModelRegistry,
+    pub category_generations: Arc<crate::category_config_generation::CategoryConfigGenerations>,
+}
+
+type LiveWiringEntries = Mutex<Vec<(Weak<TaskManager>, EngineLiveWiring)>>;
+
+static LIVE_WIRING: OnceLock<LiveWiringEntries> = OnceLock::new();
+
+fn live_wiring_store() -> &'static LiveWiringEntries {
+    LIVE_WIRING.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn register_engine_live_wiring(manager: &Arc<TaskManager>, wiring: EngineLiveWiring) {
+    let mut entries = live_wiring_store()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    entries.retain(|(weak, _)| weak.strong_count() > 0);
+    entries.push((Arc::downgrade(manager), wiring));
+}
+
+pub fn lookup_engine_live_wiring(manager: &Arc<TaskManager>) -> Option<EngineLiveWiring> {
+    let entries = live_wiring_store()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let ptr = Arc::as_ptr(manager);
+    entries
+        .iter()
+        .find(|(weak, _)| std::ptr::eq(weak.as_ptr(), ptr))
+        .map(|(_, wiring)| wiring.clone())
+}
+
+fn default_agent_dir() -> Option<PathBuf> {
+    std::env::var("MAHO_CODING_AGENT_DIR")
+        .or_else(|_| std::env::var("SENPI_CODING_AGENT_DIR"))
+        .or_else(|_| std::env::var("PI_CODING_AGENT_DIR"))
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|home| PathBuf::from(home).join(".maho").join("agent"))
+        })
+}
+
+pub fn load_senpi_config_for_cwd(
+    cwd: &std::path::Path,
+) -> maho_omo_config_resolution::SenpiOmoConfigResult {
+    let env: BTreeMap<String, String> = std::env::vars().collect();
+    maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        env: Some(env),
+        ..Default::default()
+    })
+}
 
 pub struct ComposeTaskEngineDeps {
     pub cwd: PathBuf,
@@ -168,6 +227,8 @@ pub fn compose_task_engine_with_clock(
     lifecycle_deps.now = now;
     lifecycle_deps.host_transport = deps.host_transport.clone();
     lifecycle_deps.isolation = Some(isolation_runtime.clone());
+    lifecycle_deps.host_generation_view =
+        default_agent_dir().map(senpi_task::create_host_generation_view);
     let lifecycle = Arc::new(create_task_lifecycle(lifecycle_deps));
     let claude_dir = claude_code_compat_core::shared::get_claude_config_dir();
     let agents = crate::engine_runners::resolve_task_agents_with_compat(
@@ -175,40 +236,68 @@ pub fn compose_task_engine_with_clock(
         &deps.cwd,
         &claude_dir,
     );
-    let planner = create_task_child_planner(
-        deps.config.clone(),
+    let initial_loaded = load_senpi_config_for_cwd(&deps.cwd);
+    let live_config: Arc<dyn Fn() -> Value + Send + Sync> = if initial_loaded.config == deps.config
+    {
+        crate::live_config_provider::create_live_config_provider(
+            crate::live_config_provider::LiveConfigProviderOptions {
+                cwd: deps.cwd.clone(),
+                load_config: Arc::new(load_senpi_config_for_cwd),
+                initial_result: initial_loaded,
+                logger: None,
+                cache_ttl_ms: None,
+                now: None,
+            },
+        )
+    } else {
+        let static_config = deps.config.clone();
+        Arc::new(move || static_config.clone())
+    };
+    let category_generations =
+        crate::category_config_generation::create_category_config_generations(None);
+    let resolve_registry = deps.resolve_registry;
+    let scoped_planner = create_config_scoped_task_child_planner(
         agents.clone().into_iter().collect(),
-        deps.resolve_registry,
+        resolve_registry.clone(),
+        Arc::new(|| None),
+        None,
+    );
+    let planner = crate::category_config_generation::create_generation_observing_planner(
+        scoped_planner,
+        live_config.clone(),
+        resolve_registry.clone(),
+        category_generations.clone(),
     );
     let state = runtime.clone();
     let warning_state = runtime.clone();
-    let planner = crate::category_unavailable_warning::create_category_unavailable_warning_planner(
-        planner,
-        deps.config.clone(),
-        settings.clone(),
-        Arc::new(move || {
-            state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .session_id()
-                .map(str::to_owned)
-        }),
-        Arc::new(move |text, details| {
-            let ui = warning_state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .ui()
-                .cloned();
-            if let Err(error) = crate::category_unavailable_warning::deliver_category_warning(
-                actions.as_ref(),
-                ui.as_deref(),
-                text,
-                details,
-            ) {
-                maho_ext_api::diagnostic(&format!("task category warning failed: {error}"));
-            }
-        }),
-    );
+    let planner =
+        crate::category_unavailable_warning::create_category_unavailable_warning_planner_with_live_config(
+            planner,
+            live_config.clone(),
+            Some(settings.clone()),
+            Arc::new(move || {
+                state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .session_id()
+                    .map(str::to_owned)
+            }),
+            Arc::new(move |text, details| {
+                let ui = warning_state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .ui()
+                    .cloned();
+                if let Err(error) = crate::category_unavailable_warning::deliver_category_warning(
+                    actions.as_ref(),
+                    ui.as_deref(),
+                    text,
+                    details,
+                ) {
+                    maho_ext_api::diagnostic(&format!("task category warning failed: {error}"));
+                }
+            }),
+        );
     let mut options = TaskManagerOptions::new(
         store.clone(),
         deps.runners,
@@ -225,10 +314,13 @@ pub fn compose_task_engine_with_clock(
     options.traceparent_for = Some(Arc::new(telemetry_core::read_turn_traceparent));
     options.isolation = Some(isolation_runtime);
     options.isolation_settings = isolation_settings;
-    let cloud_offload = senpi_task::manager::cloud_router::CloudOffloadConfig::from_config(&settings);
-    let cloud_backend = Arc::new(senpi_task::runners::remote_cloud::FerryxCliCloudBackend::new(
-        cloud_offload.ferryx_cli.as_deref().map(PathBuf::from),
-    ));
+    let cloud_offload =
+        senpi_task::manager::cloud_router::CloudOffloadConfig::from_config(&settings);
+    let cloud_backend = Arc::new(
+        senpi_task::runners::remote_cloud::FerryxCliCloudBackend::new(
+            cloud_offload.ferryx_cli.as_deref().map(PathBuf::from),
+        ),
+    );
     let cloud_runner = Arc::new(senpi_task::runners::remote_cloud::CloudManagedRunner::new(
         cloud_backend,
         senpi_task::runners::remote_cloud::CloudRunnerSettings {
@@ -296,6 +388,14 @@ pub fn compose_task_engine_with_clock(
     }));
     let manager = Arc::new(TaskManager::new(options));
     let _ = manager_ref.set(Arc::downgrade(&manager));
+    register_engine_live_wiring(
+        &manager,
+        EngineLiveWiring {
+            live_config,
+            resolve_registry,
+            category_generations,
+        },
+    );
     // The pause controller owns the durable Stop/Resume transaction; the DAG pause source joins it
     // once the DAG runtime exists, so the composition starts with the task side only.
     let (pause, run_pause) = crate::engine_run_pause::EngineRunPause::compose(

@@ -1,16 +1,26 @@
 //! Port of `dynamic-prompt/handoff.ts`.
 use super::PromptSurface;
+use super::types::SharedSections;
 
-pub const HANDOFF_LANGUAGE_RULE: &str = "Keep the labels Ask, wanted, For you, Now, and Next exactly as written; write everything else - the routing line, slot contents, todo labels, and the reply itself - in the user's language (the one their instructions name, else the one they write in), with Now and Next repeating the todo labels verbatim.";
+pub const HANDOFF_LANGUAGE_RULE: &str = "Labels Ask, wanted, For you, Now, Next: exactly as written. Everything else (routing line, slot contents, todo labels, reply) in user's language (named in their instructions, else the one they write in); Now/Next repeat todo labels verbatim.";
+
+pub const FULL_HANDOFF_LANGUAGE_RULE: &str = "Keep the labels Ask, wanted, For you, Now, and Next exactly as written; write everything else - the routing line, slot contents, todo labels, and the reply itself - in the user's language (the one their instructions name, else the one they write in), with Now and Next repeating the todo labels verbatim.";
 
 /// The app surface has no routing line, so its language rule drops that clause; kept as the same
 /// derivation upstream uses so the two rules cannot drift apart.
 fn app_handoff_language_rule() -> String {
-    HANDOFF_LANGUAGE_RULE.replace("the routing line, ", "")
+    HANDOFF_LANGUAGE_RULE.replace("routing line, ", "")
 }
 
-const HANDOFF_MOMENTS_TERMINAL: &str = "A handoff is a multi-task todo list's creation (in the message that creates it, after the routing line, or the next one), each todo phase change, a blocker or plan change, and the end of a turn that changed something; the routing line is not one, and an answer stays an answer, even after tool calls.";
-const HANDOFF_MOMENTS_APP: &str = "A handoff is a multi-task todo list's creation (in the message that creates it or the next one), each todo phase change, a blocker or plan change, and the end of a turn that changed something; an answer stays an answer, even after tool calls.";
+fn full_app_handoff_language_rule() -> String {
+    FULL_HANDOFF_LANGUAGE_RULE.replace("the routing line, ", "")
+}
+
+const HANDOFF_MOMENTS_TERMINAL: &str = "Handoff moments: multi-task todo list created (same message after routing line, or next one), each todo phase change, blocker or plan change, end of a turn that changed something. Routing line is not one; an answer stays an answer even after tool calls.";
+const HANDOFF_MOMENTS_APP: &str = "Handoff moments: multi-task todo list created (same message or next one), each todo phase change, blocker or plan change, end of a turn that changed something. An answer stays an answer even after tool calls.";
+
+const FULL_HANDOFF_MOMENTS_TERMINAL: &str = "A handoff is a multi-task todo list's creation (in the message that creates it, after the routing line, or the next one), each todo phase change, a blocker or plan change, and the end of a turn that changed something; the routing line is not one, and an answer stays an answer, even after tool calls.";
+const FULL_HANDOFF_MOMENTS_APP: &str = "A handoff is a multi-task todo list's creation (in the message that creates it or the next one), each todo phase change, a blocker or plan change, and the end of a turn that changed something; an answer stays an answer, even after tool calls.";
 
 pub const CHAT_REPLY_RULE: &str = "Each reply is posted as a chat message to the people in the conversation. Write the answer itself in their language, with no status block, todo labels, or progress ledger; the plan and its progress live in the todo tool only.";
 
@@ -36,6 +46,8 @@ pub struct HandoffSectionOptions {
     pub brief_updates_between_handoffs: bool,
     /// The app surface has no routing line, so the block stops referring to one; chat has no block at all.
     pub surface: PromptSurface,
+    /// `full` renders the block as worded before the senpi#5335 diet (senpi#5665).
+    pub shared_sections: SharedSections,
 }
 
 pub fn build_handoff_section(options: HandoffSectionOptions) -> String {
@@ -43,6 +55,31 @@ pub fn build_handoff_section(options: HandoffSectionOptions) -> String {
     if surface == PromptSurface::Chat {
         return chat_replies_section();
     }
+    if options.shared_sections == SharedSections::Full {
+        return build_full_handoff_section(options);
+    }
+    let next_rule = if options.turn_end_rule_stated_elsewhere {
+        "The named Next is executed in this same response with tool calls."
+    } else {
+        "The named Next is executed in this same response with tool calls; a Next with nothing after it is a defect."
+    };
+    let between_rule = if options.brief_updates_between_handoffs {
+        "Between handoffs: after each tool wave that changes what you know, one line of reply text - what you found, then `Now: [task]. Next: [task].`"
+    } else {
+        "Between handoffs: work without narration."
+    };
+    let (moment, language_rule) = if surface == PromptSurface::App {
+        (HANDOFF_MOMENTS_APP, app_handoff_language_rule())
+    } else {
+        (HANDOFF_MOMENTS_TERMINAL, HANDOFF_LANGUAGE_RULE.to_owned())
+    };
+    format!(
+        "## Handoff\n\n{moment} First weigh original ask + what user needs now; then one short block:\n\nAsk: [the user's original request] - wanted: [the outcome they asked for]. For you: [what they need to know now - ledger N/M done, findings, blockers]. Now: [the todo task in progress]. Next: [the next open task].\n\n{language_rule} {next_rule} {between_rule}"
+    )
+}
+
+fn build_full_handoff_section(options: HandoffSectionOptions) -> String {
+    let surface = options.surface;
     let next_rule = if options.turn_end_rule_stated_elsewhere {
         "The Next you name is executed in this same response with tool calls."
     } else {
@@ -54,9 +91,12 @@ pub fn build_handoff_section(options: HandoffSectionOptions) -> String {
         "Between handoffs, work without narration."
     };
     let (moment, language_rule) = if surface == PromptSurface::App {
-        (HANDOFF_MOMENTS_APP, app_handoff_language_rule())
+        (FULL_HANDOFF_MOMENTS_APP, full_app_handoff_language_rule())
     } else {
-        (HANDOFF_MOMENTS_TERMINAL, HANDOFF_LANGUAGE_RULE.to_owned())
+        (
+            FULL_HANDOFF_MOMENTS_TERMINAL,
+            FULL_HANDOFF_LANGUAGE_RULE.to_owned(),
+        )
     };
     format!(
         "## Handoff\n\n{moment} Before writing one, weigh what the user originally asked for and what they would want to know right now; then state it in one short block:\n\nAsk: [the user's original request] - wanted: [the outcome they asked for]. For you: [what they need to know now - ledger N/M done, findings, blockers]. Now: [the todo task in progress]. Next: [the next open task].\n\n{language_rule} {next_rule} {between_rule}"
@@ -82,7 +122,13 @@ mod tests {
             surface: PromptSurface::Chat,
             ..Default::default()
         });
-        assert!(terminal.contains("after the routing line"));
+        assert!(terminal.contains("after routing line"));
+        let full = build_handoff_section(HandoffSectionOptions {
+            turn_end_rule_stated_elsewhere: true,
+            shared_sections: SharedSections::Full,
+            ..Default::default()
+        });
+        assert!(full.contains("after the routing line"));
         assert!(app.contains("Between handoffs"));
         assert!(!app.contains("routing line"));
         assert!(chat.starts_with("## Replies"));

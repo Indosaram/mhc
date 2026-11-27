@@ -6,7 +6,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use maho_agent::agent_loop::{AgentEventSink, agent_loop};
+use maho_agent::agent_loop;
+use maho_agent::agent_loop::AgentEventSink;
 use maho_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentStreamOptions, AgentTool,
     AgentToolResult, AgentToolUpdateCallback, StreamFn, identity_convert_to_llm,
@@ -412,6 +413,7 @@ pub async fn run_agent_loop(
     let context = AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(tools),
     };

@@ -106,8 +106,7 @@ fn missing_key_on_api_key_rung_skips_sibling_and_falls_back_to_parent() {
     let selected = rung("openai", "gpt-6-luna-fast");
     let sibling = rung("openai", "another");
     let parent = rung("chatgpt-subscription", "gpt-6-luna-fast");
-    let mut rec = record_with(&selected, &[sibling.clone(), parent.clone()]);
-    rec.parent_model = Some(parent.display.clone());
+    let rec = record_with(&selected, &[sibling.clone(), parent.clone()]);
     let candidates = runtime_fallback_candidates(&rec, "No API key found for openai.");
     assert_eq!(candidates.remaining, vec![parent]);
     assert_eq!(candidates.skipped, vec![sibling]);
@@ -159,36 +158,19 @@ fn model_scoped_usage_limit_retains_sibling_first() {
 }
 
 #[test]
-fn parent_session_model_retention_and_exclusion() {
+fn designated_chain_model_retention_and_exclusion() {
     let go_m3 = rung("opencode-go", "minimax-m3");
     let zai_glm = rung("zai", "glm-5.3");
-    let parent = rung("chatgpt-subscription", "gpt-6.1-sol");
-    let spent_parent = rung("opencode-go", "minimax-m2.7");
+    let next = rung("chatgpt-subscription", "gpt-6.1-sol");
 
     for msg in [
         "429 Monthly usage limit reached. It will reset in 2 days 8 hours",
         "401: Unauthorized",
     ] {
-        let mut rec = record_with(&go_m3, &[zai_glm.clone(), parent.clone()]);
-        rec.parent_model = Some(parent.display.clone());
+        let rec = record_with(&go_m3, &[zai_glm.clone(), next.clone()]);
         let candidates = runtime_fallback_candidates(&rec, msg);
-        assert_eq!(candidates.remaining, vec![zai_glm.clone(), parent.clone()]);
+        assert_eq!(candidates.remaining, vec![zai_glm.clone(), next.clone()]);
     }
-
-    let mut rec = record_with(&go_m3, &[zai_glm.clone(), parent.clone()]);
-    rec.parent_model = Some(parent.display.clone());
-    let candidates = runtime_fallback_candidates(&rec, "500: upstream overloaded");
-    assert_eq!(candidates.remaining, vec![zai_glm.clone()]);
-
-    let mut rec_spent = record_with(&go_m3, &[zai_glm.clone(), spent_parent.clone()]);
-    rec_spent.parent_model = Some(spent_parent.display.clone());
-    let candidates = runtime_fallback_candidates(
-        &rec_spent,
-        "429 Monthly usage limit reached. It will reset in 2 days 8 hours",
-    );
-    assert_eq!(candidates.remaining, vec![zai_glm]);
-    assert_eq!(candidates.skipped, vec![spent_parent]);
-    assert_eq!(candidates.limit, Some(UsageLimitScope::Account));
 }
 
 #[test]

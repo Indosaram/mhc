@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use futures::future::BoxFuture;
 use maho_ext_mcp::{
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -239,4 +239,72 @@ async fn attempt_budget_of_three_bounds_a_server_that_always_answers_403() {
     assert_eq!(rig.handler.scopes.lock().expect("test fixture").len(), 3);
     assert_eq!(rig.handler.renews.load(Ordering::SeqCst), 3);
     assert_eq!(rig.server.tokens.lock().expect("test fixture").len(), 4);
+}
+
+struct ReentrantHandler {
+    me: std::sync::Weak<ReentrantHandler>,
+    client: Mutex<std::sync::Weak<McpClient>>,
+    completed: AtomicBool,
+}
+
+impl McpAuthChallengeHandler for ReentrantHandler {
+    fn reauthorize(&self, _scopes: Vec<String>) -> BoxFuture<'_, Result<(), McpError>> {
+        Box::pin(async move {
+            let client = self.client.lock().unwrap().upgrade().unwrap();
+            client
+                .set_auth_challenge_handler(self.me.upgrade().unwrap())
+                .await;
+            self.completed.store(true, Ordering::SeqCst);
+            Err(McpError::new(McpErrorKind::Auth, "login refused"))
+        })
+    }
+
+    fn renew(&self) -> BoxFuture<'_, Result<Arc<McpClient>, McpError>> {
+        Box::pin(async { Err(McpError::new(McpErrorKind::Auth, "unexpected renewal")) })
+    }
+}
+
+#[tokio::test]
+async fn sse_reauthorization_callback_can_replace_its_handler() {
+    let rig = rig(None, None).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url =
+        url::Url::parse(&format!("http://{}/events", listener.local_addr().unwrap())).unwrap();
+    let app = Router::new().route(
+        "/events",
+        get(|| async {
+            (
+                StatusCode::FORBIDDEN,
+                [(
+                    "www-authenticate",
+                    r#"Bearer error="insufficient_scope", scope="extra""#,
+                )],
+            )
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let spec = McpTransportSpec::Http {
+        url,
+        headers: Default::default(),
+    };
+    let client = McpClient::materialize_sse("step-up", &spec, rig.handler.logger.clone())
+        .await
+        .unwrap();
+    client.set_auth(rig.handler.manager.clone()).await;
+    let handler = Arc::new_cyclic(|me| ReentrantHandler {
+        me: me.clone(),
+        client: Mutex::new(Arc::downgrade(&client)),
+        completed: AtomicBool::new(false),
+    });
+    client.set_auth_challenge_handler(handler.clone()).await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.initialize(Duration::from_secs(10)),
+    )
+    .await
+    .expect("reauthorization callback deadlocked");
+    assert!(result.is_err());
+    assert!(handler.completed.load(Ordering::SeqCst));
+    server.abort();
 }

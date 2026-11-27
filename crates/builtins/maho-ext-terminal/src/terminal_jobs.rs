@@ -7,7 +7,7 @@ use crate::manager::TerminalManager;
 use crate::notify::NOTICE_TAIL_MAX_CHARS;
 use crate::output_format::sanitize_terminal_output;
 use crate::settings::{TERMINAL_SETTINGS_DEFAULTS, TimeoutAction};
-use crate::tools::bash::{execute_configured_bash_with_launch, pty_bash_schema};
+use crate::tools::bash::{execute_configured_bash_with_context, pty_bash_schema};
 use crate::tools::bash_input::{BashInputInput, bash_input_schema, execute_bash_input};
 use crate::tools::bash_output::{bash_output_schema, execute_bash_output_view};
 use crate::tools::bash_resize::{bash_resize_schema, execute_bash_resize};
@@ -16,7 +16,7 @@ use crate::tools::child_placement::{
 };
 use crate::tools::context::{
     TerminalBarrierFuture, TerminalChildLaunch, TerminalExitView, TerminalLaunchBarrier,
-    TerminalLaunchSession, TerminalToolResult, resolve_terminal_id,
+    TerminalLaunchSession, TerminalToolContext, TerminalToolResult, resolve_terminal_id,
 };
 use crate::tools::kill_bash::{execute_kill_bash_shared, kill_bash_schema};
 use maho_tool_child::entry::{
@@ -48,6 +48,7 @@ pub struct TerminalJobArgs {
     pub default_rows: f64,
     pub redact_secrets_in_output: bool,
     pub timeout_action: Option<TimeoutAction>,
+    pub background_auto_reap_minutes: Option<u64>,
 }
 
 /// `Number(value) || 0`: a number as is, a numeric string converted, anything else (or NaN) zero.
@@ -90,6 +91,10 @@ pub fn parse_args(value: &Value) -> Result<TerminalJobArgs, ToolChildJobError> {
             Some("kill") => Some(TimeoutAction::Kill),
             _ => None,
         },
+        background_auto_reap_minutes: field("backgroundAutoReapMinutes")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 1.0)
+            .map(|v| v.trunc() as u64),
     })
 }
 
@@ -169,7 +174,7 @@ fn exit_summary(id: &str, runtime: &TerminalExitView) -> Value {
     } else {
         output.to_owned()
     };
-    json!({
+    let mut value = json!({
         "event": "background_exit",
         "id": id,
         "exit": runtime.exit_result.as_ref().map_or(Value::Null, |exit| json!({
@@ -179,7 +184,13 @@ fn exit_summary(id: &str, runtime: &TerminalExitView) -> Value {
             "timedOut": exit.timed_out,
         })),
         "output": output,
-    })
+    });
+    if let Some(minutes) = runtime.auto_reaped_after_minutes
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("autoReapedAfterMinutes".to_owned(), json!(minutes));
+    }
+    value
 }
 
 fn wake_value(wake: &TerminalBackgroundWake) -> Value {
@@ -188,14 +199,46 @@ fn wake_value(wake: &TerminalBackgroundWake) -> Value {
             id,
             description,
             started_at_ms,
+            command,
+            auto_reap_minutes,
+        } => {
+            let mut value = json!({
+                "event": "background_start",
+                "id": id,
+                "description": description,
+                "startedAtMs": started_at_ms,
+            });
+            if let Some(obj) = value.as_object_mut() {
+                if let Some(command) = command {
+                    obj.insert("command".to_owned(), json!(command));
+                }
+                if let Some(minutes) = auto_reap_minutes {
+                    obj.insert("autoReapMinutes".to_owned(), json!(minutes));
+                }
+            }
+            value
+        }
+        TerminalBackgroundWake::BackgroundReapFailed {
+            id,
+            auto_reap_minutes,
+            reason,
         } => json!({
-            "event": "background_start",
+            "event": "background_reap_failed",
             "id": id,
-            "description": description,
-            "startedAtMs": started_at_ms,
+            "autoReapMinutes": auto_reap_minutes,
+            "reason": reason,
         }),
-        TerminalBackgroundWake::BackgroundExit { id, exit, output } => {
-            exit_summary(id, &TerminalExitView::new(exit.clone(), output.clone()))
+        TerminalBackgroundWake::BackgroundExit {
+            id,
+            exit,
+            output,
+            auto_reaped_after_minutes,
+        } => {
+            let mut view = TerminalExitView::new(exit.clone(), output.clone());
+            if let Some(minutes) = auto_reaped_after_minutes {
+                view = view.with_auto_reaped_after_minutes(*minutes);
+            }
+            exit_summary(id, &view)
         }
     }
 }
@@ -217,68 +260,49 @@ fn tell(job: &ToolChildJobContext, event: &str, id: &str, value: Value) {
     });
 }
 
-/// Upstream's `ctx.onBackgroundStart` / `ctx.onBackgroundExit` of the child's tool context, for a session the bash
-/// body left running: its start now, its exit when the session settles.
-fn relay_background(
+/// Removes old relay wrapper in favor of passing `TerminalToolContext` directly into
+/// `execute_configured_bash_with_context`, which handles `track_background_session` + auto-reap.
+fn child_tool_context(
     job: &ToolChildJobContext,
-    manager: &Arc<Mutex<TerminalManager>>,
-    params: &Value,
-    result: &TerminalToolResult,
-) {
-    let Some(details) = &result.details else {
-        return;
-    };
-    if details.get("background").and_then(Value::as_bool) != Some(true) {
-        return;
-    }
-    let Some(id) = details.get("bash_id").and_then(Value::as_str) else {
-        return;
-    };
-    let description = params
-        .get("description")
-        .or_else(|| params.get("command"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let started_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
-    tell(
-        job,
-        "background_start",
-        id,
-        wake_value(&TerminalBackgroundWake::BackgroundStart {
-            id: id.to_owned(),
-            description: description.to_owned(),
-            started_at_ms,
-        }),
-    );
-    let exit = manager
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(id)
-        .map(|runtime| runtime.subscribe_exit());
-    let Some(mut exit) = exit else {
-        return;
-    };
-    let (job, manager, id) = (job.clone(), manager.clone(), id.to_owned());
-    tokio::spawn(async move {
-        loop {
-            if exit.borrow_and_update().is_some() {
-                break;
-            }
-            if exit.changed().await.is_err() {
-                return;
-            }
-        }
-        let view = manager
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-            .map(|runtime| TerminalExitView::of_runtime(runtime))
-            .unwrap_or_else(|| TerminalExitView::new(None, String::new()));
-        let summary = exit_summary(&id, &view);
-        tell(&job, "background_exit", &id, summary);
-    });
+    settings: &crate::settings::ResolvedTerminalSettings,
+) -> TerminalToolContext {
+    let config = Arc::new(Mutex::new((settings.clone(), None)));
+    let mut ctx = TerminalToolContext::new(config, Arc::new(BTreeMap::new));
+    let start_job = job.clone();
+    ctx.on_background_start = Some(Arc::new(
+        move |id, description, started_at_ms, command, auto_reap_minutes| {
+            tell(
+                &start_job,
+                "background_start",
+                id,
+                wake_value(&TerminalBackgroundWake::BackgroundStart {
+                    id: id.to_owned(),
+                    description: description.to_owned(),
+                    started_at_ms,
+                    command: command.map(str::to_owned),
+                    auto_reap_minutes,
+                }),
+            );
+        },
+    ));
+    let exit_job = job.clone();
+    ctx.on_background_exit = Some(Arc::new(move |id, view| {
+        tell(&exit_job, "background_exit", id, exit_summary(id, &view));
+    }));
+    let fail_job = job.clone();
+    ctx.on_background_reap_failed = Some(Arc::new(move |id, age, reason| {
+        tell(
+            &fail_job,
+            "background_reap_failed",
+            id,
+            wake_value(&TerminalBackgroundWake::BackgroundReapFailed {
+                id: id.to_owned(),
+                auto_reap_minutes: age,
+                reason: reason.to_owned(),
+            }),
+        );
+    }));
+    ctx
 }
 
 /// The child's one terminal manager (shared by every terminal job of this child) is made on the first job, its ids
@@ -365,6 +389,8 @@ async fn run_job(
             settings.timeout_action = action;
         }
         settings.redact_secrets_in_output = args.redact_secrets_in_output;
+        settings.background_auto_reap_minutes = args.background_auto_reap_minutes;
+        let child_ctx = child_tool_context(&job, &settings);
         let update = job.update.clone();
         let update_call_id = args.tool_call_id.clone();
         let on_update: ToolUpdateCallback = Arc::new(move |result: ToolResult| {
@@ -388,7 +414,7 @@ async fn run_job(
                 .collect::<BTreeMap<_, _>>(),
             cwd: args.cwd.clone().into(),
         };
-        let result = execute_configured_bash_with_launch(
+        let result = execute_configured_bash_with_context(
             manager.clone(),
             ToolCall {
                 id: &args.tool_call_id,
@@ -401,10 +427,11 @@ async fn run_job(
             &settings,
             args.shell_path.as_deref(),
             Some(&launch),
+            Some(&child_ctx),
+            None,
         )
         .await
         .map_err(job_failed)?;
-        relay_background(&job, &manager, params, &result);
         return result_value(result);
     }
     if kind == TERMINAL_CHILD_JOB_KINDS.kill {

@@ -68,6 +68,27 @@ fn malformed_failed_and_empty_redirects_are_rejected() {
 }
 
 #[tokio::test]
+async fn grants_reject_invalid_resource_before_network_or_store_changes() {
+    use maho_ext_mcp::auth::{oauth_provider::McpOAuthProvider, token_store::McpTokenStore};
+    let root = tempfile::tempdir().unwrap();
+    let provider = McpOAuthProvider::new(McpTokenStore::new(
+        root.path(),
+        "invalid-resource",
+        "not a URL",
+    ));
+    let client = reqwest::Client::new();
+    let code_error = finish_authorization(&provider, "code", None, &client)
+        .await
+        .unwrap_err();
+    assert!(matches!(code_error, OAuthRequestError::Url(_)));
+    let client_error = client_credentials_grant(&provider, &client)
+        .await
+        .unwrap_err();
+    assert!(matches!(client_error, OAuthRequestError::Url(_)));
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
 async fn refresh_returns_fresh_tokens_without_discovery_or_registration() {
     use maho_ext_mcp::auth::{oauth_provider::McpOAuthProvider, token_store::McpTokenStore};
     let root = tempfile::tempdir().unwrap();

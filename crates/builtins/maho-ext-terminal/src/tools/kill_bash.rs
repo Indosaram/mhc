@@ -317,6 +317,7 @@ mod tests {
                         },
                     )),
                     opener: None,
+                    remote_source: None,
                     restored_from: None,
                     on_checkpoint: None,
                 })

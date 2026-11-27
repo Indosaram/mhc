@@ -12,14 +12,16 @@ use serde_json::Value;
 use super::adapter::{BoxFuture, EndpointLiveness, GatewayEndpointPort, GatewayEndpointRef};
 use super::constants::TARGET_MAX_BYTES;
 use super::decision::{DeliveryDecision, RefusalKind, TargetState, decide_delivery};
-use super::errors::ThreadToolFailure;
+use super::envelope::sender_facts;
+use super::errors::{ThreadToolFailure, pair_loop_guard_next_action, thread_tool_failure};
 use super::provenance_resolver::{ProvenanceRuntime, resolve_provenance};
 use super::result::{engine_failure, result_from_row};
 use super::store_api::GatewayStoreApi;
 use super::store_relay_ops::hash_args;
 use super::types::{
-    DeliveryEnvelope, EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, ExternalAuthor,
-    GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance, ReceiptRef,
+    DeliveryAuthority, DeliveryEnvelope, DeliveryState, EnqueueOutcome, EnqueueRequest,
+    ExternalAuthor, GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance,
+    ReceiptRef,
 };
 
 /// The endpoint serving a thread right now, or null when nothing answers for it.
@@ -48,7 +50,10 @@ pub struct GatewayDeliverRequest {
     pub expected_turn_id: Option<i64>,
     pub all_scope: bool,
     pub idempotency_key: Option<String>,
+    pub collapse_key: Option<String>,
     pub root_id: Option<String>,
+    pub inbound_hop: Option<i64>,
+    pub authority: Option<DeliveryAuthority>,
 }
 
 impl GatewayDeliverRequest {
@@ -61,7 +66,10 @@ impl GatewayDeliverRequest {
             expected_turn_id: None,
             all_scope: false,
             idempotency_key: None,
+            collapse_key: None,
             root_id: None,
+            inbound_hop: None,
+            authority: None,
         }
     }
 }
@@ -80,96 +88,6 @@ pub struct GatewayEngine {
     options: Arc<GatewayEngineOptions>,
 }
 
-struct SenderFacts {
-    provenance: Provenance,
-    principal: String,
-    rate_principal: String,
-    node: String,
-    turn: Option<String>,
-    cause: Option<String>,
-    actor: String,
-    origin: EnvelopeOrigin,
-    binding: Option<super::types::BindingRef>,
-}
-
-fn sender_facts(sender: &GatewaySender, resolved: Provenance) -> SenderFacts {
-    let session_label = match sender {
-        GatewaySender::Session { name, .. } => name
-            .as_ref()
-            .map(|name| name.trim().to_owned())
-            .filter(|name| !name.is_empty()),
-        _ => None,
-    };
-    let provenance = Provenance {
-        session: session_label.or(resolved.session.clone()),
-        ..resolved
-    };
-    match sender {
-        GatewaySender::Session {
-            durable_id,
-            name,
-            turn_id,
-            cause_delivery_id,
-        } => SenderFacts {
-            provenance,
-            principal: format!("session:{durable_id}"),
-            rate_principal: format!("session:{durable_id}"),
-            node: durable_id.clone(),
-            turn: turn_id.clone(),
-            cause: cause_delivery_id.clone(),
-            actor: name.clone().unwrap_or_else(|| durable_id.clone()),
-            origin: EnvelopeOrigin::Session {
-                session: durable_id.clone(),
-            },
-            binding: None,
-        },
-        GatewaySender::Cli { uid, user } => {
-            let principal = format!("cli:{uid}");
-            SenderFacts {
-                provenance,
-                principal: principal.clone(),
-                rate_principal: principal.clone(),
-                node: principal,
-                turn: None,
-                cause: None,
-                actor: user.clone(),
-                origin: EnvelopeOrigin::Session {
-                    session: user.clone(),
-                },
-                binding: None,
-            }
-        }
-        GatewaySender::External {
-            origin,
-            binding_id,
-            binding_revision,
-        } => {
-            let principal = format!("binding:{binding_id}");
-            // Each human in a bound thread gets their own pair bucket; a sender with no author shares the binding's.
-            let rate_principal = match &origin.author {
-                Some(author) => format!("{principal}#author:{}", author.platform_user_id),
-                None => principal.clone(),
-            };
-            SenderFacts {
-                provenance,
-                principal,
-                rate_principal,
-                node: format!("binding:{binding_id}"),
-                turn: None,
-                cause: None,
-                actor: origin.account_id.clone(),
-                origin: EnvelopeOrigin::External {
-                    external: origin.clone(),
-                },
-                binding: Some(super::types::BindingRef {
-                    binding_id: binding_id.clone(),
-                    revision: *binding_revision,
-                }),
-            }
-        }
-    }
-}
-
 /// The arguments a delivery receipt is keyed by: a retry with the same ones replays, different ones conflict.
 pub fn delivery_args_hash(
     target: &str,
@@ -178,6 +96,18 @@ pub fn delivery_args_hash(
     expected_turn_id: Option<i64>,
     binding: Option<&super::types::BindingRef>,
     author: Option<&ExternalAuthor>,
+) -> String {
+    delivery_args_hash_with_collapse(target, text, mode, expected_turn_id, binding, author, None)
+}
+
+pub fn delivery_args_hash_with_collapse(
+    target: &str,
+    text: &str,
+    mode: GatewayDeliveryMode,
+    expected_turn_id: Option<i64>,
+    binding: Option<&super::types::BindingRef>,
+    author: Option<&ExternalAuthor>,
+    collapse_key: Option<&str>,
 ) -> String {
     let mut fields = serde_json::Map::new();
     fields.insert("target".into(), Value::String(target.to_owned()));
@@ -199,13 +129,53 @@ pub fn delivery_args_hash(
             serde_json::to_value(author).unwrap_or(Value::Null)
         }),
     );
+    if let Some(key) = collapse_key {
+        fields.insert("collapse_key".into(), Value::String(key.to_owned()));
+    }
     hash_args(&Value::Object(fields))
 }
 
+const QUEUE_FULL_NOT_RUNNING: &str = "The target is not running, so nothing takes its queue until it resumes. Resume it, or send again after details.frees_at, when its oldest queued message expires and frees a slot.";
+
 fn fail(code: &str, message: impl Into<String>, details: Option<Value>) -> GatewayDeliveryResult {
-    GatewayDeliveryResult::Error {
-        error: engine_failure(code, message, details),
-    }
+    let error = match code {
+        "pair_loop_guard" => {
+            let retry_after = details
+                .as_ref()
+                .and_then(|d| d.get("retry_after_ms"))
+                .and_then(Value::as_i64)
+                .unwrap_or(5_000);
+            thread_tool_failure(
+                code,
+                message,
+                pair_loop_guard_next_action(retry_after),
+                details,
+            )
+        }
+        "queue_full"
+            if details
+                .as_ref()
+                .and_then(|d| d.get("target_running"))
+                .and_then(Value::as_bool)
+                == Some(false) =>
+        {
+            thread_tool_failure(code, message, QUEUE_FULL_NOT_RUNNING, details)
+        }
+        "queue_full" => thread_tool_failure(
+            code,
+            message,
+            "Read details.reason: the target is not taking its queue. A steer has its own reserve; send repeats with one collapse_key so each replaces the last.",
+            details,
+        ),
+        "loop_detected" => thread_tool_failure(
+            code,
+            message,
+            "A session cannot message itself through the gateway; address another thread.",
+            details,
+        ),
+        _ => engine_failure(code, message, details),
+    };
+    GatewayDeliveryResult::Error { error }
 }
 
 impl GatewayEngine {
@@ -298,8 +268,10 @@ impl GatewayEngine {
             sender_node: facts.node.clone(),
             sender_turn: facts.turn.clone(),
             cause_delivery_id: facts.cause.clone(),
+            inbound_hop: request.inbound_hop,
+            authority: request.authority,
             claimed_root_id: request.root_id.clone(),
-            origin: facts.origin.clone(),
+            origin: facts.origin(&delivery_id),
             actor: facts.actor.clone(),
             body: request.text.clone(),
             mode,
@@ -307,20 +279,32 @@ impl GatewayEngine {
             binding: facts.binding.clone(),
             receipt: ReceiptRef {
                 idempotency_key: idempotency_key.clone(),
-                args_hash: delivery_args_hash(
+                args_hash: delivery_args_hash_with_collapse(
                     &target.durable_id,
                     &request.text,
                     mode,
                     request.expected_turn_id,
                     facts.binding.as_ref(),
                     author,
+                    request.collapse_key.as_deref(),
                 ),
             },
             endpoint_kind: endpoint.as_ref().map(|endpoint| endpoint.kind),
+            collapse_key: request.collapse_key.clone(),
         };
         let outcome = match self.options.store.enqueue(&enqueue) {
             Ok(outcome) => outcome,
             Err(error) => return fail("internal_error", error.message(), None),
+        };
+        let settle = |result: GatewayDeliveryResult| {
+            let serialized = serde_json::to_value(&result).unwrap_or(Value::Null);
+            let _ = self.options.store.complete_receipt(
+                self.now(),
+                &facts.principal,
+                &idempotency_key,
+                &serialized,
+            );
+            result
         };
         match outcome {
             EnqueueOutcome::Busy => fail(
@@ -342,6 +326,7 @@ impl GatewayEngine {
                         delivery,
                         effective_mode,
                         endpoint_kind,
+                        collapsed,
                         ..
                     }) => GatewayDeliveryResult::Ok {
                         thread_id,
@@ -351,40 +336,69 @@ impl GatewayEngine {
                         effective_mode,
                         endpoint_kind,
                         deduplicated: true,
+                        collapsed,
                     },
                     Ok(other) => other,
                     Err(error) => fail("internal_error", error.to_string(), None),
                 }
             }
+            EnqueueOutcome::Collapsed {
+                row,
+                queue_position,
+            } => {
+                let absorbed = result_from_row(
+                    &row,
+                    queue_position,
+                    endpoint.as_ref().map(|e| e.kind),
+                    true,
+                    false,
+                );
+                settle(match absorbed {
+                    GatewayDeliveryResult::Ok {
+                        thread_id,
+                        delivery_id,
+                        message_seq,
+                        delivery,
+                        effective_mode,
+                        endpoint_kind,
+                        deduplicated,
+                        ..
+                    } => GatewayDeliveryResult::Ok {
+                        thread_id,
+                        delivery_id,
+                        message_seq,
+                        delivery,
+                        effective_mode,
+                        endpoint_kind,
+                        deduplicated,
+                        collapsed: Some(true),
+                    },
+                    err => err,
+                })
+            }
             EnqueueOutcome::Inserted {
                 row,
                 queue_position,
             } => {
-                let settle = |result: GatewayDeliveryResult| {
-                    let serialized = serde_json::to_value(&result).unwrap_or(Value::Null);
-                    let _ = self.options.store.complete_receipt(
-                        self.now(),
-                        &facts.principal,
-                        &idempotency_key,
-                        &serialized,
-                    );
-                    result
-                };
                 let Some(endpoint) = endpoint else {
                     return settle(result_from_row(&row, queue_position, None, false, true));
                 };
                 let reply =
                     (self.options.endpoints.wake)(endpoint.clone(), vec![delivery_id.clone()])
                         .await;
-                let reached = reply.unroutable.is_none();
                 match self.options.store.delivery_view(&delivery_id) {
-                    Ok(Some(view)) => settle(result_from_row(
-                        &view.row,
-                        view.queue_position,
-                        Some(endpoint.kind),
-                        false,
-                        !reached,
-                    )),
+                    Ok(Some(view)) => {
+                        let drained = reply.unroutable.is_none()
+                            && (view.row.state != DeliveryState::Queued
+                                || !reply.admitted.is_empty());
+                        settle(result_from_row(
+                            &view.row,
+                            view.queue_position,
+                            Some(endpoint.kind),
+                            false,
+                            !drained,
+                        ))
+                    }
                     Ok(None) => fail(
                         "internal_error",
                         format!("delivery {delivery_id} vanished after commit"),
@@ -405,6 +419,8 @@ pub fn envelope_of(row: &super::types::DeliveryRow) -> DeliveryEnvelope {
             project: "unknown".into(),
             lane: None,
             session: None,
+            device: None,
+            device_absent: None,
         }),
         origin: row.envelope.origin.clone(),
         actor: row.envelope.actor.clone(),
@@ -412,6 +428,7 @@ pub fn envelope_of(row: &super::types::DeliveryRow) -> DeliveryEnvelope {
         root_id: row.envelope.root_id.clone(),
         hop: row.envelope.hop,
         delivery_id: row.envelope.delivery_id.clone(),
+        authority: row.envelope.authority,
     }
 }
 

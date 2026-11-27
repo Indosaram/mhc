@@ -14,7 +14,7 @@ pub fn category_for_provider_code(code: &str) -> Option<Category> {
         "invalid_request_error" => Category::InvalidRequest,
         "overloaded_error" | "api_error" | "timeout_error" => Category::ProviderUnavailable,
         "billing_error" | "permission_error" | "not_found_error" => Category::Unknown,
-        _ => return None,
+        _ => return super::siwc_errors::siwc_error_for_code(code).map(|(category, _, _)| category),
     })
 }
 

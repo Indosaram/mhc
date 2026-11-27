@@ -138,7 +138,6 @@ pub fn build_start_spec(
     parent_session_id: &str,
     deps: &TaskToolDeps,
     cwd: &str,
-    parent_model: Option<&crate::tools::task::foreground_wait::ParentModel>,
 ) -> ResolvedManagerStartSpec {
     let ancestry = deps
         .resolve_ancestry
@@ -202,7 +201,6 @@ pub fn build_start_spec(
         depth: TryFrom::try_from(depth).unwrap_or_default(),
         category,
         subagent_type,
-        parent_model: parent_model.map(|model| format!("{}/{}", model.provider, model.id)),
         model: params.model.clone(),
         name: params.name.clone(),
         description: params.description.clone(),

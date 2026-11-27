@@ -14,7 +14,131 @@ use memory_core::{
         tool_errors::MemoryToolError,
     },
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex, OnceLock},
+};
+
+#[derive(Default)]
+struct RepoCreationWait {
+    outcome: Mutex<(Option<Result<(), String>>, usize)>,
+    signal: Condvar,
+}
+
+static REPO_CREATIONS: OnceLock<Mutex<HashMap<PathBuf, Arc<RepoCreationWait>>>> = OnceLock::new();
+
+fn repo_creations() -> &'static Mutex<HashMap<PathBuf, Arc<RepoCreationWait>>> {
+    REPO_CREATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct CreationGuard {
+    key: PathBuf,
+    wait: Arc<RepoCreationWait>,
+    finished: bool,
+}
+
+impl CreationGuard {
+    fn finish(mut self, result: Result<(), String>) {
+        let mut creations = repo_creations()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        creations.remove(&self.key);
+        drop(creations);
+        let mut guard = self
+            .wait
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.0 = Some(result);
+        self.wait.signal.notify_all();
+        self.finished = true;
+    }
+}
+
+impl Drop for CreationGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut creations = repo_creations()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        creations.remove(&self.key);
+        drop(creations);
+        let mut guard = self
+            .wait
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.0.is_none() {
+            guard.0 = Some(Err("memory repository creation aborted".to_owned()));
+            self.wait.signal.notify_all();
+        }
+    }
+}
+
+fn ensure_repo_initialized_coalesced(
+    repo_dir: &Path,
+    create: impl FnOnce() -> Result<(), MemoryToolError>,
+) -> Result<(), MemoryToolError> {
+    enum Role {
+        Join(Arc<RepoCreationWait>),
+        Lead(CreationGuard),
+        AlreadyExists,
+    }
+    let role = {
+        let mut creations = repo_creations()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(wait) = creations.get(repo_dir).cloned() {
+            Role::Join(wait)
+        } else if repo_dir.join(".git").exists() {
+            Role::AlreadyExists
+        } else {
+            let wait = Arc::new(RepoCreationWait::default());
+            creations.insert(repo_dir.to_path_buf(), Arc::clone(&wait));
+            Role::Lead(CreationGuard {
+                key: repo_dir.to_path_buf(),
+                wait,
+                finished: false,
+            })
+        }
+    };
+    match role {
+        Role::AlreadyExists => Ok(()),
+        Role::Join(wait) => {
+            let mut guard = wait
+                .outcome
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.1 += 1;
+            wait.signal.notify_all();
+            while guard.0.is_none() {
+                guard = wait
+                    .signal
+                    .wait(guard)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            match guard.0.as_ref() {
+                Some(Ok(())) => Ok(()),
+                Some(Err(err)) => Err(MemoryToolError::new(err.clone())),
+                None => Ok(()),
+            }
+        }
+        Role::Lead(guard) => match create() {
+            Ok(()) => {
+                guard.finish(Ok(()));
+                Ok(())
+            }
+            Err(err) => {
+                let message = err.to_string();
+                guard.finish(Err(message));
+                Err(err)
+            }
+        },
+    }
+}
 pub struct MemoryEngineSession {
     pub repo: GitMemoryRepo,
     pub lock: MemoryWriterLock,
@@ -89,7 +213,7 @@ pub fn prepare_memory_engine_session(
         wait_timeout_ms: options.lock_wait_timeout_ms.unwrap_or(5000),
         retry_delay_ms: options.lock_retry_delay_ms,
     };
-    if !paths.repo.join(".git").exists() {
+    ensure_repo_initialized_coalesced(&paths.repo, || {
         lock.run("memory-write", || {
             if !paths.repo.join(".git").exists() {
                 repo.init(InitializeGitRepoOptions {
@@ -109,8 +233,8 @@ pub fn prepare_memory_engine_session(
                 })?;
             }
             Ok::<_, GitError>(())
-        })?;
-    }
+        })
+    })?;
     crate::worker::spawn_supervisor_support::install_memory_hooks(&paths.repo)
         .map_err(|error| MemoryToolError::new(error.to_string()))?;
     Ok(MemoryEngineSession {
@@ -172,5 +296,66 @@ mod tests {
             "operation failed"
         );
         assert!(!lock.path.exists());
+    }
+
+    #[test]
+    fn concurrent_repo_creations_coalesce_and_retry_after_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("coalesce-repo");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+
+        let c1 = Arc::clone(&calls);
+        let r1 = Arc::clone(&release);
+        let p1 = repo_dir.clone();
+        let lead = std::thread::spawn(move || {
+            ensure_repo_initialized_coalesced(&p1, || {
+                c1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                entered_tx.send(()).unwrap();
+                let mut guard = r1.0.lock().unwrap();
+                while !*guard {
+                    guard = r1.1.wait(guard).unwrap();
+                }
+                Err(MemoryToolError::new("transient init failure"))
+            })
+        });
+        entered_rx.recv().unwrap();
+
+        let c2 = Arc::clone(&calls);
+        let p2 = repo_dir.clone();
+        let joiner = std::thread::spawn(move || {
+            ensure_repo_initialized_coalesced(&p2, || {
+                c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        let wait = {
+            let creations = repo_creations().lock().unwrap();
+            Arc::clone(creations.get(&repo_dir).expect("inflight creation entry"))
+        };
+        {
+            let mut guard = wait.outcome.lock().unwrap();
+            while guard.1 < 1 {
+                guard = wait.signal.wait(guard).unwrap();
+            }
+        }
+        {
+            let mut guard = release.0.lock().unwrap();
+            *guard = true;
+            release.1.notify_all();
+        }
+        assert!(lead.join().unwrap().is_err());
+        assert!(joiner.join().unwrap().is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Next caller after a failed creation retries cleanly instead of staying poisoned.
+        ensure_repo_initialized_coalesced(&repo_dir, || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::fs::create_dir_all(repo_dir.join(".git")).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

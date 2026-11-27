@@ -4,7 +4,7 @@ pub enum PromptPresetName {
     Auto,
     ClaudeFable5,
     ClaudeFable51,
-    ClaudeFable55,
+    ClaudeFable52,
     ClaudeOpus55,
     ClaudeOpus5,
     ClaudeSonnet55,
@@ -35,13 +35,14 @@ pub enum PromptPresetName {
     Gpt55,
     Gpt56,
     Gpt6Astra,
+    Gpt62,
 }
 impl PromptPresetName {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::ClaudeFable5 => "claude-fable-5",
-            Self::ClaudeFable55 => "claude-fable-5-5",
+            Self::ClaudeFable52 => "claude-fable-5-2",
             Self::ClaudeFable51 => "claude-fable-5-1",
             Self::ClaudeOpus55 => "claude-opus-5-5",
             Self::ClaudeOpus5 => "claude-opus-5",
@@ -73,6 +74,7 @@ impl PromptPresetName {
             Self::Gpt55 => "gpt-5.5",
             Self::Gpt56 => "gpt-5.6",
             Self::Gpt6Astra => "gpt-6-astra",
+            Self::Gpt62 => "gpt-6.2",
         }
     }
 }
@@ -80,7 +82,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
     match value? {
         "auto" => Some(PromptPresetName::Auto),
         "claude-fable-5" => Some(PromptPresetName::ClaudeFable5),
-        "claude-fable-5-5" => Some(PromptPresetName::ClaudeFable55),
+        "claude-fable-5-2" => Some(PromptPresetName::ClaudeFable52),
         "claude-fable-5-1" => Some(PromptPresetName::ClaudeFable51),
         "claude-opus-5-5" => Some(PromptPresetName::ClaudeOpus55),
         "claude-opus-5" => Some(PromptPresetName::ClaudeOpus5),
@@ -112,6 +114,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
         "gpt-5.5" => Some(PromptPresetName::Gpt55),
         "gpt-5.6" => Some(PromptPresetName::Gpt56),
         "gpt-6-astra" => Some(PromptPresetName::Gpt6Astra),
+        "gpt-6.2" => Some(PromptPresetName::Gpt62),
         _ => None,
     }
 }
@@ -126,7 +129,7 @@ pub fn load_prompt_preset_settings(
 
 pub const VALID_PRESETS: &[&str] = &[
     "auto",
-    "claude-fable-5-5",
+    "claude-fable-5-2",
     "claude-fable-5",
     "claude-fable-5-1",
     "claude-opus-5-5",
@@ -159,6 +162,7 @@ pub const VALID_PRESETS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.6",
     "gpt-6-astra",
+    "gpt-6.2",
 ];
 
 pub fn is_valid_preset(value: &str) -> bool {

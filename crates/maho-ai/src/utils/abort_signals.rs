@@ -43,6 +43,11 @@ pub fn combine_abort_signals(signals: &[Option<AbortSignal>]) -> CombinedAbortSi
         let forward = controller.clone();
         let id = signal.add_abort_listener(move |reason| forward.abort(Some(reason.clone())));
         listeners.push((signal.clone(), id));
+        // Abort may have happened between the initial reason check and registration.
+        if let Some(reason) = signal.reason() {
+            controller.abort(Some(reason));
+            break;
+        }
     }
 
     CombinedAbortSignal {

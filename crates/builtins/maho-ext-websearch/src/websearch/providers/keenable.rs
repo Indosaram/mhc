@@ -1,7 +1,7 @@
 //! Port of senpi `websearch/websearch/providers/keenable.ts` (pin 903b8336).
 use crate::websearch::providers::shared::{
     BuildContext, BuiltSearchRequest, SearchResultItem, append_domain_filters, clamp, collect,
-    content_headers, json_count, result,
+    content_headers, http_url, json_count, result,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -9,16 +9,6 @@ use std::collections::BTreeMap;
 pub const DEFAULT_URL: &str = "https://api.keenable.ai/v1/search";
 /// Keyless twin of the default endpoint; identified by `X-Keenable-Title` instead of a key.
 pub const PUBLIC_SEARCH_URL: &str = "https://api.keenable.ai/v1/search/public";
-
-/// Accepts only absolute http(s) URLs; control characters would let text merge into the URL.
-fn http_url(value: Option<&str>) -> Option<String> {
-    let value = value.filter(|value| !value.is_empty() && value.len() <= 2048)?;
-    if value.contains(['\t', '\n', '\r']) {
-        return None;
-    }
-    let url = url::Url::parse(value).ok()?;
-    matches!(url.scheme(), "http" | "https").then(|| url.into())
-}
 
 pub fn build_request(ctx: &BuildContext<'_>) -> BuiltSearchRequest {
     // A lone allowed domain maps to the native host-only `site` field.

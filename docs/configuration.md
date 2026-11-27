@@ -28,6 +28,44 @@ whether every category resolves to an available model.
 If you keep a separate agent directory (for example `MAHO_CODING_AGENT_DIR=~/.maho/agent`),
 `mhc import-omo` copies settings, models, keybindings, auth and sessions over from `~/.omo/agent`.
 
+## MCP servers declared by a skill
+
+In a skill's `mcp.json` sidecar or `SKILL.md` frontmatter, `timeout` sets the deadline
+for each MCP request, in milliseconds. Use a positive number no greater than
+`2147483647`; an invalid value leaves the default in effect. If the declaration also
+sets the native `requestTimeoutMs`, that setting takes precedence in the built-in MCP service.
+The request deadline does not extend the connection deadline.
+
+Use `type: "sse"` for a legacy server that advertises a message endpoint on a GET
+event stream. The client posts messages to that same-origin endpoint and reads replies
+from the stream. For Streamable HTTP servers, use `type: "http"` or just `url`.
+These skill settings do not grant access to environment variables or credentials.
+
+## Ultrawork keyword activation
+
+In either native build profile, add this to your user or project `omo.jsonc` to stop `ulw`,
+`ultrawork`, and their mass aliases from activating ultrawork automatically:
+
+```jsonc
+{
+  "keyword_detector": {
+    "disabled_keywords": ["ultrawork"]
+  }
+}
+```
+
+- `disabled_keywords` is a denylist. It wins even if the same mode is in `enabled_expansions`.
+- `enabled_expansions` is an optional allowlist. Omit it to keep the default, or use `[]` to allow
+  no expansions. If set, it must include `ultrawork` for the keyword to activate the mode.
+- The shared lists also accept `team`, `hyperplan`, and `hyperplan-ultrawork`; those entries do
+  not activate separate modes in mhc.
+
+The settings may also appear under `"[native]"` and in a named profile. Later config layers
+replace each list they specify, not the entire `keyword_detector` object. The launch flag
+`--ultrawork-disabled` can still disable activation regardless of the lists; the OmO build
+also has `--omo-senpi-ultrawork-disabled`. These settings do not block ordinary prompt
+delivery or explicit skill invocation.
+
 ## Session retention
 
 Sessions are kept forever by default. Set `sessionRetentionDays` in `settings.json` to a whole number

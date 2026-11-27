@@ -17,9 +17,12 @@ pub async fn spawn_process_worker(
         None => require_codemode_runtime_asset(None, Path::new("kernels/js/process-entry.js"))
             .map_err(|error| ProcessError::Startup(error.to_string()))?,
     };
-    let mut env = maho_ext_api::process_env::vars()
-        .into_iter()
-        .collect::<std::collections::HashMap<_, _>>();
+    let mut env = match options.inherited_env {
+        Some(inherited) => inherited(),
+        None => maho_ext_api::process_env::vars()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>(),
+    };
     env.insert(
         "SENPI_CODEMODE_PROCESS_POOL_WIDTH".into(),
         options.parallel_pool_width.to_string(),
@@ -28,6 +31,12 @@ pub async fn spawn_process_worker(
         "SENPI_CODEMODE_PROCESS_CWD".into(),
         options.cwd.to_string_lossy().into_owned(),
     );
+    if options.kill_guard.is_some() {
+        env.insert(
+            "SENPI_KILL_GUARD_BRIDGE_PORT".into(),
+            options.connection.port.to_string(),
+        );
+    }
     super::worker_host::scrub_host_env(&mut env, options.env_passthrough);
     let token = uuid::Uuid::new_v4().simple().to_string();
     let mut process = SubprocessProcess::spawn_with_frame_token(

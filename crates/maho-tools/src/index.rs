@@ -1,8 +1,17 @@
 use crate::{
-    bash::*, definition::ToolDefinition, edit::*, find::*, grep::*, ls::*, powershell::*, read::*,
+    bash::*,
+    definition::ToolDefinition,
+    edit::*,
+    find::*,
+    grep::*,
+    ls::*,
+    machine::{ToolMachine, ToolPathPolicy, create_tool_machine},
+    powershell::*,
+    read::*,
     write::*,
 };
-use std::{collections::BTreeMap, path::Path};
+use maho_machine_ops::MachineOps;
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 pub const ALL_TOOL_NAMES: [&str; 9] = [
     "read",
     "bash",
@@ -14,7 +23,7 @@ pub const ALL_TOOL_NAMES: [&str; 9] = [
     "glob",
     "ls",
 ];
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ToolsOptions {
     pub read: ReadToolOptions,
     pub bash: BashToolOptions,
@@ -25,11 +34,31 @@ pub struct ToolsOptions {
     pub find: FindToolOptions,
     pub glob: FindToolOptions,
     pub ls: LsToolOptions,
+    /// Operation layer every tool calls. Default: the process-wide local machine.
+    pub machine_ops: Option<Arc<dyn MachineOps>>,
+    /// Hooks for the tool path: only `beforeOp`, run once per tool call before any effect.
+    pub machine_policy: Option<ToolPathPolicy>,
+}
+fn tool_machine(options: &ToolsOptions) -> ToolMachine {
+    create_tool_machine(options.machine_ops.clone(), options.machine_policy.clone())
 }
 pub fn create_all_tool_definitions(
     cwd: &Path,
-    options: ToolsOptions,
+    mut options: ToolsOptions,
 ) -> BTreeMap<String, ToolDefinition> {
+    let machine = tool_machine(&options);
+    options.read.machine.get_or_insert_with(|| machine.clone());
+    options.bash.machine.get_or_insert_with(|| machine.clone());
+    options
+        .powershell
+        .machine
+        .get_or_insert_with(|| machine.clone());
+    options.edit.machine.get_or_insert_with(|| machine.clone());
+    options.write.machine.get_or_insert_with(|| machine.clone());
+    options.grep.machine.get_or_insert_with(|| machine.clone());
+    options.find.machine.get_or_insert_with(|| machine.clone());
+    options.glob.machine.get_or_insert_with(|| machine.clone());
+    options.ls.machine.get_or_insert(machine);
     let find = create_find_tool_definition(cwd.into(), options.find);
     let glob = create_glob_tool_definition(cwd, options.glob);
     [
@@ -47,7 +76,15 @@ pub fn create_all_tool_definitions(
     .map(|tool| (tool.name.clone(), tool))
     .collect()
 }
-pub fn create_coding_tool_definitions(cwd: &Path, options: ToolsOptions) -> Vec<ToolDefinition> {
+pub fn create_coding_tool_definitions(
+    cwd: &Path,
+    mut options: ToolsOptions,
+) -> Vec<ToolDefinition> {
+    let machine = tool_machine(&options);
+    options.read.machine.get_or_insert_with(|| machine.clone());
+    options.bash.machine.get_or_insert_with(|| machine.clone());
+    options.edit.machine.get_or_insert_with(|| machine.clone());
+    options.write.machine.get_or_insert(machine);
     vec![
         create_read_tool_definition(cwd.into(), options.read),
         create_bash_tool_definition(cwd.into(), options.bash),
@@ -64,7 +101,15 @@ pub fn create_glob_tool_definition(cwd: &Path, options: FindToolOptions) -> Tool
     glob.exposure = Some(crate::definition::ToolExposure::Eval);
     glob
 }
-pub fn create_read_only_tool_definitions(cwd: &Path, options: ToolsOptions) -> Vec<ToolDefinition> {
+pub fn create_read_only_tool_definitions(
+    cwd: &Path,
+    mut options: ToolsOptions,
+) -> Vec<ToolDefinition> {
+    let machine = tool_machine(&options);
+    options.read.machine.get_or_insert_with(|| machine.clone());
+    options.grep.machine.get_or_insert_with(|| machine.clone());
+    options.find.machine.get_or_insert_with(|| machine.clone());
+    options.ls.machine.get_or_insert(machine);
     vec![
         create_read_tool_definition(cwd.into(), options.read),
         create_grep_tool_definition(cwd.into(), options.grep),

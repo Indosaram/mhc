@@ -73,12 +73,45 @@ impl<S: ShutdownDrainSteps> ShutdownDrain<S> {
     pub fn register_evaluator(&mut self, evaluator: Box<dyn ShutdownEvaluator>) {
         self.evaluators.push(evaluator);
     }
+    /// Runs `"journal-flush"` first so pre-drain settles never consume its budget (`2a55e3024b`).
+    pub async fn flush_journal<N: Fn() -> f64 + ?Sized, W: FnMut(&str, Option<&str>) + ?Sized>(
+        &mut self,
+        session: &str,
+        deadline: f64,
+        now: &N,
+        warn: &mut W,
+    ) -> bool {
+        let signal = ShutdownSignal::default();
+        let _abort = AbortOnReturn(signal.clone());
+        if now() >= deadline {
+            signal.abort();
+            warn("journal-flush", None);
+            return false;
+        }
+        let work = self.steps.flush_journal(session, signal.clone());
+        run_step(work, "journal-flush", deadline, now, &signal, warn).await
+    }
     pub async fn run<N: Fn() -> f64 + ?Sized, W: FnMut(&str, Option<&str>) + ?Sized>(
         &mut self,
         reason: ShutdownReason,
         session: &str,
         deadline: f64,
         now: &N,
+        warn: &mut W,
+    ) {
+        self.run_with_journal_flushed(reason, session, deadline, now, false, warn)
+            .await;
+    }
+    pub async fn run_with_journal_flushed<
+        N: Fn() -> f64 + ?Sized,
+        W: FnMut(&str, Option<&str>) + ?Sized,
+    >(
+        &mut self,
+        reason: ShutdownReason,
+        session: &str,
+        deadline: f64,
+        now: &N,
+        journal_flushed: bool,
         warn: &mut W,
     ) {
         let signal = ShutdownSignal::default();
@@ -89,6 +122,9 @@ impl<S: ShutdownDrainSteps> ShutdownDrain<S> {
             "skills-usage-flush",
             "facts-launch",
         ] {
+            if name == "journal-flush" && journal_flushed {
+                continue;
+            }
             if reason != ShutdownReason::Quit && name == "skills-usage-flush" {
                 return;
             }

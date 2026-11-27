@@ -129,6 +129,8 @@ mod cell_handler_failures {
                 json!({"type":"object","properties":{"steps":{"type":"array","description":"Canonical steps to run in order.","items":{"type":"object","properties":{"tool":{"type":"string"},"input":{"type":"object"}},"required":["tool"]}}},"required":["steps"]}),
             ),
             kernel_prelude: None,
+            exposure: None,
+            eval_only: None,
         }
     }
 
@@ -143,6 +145,7 @@ mod cell_handler_failures {
                 on_timeout: None,
                 reset: None,
                 isolate: None,
+                language_inferred: None,
             },
             runtime: None,
             started_at: 0.0,
@@ -182,6 +185,7 @@ mod cell_handler_failures {
                 tools: Some(Arc::new(|| Ok(vec![batch_tool()]))),
                 complete: None,
                 settings: Default::default(),
+                renderer_lookup: None,
                 signal: controller.signal(),
                 deliver_reply: Arc::new(move |reply| {
                     sender.send(reply).expect("reply receiver");

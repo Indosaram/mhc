@@ -8,6 +8,11 @@ use crate::support::entry;
 fn quick_places_non_reasoning_deepseek_v4_flash_after_luna_and_haiku() {
     let quick = &CATEGORY_MODEL_REQUIREMENTS["quick"].fallback_chain;
 
+    assert!(
+        !quick
+            .iter()
+            .any(|entry| entry.model == "kimi-for-coding-highspeed")
+    );
     assert_eq!(
         quick[0..3].to_vec(),
         vec![

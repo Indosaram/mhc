@@ -2,6 +2,7 @@
 pub type AdmitCallback =
     Arc<dyn Fn(&crate::runners::types::RpcRunnerSpec) -> Result<(), HostError> + Send + Sync>;
 pub mod durable_json;
+pub mod generation_view;
 pub mod handle;
 pub mod handle_heartbeat;
 pub mod handle_listeners;
@@ -13,6 +14,7 @@ pub mod host_command_dispatch;
 pub mod host_warmup;
 pub mod open_session;
 pub mod own_endpoint;
+pub mod permission_push;
 pub mod reattach_port;
 pub mod session_client_connection;
 pub mod session_client_opening;

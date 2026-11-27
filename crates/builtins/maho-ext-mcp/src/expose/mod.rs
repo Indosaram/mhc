@@ -1,6 +1,5 @@
 pub mod call;
 pub mod naming;
-pub mod native_search;
 pub mod pagination;
 pub mod policy;
 pub mod proxy;

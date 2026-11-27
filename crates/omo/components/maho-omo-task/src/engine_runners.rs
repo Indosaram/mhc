@@ -122,7 +122,13 @@ pub fn without_excluded_fallbacks_runner(
 pub fn build_in_process_runner(
     build: InProcessRunnerBuildContext,
 ) -> std::sync::Arc<dyn senpi_task::manager::types::ManagedRunner> {
-    let runner = senpi_task::runners::in_process::InProcessRunner::new(
+    build_in_process_runner_with_dialogs(build, None)
+}
+pub fn build_in_process_runner_with_dialogs(
+    build: InProcessRunnerBuildContext,
+    dialogs: Option<std::sync::Arc<dyn senpi_task::ChildDialogForwarder>>,
+) -> std::sync::Arc<dyn senpi_task::manager::types::ManagedRunner> {
+    let mut runner = senpi_task::runners::in_process::InProcessRunner::new(
         senpi_task::runners::in_process::InProcessRunnerOptions {
             shared_parent_tools: build.shared_parent_tools,
             ui_only_tool_names: TASK_CHILD_UI_ONLY_TOOL_NAMES
@@ -134,6 +140,9 @@ pub fn build_in_process_runner(
             create_session: build.create_session,
         },
     );
+    if let Some(dialogs) = dialogs {
+        runner = runner.with_dialogs(dialogs);
+    }
     let runner=senpi_task::manager::runner::create_in_process_managed_runner(runner,senpi_task::manager::parent_registry_context::create_parent_registry_session_context_with_exclusions(build.parent_registry,build.exclude_models.clone()));
     without_excluded_fallbacks_runner(runner, &build.exclude_models)
 }
@@ -211,32 +220,51 @@ pub struct TaskRunnerBuildOptions {
 pub fn build_task_runners(
     build: TaskRunnerBuildOptions,
 ) -> senpi_task::manager::types::ManagedRunners {
+    build_task_runners_with_parent(build, None, None)
+}
+pub fn build_task_runners_with_parent(
+    build: TaskRunnerBuildOptions,
+    dialogs: Option<std::sync::Arc<dyn senpi_task::ChildDialogForwarder>>,
+    parent_permission: Option<std::sync::Arc<dyn senpi_task::ParentPermissionMode>>,
+) -> senpi_task::manager::types::ManagedRunners {
     let TaskRunnerBuildOptions {
         shared_parent_tools,
         get_shared_parent_tools,
         max_depth,
         create_session,
         parent_registry,
-        rpc_options,
+        mut rpc_options,
         exclude_models,
     } = build;
+    if rpc_options.dialogs.is_none() {
+        rpc_options.dialogs = dialogs.clone();
+    }
+    if rpc_options.parent_permission.is_none() {
+        rpc_options.parent_permission = parent_permission;
+    }
     let in_process = match get_shared_parent_tools {
         Some(shared_parent_tools) => {
-            build_live_in_process_runner(LiveInProcessRunnerBuildContext {
+            let dialogs = dialogs.clone();
+            let base = build_live_in_process_runner(LiveInProcessRunnerBuildContext {
                 shared_parent_tools,
                 max_depth,
                 create_session,
                 parent_registry,
                 exclude_models: exclude_models.clone(),
-            })
+            });
+            let _ = dialogs;
+            base
         }
-        None => build_in_process_runner(InProcessRunnerBuildContext {
-            shared_parent_tools,
-            max_depth,
-            create_session,
-            parent_registry,
-            exclude_models: exclude_models.clone(),
-        }),
+        None => build_in_process_runner_with_dialogs(
+            InProcessRunnerBuildContext {
+                shared_parent_tools,
+                max_depth,
+                create_session,
+                parent_registry,
+                exclude_models: exclude_models.clone(),
+            },
+            dialogs,
+        ),
     };
     let process =
         without_excluded_fallbacks_runner(build_process_runner(rpc_options), &exclude_models);

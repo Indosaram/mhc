@@ -12,7 +12,6 @@ fn flow(load: fn() -> Arc<dyn OAuthAuth>) -> FlowLoader {
 
 pub fn register_bun_oauth_flows() {
     register_bundled_oauth_flow_loaders(OAuthFlowLoaders {
-        anthropic: flow(crate::auth::oauth::anthropic::anthropic_oauth),
         chatgpt_subscription: flow(
             crate::auth::oauth::chatgpt_subscription::chatgpt_subscription_oauth,
         ),
@@ -44,17 +43,20 @@ pub fn register_bun_oauth_flows() {
 mod tests {
     use super::*;
     use crate::auth::oauth::load::{
-        load_anthropic_oauth, load_chatgpt_subscription_oauth, load_cursor_oauth, load_devin_oauth,
-        load_github_copilot_oauth, load_kimi_coding_oauth, load_open_router_oauth, load_xai_oauth,
+        BUILTIN_OAUTH_PROVIDERS, load_builtin_oauth, load_chatgpt_subscription_oauth,
+        load_cursor_oauth, load_devin_oauth, load_github_copilot_oauth, load_kimi_coding_oauth,
+        load_open_router_oauth, load_xai_oauth,
     };
 
     #[tokio::test]
     async fn registers_every_bundled_flow_for_the_standalone_binary() {
         register_bun_oauth_flows();
-        assert_eq!(
-            load_anthropic_oauth().await.unwrap().name(),
-            "Anthropic (Claude Pro/Max)"
+        assert!(
+            !BUILTIN_OAUTH_PROVIDERS
+                .iter()
+                .any(|(id, _)| *id == "anthropic")
         );
+        assert!(load_builtin_oauth("anthropic").await.unwrap().is_none());
         assert_eq!(
             load_chatgpt_subscription_oauth().await.unwrap().name(),
             "ChatGPT Subscription (Plus/Pro)"

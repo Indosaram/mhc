@@ -38,6 +38,13 @@ pub struct CircuitFailure {
     pub retry_after_ms: Option<f64>,
 }
 
+/// A rung the switch refused during a fallback walk: its selector and the guard's message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FallbackRungRefusal {
+    pub model: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FallbackSettings {
     pub model_fallback: bool,
@@ -59,6 +66,12 @@ pub enum RetryFallbackControllerEvent {
         to: String,
         cause: Option<FallbackRevertCause>,
     },
+    UsageLimitScopeProbe {
+        provider: String,
+        held_family: String,
+        probe_family: String,
+        outcome: super::unusable::UsageLimitScopeProbeOutcome,
+    },
 }
 
 impl RetryFallbackControllerEvent {
@@ -66,6 +79,7 @@ impl RetryFallbackControllerEvent {
         match self {
             Self::Applied { .. } => "retry_fallback_applied",
             Self::Reverted { .. } => "retry_fallback_reverted",
+            Self::UsageLimitScopeProbe { .. } => "usage_limit_scope_probe",
         }
     }
 }

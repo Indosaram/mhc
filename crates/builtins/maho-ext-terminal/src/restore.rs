@@ -139,7 +139,38 @@ fn rpc_checkpoint(value: &Value) -> Result<TerminalManifestRpcCheckpoint> {
             .ok_or_else(|| invalid("field rpcCheckpoint.statuses values must be strings"))?;
         checkpoint.statuses.insert(key.clone(), status.to_owned());
     }
+    if let Some(remote) = raw.get("remote") {
+        checkpoint.remote = Some(remote_checkpoint(remote)?);
+    }
     Ok(checkpoint)
+}
+
+fn remote_checkpoint(value: &Value) -> Result<crate::rpc_monitor_remote::RpcRemoteCheckpoint> {
+    let raw = object(value, "field rpcCheckpoint.remote must be an object")?;
+    let settled_obj = object(
+        raw.get("settled").unwrap_or(&Value::Null),
+        "field rpcCheckpoint.remote must be an object",
+    )?;
+    let mut settled = std::collections::BTreeMap::new();
+    for (key, turns) in settled_obj {
+        let arr = turns.as_array().ok_or_else(|| {
+            invalid("field rpcCheckpoint.remote.settled values must be arrays of strings")
+        })?;
+        let mut items = Vec::with_capacity(arr.len());
+        for turn in arr {
+            let s = turn.as_str().ok_or_else(|| {
+                invalid("field rpcCheckpoint.remote.settled values must be arrays of strings")
+            })?;
+            items.push(s.to_owned());
+        }
+        settled.insert(key.clone(), items);
+    }
+    let cursor = if raw.contains_key("cursor") {
+        Some(str_field(raw, "cursor")?)
+    } else {
+        None
+    };
+    Ok(crate::rpc_monitor_remote::RpcRemoteCheckpoint { cursor, settled })
 }
 fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
     let raw = object(value, "a monitor entry must be an object")?;
@@ -480,5 +511,45 @@ mod tests {
             .await,
             RestoreDigest::default()
         );
+    }
+
+    #[test]
+    fn rpc_checkpoint_parses_remote_cursor_and_settled_turns() -> Result<()> {
+        let mut payload = raw();
+        payload["monitors"][0]["runtimeKind"] = json!("rpc");
+        payload["monitors"][0]["durabilityClass"] = json!("checkpointed-rpc");
+        payload["monitors"][0]["spec"] = json!({
+            "kind": "rpc",
+            "description": "remote",
+            "target": "laptop/abc",
+            "events": ["session_status"],
+            "exclude": [],
+            "persistent": true
+        });
+        payload["monitors"][0]["rpcCheckpoint"] = json!({
+            "hosts": {},
+            "statuses": {},
+            "remote": {
+                "cursor": "cur-9",
+                "settled": {
+                    "remote#s1": ["t1", "t2"]
+                }
+            }
+        });
+        let manifest = parse_terminal_manifest(&payload, "s")?;
+        let remote = manifest.monitors[0]
+            .rpc_checkpoint
+            .as_ref()
+            .and_then(|cp| cp.remote.as_ref())
+            .expect("remote checkpoint");
+        assert_eq!(remote.cursor.as_deref(), Some("cur-9"));
+        assert_eq!(
+            remote.settled.get("remote#s1").map(Vec::as_slice),
+            Some(["t1".to_owned(), "t2".to_owned()].as_slice())
+        );
+
+        payload["monitors"][0]["rpcCheckpoint"]["remote"]["settled"]["remote#s1"] = json!([123]);
+        assert!(parse_terminal_manifest(&payload, "s").is_err());
+        Ok(())
     }
 }

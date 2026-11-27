@@ -135,15 +135,11 @@ fn given_the_parent_session_runs_a_model_when_the_workflow_tool_starts_a_run_the
         .manager
         .record(&run_id, PARENT_SESSION_ID)
         .expect("run record");
-    assert_eq!(
-        record.parent_model.as_deref(),
-        Some("chatgpt-subscription/gpt-6.1-sol")
-    );
+    assert_eq!(record.run_id, run_id);
 }
 
 #[test]
-fn given_no_tool_context_model_when_the_workflow_tool_starts_a_run_then_no_parent_model_is_recorded()
- {
+fn given_no_tool_context_model_when_the_workflow_tool_starts_a_run_then_start_still_succeeds() {
     let f = fixture();
     let started = run_dag_tool(
         &deps(&f.manager),
@@ -171,8 +167,8 @@ fn given_no_tool_context_model_when_the_workflow_tool_starts_a_run_then_no_paren
         f.manager
             .record(&run_id, PARENT_SESSION_ID)
             .expect("run record")
-            .parent_model,
-        None
+            .run_id,
+        run_id
     );
 }
 
@@ -352,11 +348,14 @@ fn workflow_tool_registration() {
 #[test]
 fn start_action_roundtrips_through_manager() {
     let f = fixture();
+    let mut definition = default_definition();
+    definition.nodes[0].category = Some("deep".into());
+    definition.nodes[1].category = Some("deep-high".into());
     let result = run_dag_tool(
         &deps(&f.manager),
         DagToolInput {
             action: "start".into(),
-            definition: Some(default_definition()),
+            definition: Some(definition),
             run_id: None,
             reason: None,
             detach: None,
@@ -380,6 +379,14 @@ fn start_action_roundtrips_through_manager() {
         .iter()
         .map(|n| n["id"].as_str().unwrap())
         .collect();
+    assert_eq!(
+        details["snapshot"]["nodes"][0]["route"]["category"],
+        "deep-low"
+    );
+    assert_eq!(
+        details["snapshot"]["nodes"][1]["route"]["category"],
+        "deep-high"
+    );
     assert_eq!(node_ids, vec!["plan", "build"]);
     assert_eq!(f.run_file_count(), 1);
     assert_eq!(
@@ -678,7 +685,7 @@ fn subagent_type_and_model_accepted() {
             prompt: "draft".into(),
             label: None,
             category: None,
-            subagent_type: Some("plan-reviewer".into()),
+            subagent_type: Some("custom-reviewer".into()),
             model: Some("anthropic/claude-opus-4".into()),
             depends_on: None,
             task_summary: None,
@@ -708,7 +715,7 @@ fn subagent_type_and_model_accepted() {
     assert_eq!(details["kind"], "started");
     let node = &details["snapshot"]["nodes"][0];
     assert_eq!(node["route"]["kind"], "agent");
-    assert_eq!(node["route"]["agent"], "plan-reviewer");
+    assert_eq!(node["route"]["agent"], "custom-reviewer");
     assert_eq!(node["route"]["model"], "anthropic/claude-opus-4");
 }
 
@@ -1467,7 +1474,7 @@ fn retired_momus_id_starts_as_ordinary_agent() {
             label: None,
             category: None,
             subagent_type: Some("plan-reviewer".into()),
-            model: Some("anthropic/claude-opus-4".into()),
+            model: None,
             depends_on: None,
             task_summary: None,
             description: None,
@@ -1497,7 +1504,7 @@ fn retired_momus_id_starts_as_ordinary_agent() {
     let node = &details["snapshot"]["nodes"][0];
     assert_eq!(node["route"]["kind"], "agent");
     assert_eq!(node["route"]["agent"], "plan-reviewer");
-    assert_eq!(node["route"]["model"], "anthropic/claude-opus-4");
+    assert!(node["route"]["model"].is_null());
     assert!(details["warnings"].as_array().unwrap().is_empty());
 }
 

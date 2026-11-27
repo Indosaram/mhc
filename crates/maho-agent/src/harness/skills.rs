@@ -246,12 +246,14 @@ fn load_dir<'a>(
             }
         };
         for entry in entries.iter().filter(|entry| entry.name == "SKILL.md") {
+            let is_link = entry.kind == FileKind::Symlink;
             if resolve_kind(env, entry, out, context).await != Some(FileKind::File) {
                 continue;
             }
-            if matcher
-                .matched_path_or_any_parents(&entry.path, false)
-                .is_ignore()
+            if !is_link
+                && matcher
+                    .matched_path_or_any_parents(&entry.path, false)
+                    .is_ignore()
             {
                 continue;
             }
@@ -263,6 +265,7 @@ fn load_dir<'a>(
             if entry.name.starts_with('.') || entry.name == "node_modules" {
                 continue;
             }
+            let is_link = entry.kind == FileKind::Symlink;
             let Some(kind) = resolve_kind(env, &entry, out, context).await else {
                 continue;
             };
@@ -274,14 +277,31 @@ fn load_dir<'a>(
                     return;
                 }
             };
-            if matcher
-                .matched_path_or_any_parents(&entry.path, kind == FileKind::Directory)
-                .is_ignore()
+            // A linked entry belongs to another tree: the ignore files above it neither hide it
+            // nor reach into it, while a linked directory's own ignore files still apply inside it.
+            if !is_link
+                && matcher
+                    .matched_path_or_any_parents(&entry.path, kind == FileKind::Directory)
+                    .is_ignore()
             {
                 continue;
             }
             if kind == FileKind::Directory {
-                load_dir(env, &entry.path, false, rules, root, context, out).await;
+                if is_link {
+                    let mut isolated = GitignoreBuilder::new(&entry.path);
+                    load_dir(
+                        env,
+                        &entry.path,
+                        false,
+                        &mut isolated,
+                        &entry.path,
+                        context,
+                        out,
+                    )
+                    .await;
+                } else {
+                    load_dir(env, &entry.path, false, rules, root, context, out).await;
+                }
             } else if kind == FileKind::File && include_root && entry.name.ends_with(".md") {
                 load_file(env, &entry.path, &info.name, context, out).await;
             }

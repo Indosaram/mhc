@@ -7,6 +7,7 @@ use serde::Serialize;
 
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
 pub const GENERATION_HANDOFF_CAPABILITY: &str = "generation_handoff";
+pub const ENDPOINT_OWNER_FENCE_CAPABILITY: &str = "endpoint_owner_fence";
 pub const REQUIRED_HOST_CAPABILITIES: [&str; 4] = [
     "multi_session",
     "extension_events",
@@ -103,6 +104,7 @@ pub enum HostRefusalReason {
     HostBusy,
     HostStopping,
     HostStalled,
+    EndpointOccupied,
 }
 impl HostRefusalReason {
     pub const fn as_str(self) -> &'static str {
@@ -114,6 +116,7 @@ impl HostRefusalReason {
             Self::HostBusy => "host_busy",
             Self::HostStopping => "host_stopping",
             Self::HostStalled => "host_stalled",
+            Self::EndpointOccupied => "endpoint_occupied",
         }
     }
 }
@@ -144,6 +147,7 @@ impl HostEnsureRefusedError {
             HostRefusalReason::HostBusy => "its socket accepts connections but did not answer inside the probe budget: a live host under load, which is never ended to make room for a replacement".into(),
             HostRefusalReason::HostStopping => "this generation is stopping; wait for its exit before launching a successor".into(),
             HostRefusalReason::HostStalled => "nothing reaches its socket, but its process is alive and its own loop-lag watchdog measured a recent stall: a stalled host is still serving its sessions, so it is neither stopped nor replaced".into(),
+            HostRefusalReason::EndpointOccupied => "another live entry or host occupies this socket path; refuse rather than overwrite".into(),
         };
         Self {
             socket: socket.into(),
@@ -194,19 +198,18 @@ fn newer(client: &HostDecisionClient, host: &HostProtocolInfo) -> bool {
     let Some(ordinal) = host.engine_ordinal else {
         return false;
     };
-    for (candidate, running) in client.identity.ordinal.iter().take(4).zip(ordinal.iter()) {
-        let candidate = serde_json::Number::from(*candidate).as_f64().unwrap_or(0.0);
-        if candidate > *running {
-            return true;
-        }
-        if candidate < *running {
-            return false;
-        }
-    }
-    let epoch = serde_json::Number::from(client.identity.ordinal[4])
-        .as_f64()
-        .unwrap_or(0.0);
-    epoch > 0.0 && ordinal[4] > 0.0 && epoch > ordinal[4]
+    let host_ordinal = [
+        ordinal[0] as i64,
+        ordinal[1] as i64,
+        ordinal[2] as i64,
+        ordinal[3] as i64,
+        ordinal[4] as i64,
+    ];
+    let host_identity = maho_core::engine_build_identity::engine_identity_of(
+        host.engine_version.as_deref().unwrap_or(""),
+        host_ordinal,
+    );
+    maho_core::engine_build_identity::compare_engine_ordinal(&client.identity, &host_identity) > 0
 }
 fn same_release(client: &HostDecisionClient, host: &HostProtocolInfo) -> bool {
     host.engine_ordinal.is_some_and(|ordinal| {
@@ -366,6 +369,7 @@ mod tests {
             engine_ordinal: Some([2026.0, 9.0, 16.0, 3.0, 0.0]),
             launch_profile: Some(profile(&["/plugin"])),
             memory_pressure: None,
+            path_identity_resolver: None,
             agent_dir: None,
             handover: None,
         }

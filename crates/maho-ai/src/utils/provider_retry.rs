@@ -125,8 +125,21 @@ async fn abortable_sleep<E>(
 
 /// Retries transient provider HTTP failures (408/409/429/5xx, `x-should-retry`) with server hints.
 pub async fn retry_provider_request<T, E, F, Fut>(
+    request: F,
+    options: &ProviderRetryOptions,
+) -> Result<T, ProviderRetryError<E>>
+where
+    E: ProviderRequestError,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    retry_provider_request_with_policy(request, options, |_| None).await
+}
+
+pub(crate) async fn retry_provider_request_with_policy<T, E, F, Fut>(
     mut request: F,
     options: &ProviderRetryOptions,
+    retry_override: impl Fn(&E) -> Option<bool>,
 ) -> Result<T, ProviderRetryError<E>>
 where
     E: ProviderRequestError,
@@ -155,9 +168,9 @@ where
         if options.signal.as_ref().is_some_and(AbortSignal::aborted) {
             return Err(ProviderRetryError::Aborted);
         }
-        let Some((_, headers)) =
-            classify(&error).filter(|(s, h)| remaining > 0 && is_retryable(*s, *h))
-        else {
+        let Some((_, headers)) = classify(&error).filter(|(s, h)| {
+            remaining > 0 && retry_override(&error).unwrap_or_else(|| is_retryable(*s, *h))
+        }) else {
             return Err(ProviderRetryError::Request(error));
         };
         let retry_index = max_retries - remaining;

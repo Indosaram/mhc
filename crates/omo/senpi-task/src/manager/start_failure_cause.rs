@@ -3,6 +3,10 @@
 //! closed class, an allow-listed command name, a shape-checked host error code and a shape-checked
 //! provider leave this module.
 
+use regex::Regex;
+use std::sync::LazyLock;
+
+use crate::runners::designated_chain_error::DesignatedChainNotHeldError;
 use crate::runners::rpc::errors::{ERROR_CODE_SHAPE, PROVIDER_SHAPE, RpcCommandError};
 use crate::runners::rpc::protocol_client::RpcClientError;
 
@@ -12,6 +16,7 @@ pub enum StartCauseClass {
     HostRefused,
     TransportLost,
     CredentialsMissing,
+    ChainNotHeld,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +25,7 @@ pub struct StartCause {
     pub timed_out_command: Option<String>,
     pub cause_code: Option<String>,
     pub provider: Option<String>,
+    pub designated_models: Option<Vec<String>>,
 }
 
 /// `RPC_RESPONSE_TIMEOUT_PREFIX` (`runners/rpc-host/reattach.ts`).
@@ -44,12 +50,33 @@ const CREDENTIAL_CODES: [&str; 2] = [
     "provider_credentials_expired",
 ];
 
+// A designated model is named exactly as its selector (`provider/model[:thinking]`); anything else is dropped.
+static MODEL_SELECTOR_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?-u)^[A-Za-z0-9][\w.-]{0,63}/[\w.:/@+-]{1,160}$")
+        .expect("model selector shape regex")
+});
+
 fn class(cause_class: StartCauseClass) -> StartCause {
     StartCause {
         cause_class,
         timed_out_command: None,
         cause_code: None,
         provider: None,
+        designated_models: None,
+    }
+}
+
+pub fn chain_not_held_cause(error: &DesignatedChainNotHeldError) -> StartCause {
+    let named: Vec<String> = error
+        .models
+        .iter()
+        .filter(|model| MODEL_SELECTOR_SHAPE.is_match(model))
+        .cloned()
+        .collect();
+    StartCause {
+        cause_code: Some(error.reason.as_str().to_string()),
+        designated_models: (!named.is_empty()).then_some(named),
+        ..class(StartCauseClass::ChainNotHeld)
     }
 }
 
@@ -146,6 +173,19 @@ pub fn describe_start_cause(cause: &StartCause, operation: StartOperation) -> St
             let code = cause.cause_code.as_deref().unwrap_or("credentials_missing");
             format!(
                 "{provider} has no usable credentials ({code}); sign in to {provider} or add its API key"
+            )
+        }
+        StartCauseClass::ChainNotHeld => {
+            let chain = cause
+                .designated_models
+                .as_ref()
+                .map_or_else(String::new, |models| format!(" ({})", models.join(" -> ")));
+            let code = cause.cause_code.as_deref().map_or_else(
+                || "chain_not_held".to_string(),
+                |c| format!("chain_not_held: {c}"),
+            );
+            format!(
+                "the engine could not hold its designated model chain{chain} ({code}), and a child never runs outside its designated models"
             )
         }
     }

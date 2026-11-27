@@ -8,6 +8,7 @@ autotests = false
 
 [dependencies]
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-ultrawork = { path = "../../../maho-ultrawork" }
 fancy-regex = "=0.16.2"
 regex = "=1.12.3"
 

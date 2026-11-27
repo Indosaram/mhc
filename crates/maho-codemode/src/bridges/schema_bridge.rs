@@ -1,4 +1,4 @@
-use maho_tools::definition::KernelPrelude;
+use maho_tools::definition::{KernelPrelude, ToolExposure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -7,6 +7,10 @@ pub struct EvalSchemaToolInfo {
     pub name: String,
     pub description: Option<String>,
     pub parameters: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<ToolExposure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_only: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_prelude: Option<KernelPrelude>,
 }
@@ -21,7 +25,22 @@ impl EvalSchemaToolInfo {
             name: name.into(),
             description,
             parameters,
+            exposure: None,
+            eval_only: None,
             kernel_prelude: None,
+        }
+    }
+}
+
+impl From<maho_ext_api::ToolInfo> for EvalSchemaToolInfo {
+    fn from(tool: maho_ext_api::ToolInfo) -> Self {
+        Self {
+            name: tool.name,
+            description: Some(tool.description),
+            parameters: Some(tool.parameters),
+            exposure: Some(tool.exposure),
+            eval_only: None,
+            kernel_prelude: tool.kernel_prelude,
         }
     }
 }

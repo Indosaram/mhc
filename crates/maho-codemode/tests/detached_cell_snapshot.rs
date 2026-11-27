@@ -16,6 +16,7 @@ fn cell() -> DetachedCellResultSource {
             on_timeout: None,
             reset: None,
             isolate: None,
+            language_inferred: None,
         },
         started_at_ms: 100.0,
         run_started_at_ms: None,

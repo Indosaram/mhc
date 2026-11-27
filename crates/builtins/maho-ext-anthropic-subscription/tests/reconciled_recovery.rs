@@ -1,16 +1,10 @@
-use maho_ai::auth::types::CredentialStore;
-use maho_ai::auth::types::{
-    AuthContext, AuthPrompt, AuthPromptKind, AuthType, Credential, ModelAuth, OAuthAuth,
-    OAuthCredential, ProviderAuthInteraction,
-};
+use maho_ai::auth::types::{AuthContext, AuthType, OAuthAuth};
 #[cfg(unix)]
 use maho_ext_anthropic_subscription::availability::probe_ambient_claude_auth_status;
 use maho_ext_anthropic_subscription::extension::AnthropicSubscriptionExtension;
 use maho_ext_anthropic_subscription::guidance::version_floor_guidance;
 use maho_ext_anthropic_subscription::{
-    accounts::{
-        AccountSlot, AccountSource, SENTINEL_TOKEN, add_account, empty_credential, list_accounts,
-    },
+    accounts::{AccountSlot, AccountStore, SENTINEL_TOKEN, add_account, empty_credential},
     oauth_login::AnthropicSubscriptionOAuth,
 };
 use maho_ext_anthropic_subscription::{
@@ -63,60 +57,11 @@ impl AuthContext for TestEnvironment {
     }
 }
 
-struct AuthFlow {
-    logins: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl OAuthAuth for AuthFlow {
-    fn name(&self) -> &str {
-        "recovery-fixture"
-    }
-    async fn login(&self, _: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
-        self.logins.fetch_add(1, Ordering::SeqCst);
-        Ok(OAuthCredential::new("fresh-access", "fresh-refresh", 12.0))
-    }
-    async fn refresh(
-        &self,
-        credential: &OAuthCredential,
-        _: &maho_ai::utils::abort::AbortSignal,
-    ) -> anyhow::Result<OAuthCredential> {
-        Ok(credential.clone())
-    }
-    async fn to_auth(&self, _: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth::default())
-    }
-}
-
-struct PromptAnswers {
-    answers: std::sync::Mutex<std::collections::VecDeque<String>>,
-    prompts: std::sync::Mutex<Vec<String>>,
-}
-
-#[async_trait::async_trait]
-impl maho_ai::auth::types::AuthInteraction for PromptAnswers {
-    fn signal(&self) -> Option<maho_ai::utils::abort::AbortSignal> {
-        None
-    }
-    async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {
-        if let AuthPromptKind::Text { message, .. } = prompt.kind {
-            self.prompts.lock().expect("prompts").push(message);
-        }
-        Ok(self
-            .answers
-            .lock()
-            .expect("answers")
-            .pop_front()
-            .unwrap_or_default())
-    }
-    fn notify(&self, _: maho_ai::auth::types::AuthEvent) {}
-}
-
 fn oauth_adapter(
     settings: serde_json::Value,
     ambient: bool,
     store: Arc<maho_ai::auth::credential_store::InMemoryCredentialStore>,
-) -> (AnthropicSubscriptionOAuth, Arc<AuthFlow>, Arc<AtomicUsize>) {
+) -> (AnthropicSubscriptionOAuth, Arc<AtomicUsize>) {
     let values = settings.as_object().expect("settings object").clone();
     let settings = Arc::new(
         move || maho_ext_anthropic_subscription::settings::ProviderSettings {
@@ -135,49 +80,13 @@ fn oauth_adapter(
         Arc::new(|| 0),
         30_000,
     );
-    let flow = Arc::new(AuthFlow {
-        logins: AtomicUsize::new(0),
-    });
-    (
-        AnthropicSubscriptionOAuth {
-            store,
-            flow: flow.clone(),
-            settings,
-            ambient: reader,
-        },
-        flow,
-        probes,
-    )
-}
-
-fn answers(values: &[&str]) -> (ProviderAuthInteraction, Arc<PromptAnswers>) {
-    let scripted = Arc::new(PromptAnswers {
-        answers: std::sync::Mutex::new(values.iter().map(|value| (*value).to_owned()).collect()),
-        prompts: std::sync::Mutex::new(Vec::new()),
-    });
-    let controller = maho_ai::utils::abort::AbortController::new();
-    (
-        ProviderAuthInteraction::new(controller.signal(), scripted.clone()),
-        scripted,
-    )
-}
-
-async fn seed_credential(
-    store: &Arc<maho_ai::auth::credential_store::InMemoryCredentialStore>,
-    provider: &str,
-    credential: OAuthCredential,
-) {
-    store
-        .modify(
-            provider,
-            Box::new(move |_| {
-                let credential = credential.clone();
-                Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })
-            }),
-            None,
-        )
-        .await
-        .expect("seed");
+    let mut oauth = AnthropicSubscriptionOAuth::native_with_resolver(
+        store,
+        settings,
+        Arc::new(|| anyhow::bail!("only the fixture's ambient callback may run")),
+    );
+    oauth.ambient = reader;
+    (oauth, probes)
 }
 
 #[tokio::test]
@@ -189,13 +98,7 @@ async fn oauth_check_prefers_stored_and_environment_credentials_without_ambient_
                     &empty_credential(),
                     AccountSlot {
                         name: "managed".into(),
-                        display_name: None,
-                        access: "access".into(),
-                        refresh: "refresh".into(),
-                        expires: 0.0,
-                        source: AccountSource::Login,
-                        blocked_until: None,
-                        block_reason: None,
+                        store: Some(AccountStore::ClaudeCli),
                         ..Default::default()
                     },
                 )
@@ -209,7 +112,7 @@ async fn oauth_check_prefers_stored_and_environment_credentials_without_ambient_
         ),
     ] {
         let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-        let (oauth, _, probes) = oauth_adapter(json!({}), false, store);
+        let (oauth, probes) = oauth_adapter(json!({}), false, store);
         let controller = maho_ai::utils::abort::AbortController::new();
         let check = oauth
             .check(
@@ -232,7 +135,7 @@ async fn oauth_check_prefers_stored_and_environment_credentials_without_ambient_
 #[tokio::test]
 async fn oauth_check_gates_ambient_probe_and_respects_explicit_ambient_lane() {
     let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-    let (oauth, _, probes) = oauth_adapter(json!({}), true, store.clone());
+    let (oauth, probes) = oauth_adapter(json!({}), true, store.clone());
     let controller = maho_ai::utils::abort::AbortController::new();
     assert!(
         oauth
@@ -246,7 +149,7 @@ async fn oauth_check_gates_ambient_probe_and_respects_explicit_ambient_lane() {
             .is_none()
     );
     assert_eq!(probes.load(Ordering::SeqCst), 0);
-    let (oauth, _, probes) = oauth_adapter(
+    let (oauth, probes) = oauth_adapter(
         json!({"enabled":true,"tokenInjection":"ambient"}),
         true,
         store,
@@ -255,13 +158,7 @@ async fn oauth_check_gates_ambient_probe_and_respects_explicit_ambient_lane() {
         &empty_credential(),
         AccountSlot {
             name: "managed".into(),
-            display_name: None,
-            access: "access".into(),
-            refresh: "refresh".into(),
-            expires: 0.0,
-            source: AccountSource::Login,
-            blocked_until: None,
-            block_reason: None,
+            store: Some(AccountStore::ClaudeCli),
             ..Default::default()
         },
     )
@@ -281,90 +178,9 @@ async fn oauth_check_gates_ambient_probe_and_respects_explicit_ambient_lane() {
 }
 
 #[tokio::test]
-async fn oauth_login_imports_or_declines_existing_anthropic_credential() {
-    for (answer, imported) in [("yes", true), ("no", false)] {
-        let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-        seed_credential(
-            &store,
-            "anthropic",
-            OAuthCredential::new("old-access", "old-refresh", 1.0),
-        )
-        .await;
-        let (oauth, flow, _) = oauth_adapter(json!({}), false, store.clone());
-        let (interaction, scripted) = answers(&[answer]);
-        let credential = oauth.login(&interaction).await.expect("login");
-        let slots = list_accounts(&credential, None).expect("accounts");
-        if imported {
-            assert_eq!(slots[0].name, "imported-anthropic");
-            assert_eq!(slots[0].source, AccountSource::Import);
-            assert!(
-                store
-                    .read("anthropic", None)
-                    .await
-                    .expect("anthropic slot")
-                    .is_none()
-            );
-            assert_eq!(flow.logins.load(Ordering::SeqCst), 0);
-        } else {
-            assert_eq!(slots[0].name, "default");
-            assert_eq!(slots[0].source, AccountSource::Login);
-            assert!(
-                store
-                    .read("anthropic", None)
-                    .await
-                    .expect("anthropic slot")
-                    .is_some()
-            );
-            assert_eq!(flow.logins.load(Ordering::SeqCst), 1);
-        }
-        assert!(!scripted.prompts.lock().expect("prompt capture").is_empty());
-    }
-}
-
-#[tokio::test]
-async fn oauth_login_adds_a_named_account_and_preserves_sentinel_fields() {
-    let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-    let first = add_account(
-        &empty_credential(),
-        AccountSlot {
-            name: "default".into(),
-            display_name: None,
-            access: "old".into(),
-            refresh: "old-refresh".into(),
-            expires: 1.0,
-            source: AccountSource::Login,
-            blocked_until: None,
-            block_reason: None,
-            ..Default::default()
-        },
-    )
-    .expect("first slot");
-    seed_credential(
-        &store,
-        maho_ext_anthropic_subscription::auth_lane::PROVIDER_ID,
-        first,
-    )
-    .await;
-    let (oauth, _, _) = oauth_adapter(json!({}), false, store);
-    let (interaction, scripted) = answers(&["work"]);
-    let credential = oauth.login(&interaction).await.expect("login");
-    let slots = list_accounts(&credential, None).expect("accounts");
-    assert_eq!(
-        slots
-            .iter()
-            .map(|slot| slot.name.as_str())
-            .collect::<Vec<_>>(),
-        ["default", "work"]
-    );
-    assert_eq!(credential.access, SENTINEL_TOKEN);
-    assert_eq!(credential.refresh, SENTINEL_TOKEN);
-    assert!(scripted.prompts.lock().expect("prompts")[0].contains("Name for this account"));
-}
-
-#[tokio::test]
 async fn oauth_auth_uses_sentinel_and_refresh_preserves_credential() {
     let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-    let (oauth, _, _) = oauth_adapter(json!({}), false, store);
+    let (oauth, _) = oauth_adapter(json!({}), false, store);
     let credential = empty_credential();
     let controller = maho_ai::utils::abort::AbortController::new();
     assert_eq!(
@@ -388,7 +204,7 @@ async fn oauth_auth_uses_sentinel_and_refresh_preserves_credential() {
 #[tokio::test]
 async fn ambient_resolution_uses_cli_request_tokens_and_preserves_empty_mask() {
     let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-    let (oauth, _, probes) = oauth_adapter(json!({"enabled":true}), true, store);
+    let (oauth, probes) = oauth_adapter(json!({"enabled":true}), true, store);
     let controller = maho_ai::utils::abort::AbortController::new();
     let cli = oauth
         .resolve_ambient(
@@ -441,19 +257,11 @@ fn provider_extension(
     >,
 ) -> AnthropicSubscriptionExtension {
     let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-    let ambient = maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(
-        Arc::new(|| Box::pin(async { Ok(false) })),
-        Arc::new(|| 0),
-        30_000,
-    );
-    let oauth = Arc::new(AnthropicSubscriptionOAuth {
+    let oauth = Arc::new(AnthropicSubscriptionOAuth::native_with_resolver(
         store,
-        flow: Arc::new(maho_ai::auth::oauth::anthropic::AnthropicOAuth::new(
-            maho_ai::auth::oauth::transport::default_transport(),
-        )),
-        settings: settings.clone(),
-        ambient,
-    });
+        settings.clone(),
+        Arc::new(|| anyhow::bail!("registration does not spawn Claude Code")),
+    ));
     AnthropicSubscriptionExtension {
         oauth,
         stream: Arc::new(|_, _, _| panic!("registration does not stream")),
@@ -1613,7 +1421,7 @@ fn telemetry_is_omitted_for_resume_and_delta_observations() {
 #[tokio::test]
 async fn oauth_ambient_resolution_accepts_explicit_token_without_host_probe() {
     let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
-    let (oauth, _, probes) = oauth_adapter(json!({"tokenInjection":"ambient"}), false, store);
+    let (oauth, probes) = oauth_adapter(json!({"tokenInjection":"ambient"}), false, store);
     let controller = maho_ai::utils::abort::AbortController::new();
     let request = BTreeMap::from([(
         "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),

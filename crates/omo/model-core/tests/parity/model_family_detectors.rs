@@ -41,6 +41,23 @@ fn gpt_model_ids_detect_gpt_family_only() {
 }
 
 #[test]
+fn recognizes_v41_flash_aliases_but_not_v4_flash_or_pro() {
+    check(
+        model_core::is_deepseek_v41_flash_model,
+        &[
+            ("DEEPSEEK/deepseek-flash", true),
+            ("deepseek-v4.1-flash:high", true),
+            ("proxy/deepseek-v4p1-flash@20260910", true),
+            ("deepseek-v4-1-flash-thinking", true),
+            ("deepseek-v4-flash", false),
+            ("deepseek-v4-flash-0731", false),
+            ("deepseek-v4-pro", false),
+            ("deepseek-v4.1-flashlight", false),
+        ],
+    );
+}
+
+#[test]
 fn gemini_model_ids_detect_gemini_family_only() {
     check(
         is_gemini_model,

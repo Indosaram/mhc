@@ -26,11 +26,14 @@ try {
   }
   // The shared builder has no clock injection in Rust. Compare the hook payload
   // with its documented per-run date field projected out, not a recorded day.
-  for (const result of results) if (result?.systemPrompt) {
-    result.systemPrompt = result.systemPrompt
-      .replace(/<workstation>\n[\s\S]*?\n<\/workstation>/, '<workstation>\n- OS: darwin (kernel Darwin 27.0.0)\n- Arch: arm64\n- CPU: Apple M3 Pro (12 cores)\n- GPU: Apple M3 Pro\n</workstation>')
-      .replace(/^Current date: \d{4}-\d{2}-\d{2}$/m, 'Current date: <date>');
+  // The parts carry the same host facts as the prompt, so they are projected the same way.
+  const project = (text) => text
+    .replace(/<workstation>\n[\s\S]*?\n<\/workstation>/, '<workstation>\n- OS: darwin (kernel Darwin 27.0.0)\n- Arch: arm64\n- CPU: Apple M3 Pro (12 cores)\n- GPU: Apple M3 Pro\n</workstation>')
+    .replace(/^Current date: \d{4}-\d{2}-\d{2}$/m, 'Current date: <date>');
+  for (const result of results) {
+    if (result?.systemPrompt) result.systemPrompt = project(result.systemPrompt);
+    for (const part of result?.systemPromptParts ?? []) part.text = project(part.text);
   }
   writeFileSync(process.argv[2], JSON.stringify(results, null, 2).split(root).join('<root>') + '\n');
-  console.log('Recorded five upstream prompt main-hook results');
+  console.log(`Recorded ${results.length} upstream prompt main-hook results`);
 } finally { rmSync(root, { recursive: true, force: true }); }

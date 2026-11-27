@@ -34,6 +34,22 @@ pub fn create_category_unavailable_warning_planner(
     session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     warn: WarningSink,
 ) -> ChildPlanner {
+    create_category_unavailable_warning_planner_with_live_config(
+        planner,
+        Arc::new(move || config.clone()),
+        Some(settings),
+        session_id,
+        warn,
+    )
+}
+
+pub fn create_category_unavailable_warning_planner_with_live_config(
+    planner: ChildPlanner,
+    config: Arc<dyn Fn() -> Value + Send + Sync>,
+    settings_override: Option<Value>,
+    session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    warn: WarningSink,
+) -> ChildPlanner {
     let warned = Mutex::new(OncePerSessionGuard::default());
     Arc::new(move |spec| {
         let resolution = planner(spec);
@@ -46,7 +62,9 @@ pub fn create_category_unavailable_warning_planner(
         let (Some(category), Some(chain)) = (&error.category, &error.attempted_chain) else {
             return resolution;
         };
-        let category_config = &config["categories"][category];
+        let live_config = config();
+        let settings = settings_override.as_ref().unwrap_or(&live_config["task"]);
+        let category_config = &live_config["categories"][category];
         if !category_config["model"].is_null() {
             return resolution;
         }

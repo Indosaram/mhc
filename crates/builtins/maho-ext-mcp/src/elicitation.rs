@@ -9,7 +9,9 @@ use crate::{
         McpFormInput, McpFormOutcomeKind, McpFormServer, McpFormServerSource, private_mcp_forms,
     },
     modern::form_schema::validate_mrtr_form,
-    request_origin::{LegacyMcpOperationLookup, legacy_mcp_operation},
+    request_origin::{
+        LegacyMcpCallerUi, LegacyMcpOperationLookup, legacy_mcp_caller_ui, legacy_mcp_operation,
+    },
     transport_sdk::McpClient,
 };
 use maho_ext_api::{ExtensionUi, ExtensionUiDialogOptions};
@@ -197,11 +199,25 @@ pub async fn handle_client_elicitation(
     request_id: &Value,
     timeout: Duration,
 ) -> Result<Value, ElicitationRejection> {
+    let caller = legacy_mcp_caller_ui(client);
+    if matches!(caller, LegacyMcpCallerUi::Refuse) {
+        let enforced = client
+            .protocol
+            .private_forms
+            .load(std::sync::atomic::Ordering::Acquire)
+            || ui.is_some_and(|ui| private_mcp_forms(ui).is_some());
+        return Err(if enforced { reject_private() } else { reject() });
+    }
+    let effective_ui = match &caller {
+        LegacyMcpCallerUi::Ui(scoped) => scoped.as_ref(),
+        LegacyMcpCallerUi::None => ui,
+        LegacyMcpCallerUi::Refuse => unreachable!(),
+    };
     let enforced = client
         .protocol
         .private_forms
         .load(std::sync::atomic::Ordering::Acquire)
-        || ui.is_some_and(|ui| private_mcp_forms(ui).is_some());
+        || effective_ui.is_some_and(|ui| private_mcp_forms(ui).is_some());
     // Unsolicited requests without an advertised capability never claim UI support.
     if client.protocol.legacy_form_eligible() == Some(false) {
         return Err(if enforced { reject_private() } else { reject() });
@@ -210,7 +226,7 @@ pub async fn handle_client_elicitation(
         // Private validation prevents error data from echoing malformed form bodies.
         return private_elicitation(client, params, request_id, timeout).await;
     }
-    let result = handle_mcp_elicitation(ui.map(|ui| &**ui), params, timeout).await?;
+    let result = handle_mcp_elicitation(effective_ui.map(|ui| &**ui), params, timeout).await?;
     serde_json::to_value(result).map_err(|_| reject())
 }
 

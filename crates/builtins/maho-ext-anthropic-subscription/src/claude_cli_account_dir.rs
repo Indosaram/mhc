@@ -1,8 +1,9 @@
 //! Port of senpi `anthropic-subscription/claude-cli-account-dir.ts` (v2026.11.19-5).
 //!
 //! `readClaudeCliAccessToken` is only read by the usage poller, which lives in maho-core and cannot import this
-//! crate; its port is in `maho_core::subscription_limits::usage_accounts`. `newAccountDirId` and `removeAccountDir`
-//! belong to the claude CLI `/login` and account removal, which this port does not carry.
+//! crate; its port is in `maho_core::subscription_limits::usage_accounts`.
+use crate::{claude_cli_auth_status::logout_claude_cli, claude_cli_process::ClaudeCliRun};
+use maho_ai::utils::abort::AbortSignal;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -23,6 +24,10 @@ pub const CLAUDE_CLI_SHARED_LINKS: [&str; 7] = [
 
 const SHARED_FILES: [&str; 2] = ["settings.json", "CLAUDE.md"];
 
+pub fn new_account_dir_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 pub fn is_valid_account_dir_id(dir_id: &str) -> bool {
     dir_id.len() == 32
         && dir_id
@@ -36,6 +41,7 @@ pub fn account_dir_for(agent_dir: &Path, dir_id: &str) -> anyhow::Result<PathBuf
     if !is_valid_account_dir_id(dir_id) {
         anyhow::bail!("Invalid Claude account dir id");
     }
+    // SAFETY-DIVERGENCE SD-20: all lifecycle operations use the same overridable account root.
     Ok(maho_core::config::claude_cli_account_root(agent_dir).join(dir_id))
 }
 
@@ -94,6 +100,24 @@ fn restrict_to_owner(_account_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn create_private_account_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    if !std::fs::symlink_metadata(path)?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "Claude account path is not a directory",
+        ));
+    }
+    restrict_to_owner(path)
+}
+
 /// `path` with its parent's links resolved, so `~/.claude/projects` and the same entry reached through a linked home
 /// compare equal even while the entry itself is missing (a dangling `CLAUDE.md` link).
 fn resolved_location(path: &Path) -> PathBuf {
@@ -114,10 +138,7 @@ pub fn ensure_account_dir(
     shared_root: &Path,
 ) -> anyhow::Result<PathBuf> {
     let account_dir = account_dir_for(agent_dir, dir_id)?;
-    if !account_dir.is_dir() {
-        std::fs::create_dir_all(&account_dir)?;
-    }
-    restrict_to_owner(&account_dir)?;
+    create_private_account_dir(&account_dir)?;
     for entry in CLAUDE_CLI_SHARED_LINKS {
         let path = account_dir.join(entry);
         let target = shared_root.join(entry);
@@ -137,11 +158,124 @@ pub fn ensure_account_dir(
     Ok(account_dir)
 }
 
+pub struct RemoveAccountDirOptions<'a> {
+    pub agent_dir: &'a Path,
+    pub dir_id: &'a str,
+    pub executable: Option<&'a Path>,
+    pub parent_env: &'a BTreeMap<String, String>,
+    pub signal: Option<&'a AbortSignal>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveAccountDirOutcome {
+    Removed,
+    RemovedWithoutSignOut,
+    NotAnAccountDir,
+}
+
+/// Sign out against the exact (possibly SD-20-overridden) path, then remove only that directory.
+/// A missing directory still needs a sign-out: the credential store is keyed by the path.
+pub async fn remove_account_dir(
+    options: RemoveAccountDirOptions<'_>,
+) -> anyhow::Result<RemoveAccountDirOutcome> {
+    let account_dir = account_dir_for(options.agent_dir, options.dir_id)?;
+    if let Some(signal) = options.signal {
+        signal.throw_if_aborted()?;
+    }
+    let before = match std::fs::symlink_metadata(&account_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            create_private_account_dir(&account_dir)?;
+            std::fs::symlink_metadata(&account_dir)?
+        }
+        metadata => metadata?,
+    };
+    if !before.is_dir() {
+        return Ok(RemoveAccountDirOutcome::NotAnAccountDir);
+    }
+    let signed_out = match options.executable {
+        Some(executable) => {
+            logout_claude_cli(
+                &ClaudeCliRun {
+                    executable,
+                    config_dir: account_dir.clone(),
+                    parent_env: options.parent_env,
+                },
+                None,
+                options.signal,
+            )
+            .await
+        }
+        None => false,
+    };
+    finish_account_dir_removal(account_dir, before, signed_out, options.signal)
+}
+
+fn finish_account_dir_removal(
+    account_dir: PathBuf,
+    before: std::fs::Metadata,
+    signed_out: bool,
+    signal: Option<&AbortSignal>,
+) -> anyhow::Result<RemoveAccountDirOutcome> {
+    if !signed_out && let Some(signal) = signal {
+        signal.throw_if_aborted()?;
+    }
+    match std::fs::symlink_metadata(&account_dir) {
+        Ok(after) if !after.is_dir() => return Ok(RemoveAccountDirOutcome::NotAnAccountDir),
+        #[cfg(unix)]
+        Ok(after) => {
+            use std::os::unix::fs::MetadataExt;
+            if (before.dev(), before.ino()) != (after.dev(), after.ino()) {
+                return Ok(RemoveAccountDirOutcome::NotAnAccountDir);
+            }
+        }
+        #[cfg(not(unix))]
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    // Unlike manually walking shared paths, remove_dir_all never follows symlinks.
+    match std::fs::remove_dir_all(account_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(if signed_out {
+        RemoveAccountDirOutcome::Removed
+    } else {
+        RemoveAccountDirOutcome::RemovedWithoutSignOut
+    })
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     const DIR_ID: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn completed_logout_is_committed_despite_a_late_abort() {
+        let temp = tempfile::tempdir().expect("temp");
+        let completed = temp.path().join("completed");
+        std::fs::create_dir(&completed).expect("completed account directory");
+        let before = std::fs::symlink_metadata(&completed).expect("metadata");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        assert_eq!(
+            finish_account_dir_removal(completed.clone(), before, true, Some(&controller.signal()))
+                .expect("completed logout is committed"),
+            RemoveAccountDirOutcome::Removed
+        );
+        assert!(!completed.exists());
+
+        let pending = temp.path().join("pending");
+        std::fs::create_dir(&pending).expect("pending account directory");
+        let before = std::fs::symlink_metadata(&pending).expect("metadata");
+        assert!(
+            finish_account_dir_removal(pending.clone(), before, false, Some(&controller.signal()))
+                .is_err()
+        );
+        assert!(pending.exists());
+    }
 
     #[test]
     fn dir_ids_are_32_lowercase_hex() {
@@ -156,6 +290,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp");
         let agent = temp.path().join("agent");
         let shared = temp.path().join("claude");
+        assert!(
+            account_dir_for(&agent, DIR_ID)
+                .unwrap()
+                .starts_with(temp.path())
+        );
         std::fs::create_dir_all(&shared).expect("shared");
         std::fs::write(shared.join("settings.json"), "{}").expect("settings");
         let dir = ensure_account_dir(&agent, DIR_ID, &shared).expect("ensure");

@@ -5,7 +5,7 @@ use maho_omo_model_profile::describe::{
 use serde_json::json;
 
 const KIMI: &str = "moonshotai/kimi-k3.1-pro";
-const GLM: &str = "zai/glm-5.3";
+const FABLE: &str = "anthropic-subscription/claude-fable-5-2";
 
 fn available(selectors: &[&str]) -> Vec<String> {
     selectors
@@ -21,17 +21,17 @@ fn claude_rung_label() -> String {
     format!("{}/{}", rung.providers[0], rung.model)
 }
 
-fn kimi_rung_label() -> String {
+fn fable_rung_label() -> String {
     let rung = &builtin_model_profiles()["daily-normal"].models[1];
     format!("{}/{}", rung.providers[0], rung.model)
 }
 
 #[test]
 fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
-    let view = describe_model_profile(&json!({}), &available(&[KIMI, GLM]));
+    let view = describe_model_profile(&json!({}), &available(&[KIMI, FABLE]));
     assert_eq!(view.profile, "daily-normal");
     assert_eq!(view.selection, ModelProfileSelection::Default);
-    assert_eq!(view.applied.as_deref(), Some(KIMI));
+    assert_eq!(view.applied.as_deref(), Some(FABLE));
     assert_eq!(
         view.rungs.iter().map(|rung| rung.state).collect::<Vec<_>>(),
         [
@@ -41,8 +41,8 @@ fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
         ]
     );
     assert_eq!(view.rungs[0].model, claude_rung_label());
-    assert_eq!(view.rungs[1].model, KIMI);
-    assert_eq!(view.rungs[2].model, GLM);
+    assert_eq!(view.rungs[1].model, FABLE);
+    assert_eq!(view.rungs[2].model, "kimi-coding/kimi-k3.1-pro");
     assert!(
         view.rungs
             .iter()
@@ -54,17 +54,17 @@ fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
 #[test]
 fn an_exclude_entry_marks_its_rung_excluded_and_removes_the_selector_before_resolving() {
     let view = describe_model_profile(
-        &json!({"exclude_models": ["kimi-*"]}),
-        &available(&[KIMI, GLM]),
+        &json!({"exclude_models": ["claude-fable-*"]}),
+        &available(&[KIMI, FABLE]),
     );
-    assert_eq!(view.applied.as_deref(), Some(GLM));
+    assert_eq!(view.applied.as_deref(), Some(KIMI));
     let excluded = view
         .rungs
         .iter()
-        .find(|rung| rung.model == kimi_rung_label())
-        .expect("the kimi rung");
+        .find(|rung| rung.model == fable_rung_label())
+        .expect("the Fable rung");
     assert_eq!(excluded.state, ModelProfileRungState::Excluded);
-    assert_eq!(excluded.excluded_by.as_deref(), Some("kimi-*"));
+    assert_eq!(excluded.excluded_by.as_deref(), Some("claude-fable-*"));
     assert_eq!(view.rungs[2].state, ModelProfileRungState::Applied);
 }
 
@@ -97,7 +97,7 @@ fn a_literal_pin_is_one_pin_rung_of_itself() {
 fn a_retired_id_counts_as_unset_unless_the_user_defines_that_name() {
     let retired = describe_model_profile(
         &json!({"model_profile": "recommended"}),
-        &available(&[KIMI, GLM]),
+        &available(&[KIMI, FABLE]),
     );
     assert_eq!(retired.profile, "daily-normal");
     assert_eq!(retired.selection, ModelProfileSelection::Default);

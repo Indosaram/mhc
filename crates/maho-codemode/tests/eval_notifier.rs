@@ -104,3 +104,19 @@ fn suppressed_context_does_not_consume_notification_and_next_turn_follows_up() {
         .unwrap();
     assert_eq!(options.deliver_as, Some(DeliverAs::FollowUp));
 }
+
+#[test]
+fn remote_loop_notifier_delivers_regardless_of_mode_or_model() {
+    let mut notifier = EvalNotifier::with_loop_remote(std::sync::Arc::new(|| true));
+    for context in [
+        None,
+        Some((ExtensionMode::Print, false)),
+        Some((ExtensionMode::Json, false)),
+    ] {
+        let (_, options) = notifier
+            .notification_message(&cells(), EvalNotifyMode::Wake, context)
+            .expect("remote loop should still deliver");
+        assert!(options.trigger_turn);
+        notifier.reset();
+    }
+}

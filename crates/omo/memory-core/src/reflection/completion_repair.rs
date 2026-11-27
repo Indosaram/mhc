@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::git::exec::{GitExec, GitExecOptions, GitExecResult};
+use crate::git::exec::{GitExec, GitExecBytesResult, GitExecOptions, GitExecResult};
 use crate::git::repo::{COMMIT_TIMEOUT_MS, NO_AUTO_MAINTENANCE};
 use crate::sync::redact::redact_secret_like_material;
 
@@ -84,7 +84,7 @@ pub fn read_dropped_trailers(
     base_sha: &str,
     tip_sha: &str,
 ) -> Result<Vec<DroppedEntry>, String> {
-    let run = Run { exec, dir };
+    let run = literal_pathspec_runner(exec, dir);
     let parent_spec = format!("{tip_sha}^");
     let parent = run.call(&["rev-parse", "--verify", &parent_spec])?;
     if parent.code != 0 || parent.stdout.trim() != base_sha {
@@ -122,17 +122,43 @@ fn literal_pathspec_env() -> BTreeMap<String, String> {
     ])
 }
 
-struct Run<'a> {
+pub struct LiteralPathspecRunner<'a> {
     exec: &'a dyn GitExec,
     dir: &'a Path,
 }
 
-impl Run<'_> {
-    fn call(&self, argv: &[&str]) -> Result<GitExecResult, String> {
+pub fn literal_pathspec_runner<'a>(
+    exec: &'a dyn GitExec,
+    dir: &'a Path,
+) -> LiteralPathspecRunner<'a> {
+    LiteralPathspecRunner { exec, dir }
+}
+
+impl LiteralPathspecRunner<'_> {
+    pub fn call(&self, argv: &[&str]) -> Result<GitExecResult, String> {
         self.call_with_timeout(argv, GIT_TIMEOUT_MS)
     }
 
-    fn call_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<GitExecResult, String> {
+    pub fn call_bytes(&self, argv: &[&str]) -> Result<GitExecBytesResult, String> {
+        let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+        self.exec
+            .run_bytes(
+                &argv,
+                &GitExecOptions {
+                    cwd: self.dir.to_path_buf(),
+                    timeout_ms: GIT_TIMEOUT_MS,
+                    env: literal_pathspec_env(),
+                    stdin: None,
+                },
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn call_with_timeout(
+        &self,
+        argv: &[&str],
+        timeout_ms: u64,
+    ) -> Result<GitExecResult, String> {
         let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
         self.exec
             .run(
@@ -147,11 +173,11 @@ impl Run<'_> {
             .map_err(|error| error.to_string())
     }
 
-    fn must(&self, argv: &[&str]) -> Result<String, String> {
+    pub fn must(&self, argv: &[&str]) -> Result<String, String> {
         self.must_with_timeout(argv, GIT_TIMEOUT_MS)
     }
 
-    fn must_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<String, String> {
+    pub fn must_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<String, String> {
         let result = self.call_with_timeout(argv, timeout_ms)?;
         if result.code != 0 {
             let stderr = result.stderr.trim();
@@ -168,7 +194,7 @@ impl Run<'_> {
 /// destination -> source of every rename in `base_sha..tip_sha`, so dropping a moved file also
 /// undoes the move.
 fn rename_sources(
-    run: &Run<'_>,
+    run: &LiteralPathspecRunner<'_>,
     base_sha: &str,
     tip_sha: &str,
 ) -> Result<BTreeMap<String, String>, String> {
@@ -205,7 +231,7 @@ pub fn commit_count(
     base_sha: &str,
     tip_sha: &str,
 ) -> Result<usize, String> {
-    let run = Run { exec, dir };
+    let run = literal_pathspec_runner(exec, dir);
     let range = format!("{base_sha}..{tip_sha}");
     let out = run.must(&["rev-list", "--count", range.as_str()])?;
     Ok(out.trim().parse::<usize>().unwrap_or(0))
@@ -225,7 +251,7 @@ pub fn squash_without_paths(
     dropped: &BTreeSet<String>,
     record: &[DroppedEntry],
 ) -> Result<String, String> {
-    let run = Run { exec, dir };
+    let run = literal_pathspec_runner(exec, dir);
     let sources = rename_sources(&run, base_sha, tip_sha)?;
     let mut identity_argv: Vec<&str> = STABLE_LOG_OUTPUT.to_vec();
     identity_argv.extend(["log", "-1", "--format=%an%n%ae%n%s", tip_sha]);

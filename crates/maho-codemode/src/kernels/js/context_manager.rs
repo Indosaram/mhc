@@ -57,6 +57,8 @@ pub(super) struct WorkerOptions {
     pub(super) names: KernelToolNames,
     memory: crate::bridge::protocol::KernelMemoryThresholds,
     env_passthrough: Option<Vec<String>>,
+    inherited_env: Option<crate::kernels::session_env::InheritedEnvironment>,
+    kill_guard: Option<(String, u32)>,
     #[cfg(test)]
     worker_entry: Option<PathBuf>,
 }
@@ -88,6 +90,11 @@ impl WorkerOptions {
             },
             memory: Some(&self.memory),
             env_passthrough: self.env_passthrough.as_deref(),
+            inherited_env: self.inherited_env.as_ref(),
+            kill_guard: self
+                .kill_guard
+                .as_ref()
+                .map(|(url, pid)| (url.as_str(), *pid)),
         }
     }
 }
@@ -103,6 +110,10 @@ pub struct JavaScriptKernelStart {
     pub memory: crate::bridge::protocol::KernelMemoryThresholds,
     /// `Some` scrubs secret-looking variables from the kernel child env, keeping these names.
     pub env_passthrough: Option<Vec<String>>,
+    /// The host environment kernel children inherit without supervisor hand-off (`senpi#5635`).
+    pub inherited_env: Option<crate::kernels::session_env::InheritedEnvironment>,
+    /// Kill guard judge module URL and host agent pid (`senpi#5349`).
+    pub kill_guard: Option<(String, u32)>,
 }
 
 pub struct JavaScriptKernel {
@@ -204,6 +215,8 @@ impl JavaScriptKernel {
                     ceiling_bytes: 2_147_483_648,
                 },
                 env_passthrough: None,
+                inherited_env: None,
+                kill_guard: None,
             },
         )
         .await
@@ -222,6 +235,8 @@ impl JavaScriptKernel {
             shutdown,
             memory,
             env_passthrough,
+            inherited_env,
+            kill_guard,
         } = start;
         let owner_signal = shutdown.signal();
         let startup_owner = owner_signal.clone();
@@ -242,6 +257,8 @@ impl JavaScriptKernel {
             names,
             memory,
             env_passthrough,
+            inherited_env,
+            kill_guard,
             #[cfg(test)]
             worker_entry: None,
         };

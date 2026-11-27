@@ -131,6 +131,7 @@ mod upstream_cases {
     use crate::host::fake::{FakeRegistry, model};
     fn report(config: Value) -> ModelChainsReport {
         let models = vec![
+            model("anthropic", "claude-fable-5-2"),
             model("anthropic", "claude-fable-5-1"),
             model("anthropic", "claude-opus-5-5"),
             model("kimi-for-coding", "k3.1-pro"),
@@ -154,6 +155,7 @@ mod upstream_cases {
         assert_eq!(
             entry.runtime,
             vec![
+                "anthropic/claude-fable-5-2",
                 "anthropic/claude-fable-5-1",
                 "anthropic/claude-opus-5-5",
                 "kimi-for-coding/k3.1-pro"
@@ -167,6 +169,7 @@ mod upstream_cases {
                 .collect::<Vec<_>>(),
             vec![
                 &ChainRungState::Primary,
+                &ChainRungState::Fallback,
                 &ChainRungState::Fallback,
                 &ChainRungState::Fallback
             ]

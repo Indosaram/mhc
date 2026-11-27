@@ -72,6 +72,21 @@ fn first_mention_injects_full_contract_exactly_once_per_session() {
 }
 
 #[test]
+fn prohibited_advice_does_not_spend_the_sessions_first_directive() {
+    let engine = engine();
+    assert_eq!(prompt(&engine, "s", "Avoid ulw or mass-ulw."), Stage::None);
+    assert!(engine.on_turn_start("s", false).is_none());
+    assert!(!engine.sessions().snapshot("s").armed);
+    assert_eq!(
+        prompt(&engine, "s", "No ulw-loop, just ulw this."),
+        Stage::Initial
+    );
+    let directive = engine.on_turn_start("s", false).expect("first directive");
+    assert_eq!(directive.custom_type, DIRECTIVE_MESSAGE_TYPE);
+    assert_eq!(directive.content.len(), 1, "no mass-mode supplement");
+}
+
+#[test]
 fn remention_while_armed_sends_notice_not_contract() {
     let engine = engine();
     prompt(&engine, "s", "ulw one");

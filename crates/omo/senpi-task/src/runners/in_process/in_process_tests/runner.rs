@@ -507,10 +507,9 @@ fn record(
 #[test]
 fn given_no_child_fallback_chain_when_settings_are_created_then_global_model_fallback_is_disabled()
 {
-    assert_eq!(
-        create_runtime_fallback_settings(Some("vendor/primary"), None, None),
-        RetryFallbackSettings::default()
-    );
+    let settings = create_runtime_fallback_settings(Some("vendor/primary"), None, None);
+    assert!(!settings.model_fallback);
+    assert_eq!(settings.chains["vendor/primary"], Vec::<String>::new());
 }
 
 #[test]
@@ -522,11 +521,12 @@ fn given_an_explicit_child_fallback_chain_when_settings_are_created_then_only_th
         None,
     );
     assert!(settings.model_fallback);
-    assert_eq!(settings.chains.len(), 1);
+    assert_eq!(settings.chains.len(), 2);
     assert_eq!(
         settings.chains["vendor/primary"],
         strings(&["vendor/fallback"])
     );
+    assert_eq!(settings.chains["vendor/fallback"], Vec::<String>::new());
 }
 
 /// A child-owned retry override; each field is optional and independent (upstream spreads a key
@@ -564,7 +564,7 @@ fn given_a_child_retry_budget_without_a_chain_when_settings_are_created_then_the
         Some(&child_retry(Some(1), None)),
     );
     assert!(!settings.model_fallback);
-    assert!(settings.chains.is_empty());
+    assert_eq!(settings.chains["vendor/primary"], Vec::<String>::new());
     assert_eq!(settings.max_retries, Some(1));
     assert_eq!(settings.base_delay_ms, None);
 }
@@ -712,8 +712,8 @@ fn retry_settings_for_spec(
 fn given_a_builtin_category_resolving_to_a_chain_rung_when_the_child_session_is_created_then_the_remaining_chain_rungs_land_in_retry_fallback_chains()
  {
     let models = registry(vec![
-        model("openai-codex", "gpt-5.6-luna-fast"),
-        model("opencode-go", "minimax-m3"),
+        model("openai", "gpt-6-luna-fast"),
+        model("deepseek", "deepseek-flash"),
     ]);
     let resolution = resolve_category(
         "quick",
@@ -727,12 +727,12 @@ fn given_a_builtin_category_resolving_to_a_chain_rung_when_the_child_session_is_
         other => panic!("Expected resolved category, got {}", other.kind()),
     };
     let selected_model = format!("{}/{}", spec.provider, spec.model_id);
-    assert_eq!(selected_model, "openai-codex/gpt-5.6-luna-fast");
+    assert_eq!(selected_model, "openai/gpt-6-luna-fast");
     let settings = retry_settings_for_spec(Some(&selected_model), spec.fallback_models.clone());
     assert!(settings.model_fallback);
     assert_eq!(
         settings.chains[&selected_model],
-        strings(&["opencode-go/minimax-m3:max"])
+        strings(&["deepseek/deepseek-flash:off"])
     );
 }
 

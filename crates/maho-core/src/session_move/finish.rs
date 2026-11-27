@@ -1,4 +1,5 @@
 //! Sender finalization, including receiver revocation and stable-id input recovery.
+use super::bundle::read_kept_bundle;
 use super::move_ledger::MoveStatus;
 use super::move_steps::{MoveStep, move_step};
 use super::ownership::*;
@@ -28,11 +29,11 @@ async fn settle_move(options: &FinishMoveOptions<'_>) -> Result<(), String> {
         ..
     } = options;
     if super::path_exists(bundle_dir).await {
-        let manifest = super::bundle::read_manifest(bundle_dir).map_err(|e| e.to_string())?;
-        if manifest.move_id != *move_id {
+        let kept = read_kept_bundle(bundle_dir).map_err(|e| e.to_string())?;
+        if kept.move_id != *move_id {
             return Err(format!(
                 "move_mismatch: the kept bundle belongs to {} not {move_id}",
-                manifest.move_id
+                kept.move_id
             ));
         }
     }
@@ -92,6 +93,6 @@ pub async fn requeue_dropped_input(file: &Path, bundle: &Path) -> Result<(), Str
     if !super::path_exists(bundle).await {
         return Ok(());
     }
-    let manifest = super::bundle::read_manifest(bundle).map_err(|e| e.to_string())?;
-    super::requeue::requeue_input(file, &manifest.move_id, &manifest.dropped_user_messages).await
+    let kept = read_kept_bundle(bundle).map_err(|e| e.to_string())?;
+    super::requeue::requeue_input(file, &kept.move_id, &kept.dropped_user_messages).await
 }

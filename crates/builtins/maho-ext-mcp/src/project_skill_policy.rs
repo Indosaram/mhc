@@ -2,6 +2,7 @@ use crate::{
     config_schema::{McpServerConfig, ResolvedMcpServer},
     env_grants_store::*,
     errors::{McpError, McpErrorKind},
+    skill_server::{native_skill_declaration, plain_skill_wire},
 };
 use std::{
     collections::BTreeMap,
@@ -337,7 +338,7 @@ impl ProjectMcpAuthority {
         if let Some(warning) = warning {
             maho_ext_api::diagnostic(&warning);
         }
-        let wire = serde_json::from_value(policy.declaration)
+        let wire = plain_skill_wire(native_skill_declaration(policy.declaration))
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
         // plainMcpServerConfig: the declaration was refused references at preparation, so it normalizes to a
         // resolved snapshot directly (no identity is needed for the materialization itself).
@@ -537,7 +538,7 @@ pub async fn prepare_project_skill_server_with_notices(
     }
     let placeholder = ProjectMcpMaterialization {
         config: crate::config::normalize_server(
-            serde_json::from_value(raw.clone())
+            plain_skill_wire(native_skill_declaration(raw.clone()))
                 .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?,
         ),
         env: BTreeMap::new(),

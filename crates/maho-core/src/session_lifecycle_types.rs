@@ -281,6 +281,9 @@ pub struct SessionLifecycle {
     pub seq: u64,
     pub epoch: u64,
     pub epoch_origin: EpochOrigin,
+    /// Current or most recent run; absent before the first run and in older engine snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_id: Option<String>,
     pub human_input_revision: u64,

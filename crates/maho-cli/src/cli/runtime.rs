@@ -69,14 +69,6 @@ pub fn start_usage_polling(agent_dir: &str, report: Arc<dyn Fn(String) + Send + 
     let sources = AccountSources {
         store,
         env: Arc::new(|name| std::env::var(name).ok()),
-        refresher: Arc::new(|refresh, signal| {
-            Box::pin(async move {
-                let credential = maho_ai::auth::types::OAuthCredential::new("", refresh, 0.0);
-                maho_ai::auth::oauth::anthropic::anthropic_oauth()
-                    .refresh(&credential, &signal)
-                    .await
-            })
-        }),
         now: Arc::new(|| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -294,7 +286,16 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         // senpi main.ts:477-513: a path opens as-is, an id/prefix resolves locally then globally.
         match resolve_session_path(argument, &cwd_text, session_dir.as_deref()) {
             ResolvedSession::Path(path) | ResolvedSession::Local(path) => {
-                open_session_or_exit(&path, session_dir.as_deref(), &mut indicator)
+                open_session_or_exit(
+                    &path,
+                    mode,
+                    session_dir.as_deref(),
+                    &mut indicator,
+                    &parsed,
+                    &cwd,
+                    startup_settings.get_image_auto_resize(),
+                )
+                .await
             }
             ResolvedSession::Global {
                 path,
@@ -328,7 +329,18 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
                 &startup_settings,
             )
         })? {
-            Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
+            Some(path) => {
+                open_session_or_exit(
+                    &path,
+                    mode,
+                    session_dir.as_deref(),
+                    &mut indicator,
+                    &parsed,
+                    &cwd,
+                    startup_settings.get_image_auto_resize(),
+                )
+                .await
+            }
             None => {
                 indicator.stop();
                 println!("\x1b[2mNo session selected\x1b[22m");
@@ -336,7 +348,30 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
             }
         }
     } else if parsed.continue_session {
-        SessionManager::continue_recent(&cwd_text, session_dir.as_deref())?
+        if let Some(recent_path) =
+            SessionManager::recent_session_file(&cwd_text, session_dir.as_deref())
+            && std::path::Path::new(&recent_path).exists()
+        {
+            admit_or_exit(
+                &recent_path,
+                mode,
+                true,
+                &mut indicator,
+                &parsed,
+                &cwd,
+                startup_settings.get_image_auto_resize(),
+            )
+            .await;
+        }
+        let mut recent = SessionManager::continue_recent(&cwd_text, session_dir.as_deref())?;
+        if session_dir.is_none()
+            && recent
+                .session_file()
+                .is_some_and(|file| std::path::Path::new(file).exists())
+        {
+            recent.adopt_home_session_dir().await;
+        }
+        recent
     } else if let Some(id) = parsed.session_id.as_deref() {
         // senpi main.ts:537-547: an existing exact-id project session is resumed, not duplicated.
         match find_local_session_by_exact_id(id, &cwd_text, session_dir.as_deref()) {
@@ -346,7 +381,16 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
                         eprintln!("\x1b[33mWarning: --spawned-by is ignored when resuming an existing session.\x1b[39m")
                     });
                 }
-                SessionManager::open(&path, session_dir.as_deref(), None, None)?
+                open_session_or_exit(
+                    &path,
+                    mode,
+                    session_dir.as_deref(),
+                    &mut indicator,
+                    &parsed,
+                    &cwd,
+                    startup_settings.get_image_auto_resize(),
+                )
+                .await
             }
             None => {
                 indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m"));
@@ -389,12 +433,12 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
             indicator.stop();
             std::process::exit(0);
         };
-        manager = SessionManager::open(
+        manager = open_with_home_session_dir(
             &session_file,
             session_dir.as_deref(),
             Some(issue.fallback_cwd.as_str()),
-            None,
-        )?;
+        )
+        .await?;
     }
     let session_cwd = manager.cwd().to_owned();
     // senpi `createCliRuntimeFactory`: resolve project trust for the session cwd (override, saved
@@ -446,6 +490,7 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         ))
         .await;
     let mut settings = launch_trust.settings_manager(&session_cwd, &agent_dir);
+    settings.set_project_trust_locked(parsed.project_trust_override.is_some());
     let project_trust_warnings = launch_trust.warnings;
     // senpi main.ts:769-775 `projectTrustDiagnostics`, then `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
     let mut runtime_diagnostics: Vec<_> = project_trust_warnings
@@ -1295,14 +1340,96 @@ pub fn resolve_session_dir(
         .map(|value| maho_core::paths::normalize_path(value, &options))
 }
 
-/// senpi main.ts `openSessionOrExit`: a session file that cannot be opened prints a red
-/// `Error: <message>` and exits 1.
-fn open_session_or_exit(
+async fn admit_or_exit(
+    session_file: &str,
+    mode: AppMode,
+    can_attach: bool,
+    indicator: &mut super::startup_loading_indicator::StartupLoadingIndicator,
+    parsed: &Args,
+    cwd: &std::path::Path,
+    auto_resize_images: bool,
+) {
+    let can_ask = mode == AppMode::Interactive
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
+    let mut confirm = |question: String| -> super::session_opening::ConfirmFuture<'_> {
+        Box::pin(async move { prompt_confirm(&question) })
+    };
+    let mut err = |line: &str| {
+        maho_core::output_guard::maho_write_stderr(&format!("{line}\n"));
+    };
+    let mut io = super::session_opening::StartupAdmissionIo {
+        can_ask,
+        confirm: &mut confirm,
+        err: &mut err,
+        can_attach,
+        lookup: None,
+        stop: None,
+    };
+    match super::session_opening::admit_startup_session(Some(session_file), &mut io).await {
+        super::session_opening::StartupAdmission::Open => {}
+        super::session_opening::StartupAdmission::Cancelled => {
+            indicator.stop();
+            std::process::exit(0);
+        }
+        super::session_opening::StartupAdmission::Refused => {
+            indicator.stop();
+            std::process::exit(super::session_opening::SESSION_HELD_EXIT_CODE);
+        }
+        super::session_opening::StartupAdmission::Attach(_target) => {
+            match super::held_session_attach::held_session_attach_plan(
+                parsed,
+                cwd,
+                auto_resize_images,
+            )
+            .await
+            {
+                Ok(super::held_session_attach::HeldSessionAttachPlan::Refusal(reason)) => {
+                    indicator.stop();
+                    eprintln!("\x1b[31mNot opened: {reason}\x1b[39m");
+                    std::process::exit(1);
+                }
+                Ok(super::held_session_attach::HeldSessionAttachPlan::Startup(_)) => {
+                    indicator.stop();
+                    eprintln!(
+                        "\x1b[31mNot opened: this session is open in a multi-session host; terminal --attach requires S18 attached-TUI (not yet ported).\x1b[39m"
+                    );
+                    std::process::exit(super::session_opening::SESSION_HELD_EXIT_CODE);
+                }
+                Err(error) => {
+                    indicator.stop();
+                    eprintln!("\x1b[31mError: {error}\x1b[39m");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+async fn open_with_home_session_dir(
     path: &str,
     session_dir: Option<&str>,
+    fallback_cwd: Option<&str>,
+) -> Result<SessionManager, String> {
+    let mut manager = SessionManager::open(path, session_dir, fallback_cwd, None)?;
+    if session_dir.is_none() {
+        manager.adopt_home_session_dir().await;
+    }
+    Ok(manager)
+}
+
+/// senpi main.ts `openSessionOrExit`: admits held sessions, opens the file, and exits cleanly on failure.
+async fn open_session_or_exit(
+    path: &str,
+    mode: AppMode,
+    session_dir: Option<&str>,
     indicator: &mut super::startup_loading_indicator::StartupLoadingIndicator,
+    parsed: &Args,
+    cwd: &std::path::Path,
+    auto_resize_images: bool,
 ) -> SessionManager {
-    match SessionManager::open(path, session_dir, None, None) {
+    admit_or_exit(path, mode, true, indicator, parsed, cwd, auto_resize_images).await;
+    match open_with_home_session_dir(path, session_dir, None).await {
         Ok(manager) => manager,
         Err(message) => {
             indicator.stop();

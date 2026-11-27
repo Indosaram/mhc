@@ -1,6 +1,11 @@
+use super::bridge_tool_call::{
+    BridgeToolCallContext, BridgeToolCallRequest, route_bridge_tool_call,
+};
+use super::cell_tool_updates::CellToolUpdates;
 use super::session_manager_proxy::{SessionDisposeFuture, SessionManagerLifecycle};
 use crate::tool::{
     eval_tool_options::EvalKernelManager,
+    nested_tool_output::CellToolUpdateSink,
     types::{EvalKernel, EvalKernelFuture, EvalLanguage},
 };
 use crate::{
@@ -10,17 +15,10 @@ use crate::{
         },
         protocol::BridgeConnectionConfig,
     },
-    bridges::{
-        agent_bridge::AgentBridge,
-        output_bridge::OutputExecuteTool,
-        reserved_dispatch::{ReservedDispatchContext, is_reserved_tool_name, run_reserved_tool},
-    },
+    bridges::{agent_bridge::AgentBridge, output_bridge::OutputExecuteTool},
     config::settings::CodemodeSettings,
-    kernels::session_env::SessionEnvironment,
-    tool::tool_result_marshal::marshal_tool_result,
+    kernels::session_env::{InheritedEnvironment, SessionEnvironment},
 };
-use maho_ext_api::ExecuteToolOptions;
-use serde_json::json;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -30,13 +28,17 @@ use std::{
     },
 };
 
+#[derive(Clone)]
 pub struct CreateCodemodeSessionManagerOptions {
     pub session_id: String,
+    pub owner_session_id: Option<String>,
     pub cwd: PathBuf,
     pub settings: CodemodeSettings,
     pub local_roots: Option<crate::bridge::protocol::LocalRoots>,
     pub artifacts_dir: Option<PathBuf>,
     pub session_env: Option<SessionEnvironment>,
+    pub inherited_env: Option<InheritedEnvironment>,
+    pub kill_guard: bool,
     pub executor: Arc<dyn OutputExecuteTool>,
     pub list_tools: Option<crate::bridges::schema_bridge::EvalToolCatalog>,
     pub complete: BridgeCompletionHandler,
@@ -59,6 +61,7 @@ pub struct CodemodeSessionManager {
     environments: Arc<crate::environments::js_environments::JsEnvironments>,
     javascript_shutdown: maho_ai::utils::abort::AbortController,
     dispose_result: tokio::sync::OnceCell<Result<(), String>>,
+    cell_tool_updates: Arc<CellToolUpdates>,
     contexts: Arc<
         std::sync::Mutex<
             HashMap<String, Arc<crate::tool::eval_tool_options::EvalInvocationContext>>,
@@ -109,6 +112,8 @@ impl CodemodeSessionManager {
         let list_tools = options.list_tools.clone();
         let task_tools = options.settings.task_tools.clone();
         let agent_bridge = AgentBridge::for_executor(&executor);
+        let cell_tool_updates = Arc::new(CellToolUpdates::default());
+        let bridge_tool_updates = cell_tool_updates.clone();
         let contexts: Arc<
             std::sync::Mutex<
                 HashMap<String, Arc<crate::tool::eval_tool_options::EvalInvocationContext>>,
@@ -120,6 +125,44 @@ impl CodemodeSessionManager {
         let completion_session_context = session_context.clone();
         let completion_contexts = contexts.clone();
         let complete = options.complete.clone();
+        let on_kill_guard_check = options.kill_guard.then(|| {
+            let agent_pid = i64::from(std::process::id());
+            #[cfg(unix)]
+            let agent_ppid = Some(i64::from(std::os::unix::process::parent_id()));
+            #[cfg(not(unix))]
+            let agent_ppid = None;
+            let handler: crate::bridge::http_server::BridgeKillGuardCheckHandler =
+                Arc::new(move |body| {
+                    let options = maho_core::kill_guard::request::KillGuardRequestOptions {
+                        agent_pid,
+                        agent_ppid,
+                        platform: None,
+                        view: None,
+                    };
+                    Box::pin(async move {
+                        let verdict = tokio::task::spawn_blocking(move || {
+                            maho_core::kill_guard::request::decide_kill_guard_request(
+                                &body, &options,
+                            )
+                        })
+                        .await
+                        .unwrap_or_else(|error| {
+                            maho_core::kill_guard::verdict::refuse(
+                                maho_core::kill_guard::types::KillGuardRule::R5,
+                                &format!("kill-guard check failed: {error}"),
+                                None,
+                            )
+                        });
+                        serde_json::to_value(&verdict).map_err(|error| {
+                            serde_json::json!({
+                                "name": "Error",
+                                "message": error.to_string(),
+                            })
+                        })
+                    })
+                });
+            handler
+        });
         let bridge = start_bridge_server(BridgeServerOptions {
             token: None,
             body_limit_bytes: None,
@@ -144,64 +187,34 @@ impl CodemodeSessionManager {
                     });
                 complete(request)
             }),
+            on_kill_guard_check,
             on_call: Arc::new(move |request| {
                 let executor = executor.clone();
                 let list_tools = list_tools.clone();
                 let task_tools = task_tools.clone();
                 let agent_bridge = agent_bridge.clone();
                 let environments = bridge_environments.clone();
+                let updates = bridge_tool_updates.clone();
                 Box::pin(async move {
-                    let execute_options = ExecuteToolOptions {
-                        signal: Some(request.signal.clone()),
-                        ..Default::default()
-                    };
-                    if is_reserved_tool_name(&request.tool_name) {
-                        let tools =
-                            if request.tool_name == crate::bridge::reserved::RESERVED_OUTPUT_TOOL {
-                                None
-                            } else {
-                                list_tools
-                                    .as_ref()
-                                    .map(|list| list())
-                                    .transpose()
-                                    .map_err(|error| json!({"name":"Error","message":error}))?
-                            };
-                        run_reserved_tool(
-                            &request.tool_name,
-                            ReservedDispatchContext {
-                                call_id: &request.call_id,
-                                args: &request.args,
-                                executor: executor.as_ref(),
-                                task_tool_name: &task_tools.task,
-                                task_output_tool_name: &task_tools.output,
-                                tools: tools.as_deref(),
-                                execute_options,
-                                emit_status: None,
-                                agent_bridge: &agent_bridge,
-                                environments: Some(environments.as_ref()),
-                            },
-                        )
-                        .await
-                        .map_err(|error| {
-                            let mut payload = json!({"name":"Error","message":error.to_string()});
-                            if let Some(code) = error.code() {
-                                payload["code"] = json!(code);
-                            }
-                            payload
-                        })
-                    } else {
-                        executor
-                            .execute_tool(&request.tool_name, request.args, execute_options)
-                            .await
-                            .map(|result| marshal_tool_result(&result))
-                            .map_err(|error| {
-                                let code =
-                                    crate::bridges::reserved_dispatch::execute_tool_error_code(
-                                        &error.code,
-                                    );
-                                json!({"name":"Error","message":error.to_string(),"code":code})
-                            })
-                    }
+                    let sink = updates.sink_for(request.cell_token.as_deref());
+                    route_bridge_tool_call(
+                        BridgeToolCallContext {
+                            executor: executor.as_ref(),
+                            list_tools: list_tools.as_ref(),
+                            task_tools: &task_tools,
+                            agent_bridge: &agent_bridge,
+                            environments: Some(environments.as_ref()),
+                            tool_updates: sink,
+                        },
+                        BridgeToolCallRequest {
+                            tool_name: &request.tool_name,
+                            args: request.args,
+                            call_id: &request.call_id,
+                            cell_token: request.cell_token.as_deref(),
+                            signal: request.signal,
+                        },
+                    )
+                    .await
                 })
             }),
         })
@@ -220,6 +233,7 @@ impl CodemodeSessionManager {
             environments,
             javascript_shutdown: maho_ai::utils::abort::AbortController::new(),
             dispose_result: tokio::sync::OnceCell::new(),
+            cell_tool_updates,
             contexts,
             session_context,
         })
@@ -335,9 +349,11 @@ impl CodemodeSessionManager {
             settings: self.options.settings.clone(),
             list_tools: self.options.list_tools.clone(),
             session_env: self.options.session_env.clone(),
+            inherited_env: self.options.inherited_env.clone(),
             port: self.bridge.port,
             token: self.bridge.token.clone(),
             shutdown: self.javascript_shutdown.clone(),
+            kill_guard: self.options.kill_guard,
         }
     }
 
@@ -411,6 +427,13 @@ impl EvalKernelManager for CodemodeSessionManager {
             }
         }))
     }
+    fn bind_cell_tool_updates(
+        &self,
+        token: &str,
+        sink: Arc<dyn CellToolUpdateSink>,
+    ) -> Option<Box<dyn FnOnce() + Send + Sync>> {
+        Some(CellToolUpdates::bind(&self.cell_tool_updates, token, sink))
+    }
     fn get_kernel(&self, language: EvalLanguage) -> EvalKernelFuture<'_, Arc<dyn EvalKernel>> {
         Box::pin(async move {
             match language {
@@ -445,9 +468,23 @@ struct JavaScriptLauncher {
     settings: CodemodeSettings,
     list_tools: Option<crate::bridges::schema_bridge::EvalToolCatalog>,
     session_env: Option<SessionEnvironment>,
+    inherited_env: Option<InheritedEnvironment>,
     port: u16,
     token: String,
     shutdown: maho_ai::utils::abort::AbortController,
+    kill_guard: bool,
+}
+
+fn kill_guard_bridge_url(port: u16) -> Result<String, String> {
+    let path = crate::kernels::shared::runtime_asset::require_codemode_runtime_asset(
+        None,
+        std::path::Path::new("kernels/js/kill-guard-bridge.js"),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut url = url::Url::from_file_path(&path)
+        .map_err(|()| format!("invalid kill-guard bridge path: {}", path.display()))?;
+    url.set_query(Some(&format!("port={port}")));
+    Ok(url.into())
 }
 
 impl JavaScriptLauncher {
@@ -509,6 +546,12 @@ impl JavaScriptLauncher {
                     shutdown: self.shutdown.clone(),
                     memory,
                     env_passthrough: settings.env_passthrough.clone(),
+                    inherited_env: self.inherited_env.clone(),
+                    kill_guard: if self.kill_guard {
+                        Some((kill_guard_bridge_url(self.port)?, std::process::id()))
+                    } else {
+                        None
+                    },
                 },
             )
             .await

@@ -118,6 +118,7 @@ async fn result_builder_finalizes_machine_details() {
             on_timeout: None,
             reset: None,
             isolate: None,
+            language_inferred: None,
         },
         runtime: None,
         started_at: 0.0,
@@ -200,6 +201,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
             on_timeout: None,
             reset: None,
             isolate: None,
+            language_inferred: None,
         },
         runtime: None,
         started_at: 0.0,
@@ -239,6 +241,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
             tools: None,
             complete: None,
             settings: maho_codemode::config::settings::CodemodeSettings::default(),
+            renderer_lookup: None,
             signal: controller.signal(),
             deliver_reply: Arc::new(move |reply| {
                 sender.send(reply).expect("reply receiver");
@@ -285,6 +288,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
             tools: Some(Arc::new(|| Err("native catalog unavailable".into()))),
             complete: None,
             settings: Default::default(),
+            renderer_lookup: None,
             signal: controller.signal(),
             deliver_reply: Arc::new(|_| {
                 panic!("a failed schema-hint lookup cannot publish a reply")

@@ -6,7 +6,7 @@ Native Senpi skills authored directly against the Senpi tool surface (not ported
 
 | Skill | Role |
 |-------|------|
-| `ultrawork/` | Senpi-native ultrawork directive source; its body is embedded into `src/components/ultrawork/generated-directive.ts` by `plugin/scripts/embed-directive.mjs` (build fails on non-senpi harness tokens). |
+| `ultrawork/` | Ships the default contract in `SKILL.md` and the complete GPT contract in `references/gpt.md`. `maho-ultrawork` embeds both; the GPT contract is not an addendum to the default. |
 | `ulw-plan/` | Read-only planning lifecycle: draft -> plan with explicit approval; `scripts/scaffold-plan.mjs` scaffolds guarded `.omo` artifacts. |
 | `ulw-loop/` | Goal/QA lifecycle loop; component-owned native source, shipped verbatim. |
 | `ulw-research/` | Claim-graph research orchestration: claims enter `claim-graph.md` as `verified-claims`; unsupported claims stay unresolved/refuted. |

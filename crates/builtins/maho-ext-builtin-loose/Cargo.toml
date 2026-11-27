@@ -7,6 +7,7 @@ license = "MIT"
 autotests = false
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
 serde_json.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-host = { path = "../../maho-ext-host" }

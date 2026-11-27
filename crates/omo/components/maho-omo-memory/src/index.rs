@@ -178,17 +178,26 @@ impl MemoryComponent {
             &self.options.env,
             &self.options.cwd,
         );
-        let sweep_now = chrono::Utc::now().timestamp_millis();
-        let _ = crate::transient_identity::sweep_transient_run_roots(
-            &sweep_root,
+        let sweep_now = (self.options.now)() as i64;
+        let transient_sweep = crate::transient_sweep_once::schedule_transient_sweep_once(
+            &sweep_root.clone(),
             sweep_now,
-            24 * 60 * 60 * 1000,
-        );
-        let _ = crate::transient_identity::sweep_abandoned_identity_roots(
-            &sweep_root,
-            sweep_now,
-            7 * 24 * 60 * 60 * 1000,
-        );
+            None,
+            move || {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let _ = crate::transient_identity::sweep_transient_run_roots(
+                    &sweep_root,
+                    now_ms,
+                    24 * 60 * 60 * 1000,
+                );
+                let _ = crate::transient_identity::sweep_abandoned_identity_roots(
+                    &sweep_root,
+                    now_ms,
+                    7 * 24 * 60 * 60 * 1000,
+                );
+            },
+        )
+        .map(Arc::new);
         register_static(api);
         let this = self.clone();
         let subscription = Arc::new(Mutex::new(Some(api.events.on(
@@ -269,9 +278,13 @@ impl MemoryComponent {
             })
         }));
         let this = self.clone();
+        let transient_sweep = transient_sweep.clone();
         api.on(
             EventKind::SessionShutdown,
             Arc::new(move |event, context| {
+                if let Some(sweep) = &transient_sweep {
+                    sweep.cancel();
+                }
                 let deadline = crate::shutdown_drain::shutdown_deadline_at(|| (this.options.now)());
                 let this = this.clone();
                 let shutdown = hooks.shutdown.clone();

@@ -28,7 +28,7 @@ env:
   # Must equal PINNED_VERSION in assets/omo-latest/skills/ast-grep/install.sh.
   AST_GREP_VERSION: "0.45.0"
   # Must equal SENPI_PIN in tools/golden/pin.mjs; golden tests refuse any other senpi commit.
-  SENPI_PIN: 59d58cee59d76bbecc83be828b59ff5420eb74df
+  SENPI_PIN: 99a26322f4a81d5ed95f0fd9f292938a6afbd8ff
 
 jobs:
   clippy:

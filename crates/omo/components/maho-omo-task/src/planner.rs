@@ -85,28 +85,45 @@ pub fn create_task_child_planner_with_tiers(
     resolve_parent_service_tier: ResolveParentServiceTier,
     resolve_default_route: Option<ResolveDefaultRoute>,
 ) -> ChildPlanner {
-    let excluded = exclude_models(&config);
+    let scoped = create_config_scoped_task_child_planner(
+        agents,
+        resolve_registry,
+        resolve_parent_service_tier,
+        resolve_default_route,
+    );
+    Arc::new(move |spec| scoped(spec, &config))
+}
+
+type FinishPlanFn = Arc<dyn Fn(ResolvedChildPlan, &[String]) -> ResolvedChildPlan + Send + Sync>;
+
+pub fn create_config_scoped_task_child_planner(
+    agents: Vec<(String, AgentDefinition)>,
+    resolve_registry: ResolveModelRegistry,
+    resolve_parent_service_tier: ResolveParentServiceTier,
+    resolve_default_route: Option<ResolveDefaultRoute>,
+) -> crate::category_config_generation::ConfigScopedChildPlanner {
+    let distributor = senpi_task::ModelDistributor::default();
     // Whatever path resolved, the plan then inherits the parent's effective execution tier, and an
     // excluded `-fast` sibling keeps the base plan instead of failing the spawn.
-    let finish: Arc<dyn Fn(ResolvedChildPlan) -> ResolvedChildPlan + Send + Sync> = {
+    let finish: FinishPlanFn = {
         let resolve_registry = resolve_registry.clone();
         let resolve_parent_service_tier = resolve_parent_service_tier.clone();
-        let excluded = excluded.clone();
-        Arc::new(move |plan: ResolvedChildPlan| {
+        Arc::new(move |plan: ResolvedChildPlan, excluded: &[String]| {
             let live = resolve_registry();
             let fast = inherit_parent_fast_mode(
                 plan.clone(),
                 live.as_deref(),
                 resolve_parent_service_tier().as_deref(),
             );
-            if is_excluded_model(&fast.model, &excluded) {
+            if is_excluded_model(&fast.model, excluded) {
                 plan
             } else {
                 fast
             }
         })
     };
-    Arc::new(move |spec| {
+    Arc::new(move |spec, config| {
+        let excluded = exclude_models(config);
         let finish = finish.clone();
         let mut available_agents: Vec<_> = agents
             .iter()
@@ -202,6 +219,7 @@ pub fn create_task_child_planner_with_tiers(
                 &ResolveAgentOptions {
                     omo_config: Some(config.clone()),
                     model_override: explicit.map(str::to_owned),
+                    distribute_models: Some(distributor.clone()),
                     ..ResolveAgentOptions::default()
                 },
             ) {
@@ -217,48 +235,58 @@ pub fn create_task_child_planner_with_tiers(
                         .resolved_model
                         .clone()
                         .or_else(|| explicit.and_then(explicit_model_metadata));
-                    return Ok(finish(ResolvedChildPlan {
-                        model: resolution.model,
-                        requested_model: resolution.requested_model,
-                        fallback_models: resolution.fallback_models,
-                        resolved_model,
-                        variant,
-                        agent_type: Some(resolution.persona.agent_type),
-                        instructions: resolution.persona.instructions,
-                        tool_allowlist: resolution.persona.tool_allowlist,
-                        agent_execution_mode: resolution.persona.agent_execution_mode.map(|mode| {
-                            match mode {
-                                AgentExecutionMode::InProcess => ExecutionMode::InProcess,
-                                AgentExecutionMode::Process => ExecutionMode::Process,
-                            }
-                        }),
-                        allowed_subagents: resolution.persona.allowed_subagents,
-                        max_depth: resolution
-                            .persona
-                            .max_depth
-                            .and_then(|depth| u32::try_from(depth).ok()),
-                        ..ResolvedChildPlan::default()
-                    }));
+                    return Ok(finish(
+                        ResolvedChildPlan {
+                            model: resolution.model,
+                            requested_model: resolution.requested_model,
+                            fallback_models: resolution.fallback_models,
+                            resolved_model,
+                            variant,
+                            agent_type: Some(resolution.persona.agent_type),
+                            instructions: resolution.persona.instructions,
+                            tool_allowlist: resolution.persona.tool_allowlist,
+                            agent_execution_mode: resolution.persona.agent_execution_mode.map(
+                                |mode| match mode {
+                                    AgentExecutionMode::InProcess => ExecutionMode::InProcess,
+                                    AgentExecutionMode::Process => ExecutionMode::Process,
+                                },
+                            ),
+                            allowed_subagents: resolution.persona.allowed_subagents,
+                            max_depth: resolution
+                                .persona
+                                .max_depth
+                                .and_then(|depth| u32::try_from(depth).ok()),
+                            ..ResolvedChildPlan::default()
+                        },
+                        &excluded,
+                    ));
                 }
                 AgentResolutionResult::ModelUnavailable {
+                    agent,
                     attempted_model,
                     available_agents,
-                    ..
+                    attempted_chain,
+                    missing_providers,
                 } => {
-                    let mut error = PlanResolutionError::new(
-                        PlanResolutionCode::ModelUnavailable,
-                        if registry.is_none() {
-                            NO_REGISTRY_MESSAGE.into()
-                        } else {
-                            format!(
-                                "No available model for agent \"{name}\" (attempted {}).",
-                                attempted_model.as_deref().unwrap_or("none")
-                            )
-                        },
-                    );
+                    let message = if registry.is_none() {
+                        NO_REGISTRY_MESSAGE.into()
+                    } else {
+                        crate::model_error_text::agent_model_failure_text(
+                            name,
+                            Some(&agent),
+                            attempted_model.as_deref(),
+                            attempted_chain.as_deref(),
+                            missing_providers.as_deref(),
+                            &agents,
+                        )
+                    };
+                    let mut error =
+                        PlanResolutionError::new(PlanResolutionCode::ModelUnavailable, message);
                     if registry.is_some() {
                         error.available_agents = Some(available_agents);
                     }
+                    error.attempted_chain = attempted_chain;
+                    error.missing_providers = missing_providers;
                     return Err(Box::new(error));
                 }
                 AgentResolutionResult::NotFound { .. } => {}
@@ -301,9 +329,11 @@ pub fn create_task_child_planner_with_tiers(
         };
         let resolution = resolve_category(
             category,
-            &config,
+            config,
             registry.as_ref(),
-            &ResolveCategoryOptions::default(),
+            &ResolveCategoryOptions {
+                distribute_models: Some(distributor.clone()),
+            },
         )
         .map_err(|error| {
             Box::new(PlanResolutionError::new(
@@ -329,16 +359,19 @@ pub fn create_task_child_planner_with_tiers(
                 resolved.variant = spec.variant;
                 resolved.reasoning_effort = spec.reasoning_effort;
                 resolved.reasoning = spec.reasoning;
-                Ok(finish(ResolvedChildPlan {
-                    model: format!("{}/{}", spec.provider, spec.model_id),
-                    requested_model: spec.requested_model,
-                    fallback_models: spec.fallback_models,
-                    resolved_model: Some(resolved),
-                    variant,
-                    category: Some(category),
-                    prompt_append: spec.prompt_append,
-                    ..ResolvedChildPlan::default()
-                }))
+                Ok(finish(
+                    ResolvedChildPlan {
+                        model: format!("{}/{}", spec.provider, spec.model_id),
+                        requested_model: spec.requested_model,
+                        fallback_models: spec.fallback_models,
+                        resolved_model: Some(resolved),
+                        variant,
+                        category: Some(category),
+                        prompt_append: spec.prompt_append,
+                        ..ResolvedChildPlan::default()
+                    },
+                    &excluded,
+                ))
             }
             CategoryResolutionResult::Disabled {
                 reason,
@@ -374,6 +407,11 @@ pub fn create_task_child_planner_with_tiers(
                 error.category = Some(category.into());
                 error.attempted_chain = unavailable.attempted_chain;
                 error.missing_providers = unavailable.missing_providers;
+                if let Some(message) =
+                    crate::model_error_text::category_model_failure_text(&error, config)
+                {
+                    error.message = message;
+                }
                 Err(Box::new(error))
             }
         }

@@ -423,8 +423,17 @@ impl EngineRunPause {
         effects: Arc<EngineRunPauseEffects>,
         barrier: AdmissionBarrier,
     ) -> Self {
-        let registry = Arc::new(PauseRegistry::new(state_dir, barrier.clone()));
         let sources = effects.sources.clone();
+        Self::new_with_effects(state_dir, effects, sources, barrier)
+    }
+
+    pub fn new_with_effects(
+        state_dir: impl Into<std::path::PathBuf>,
+        effects: Arc<dyn RunPauseEffects>,
+        sources: Arc<Mutex<Vec<Arc<dyn RunPauseSource>>>>,
+        barrier: AdmissionBarrier,
+    ) -> Self {
+        let registry = Arc::new(PauseRegistry::new(state_dir, barrier.clone()));
         let controller = Arc::new(RunPauseController::new((*registry).clone(), effects));
         Self {
             registry,
@@ -509,6 +518,25 @@ impl EngineRunPause {
                 }]
             }
         }
+    }
+
+    pub fn has_lost(&self, parent_session_id: &str, pause_seq: u64) -> bool {
+        match self.controller.has_lost(parent_session_id, pause_seq) {
+            Ok(lost) => lost,
+            Err(error) => {
+                maho_ext_api::diagnostic(&format!("pause has_lost check failed: {error}"));
+                false
+            }
+        }
+    }
+
+    pub fn end_lost(
+        &self,
+        parent_session_id: &str,
+        pause_seq: u64,
+    ) -> Result<Vec<senpi_task::pause::run_controller::ResumeFailure>, String> {
+        block_on_nested(self.controller.end_lost(parent_session_id, pause_seq))
+            .map_err(|error| error.to_string())
     }
 
     pub fn release(&self, parent_session_id: &str, pause_seq: u64, resume_id: &str) -> bool {
@@ -734,6 +762,95 @@ impl senpi_task::manager::run_pause::TaskRunPausePorts for ManagerRunPausePorts 
     }
 }
 
+struct ComposedRunPauseEffects {
+    inner: Arc<EngineRunPauseEffects>,
+    manager: Arc<senpi_task::manager::TaskManager>,
+}
+
+impl RunPauseEffects for ComposedRunPauseEffects {
+    fn snapshot(&self, parent: &str, admissions: &[AdmissionParticipant]) -> Vec<PauseParticipant> {
+        self.inner.snapshot(parent, admissions)
+    }
+    fn quiesce<'a>(&'a self, parent: &'a str, seq: u64) -> Effect<'a, ()> {
+        self.inner.quiesce(parent, seq)
+    }
+    fn settle_creations<'a>(&'a self, parent: &'a str, seq: u64) -> Effect<'a, ()> {
+        self.inner.settle_creations(parent, seq)
+    }
+    fn add_fences<'a>(&'a self, parent: &'a str, seq: u64, runs: Vec<RunRef>) -> Effect<'a, ()> {
+        self.inner.add_fences(parent, seq, runs)
+    }
+    fn pause<'a>(
+        &'a self,
+        participant: &'a PauseParticipant,
+        owner: RunPauseOwner,
+    ) -> Effect<'a, PauseParticipantResult> {
+        self.inner.pause(participant, owner)
+    }
+    fn dispatch_guidance<'a>(
+        &'a self,
+        parent: &'a str,
+        seq: u64,
+        resume: &'a str,
+    ) -> Effect<'a, ()> {
+        self.inner.dispatch_guidance(parent, seq, resume)
+    }
+    fn resume<'a>(
+        &'a self,
+        participant: &'a PauseParticipant,
+        request: senpi_task::pause::run_controller::ResumeParticipantRequest,
+        credential: Option<ResumeCredential>,
+    ) -> Effect<'a, ResumeParticipantResult> {
+        self.inner.resume(participant, request, credential)
+    }
+    fn install<'a>(
+        &'a self,
+        parent: &'a str,
+        seq: u64,
+        credential: ResumeCredential,
+    ) -> Effect<'a, ()> {
+        self.inner.install(parent, seq, credential)
+    }
+    fn acknowledge_installed<'a>(
+        &'a self,
+        parent: &'a str,
+        seq: u64,
+        resume: &'a str,
+    ) -> Effect<'a, ()> {
+        self.inner.acknowledge_installed(parent, seq, resume)
+    }
+    fn cancel<'a>(&'a self, participant: &'a PauseParticipant, parent: &'a str) -> Effect<'a, ()> {
+        self.inner.cancel(participant, parent)
+    }
+    fn end_lost<'a>(
+        &'a self,
+        participant: &'a PauseParticipant,
+        reason: &'a str,
+    ) -> Effect<'a, bool> {
+        Box::pin(async move {
+            let Some(task_id) = participant.task_id.as_deref() else {
+                return Ok(false);
+            };
+            if participant.kind == ParticipantKind::HeldAdmission {
+                return Ok(false);
+            }
+            if let Some(record) = self.manager.get(task_id)
+                && u64::try_from(record.notification.run_epoch).ok() != participant.run_epoch
+            {
+                return Ok(true);
+            }
+            Ok(self.manager.end_lost_paused_task(task_id, reason))
+        })
+    }
+    fn observe_hold<'a>(
+        &'a self,
+        participant: &'a PauseParticipant,
+        parent: &'a str,
+    ) -> Effect<'a, Option<senpi_task::pause::ports::ObservedHold>> {
+        self.inner.observe_hold(participant, parent)
+    }
+}
+
 impl EngineRunPause {
     /// Compose the engine's pause controller over the live manager and store.
     pub fn compose(
@@ -851,7 +968,12 @@ impl EngineRunPause {
             }),
             cancel_task,
         });
-        let engine = EngineRunPause::new_with_barrier(state_dir, effects, barrier);
+        let sources = effects.sources.clone();
+        let composed = Arc::new(ComposedRunPauseEffects {
+            inner: effects,
+            manager,
+        });
+        let engine = EngineRunPause::new_with_effects(state_dir, composed, sources, barrier);
         (engine, run_pause)
     }
 }

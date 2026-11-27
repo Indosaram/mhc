@@ -16,7 +16,7 @@ pub fn format_bytes(bytes: usize) -> String {
 pub fn is_progress_details(details: &serde_json::Value) -> bool {
     matches!(
         details.get("phase").and_then(serde_json::Value::as_str),
-        Some("fetching" | "downloading" | "converting")
+        Some("fetching" | "downloading" | "converting" | "rendering")
     )
 }
 pub fn is_result_details(details: &serde_json::Value) -> bool {
@@ -160,6 +160,9 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
                         "converting" => {
                             format!("Converting {url} to {}", string(details, "format"))
                         }
+                        "rendering" => {
+                            format!("Rendering {url}: the static HTML is an empty app shell")
+                        }
                         _ => format!(
                             "Fetching {url} as {} ({}s)",
                             string(details, "format"),
@@ -189,7 +192,9 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
                     theme.fg(ThemeColor::Accent, string(details, "format")),
                     theme.fg(ThemeColor::Muted, "•"),
                     theme.fg(ThemeColor::Muted, &format_bytes(number(details, "bytes"))),
-                    if details["converted"] == true {
+                    if details["rendered"] == true {
+                        theme.fg(ThemeColor::Dim, " rendered")
+                    } else if details["converted"] == true {
                         theme.fg(ThemeColor::Dim, " converted")
                     } else {
                         String::new()
@@ -263,9 +268,88 @@ mod tests {
         assert!(is_progress_details(
             &serde_json::json!({"phase":"downloading"})
         ));
+        assert!(is_progress_details(
+            &serde_json::json!({"phase":"rendering"})
+        ));
         assert!(!is_progress_details(&serde_json::json!({"phase":"other"})));
         assert!(is_result_details(&serde_json::json!({"status":404})));
         assert!(!is_result_details(&serde_json::json!({"status":"404"})));
+    }
+    #[test]
+    fn renders_rendering_progress_and_rendered_tag() {
+        use maho_ext_api::{AgentToolResult, ToolRenderContext, ToolRendererSession};
+        use maho_interactive::theme::{Theme, ThemeBg, ThemeColor, theme::ColorMode};
+        use serde_json::json;
+        let native = Theme::builtin("dark", ColorMode::Truecolor).unwrap();
+        let theme = maho_ext_api::Theme {
+            name: Some(native.name.clone()),
+            colors: ThemeColor::ALL
+                .iter()
+                .map(|color| (color.key().into(), native.get_fg_ansi(*color)))
+                .collect(),
+            backgrounds: ThemeBg::ALL
+                .iter()
+                .map(|bg| (bg.key().into(), native.get_bg_ansi(*bg)))
+                .collect(),
+            vars: Default::default(),
+        };
+        let render = |is_partial: bool, details: serde_json::Value| {
+            let context = ToolRenderContext {
+                args: json!({"url": "https://example.test", "format": "markdown"}),
+                tool_call_id: "render-phase".into(),
+                invalidate: std::rc::Rc::new(|| {}),
+                last_component: None,
+                state: (),
+                cwd: Default::default(),
+                execution_started: true,
+                args_complete: true,
+                is_partial,
+                expanded: false,
+                show_images: false,
+                image_protocol: None,
+                is_error: false,
+                has_result: None,
+                spinner_frame: None,
+            };
+            let mut slots = ToolRendererSession {
+                renderers: std::sync::Arc::new(renderers()),
+                context,
+            }
+            .into_slots();
+            let mut result = AgentToolResult::text("body");
+            result.details = details;
+            let lines = slots.render_result(&result, &theme, 200).unwrap();
+            maho_tui::utils::strip_terminal_sequences(&lines.join("\n"))
+                .trim_end()
+                .to_owned()
+        };
+        assert_eq!(
+            render(
+                true,
+                json!({
+                    "phase": "rendering",
+                    "url": "https://example.test",
+                    "format": "markdown",
+                    "timeoutSeconds": 30,
+                    "progress": {"activity": "fetching", "startedAt": 0, "maxWaitMs": 30000}
+                })
+            ),
+            "Rendering https://example.test: the static HTML is an empty app shell"
+        );
+        let rendered_out = render(
+            false,
+            json!({
+                "status": 200,
+                "statusText": "OK",
+                "format": "markdown",
+                "bytes": 100,
+                "converted": true,
+                "rendered": true,
+                "outputTruncated": false
+            }),
+        );
+        assert!(rendered_out.contains("rendered"));
+        assert!(!rendered_out.contains("converted"));
     }
 }
 

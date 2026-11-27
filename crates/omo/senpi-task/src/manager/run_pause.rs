@@ -690,6 +690,64 @@ impl TaskRunPause {
         lock(&self.resumed).remove(task_id);
     }
 
+    /// End a paused child whose run's Resume could not reach it (#12249).
+    /// Checked and transitioned under one locked store mutation so a host that took
+    /// ownership in between is never ended here.
+    pub fn end_lost_paused_task<F>(&self, task_id: &str, reason: &str, may_end: F) -> bool
+    where
+        F: Fn(&TaskRecord) -> bool,
+    {
+        if self.ports.live_handle(task_id).is_some() {
+            return false;
+        }
+        let timestamp = now_iso(self.ports.now());
+        let error_message = format!(
+            "The run's Resume could not restore this paused child ({reason}), so its run ended. Its transcript is kept for task_output."
+        );
+        let mut applied_audit: Option<crate::state::TaskTransitionAudit> = None;
+        let result = self.ports.store().mutate(task_id, |fresh| {
+            if fresh.status != TaskStatus::Paused || !may_end(fresh) {
+                return fresh.clone();
+            }
+            let mut unpaused = fresh.clone();
+            unpaused.run_pause = None;
+            let transitioned = crate::state::transition_task_record(
+                &unpaused,
+                &crate::state::TaskTransition::FailSessionUnavailable {
+                    timestamp: timestamp.clone(),
+                    error_message: error_message.clone(),
+                    killed: false,
+                    run_stats: None,
+                },
+            );
+            if !transitioned.applied {
+                return fresh.clone();
+            }
+            let mut ended = transitioned.record;
+            ended.failure_kind = Some("session_unavailable".to_string());
+            applied_audit = Some(transitioned.audit);
+            ended
+        });
+        if result.is_err() {
+            return false;
+        }
+        let Some(audit) = applied_audit else {
+            return false;
+        };
+        if let Ok(payload) = serde_json::to_value(&audit) {
+            let _ = self.ports.store().append_event(
+                task_id,
+                &crate::store::PersistedTaskEvent {
+                    event_type: audit.type_name().to_string(),
+                    payload,
+                },
+            );
+        }
+        self.forget(task_id);
+        self.ports.park_capacity(task_id, 0);
+        true
+    }
+
     pub fn settlement(&self, task_id: &str, epoch: i64) -> tokio::sync::oneshot::Receiver<()> {
         self.intents.settlement(task_id, epoch)
     }

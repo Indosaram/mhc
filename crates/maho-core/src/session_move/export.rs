@@ -18,17 +18,67 @@ pub struct ExportSessionForMoveOptions<'a> {
 pub async fn export_session_for_move(
     options: ExportSessionForMoveOptions<'_>,
 ) -> Result<MoveManifest, String> {
+    export_session_for_move_and_read(options, |_| async { Ok(()) })
+        .await
+        .map(|(manifest, ())| manifest)
+}
+
+/// `export_session_for_move`, then `read` on the written bundle folder before the move lock is
+/// released (`senpi#6267`).
+pub async fn export_session_for_move_and_read<T, F, Fut>(
+    options: ExportSessionForMoveOptions<'_>,
+    read: F,
+) -> Result<(MoveManifest, T), String>
+where
+    F: FnOnce(&Path) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
     super::session_lock::with_session_move_lock(
         options.session_file,
         async {
             if let Some(guard) = options.locked_guard {
                 guard()?;
             }
-            write_move_bundle(&options).await
+            let manifest = write_move_bundle(&options).await?;
+            let value = read(options.bundle_dir).await?;
+            Ok((manifest, value))
         },
         options.guard,
     )
     .await
+}
+
+pub async fn assert_move_fits(
+    session_file: &Path,
+    session_id: &str,
+    state_dir: Option<&Path>,
+    sealed_already: bool,
+) -> Result<(), String> {
+    let session_dir = session_file.parent().unwrap_or(Path::new("."));
+    let blobs = super::files_under(&session_dir.join("resident-blobs").join(session_id)).await?;
+    let mut paths: Vec<String> = Vec::with_capacity(blobs.len());
+    for source in &blobs {
+        let rel = source
+            .strip_prefix(session_dir)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        paths.push(format!("files/{rel}"));
+    }
+    if let Some(dir) = state_dir {
+        for source in super::files_under(dir).await? {
+            let rel = source
+                .strip_prefix(dir)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            paths.push(format!("state/{rel}"));
+        }
+    }
+    if let Some(too_deep) = paths.into_iter().find(|p| nests_too_deep(p)) {
+        return Err(MovePathTooDeepError::new(too_deep, sealed_already).to_string());
+    }
+    Ok(())
 }
 async fn write_move_bundle(
     options: &ExportSessionForMoveOptions<'_>,
@@ -38,12 +88,21 @@ async fn write_move_bundle(
     let session_id = parse_plain_id(&json!(header_session_id(&entries)), "session id")
         .map_err(|e| e.to_string())?;
     match session_ownership(&entries) {
-        SessionOwnership::Writable => super::append_custom(
-            options.session_file,
-            SESSION_RELEASED,
-            json!({"reason":"move", "move_id":move_id,"session_id":session_id,"target":options.target,"released_at":crate::session_manager::now_iso_millis()}),
-        )
-        .await?,
+        SessionOwnership::Writable => {
+            assert_move_fits(
+                options.session_file,
+                &session_id,
+                options.extension_state_dir,
+                false,
+            )
+            .await?;
+            super::append_custom(
+                options.session_file,
+                SESSION_RELEASED,
+                json!({"reason":"move", "move_id":move_id,"session_id":session_id,"target":options.target,"released_at":crate::session_manager::now_iso_millis()}),
+            )
+            .await?;
+        }
         SessionOwnership::Refused(owner)
             if owner.state == RefusedState::Moving && owner.move_id == move_id => {}
         SessionOwnership::Refused(owner) => {
@@ -71,6 +130,7 @@ async fn write_move_bundle(
             state.display()
         ));
     }
+    assert_move_fits(options.session_file, &session_id, state.as_deref(), true).await?;
     let staging = PathBuf::from(format!(
         "{}.partial-{}",
         options.bundle_dir.display(),

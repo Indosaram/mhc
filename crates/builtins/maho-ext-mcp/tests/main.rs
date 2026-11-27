@@ -94,6 +94,8 @@ pub mod service_connection;
 pub mod service_lifecycle;
 #[path = "service_register.rs"]
 pub mod service_register;
+#[path = "service_skill_sse.rs"]
+pub mod service_skill_sse;
 #[path = "service_snapshot.rs"]
 pub mod service_snapshot;
 #[path = "session_exposure.rs"]
@@ -168,6 +170,10 @@ pub mod modern_tasks;
 pub mod modern_tool_schemas;
 #[path = "modern_transport_port.rs"]
 pub mod modern_transport_port;
+#[path = "oauth_grant.rs"]
+pub mod oauth_grant;
+#[path = "oauth_registered_redirect.rs"]
+pub mod oauth_registered_redirect;
 #[path = "parameter_headers.rs"]
 pub mod parameter_headers;
 #[path = "reference_disclosure.rs"]
@@ -180,5 +186,9 @@ pub mod reference_support;
 pub mod reference_trust;
 #[path = "register_redaction.rs"]
 pub mod register_redaction;
+#[path = "service_scopes.rs"]
+pub mod service_scopes;
+#[path = "startup_window.rs"]
+pub mod startup_window;
 #[path = "sync_5152_rows.rs"]
 pub mod sync_5152_rows;

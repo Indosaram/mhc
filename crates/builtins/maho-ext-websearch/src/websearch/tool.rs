@@ -44,13 +44,60 @@ pub fn search_details_value(details: &super::types::SearchDetails) -> Value {
     }
     value
 }
-pub fn parameters() -> Value {
-    json!({"type":"object","properties":{"query":{"type":"string","minLength":2,"description":"The search query to use"},"allowed_domains":{"type":"array","items":{"type":"string"},"description":"Only include search results from these domains"},"blocked_domains":{"type":"array","items":{"type":"string"},"description":"Never include search results from these domains"}},"required":["query"],"additionalProperties":false})
+pub const DEFAULT_MAX_RESULTS: f64 = 10.;
+pub const MIN_MAX_RESULTS: f64 = 1.;
+pub const MAX_MAX_RESULTS: f64 = 50.;
+/// The one Tool Guidelines bullet; the server-search `## Web Search` section states it instead (senpi#5335).
+pub const WEB_SEARCH_CITE_GUIDELINE: &str =
+    "web_search used -> cite returned URLs in final answer.";
+
+pub fn per_call_max_results(value: f64) -> f64 {
+    value.trunc().clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS)
 }
+
+pub fn parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 2,
+                "description": "The search query to use"
+            },
+            "allowed_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Only include search results from these domains. Cannot be combined with a non-empty blocked_domains."
+            },
+            "blocked_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Never include search results from these domains. Cannot be combined with a non-empty allowed_domains."
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return, 1-50. Outranks a websearch.json entry's maxResults for this call; values outside the range are clamped."
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
 pub fn request_from_arguments(
     query: String,
     allowed_domains: Option<Vec<String>>,
     blocked_domains: Option<Vec<String>>,
+    config: &WebsearchConfig,
+) -> Result<SearchRequest, String> {
+    request_from_arguments_with_max_results(query, allowed_domains, blocked_domains, None, config)
+}
+
+pub fn request_from_arguments_with_max_results(
+    query: String,
+    allowed_domains: Option<Vec<String>>,
+    blocked_domains: Option<Vec<String>>,
+    max_results: Option<f64>,
     config: &WebsearchConfig,
 ) -> Result<SearchRequest, String> {
     if allowed_domains
@@ -65,13 +112,18 @@ pub fn request_from_arguments(
                 .into(),
         );
     }
+    let configured_max_results = config
+        .providers
+        .first()
+        .and_then(|entry| entry.config.max_results)
+        .unwrap_or(DEFAULT_MAX_RESULTS);
+    let call_max_results = max_results
+        .filter(|v| v.is_finite())
+        .map(per_call_max_results);
     Ok(SearchRequest {
         query,
-        max_results: config
-            .providers
-            .first()
-            .and_then(|entry| entry.config.max_results)
-            .unwrap_or(10.),
+        max_results: call_max_results.unwrap_or(configured_max_results),
+        max_results_from_call: call_max_results.is_some(),
         allowed_domains,
         blocked_domains,
     })
@@ -177,6 +229,7 @@ pub fn create_web_search_tool_with_registry(
                     .get("blocked_domains")
                     .map(|value| serde_json::from_value(value.clone()))
                     .transpose()?;
+                let max_results = call.params.get("max_results").and_then(Value::as_f64);
                 let error_result = |message: String, reason: Option<&str>| {
                     let mut details = json!({"phase":"error","query":query,"error":message});
                     if let Some(reason) = reason {
@@ -218,10 +271,11 @@ pub fn create_web_search_tool_with_registry(
                         ));
                     }
                 };
-                let request = request_from_arguments(
+                let request = request_from_arguments_with_max_results(
                     query.clone(),
                     allowed.clone(),
                     blocked.clone(),
+                    max_results,
                     &config,
                 )
                 .map_err(ToolError::Message)?;

@@ -1,175 +1,426 @@
-//! RPC move transaction dispatch. File custody stays in the engine ledger.
+//! RPC move transaction dispatch (senpi `modes/rpc/session-move-commands.ts`).
+//! File custody stays in `maho_core::session_move`.
+
+use crate::session_move_import::{MoveImportPort, import_moved, open_landed, session_dir_refusal};
+use crate::session_move_landed::{landed_when_fenced, status_answer};
+use crate::session_move_request::{MoveRequest, parse_move_request};
+use crate::session_move_wire::MOVE_INLINE_MAX_FILES;
+use async_trait::async_trait;
+use maho_core::repository_identity::read_repository_identity;
+use maho_core::session_manager::{get_default_session_dir_with, load_entries_from_file};
 use maho_core::session_move::{
-    bundle,
-    move_ledger::{DeclineReason, MoveLedger, MoveRecord, MoveStatus},
+    copy::copy_session_as,
+    export::{ExportSessionForMoveOptions, export_session_for_move_and_read},
+    extension_state::sealed_outgoing_state_dir,
+    finish::{FinishMoveOptions, finish_move},
+    identity::read_session_repository_identity,
+    inline_bundle::{InlineBundleLimits, read_inline_bundle},
+    move_ledger::{DeclineReason, MoveFencedError, MoveLedger, MoveRecord, MoveStatus},
     ownership::{RefusedState, SessionOwnership, session_ownership},
+    prepare::{PrepareMoveOptions, prepare_move},
+    revoke::{RevokeMoveOptions, revoke_imported_move},
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-fn wire(record: MoveRecord) -> Value {
+
+#[async_trait]
+pub trait MoveSessionPort: Send + Sync {
+    fn agent_dir(&self) -> &Path;
+    fn hosted_paths(&self) -> Vec<String>;
+    async fn open_landed(&self, open_command: Value) -> Result<Option<Value>, Value>;
+}
+
+struct SimpleMovePort<'a> {
+    agent_dir: &'a Path,
+    hosted_paths: &'a [String],
+}
+
+#[async_trait]
+impl MoveSessionPort for SimpleMovePort<'_> {
+    fn agent_dir(&self) -> &Path {
+        self.agent_dir
+    }
+    fn hosted_paths(&self) -> Vec<String> {
+        self.hosted_paths.to_vec()
+    }
+    async fn open_landed(&self, _open_command: Value) -> Result<Option<Value>, Value> {
+        Ok(Some(json!({
+            "error": "open_unsupported",
+            "errorCode": "open_unsupported",
+        })))
+    }
+}
+
+struct PortImportAdapter<'a> {
+    port: &'a dyn MoveSessionPort,
+}
+
+#[async_trait]
+impl MoveImportPort for PortImportAdapter<'_> {
+    fn agent_dir(&self) -> &Path {
+        self.port.agent_dir()
+    }
+    async fn open_landed(&self, open_command: Value) -> Result<Option<Value>, Value> {
+        self.port.open_landed(open_command).await
+    }
+}
+
+fn wire_record(record: MoveRecord) -> Value {
     match record {
-        MoveRecord::Ready { expires_at } => json!({"state":"ready","expires_at":expires_at}),
-        MoveRecord::Status(status) => status_wire(status),
+        MoveRecord::Ready { expires_at } => json!({"state": "ready", "expires_at": expires_at}),
+        MoveRecord::Status(status) => crate::session_move_landed::move_status_to_value(&status),
     }
 }
-fn status_wire(status: MoveStatus) -> Value {
-    match status {
-        MoveStatus::Receiving => json!({"state":"receiving"}),
-        MoveStatus::AcceptedRevoked => json!({"state":"accepted","revoked":true}),
-        MoveStatus::Accepted => json!({"state":"accepted"}),
-        MoveStatus::Declined { reason } => json!({"state":"declined","reason":reason.as_str()}),
-        MoveStatus::Failed { reason } => json!({"state":"failed","reason":reason.as_str()}),
+
+fn refusal(id: Option<&Value>, code: &str, detail: &str, landed: Option<Value>) -> Value {
+    let mut error_data = json!({ "detail": detail });
+    if let Some(Value::Object(map)) = landed
+        && let Some(obj) = error_data.as_object_mut()
+    {
+        for (k, v) in map {
+            obj.insert(k, v);
+        }
     }
+    json!({
+        "id": id,
+        "type": "response",
+        "command": "move_session",
+        "success": false,
+        "error": code,
+        "errorCode": code,
+        "errorData": error_data,
+    })
 }
-fn refusal(command: &Value, code: &str, detail: &str) -> Value {
-    json!({"id":command["id"],"type":"response","command":"move_session","success":false,"error":code,"errorCode":code,"errorData":{"detail":detail}})
-}
+
 pub fn validate_move_request(command: &Value) -> Result<(), String> {
-    let op = command["op"].as_str().unwrap_or_default();
-    if op == "import" {
-        let dir = text(command, "bundleDir")?;
-        let cwd = text(command, "cwd")?;
-        if !Path::new(dir).is_absolute() || !Path::new(cwd).is_absolute() {
-            return Err("import needs bundleDir and cwd as absolute paths.".into());
-        }
-        if command.get("from").is_some_and(|value| !value.is_string()) {
-            return Err("from must be a string.".into());
-        }
-        return Ok(());
-    }
-    if !bundle::is_move_id(&command["moveId"]) {
-        return Err("moveId must be a plain id.".into());
-    }
-    match op {
-        "prepare" | "cancel" => {}
-        "status" => {
-            if command.get("sessionPath").is_some() {
-                text(command, "sessionPath")?;
-            }
-        }
-        "export" => {
-            text(command, "sessionPath")?;
-            text(command, "target")?;
-            if command.get("droppedUserMessages").is_some_and(|value| {
-                value
-                    .as_array()
-                    .is_none_or(|items| items.iter().any(|item| !item.is_string()))
-            }) {
-                return Err("droppedUserMessages must contain strings.".into());
-            }
-        }
-        "finish" => {
-            text(command, "sessionPath")?;
-            let answer = &command["answer"];
-            let valid = match answer["state"].as_str() {
-                Some("receiving" | "accepted") => true,
-                Some("declined") => matches!(
-                    answer["reason"].as_str(),
-                    Some(
-                        "no_record"
-                            | "expired"
-                            | "cancelled"
-                            | "chunk_without_ready"
-                            | "repository"
-                    )
-                ),
-                Some("failed") => matches!(
-                    answer["reason"].as_str(),
-                    Some("bundle_invalid" | "import_failed")
-                ),
-                _ => false,
-            };
-            if !valid {
-                return Err("finish needs the receiver's answer from status.".into());
-            }
-        }
-        "revoke" => {
-            text(command, "sessionPath")?;
-        }
-        _ => return Err("invalid move operation".into()),
-    }
-    Ok(())
+    let Some(obj) = command.as_object() else {
+        return Err("move_session request must be an object".to_owned());
+    };
+    parse_move_request(obj).map(|_| ())
 }
+
 pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Value) -> Value {
-    if let Err(error) = validate_move_request(command) {
-        return refusal(command, "invalid_move_request", &error);
-    }
-    let op = command["op"].as_str().unwrap_or_default();
-    if op != "import" && !bundle::is_move_id(&command["moveId"]) {
+    let port = SimpleMovePort {
+        agent_dir: Path::new(agent_dir),
+        hosted_paths,
+    };
+    move_session_with_port(&port, command).await
+}
+
+pub async fn move_session_with_port(port: &dyn MoveSessionPort, command: &Value) -> Value {
+    let id_val = command.get("id");
+    let Some(obj) = command.as_object() else {
         return refusal(
-            command,
+            id_val,
             "invalid_move_request",
-            "moveId must be a plain id: a letter or digit, then letters, digits, '.', '_' or '-', at most 128 characters.",
+            "move_session request must be an object",
+            None,
         );
-    }
-    let root = Path::new(agent_dir).join("session-moves");
+    };
+    let parsed = match parse_move_request(obj) {
+        Ok(p) => p,
+        Err(err) => return refusal(id_val, "invalid_move_request", &err, None),
+    };
+    let agent_dir = port.agent_dir();
+    let root = agent_dir.join("session-moves");
     let ledger = MoveLedger::new(root.join("ledger"));
-    let id = command["moveId"].as_str().unwrap_or_default();
-    let result:Result<Value,String>=async {match op {
-        "prepare"=>ledger.prepare(id).await.map(wire).map_err(|error|error.to_string()),
-        "cancel"=>ledger.decline(id,DeclineReason::Cancelled).await.map(wire).map_err(|error|error.to_string()),
-        "status"=>maho_core::session_move::import::answer_move_status(&ledger,id,command["sessionPath"].as_str().map(Path::new)).await.map(status_wire),
-        "export"=>{
-            let path=&ordered_real_path(text(command,"sessionPath")?).await;closed(hosted_paths,&path.to_string_lossy())?;
-            let entries=load_entries(path).await;
-            if !matches!(session_ownership(&entries),SessionOwnership::Refused(ref owner) if owner.state==RefusedState::Moving&&owner.move_id==id){return Err("move_not_released: release the session for this move first".into());}
-            let destination=root.join("outgoing").join(id);
-            let dropped=command["droppedUserMessages"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
-            let state=maho_core::session_move::extension_state::sealed_outgoing_state_dir(path,id).await?;
-            let guard=||closed(hosted_paths,&path.to_string_lossy());
-            let manifest=maho_core::session_move::export::export_session_for_move(maho_core::session_move::export::ExportSessionForMoveOptions{session_file:path,move_id:id,target:text(command,"target")?,dropped_user_messages:&dropped,bundle_dir:&destination,extension_state_dir:state.as_deref(),resolve_extension_state:None,guard:Some(&guard),locked_guard:Some(&guard)}).await?;
-            let files=1+manifest.sidecars.len()+manifest.payloads.iter().map(|payload|payload.files.len()).sum::<usize>();
-            Ok(json!({"move_id":id,"session_id":manifest.session_id,"bundle_dir":destination,"files":files}))
-        },
-        "finish"=>{
-            let path=&ordered_real_path(text(command,"sessionPath")?).await;let guard=||closed(hosted_paths,&path.to_string_lossy());
-            let answer=maho_core::session_move::move_ledger::parse_move_status(&command["answer"]).ok_or("invalid_move_request: invalid move answer")?;
-            maho_core::session_move::finish::finish_move(maho_core::session_move::finish::FinishMoveOptions{session_file:path,bundle_dir:&root.join("outgoing").join(id),move_id:id,answer:&answer,guard:Some(&guard)}).await?;
-            let entries=load_entries(path).await;
-            let state=match session_ownership(&entries){SessionOwnership::Writable=>"writable",SessionOwnership::Refused(owner)=>if owner.state==RefusedState::Moved{"moved"}else{"moving"}};
-            Ok(json!({"ownership":state}))
-        },
-        "import"=>{
-            let cwd=Path::new(text(command,"cwd")?);let dir=PathBuf::from(maho_core::session_manager::get_default_session_dir_with(&cwd.to_string_lossy(),agent_dir));
-            let outcome=maho_core::session_move::import::import_moved_session(maho_core::session_move::import::ImportMovedSessionOptions{bundle_dir:Path::new(text(command,"bundleDir")?),target_cwd:cwd,ledger:&ledger,session_dir:Some(&dir),from:command["from"].as_str(),read_identity:None}).await?;
-            let entries=load_entries(&outcome).await;
-            Ok(json!({"session_id":maho_core::session_move::ownership::header_session_id(&entries),"session_path":outcome}))
-        },
-        "revoke"=>{
-            let path=&ordered_real_path(text(command,"sessionPath")?).await;let guard=||closed(hosted_paths,&path.to_string_lossy());
-            maho_core::session_move::revoke::revoke_imported_move(maho_core::session_move::revoke::RevokeMoveOptions{session_file:path,move_id:id,ledger:&ledger,guard:Some(&guard)}).await?;Ok(json!({"ownership":"moved"}))
-        },
-        _=>Err("invalid_move_request: invalid move operation".into()),
-    }}.await;
-    match result {
-        Ok(data) => {
-            json!({"id":command["id"],"type":"response","command":"move_session","success":true,"data":data})
+
+    if let MoveRequest::Import {
+        ref session_dir, ..
+    } = parsed
+    {
+        if let Some(detail) = session_dir_refusal(session_dir.as_deref()).await {
+            return refusal(id_val, "invalid_move_request", &detail, None);
         }
-        Err(error) => {
-            let code = error
-                .split(':')
-                .next()
-                .filter(|code| {
-                    matches!(
-                        *code,
-                        "invalid_move_request"
-                            | "session_open_here"
-                            | "move_not_released"
-                            | "move_mismatch"
-                            | "move_bundle_invalid"
-                            | "move_repository_mismatch"
-                            | "move_target_occupied"
-                            | "move_already_moved"
-                            | "move_fenced"
-                    )
-                })
-                .unwrap_or("move_failed");
-            refusal(command, code, &error)
+        let adapter = PortImportAdapter { port };
+        match import_moved(&parsed, agent_dir, &ledger, &root).await {
+            Ok((session_id, session_path)) => {
+                let cwd = match &parsed {
+                    MoveRequest::Import { cwd, .. } => cwd.as_str(),
+                    _ => "",
+                };
+                if let Some(open_err) = open_landed(&adapter, obj, cwd, &session_path).await {
+                    return json!({
+                        "id": id_val,
+                        "type": "response",
+                        "command": "move_session",
+                        "success": true,
+                        "data": {
+                            "session_id": session_id,
+                            "session_path": session_path,
+                            "open_error": open_err,
+                        },
+                    });
+                }
+                return json!({
+                    "id": id_val,
+                    "type": "response",
+                    "command": "move_session",
+                    "success": true,
+                    "data": {
+                        "session_id": session_id,
+                        "session_path": session_path,
+                    },
+                });
+            }
+            Err(err) => {
+                let code = map_move_error_code(&err);
+                return refusal(id_val, code, &err, None);
+            }
+        }
+    }
+
+    let hosted = port.hosted_paths();
+    let move_id_for_fence = match &parsed {
+        MoveRequest::Prepare { move_id, .. }
+        | MoveRequest::Cancel { move_id }
+        | MoveRequest::Status { move_id, .. }
+        | MoveRequest::Export { move_id, .. }
+        | MoveRequest::Finish { move_id, .. }
+        | MoveRequest::Revoke { move_id, .. } => Some(move_id.clone()),
+        _ => None,
+    };
+
+    match run_non_import(parsed, port, &hosted, &ledger, &root).await {
+        Ok(data) => json!({
+            "id": id_val,
+            "type": "response",
+            "command": "move_session",
+            "success": true,
+            "data": data,
+        }),
+        Err(err) => {
+            let code = map_move_error_code(&err);
+            let landed = if code == "move_fenced"
+                && let Some(mid) = move_id_for_fence
+            {
+                let record = ledger
+                    .answer_status(&mid, false)
+                    .await
+                    .map(MoveRecord::Status)
+                    .unwrap_or(MoveRecord::Status(MoveStatus::Accepted));
+                let fenced = MoveFencedError::new(mid, record, None);
+                landed_when_fenced(&ledger, &fenced).await
+            } else {
+                None
+            };
+            refusal(id_val, code, &err, landed)
         }
     }
 }
-/// senpi `orderedRealPath`: resolves a session file's real path off the async workers, serialized per resolved path so
-/// the move steps for one file enter the per-file move lock in the order they were called.
+
+fn map_move_error_code(error: &str) -> &'static str {
+    let head = error.split(':').next().unwrap_or_default().trim();
+    match head {
+        "invalid_move_request" => "invalid_move_request",
+        "session_open_here" => "session_open_here",
+        "move_not_released" => "move_not_released",
+        "move_fenced" => "move_fenced",
+        "move_bundle_invalid" => "move_bundle_invalid",
+        "move_repository_mismatch" => "move_repository_mismatch",
+        "workspace_missing" => "workspace_missing",
+        "move_target_occupied" => "move_target_occupied",
+        "move_mismatch" => "move_mismatch",
+        "move_already_moved" => "move_already_moved",
+        "session_moved_away" => "session_moved_away",
+        "ESESSIONHELD" => "session_held",
+        _ => "move_failed",
+    }
+}
+
+async fn run_non_import(
+    parsed: MoveRequest,
+    port: &dyn MoveSessionPort,
+    hosted_paths: &[String],
+    ledger: &MoveLedger,
+    root: &Path,
+) -> Result<Value, String> {
+    let agent_dir = port.agent_dir();
+    match parsed {
+        MoveRequest::Prepare {
+            move_id,
+            cwd,
+            repository,
+        } => {
+            let record = prepare_move(PrepareMoveOptions {
+                ledger,
+                move_id: &move_id,
+                cwd: cwd.as_deref(),
+                repository: repository.as_ref(),
+            })
+            .await?;
+            Ok(wire_record(record))
+        }
+        MoveRequest::IdentityCwd { cwd } => {
+            let resolved = tokio::fs::canonicalize(&cwd)
+                .await
+                .unwrap_or_else(|_| PathBuf::from(&cwd));
+            let repo = read_repository_identity(&resolved.to_string_lossy()).await;
+            Ok(match repo {
+                None => json!({}),
+                Some(r) => json!({ "repository": r }),
+            })
+        }
+        MoveRequest::IdentitySession { session_path } => {
+            let sessions_root = agent_dir.join("sessions");
+            let repo = read_session_repository_identity(&sessions_root, Path::new(&session_path))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(match repo {
+                None => json!({}),
+                Some(r) => json!({ "repository": r }),
+            })
+        }
+        MoveRequest::Cancel { move_id } => {
+            let record = ledger
+                .decline(&move_id, DeclineReason::Cancelled)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(wire_record(record))
+        }
+        MoveRequest::Status { move_id, named } => {
+            status_answer(ledger, &move_id, named.as_ref(), agent_dir).await
+        }
+        MoveRequest::Export {
+            session_path,
+            move_id,
+            target,
+            dropped,
+            inline_max_bytes,
+        } => {
+            let path = ordered_real_path(&session_path).await;
+            closed(hosted_paths, &path.to_string_lossy())?;
+            let path_str = path.to_string_lossy().into_owned();
+            let entries = tokio::task::spawn_blocking(move || load_entries_from_file(&path_str))
+                .await
+                .map_err(|e| e.to_string())?;
+            if !matches!(
+                session_ownership(&entries),
+                SessionOwnership::Refused(ref owner)
+                    if owner.state == RefusedState::Moving && owner.move_id == move_id
+            ) {
+                return Err("move_not_released: release the session for this move first".to_owned());
+            }
+            let destination = root.join("outgoing").join(&move_id);
+            let state = sealed_outgoing_state_dir(&path, &move_id).await?;
+            let guard = || closed(hosted_paths, &path.to_string_lossy());
+            let (manifest, inline) = export_session_for_move_and_read(
+                ExportSessionForMoveOptions {
+                    session_file: &path,
+                    move_id: &move_id,
+                    target: &target,
+                    dropped_user_messages: &dropped,
+                    bundle_dir: &destination,
+                    extension_state_dir: state.as_deref(),
+                    resolve_extension_state: None,
+                    guard: Some(&guard),
+                    locked_guard: Some(&guard),
+                },
+                |written| {
+                    let written = written.to_path_buf();
+                    async move {
+                        let Some(cap) = inline_max_bytes else {
+                            return Ok(None);
+                        };
+                        read_inline_bundle(
+                            &written,
+                            InlineBundleLimits {
+                                max_bytes: cap as u64,
+                                max_files: MOVE_INLINE_MAX_FILES,
+                            },
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+            let files = 1
+                + manifest.sidecars.len()
+                + manifest
+                    .payloads
+                    .iter()
+                    .map(|p| p.files.len())
+                    .sum::<usize>();
+            let mut out = json!({
+                "move_id": manifest.move_id,
+                "session_id": manifest.session_id,
+                "bundle_dir": destination,
+                "files": files,
+            });
+            if let Some(inline_files) = inline {
+                out["inline_files"] = serde_json::to_value(inline_files).unwrap_or(Value::Null);
+            }
+            Ok(out)
+        }
+        MoveRequest::Finish {
+            session_path,
+            move_id,
+            answer,
+        } => {
+            let path = ordered_real_path(&session_path).await;
+            let guard = || closed(hosted_paths, &path.to_string_lossy());
+            finish_move(FinishMoveOptions {
+                session_file: &path,
+                bundle_dir: &root.join("outgoing").join(&move_id),
+                move_id: &move_id,
+                answer: &answer,
+                guard: Some(&guard),
+            })
+            .await?;
+            let path_str = path.to_string_lossy().into_owned();
+            let entries = tokio::task::spawn_blocking(move || load_entries_from_file(&path_str))
+                .await
+                .map_err(|e| e.to_string())?;
+            let state = match session_ownership(&entries) {
+                SessionOwnership::Writable => "writable",
+                SessionOwnership::Refused(owner) => {
+                    if owner.state == RefusedState::Moved {
+                        "moved"
+                    } else {
+                        "moving"
+                    }
+                }
+            };
+            Ok(json!({ "ownership": state }))
+        }
+        MoveRequest::Revoke {
+            session_path,
+            move_id,
+        } => {
+            let path = ordered_real_path(&session_path).await;
+            let guard = || closed(hosted_paths, &path.to_string_lossy());
+            revoke_imported_move(RevokeMoveOptions {
+                session_file: &path,
+                move_id: &move_id,
+                ledger,
+                guard: Some(&guard),
+            })
+            .await?;
+            Ok(json!({ "ownership": "moved" }))
+        }
+        MoveRequest::Copy {
+            session_path,
+            session_id,
+            session_dir,
+        } => {
+            let path = ordered_real_path(&session_path).await;
+            let agent_dir_str = agent_dir.to_string_lossy().into_owned();
+            let copied = copy_session_as(&path, &session_id, |cwd| {
+                session_dir
+                    .as_deref()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| get_default_session_dir_with(cwd, &agent_dir_str))
+            })
+            .await?;
+            Ok(json!({
+                "session_id": copied.session_id,
+                "session_path": copied.session_path,
+            }))
+        }
+        MoveRequest::Import { .. } => Err("unreachable import".to_owned()),
+    }
+}
+
 async fn ordered_real_path(path: &str) -> PathBuf {
     static CHAINS: std::sync::OnceLock<
         std::sync::Mutex<
@@ -185,7 +436,6 @@ async fn ordered_real_path(path: &str) -> PathBuf {
             .entry(key.clone())
             .or_default(),
     );
-    // tokio's mutex is FIFO: waiters resolve in call order.
     let turn = chain.lock().await;
     let resolved = tokio::fs::canonicalize(path)
         .await
@@ -195,7 +445,6 @@ async fn ordered_real_path(path: &str) -> PathBuf {
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The last caller of a key drops its chain (senpi deletes the entry once its own promise is the tail).
     if chains.get(&key).is_some_and(|tail| {
         std::sync::Arc::ptr_eq(tail, &chain) && std::sync::Arc::strong_count(tail) == 2
     }) {
@@ -203,19 +452,11 @@ async fn ordered_real_path(path: &str) -> PathBuf {
     }
     resolved
 }
-/// senpi `loadEntriesFromFileAsync`: no sync fs on the RPC move path.
-async fn load_entries(path: &Path) -> Vec<Value> {
-    let path = path.to_string_lossy().into_owned();
-    tokio::task::spawn_blocking(move || maho_core::session_manager::load_entries_from_file(&path))
-        .await
-        .unwrap_or_default()
-}
-// Open remainder (senpi refuseOpenHere): upstream resolves hosted paths with async realpath; the guard maho-core's
-// export/finish/revoke options take is a sync closure, so this check still canonicalizes synchronously until the core
-// guard signature becomes async. Not a divergence: the blocking fs the upstream change removed is still here.
+
 fn real(path: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
+
 fn closed(hosted: &[String], path: &str) -> Result<(), String> {
     if hosted.iter().any(|hosted| real(hosted) == real(path)) {
         Err("session_open_here: close the session here before moving it".into())
@@ -223,15 +464,11 @@ fn closed(hosted: &[String], path: &str) -> Result<(), String> {
         Ok(())
     }
 }
-fn text<'a>(command: &'a Value, key: &str) -> Result<&'a str, String> {
-    command[key]
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-        .ok_or_else(|| format!("invalid_move_request: {key} must be a non-empty string"))
-}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn rejects_invalid_move_answers_and_relative_import_paths() {
         for answer in [
@@ -250,6 +487,15 @@ mod tests {
             validate_move_request(&json!({"op":"import","bundleDir":"relative","cwd":"/repo"}))
                 .is_err()
         );
-        assert!(validate_move_request(&json!({"op":"finish","moveId":"m","sessionPath":"/session","answer":{"state":"accepted","revoked":true}})).is_ok());
+        assert!(
+            validate_move_request(&json!({"op":"finish","moveId":"m","sessionPath":"/session","answer":{"state":"accepted","revoked":true}}))
+                .is_ok()
+        );
+        assert!(
+            validate_move_request(
+                &json!({"op":"copy","sessionPath":"/s.jsonl","sessionId":"copy1"})
+            )
+            .is_ok()
+        );
     }
 }

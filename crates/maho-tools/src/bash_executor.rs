@@ -11,6 +11,36 @@ use std::{
 };
 pub type BashChunkCallback = Arc<dyn Fn(&str) -> Result<(), ToolError> + Send + Sync>;
 pub type BashAsyncChunkCallback = Arc<dyn Fn(String) -> ToolFuture<'static, ()> + Send + Sync>;
+/// Overlay returning the active kill-guard runtime variables for a base environment (`maho-core`
+/// registers this callback so `maho-tools` merges `active_kill_guard_environment` without a crate cycle).
+pub type KillGuardEnvOverlay =
+    Arc<dyn Fn(&BTreeMap<String, String>) -> BTreeMap<String, String> + Send + Sync>;
+
+static KILL_GUARD_ENV_OVERLAY: std::sync::RwLock<Option<KillGuardEnvOverlay>> =
+    std::sync::RwLock::new(None);
+
+pub fn set_kill_guard_env_overlay(overlay: Option<KillGuardEnvOverlay>) {
+    let mut guard = KILL_GUARD_ENV_OVERLAY
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = overlay;
+}
+
+pub fn apply_kill_guard_env(env: &mut BTreeMap<String, String>) {
+    let overlay = KILL_GUARD_ENV_OVERLAY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(overlay) = overlay {
+        let extra = overlay(env);
+        env.extend(extra);
+    }
+}
+
+pub fn with_kill_guard_env(mut base: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    apply_kill_guard_env(&mut base);
+    base
+}
 #[derive(Default)]
 pub struct BashExecutorOptions {
     pub on_chunk: Option<BashChunkCallback>,
@@ -174,7 +204,8 @@ pub async fn execute_bash_with_operations(
             redact_secrets_in_output: options.redact_secrets_in_output,
             signal: execution_signal.clone(),
             timeout: None,
-            env: options.env.unwrap_or_else(|| std::env::vars().collect()),
+            env: options.env,
+            session_id: None,
         },
     );
     tokio::pin!(operation);
@@ -451,5 +482,28 @@ mod tests {
         let streamed = chunks.lock().expect("chunks").concat();
         assert_eq!(streamed, "key: <redacted>caf\u{fffd}");
         assert_eq!(result.output, streamed);
+    }
+
+    #[test]
+    fn with_kill_guard_env_merges_registered_overlay() {
+        let mut base = BTreeMap::new();
+        base.insert("PATH".to_owned(), "/usr/bin:/bin".to_owned());
+        set_kill_guard_env_overlay(Some(Arc::new(|env| {
+            let mut extra = BTreeMap::new();
+            let current = env.get("PATH").cloned().unwrap_or_default();
+            extra.insert("PATH".to_owned(), format!("/shims:{current}"));
+            extra.insert("BASH_ENV".to_owned(), "/shims/bash_env.sh".to_owned());
+            extra
+        })));
+        let merged = with_kill_guard_env(base);
+        set_kill_guard_env_overlay(None);
+        assert_eq!(
+            merged.get("PATH").map(String::as_str),
+            Some("/shims:/usr/bin:/bin")
+        );
+        assert_eq!(
+            merged.get("BASH_ENV").map(String::as_str),
+            Some("/shims/bash_env.sh")
+        );
     }
 }

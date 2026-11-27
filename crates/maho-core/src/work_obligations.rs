@@ -60,6 +60,8 @@ pub struct SessionWorkObligations {
     records: BTreeMap<String, WorkCustodyRecord>,
     unpersisted: BTreeMap<String, WorkCustodyRecord>,
     delivering: BTreeSet<String>,
+    /// Engine delivery custody a send opened in this process and has not queued yet (`senpi#6810`).
+    sending: BTreeSet<String>,
     published_sources: BTreeSet<String>,
     store: Box<dyn CustodyStore>,
 }
@@ -78,6 +80,7 @@ impl SessionWorkObligations {
             records,
             unpersisted: BTreeMap::new(),
             delivering: BTreeSet::new(),
+            sending: BTreeSet::new(),
             published_sources: BTreeSet::new(),
             store,
         }
@@ -109,9 +112,33 @@ impl SessionWorkObligations {
         let mut record = fresh(key, kind);
         record.detail = detail;
         let id = record.id.clone();
+        if key.starts_with(ENGINE_DELIVERY_KEY_PREFIX) {
+            self.sending.insert(id.clone());
+        }
         self.install(record);
         self.store.changed();
         ObligationToken { id }
+    }
+
+    pub fn is_delivery_in_flight(&self, record: &WorkCustodyRecord) -> bool {
+        if !record.key.starts_with(ENGINE_DELIVERY_KEY_PREFIX) {
+            return false;
+        }
+        self.sending.contains(&record.id)
+            || record
+                .ticket_id
+                .as_deref()
+                .is_some_and(|t| self.delivering.contains(t))
+    }
+
+    pub fn is_consumed_by(&self, record: &WorkCustodyRecord, run_id: Option<&str>) -> bool {
+        let Some(run_id) = run_id else {
+            return false;
+        };
+        if !record.key.starts_with(ENGINE_DELIVERY_KEY_PREFIX) {
+            return false;
+        }
+        record.state == State::Consumed && record.run_id.as_deref() == Some(run_id)
     }
     /// `items`: the producer's named items (`items`, else legacy `monitors`, senpi#4106); a change in ids,
     /// descriptions or omitted count republishes even when the count holds.
@@ -204,11 +231,13 @@ impl SessionWorkObligations {
         if payload.item_ids.is_none() && r.state == State::Queued {
             payload.item_ids = r.payload.as_ref().and_then(|p| p.item_ids.clone());
         }
+        let id = r.id.clone();
         r.state = State::Queued;
         r.payload = Some(payload);
         r.delivery = None;
         self.install(r);
         self.delivering.insert(ticket.into());
+        self.sending.remove(&id);
         self.store.changed();
         Ok(true)
     }
@@ -224,7 +253,18 @@ impl SessionWorkObligations {
         record.payload.as_ref()?.item_ids.clone()
     }
     pub fn end_delivery(&mut self, ticket: &str) {
-        self.delivering.remove(ticket);
+        if !self.delivering.remove(ticket) {
+            return;
+        }
+        if let Some(record) = self
+            .records
+            .values()
+            .find(|v| v.ticket_id.as_deref() == Some(ticket))
+            && custody_is_open(record)
+            && record.state != State::Consumed
+        {
+            self.store.changed();
+        }
     }
     pub fn passive(&mut self, ticket: &str) -> Result<(), CustodyViolation> {
         let r = self.ticket_record(ticket)?;
@@ -301,6 +341,28 @@ impl SessionWorkObligations {
         }
         self.store.changed();
     }
+    pub fn settle_ended_runs(&mut self, current_run_id: Option<&str>, current_run_ended: bool) {
+        let Some(current_run_id) = current_run_id else {
+            return;
+        };
+        let ended: Vec<_> = self
+            .active()
+            .into_iter()
+            .filter(|r| {
+                r.state == State::Consumed
+                    && (r.run_id.as_deref() != Some(current_run_id) || current_run_ended)
+            })
+            .cloned()
+            .collect();
+        if ended.is_empty() {
+            return;
+        }
+        for mut r in ended {
+            r.state = State::Settled;
+            self.install(r);
+        }
+        self.store.changed();
+    }
     fn install(&mut self, record: WorkCustodyRecord) {
         if self.store.append(&record).is_ok() {
             self.unpersisted.remove(&record.id);
@@ -337,6 +399,7 @@ impl SessionWorkObligations {
         notice_id: Option<String>,
     ) -> Result<(), CustodyViolation> {
         let mut r = self.owned(id)?;
+        self.sending.remove(id);
         r.state = state;
         if notice_id.is_some() {
             r.notice_id = notice_id;

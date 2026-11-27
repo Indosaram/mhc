@@ -61,54 +61,6 @@ fn chain(name: &str) -> Vec<DelegateFallbackEntry> {
     category_fallback_chain(name).expect("chain").to_vec()
 }
 
-const OPENAI_RUNG: &[&str] = &[
-    "openai",
-    "quotio-openai",
-    "github-copilot",
-    "opencode",
-    "vercel",
-];
-
-// ---- category/resolve-category.test.ts ----
-
-struct Gpt56Case {
-    category: &'static str,
-    model_id: &'static str,
-    native_variant: &'static str,
-    mixed_winner: (&'static str, &'static str, &'static str),
-    copilot_variant: &'static str,
-    copilot_fallback_entry: DelegateFallbackEntry,
-}
-
-fn gpt56_category_cases() -> Vec<Gpt56Case> {
-    vec![
-        Gpt56Case {
-            category: "ultrabrain",
-            model_id: "gpt-5.6-sol",
-            native_variant: "max",
-            mixed_winner: ("vercel", "openai/gpt-5.6-sol", "max"),
-            copilot_variant: "max",
-            copilot_fallback_entry: entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-        },
-        Gpt56Case {
-            category: "deep",
-            model_id: "gpt-5.6-sol",
-            native_variant: "medium",
-            mixed_winner: ("github-copilot", "gpt-5.6-sol", "medium"),
-            copilot_variant: "medium",
-            copilot_fallback_entry: entry(OPENAI_RUNG, "gpt-5.6-sol", Some("medium")),
-        },
-        Gpt56Case {
-            category: "unspecified-low",
-            model_id: "gpt-5.6-terra",
-            native_variant: "high",
-            mixed_winner: ("github-copilot", "gpt-5.6-terra", "high"),
-            copilot_variant: "high",
-            copilot_fallback_entry: entry(OPENAI_RUNG, "gpt-5.6-terra", Some("high")),
-        },
-    ]
-}
-
 #[test]
 fn resolve_user_overlay_wins_and_prompt_is_appended() {
     let models = registry(vec![model("anthropic", "claude-opus-4-7")]);
@@ -171,16 +123,18 @@ fn resolve_runtime_fallback_chain_is_retained() {
     assert_eq!(
         (resolved.spec.requested_model, resolved.spec.fallback_models),
         (
-            Some(ResolvedModelRecord::new(
-                ResolvedModelSource::Category,
-                "vendor-a",
-                "primary-model"
-            )),
-            Some(vec![ResolvedModelRecord::new(
-                ResolvedModelSource::Category,
-                "vendor-c",
-                "final-model"
-            )]),
+            Some(ResolvedModelRecord {
+                variant: Some("low".into()),
+                ..ResolvedModelRecord::new(
+                    ResolvedModelSource::Category,
+                    "vendor-a",
+                    "primary-model"
+                )
+            }),
+            Some(vec![ResolvedModelRecord {
+                variant: Some("low".into()),
+                ..ResolvedModelRecord::new(ResolvedModelSource::Category, "vendor-c", "final-model")
+            }]),
         )
     );
 }
@@ -221,151 +175,125 @@ fn resolve_canonical_models_win_over_legacy_fallbacks() {
 #[test]
 fn resolve_simple_category_keeps_canonical_reasoning() {
     let models = registry(vec![model("vendor-a", "solo-model")]);
-    let config = json!({ "categories": { "deep": { "model": "vendor-a/solo-model", "reasoning": "medium" } } });
-    let resolved = expect_resolved(resolve("deep", config, &models));
+    let config = json!({ "categories": { "deep-low": { "model": "vendor-a/solo-model", "reasoning": "medium" } } });
+    let resolved = expect_resolved(resolve("deep-low", config, &models));
     assert_eq!(resolved.spec.model_id, "solo-model");
     assert_eq!(resolved.spec.reasoning_effort.as_deref(), Some("medium"));
 }
 
 #[test]
 fn resolve_quick_chain_reaches_luna_fast() {
-    let models = registry(vec![model("openai-codex", "gpt-5.6-luna-fast")]);
+    let models = registry(vec![model("openai", "gpt-6-luna-fast")]);
     let resolved = expect_resolved(resolve("quick", json!({}), &models));
-    assert_eq!(resolved.spec.provider, "openai-codex");
-    assert_eq!(resolved.spec.model_id, "gpt-5.6-luna-fast");
-    assert_eq!(resolved.spec.variant.as_deref(), Some("low"));
-    assert!(resolved.selection.matched_fallback);
-    assert_eq!(
-        resolved.selection.fallback_entry,
-        Some(entry(&["openai-codex"], "gpt-5.6-luna-fast", Some("low")))
-    );
-}
-
-#[test]
-fn resolve_writing_default_selects_kimi_k3() {
-    let models = registry(vec![
-        model("kimi-coding", "k3"),
-        model("kimi-coding", "k3.1-pro"),
-    ]);
-    let resolved = expect_resolved(resolve("writing", json!({}), &models));
-    assert_eq!(resolved.spec.provider, "kimi-coding");
-    assert_eq!(resolved.spec.model_id, "k3");
-    assert_eq!(resolved.spec.variant.as_deref(), Some("low"));
-    assert!(!resolved.selection.matched_fallback);
-}
-
-#[test]
-fn resolve_writing_falls_back_to_k3_rung() {
-    let models = registry(vec![model("opencode-go", "kimi-k3.1-pro")]);
-    let resolved = expect_resolved(resolve("writing", json!({}), &models));
-    assert_eq!(resolved.spec.provider, "opencode-go");
-    assert_eq!(resolved.spec.model_id, "kimi-k3.1-pro");
+    assert_eq!(resolved.spec.provider, "openai");
+    assert_eq!(resolved.spec.model_id, "gpt-6-luna-fast");
     assert_eq!(resolved.spec.variant.as_deref(), Some("low"));
     assert!(resolved.selection.matched_fallback);
     assert_eq!(
         resolved.selection.fallback_entry,
         Some(entry(
-            &[
-                "kimi-coding",
-                "kimi-for-coding",
-                "moonshotai",
-                "opencode-go"
-            ],
-            "kimi-k3.1-pro",
+            &["chatgpt-subscription", "openai"],
+            "gpt-6-luna-fast",
             Some("low")
         ))
     );
 }
 
 #[test]
-fn resolve_visual_engineering_glm_rung_keeps_max() {
-    let models = registry(vec![model("zai-coding-plan", "glm-5.2")]);
-    let resolved = expect_resolved(resolve("visual-engineering", json!({}), &models));
-    assert_eq!(resolved.spec.provider, "zai-coding-plan");
-    assert_eq!(resolved.spec.model_id, "glm-5.2");
-    assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
-    assert!(resolved.selection.matched_fallback);
-    assert_eq!(
-        resolved.selection.fallback_entry,
-        Some(entry(
-            &["zai-coding-plan", "opencode-go", "vercel"],
-            "glm-5.2",
-            Some("max")
-        ))
-    );
-}
-
-#[test]
-fn resolve_vercel_gpt56_keeps_native_top_rung() {
-    for case in gpt56_category_cases() {
-        let gateway_model_id = format!("openai/{}", case.model_id);
-        let models = registry(vec![model("vercel", &gateway_model_id)]);
-        let resolved = expect_resolved(resolve(case.category, json!({}), &models));
-        assert_eq!(resolved.spec.provider, "vercel");
-        assert_eq!(resolved.spec.model_id, gateway_model_id);
-        assert_eq!(resolved.spec.variant.as_deref(), Some(case.native_variant));
-        let fallback_entry = resolved.selection.fallback_entry.expect("fallback entry");
-        assert_eq!(fallback_entry.model, case.model_id);
-        assert_eq!(fallback_entry.variant.as_deref(), Some(case.native_variant));
-    }
-}
-
-#[test]
-fn resolve_vercel_and_copilot_gpt56_first_rung_provider_wins() {
-    for case in gpt56_category_cases() {
-        let gateway_model_id = format!("openai/{}", case.model_id);
-        let models = registry(vec![
-            model("github-copilot", case.model_id),
-            model("vercel", &gateway_model_id),
-        ]);
-        let resolved = expect_resolved(resolve(case.category, json!({}), &models));
-        let (provider, model_id, variant) = case.mixed_winner;
-        assert_eq!(resolved.spec.provider, provider);
-        assert_eq!(resolved.spec.model_id, model_id);
-        assert_eq!(resolved.spec.variant.as_deref(), Some(variant));
+fn writing_prefers_argon_then_opus_with_accepted_effort() {
+    for (provider, id, effort) in [
+        ("google", "gemini-4-argon", "low"),
+        ("anthropic", "claude-opus-5-5", "low"),
+        ("anthropic", "claude-opus-4-6", "max"),
+    ] {
+        let resolved = expect_resolved(resolve(
+            "writing",
+            json!({}),
+            &registry(vec![model(provider, id)]),
+        ));
         assert_eq!(
-            resolved.selection.fallback_entry.expect("entry").model,
-            case.model_id
+            (
+                resolved.spec.provider.as_str(),
+                resolved.spec.model_id.as_str(),
+                resolved.spec.variant.as_deref()
+            ),
+            (provider, id, Some(effort))
         );
     }
 }
 
 #[test]
-fn resolve_copilot_gpt56_uses_copilot_rung() {
-    for case in gpt56_category_cases() {
-        let models = registry(vec![model("github-copilot", case.model_id)]);
-        let resolved = expect_resolved(resolve(case.category, json!({}), &models));
-        assert_eq!(resolved.spec.provider, "github-copilot");
-        assert_eq!(resolved.spec.model_id, case.model_id);
-        assert_eq!(resolved.spec.variant.as_deref(), Some(case.copilot_variant));
-        assert_eq!(
-            resolved.selection.fallback_entry,
-            Some(case.copilot_fallback_entry)
-        );
+fn exact_gpt_lanes_prefer_subscription_but_not_its_fast_sku() {
+    for (category, id, effort) in [
+        ("deep-low", "gpt-6.2-sol", "medium"),
+        ("deep-high", "gpt-6.2-astra", "high"),
+        ("ultrabrain", "gpt-6.2-astra", "max"),
+    ] {
+        for (subscription_id, winner) in [
+            (id.to_string(), "chatgpt-subscription"),
+            (format!("{id}-fast"), "openai"),
+        ] {
+            let host = registry(vec![
+                model("openai", id),
+                model("chatgpt-subscription", &subscription_id),
+            ]);
+            let got = expect_resolved(resolve(category, json!({}), &host));
+            assert_eq!(
+                (
+                    got.spec.provider.as_str(),
+                    got.spec.model_id.as_str(),
+                    got.spec.variant.as_deref()
+                ),
+                (winner, id, Some(effort))
+            );
+            assert!(got.spec.fallback_models.is_none());
+        }
+        for unavailable in [
+            model("github-copilot", id),
+            model("openai", &format!("{id}-fast")),
+            model("chatgpt-subscription", "gpt-6.1-sol"),
+        ] {
+            let got =
+                expect_unavailable(resolve(category, json!({}), &registry(vec![unavailable])));
+            assert!(!contains(&got.available_categories, category));
+        }
     }
 }
 
 #[test]
-fn resolve_deep_never_selects_retired_gpt55_rung() {
-    let result = resolve(
-        "deep",
-        json!({}),
-        &registry(vec![model("github-copilot", "gpt-5.5")]),
+fn resolve_dead_chain_has_no_system_default_last_resort() {
+    let models = registry(vec![model("local", "unrelated")]);
+    let options = ResolveCategoryOptions::default();
+    let unavailable = expect_unavailable(
+        resolve_category("quick", &json!({}), &models, &options).expect("resolve"),
     );
-    assert_eq!(result.kind(), "model_unavailable");
+    assert_eq!(unavailable.category, "quick");
+    assert!(unavailable.attempted_chain.is_some());
 }
 
 #[test]
-fn resolve_reaches_system_default() {
-    let models = registry(vec![model("local", "system-default")]);
+fn resolve_round_robin_rotates_category_models_and_omits_builtin_chain_candidates() {
+    let models = registry(vec![
+        model("openai", "gpt-6-luna-fast"),
+        model("anthropic", "claude-haiku-4-5"),
+    ]);
+    let config = json!({
+        "categories": {
+            "quick": {
+                "models": ["openai/gpt-6-luna-fast", "anthropic/claude-haiku-4-5"],
+                "models_distribution": "round_robin"
+            }
+        }
+    });
     let options = ResolveCategoryOptions {
-        system_default_model: Some("local/system-default".into()),
+        distribute_models: Some(crate::models_distribution::ModelDistributor::new()),
     };
-    let resolved =
-        expect_resolved(resolve_category("quick", &json!({}), &models, &options).expect("resolve"));
-    assert_eq!(resolved.spec.provider, "local");
-    assert_eq!(resolved.spec.model_id, "system-default");
-    assert!(!resolved.selection.matched_fallback);
+    let first = expect_resolved(resolve_category("quick", &config, &models, &options).expect("1"));
+    let second = expect_resolved(resolve_category("quick", &config, &models, &options).expect("2"));
+    assert_eq!(first.spec.provider, "openai");
+    assert_eq!(second.spec.provider, "anthropic");
+    assert_eq!(first.spec.fallback_models.as_ref().map(Vec::len), Some(1));
+    assert_eq!(first.selection.source, ModelSelectionSource::User);
 }
 
 #[test]
@@ -387,7 +315,7 @@ fn resolve_absent_selected_model_names_attempted_and_available() {
 
 #[test]
 fn resolve_overlay_generation_params_reach_child_spec() {
-    let models = registry(vec![model("kimi-coding", "kimi-for-coding-highspeed")]);
+    let models = registry(vec![model("chatgpt-subscription", "gpt-6-luna-fast")]);
     let config = json!({ "categories": { "quick": {
         "temperature": 0.3, "top_p": 0.8, "maxTokens": 4096,
         "thinking": { "type": "enabled", "budgetTokens": 1024 },
@@ -435,25 +363,36 @@ fn builtin_defaults_pin_machine_routing_fields() {
     assert_eq!(
         defaults,
         vec![
-            ("visual-engineering", "anthropic/claude-opus-5", Some("max")),
-            ("artistry", "anthropic/claude-fable-5-1", Some("max")),
-            ("ultrabrain", "openai/gpt-5.6-sol", Some("max")),
-            ("deep", "openai/gpt-5.6-sol", Some("medium")),
-            ("quick", "kimi-coding/kimi-for-coding-highspeed", None),
-            ("unspecified-low", "xai/grok-4.6", Some("xhigh")),
-            ("architect", "anthropic/claude-fable-5", Some("xhigh")),
-            ("unspecified-high", "kimi-coding/k3", Some("max")),
-            ("writing", "kimi-coding/k3", Some("low")),
-        ]
-    );
-    let mut requires = builtin_category_requires_model();
-    requires.sort_unstable();
-    assert_eq!(
-        requires,
-        vec![
-            ("architect", "claude-fable-5"),
-            ("deep", "gpt-5.6-sol"),
-            ("ultrabrain", "gpt-5.6-sol")
+            ("visual-engineering", "google/gemini-4-argon", Some("low")),
+            ("artistry", "anthropic/claude-fable-5-2", Some("max")),
+            (
+                "ultrabrain",
+                "chatgpt-subscription/gpt-6.2-astra",
+                Some("max")
+            ),
+            (
+                "deep-low",
+                "chatgpt-subscription/gpt-6.2-sol",
+                Some("medium")
+            ),
+            (
+                "deep-high",
+                "chatgpt-subscription/gpt-6.2-astra",
+                Some("high")
+            ),
+            ("quick", "chatgpt-subscription/gpt-6-luna-fast", Some("low")),
+            (
+                "unspecified-low",
+                "anthropic/claude-sonnet-5-5",
+                Some("medium")
+            ),
+            (
+                "unspecified-high",
+                "anthropic/claude-opus-5-5",
+                Some("medium")
+            ),
+            ("architect", "anthropic/claude-fable-5-2", Some("xhigh")),
+            ("writing", "google/gemini-4-argon", Some("low")),
         ]
     );
 }
@@ -461,12 +400,17 @@ fn builtin_defaults_pin_machine_routing_fields() {
 // ---- category/available-categories.test.ts ----
 
 #[test]
-fn available_exposes_architect_with_gate_model() {
-    let names = resolve_available_category_names(
-        &json!({}),
-        &registry(vec![model("anthropic", "claude-fable-5")]),
-    );
-    assert!(names.contains(&"architect".to_string()));
+fn available_exposes_architect_with_either_exact_fable_version() {
+    for (provider, id) in [
+        ("anthropic", "claude-fable-5-2"),
+        ("anthropic", "claude-fable-5-1"),
+        ("github-copilot", "claude-fable-5.1"),
+    ] {
+        let host = registry(vec![model(provider, id)]);
+        let got = expect_resolved(resolve("architect", json!({}), &host));
+        assert_eq!(got.spec.model_id, id);
+        assert!(contains(&got.available_categories, "architect"));
+    }
 }
 
 #[test]
@@ -480,7 +424,8 @@ fn available_hides_architect_without_gate_model() {
 
 #[test]
 fn available_explicit_declaration_exposes_architect() {
-    let config = json!({ "categories": { "architect": { "model": "anthropic/claude-fable-5" } } });
+    let config =
+        json!({ "categories": { "architect": { "model": "anthropic/claude-fable-5-2" } } });
     let names =
         resolve_available_category_names(&config, &registry(vec![model("omo-mock", "mock-weak")]));
     assert!(names.contains(&"architect".to_string()));
@@ -529,10 +474,10 @@ fn anthropic_architect_requires_fable_at_xhigh() {
         (architect().config, architect().requires_model),
         (
             BuiltinCategoryConfig {
-                model: "anthropic/claude-fable-5",
+                model: "anthropic/claude-fable-5-2",
                 variant: Some("xhigh")
             },
-            Some("claude-fable-5")
+            &["claude-fable-5-2", "claude-fable-5-1"][..]
         )
     );
 }
@@ -540,147 +485,29 @@ fn anthropic_architect_requires_fable_at_xhigh() {
 // ---- category/category-routing-policy.test.ts ----
 
 #[test]
-fn routing_policy_pins_primary_models() {
-    let config = |name: &str| builtin_category(name).expect("category").config.to_value();
-    assert_eq!(
-        [
-            config("visual-engineering"),
-            config("quick"),
-            config("unspecified-high"),
-            config("unspecified-low"),
-        ],
-        [
-            json!({ "model": "anthropic/claude-opus-5", "variant": "max" }),
-            json!({ "model": "kimi-coding/kimi-for-coding-highspeed" }),
-            json!({ "model": "kimi-coding/k3", "variant": "max" }),
-            json!({ "model": "xai/grok-4.6", "variant": "xhigh" }),
-        ]
-    );
-}
-
-#[test]
-fn routing_policy_unspecified_low_chain_is_grok_first_without_luna() {
-    let low = chain("unspecified-low");
-    assert!(!low.iter().any(|rung| rung.model == "gpt-5.6-luna"));
-    assert_eq!(
-        low,
-        vec![
-            entry(
-                &["xai", "github-copilot", "opencode", "vercel"],
-                "grok-4.6",
-                Some("xhigh")
-            ),
-            entry(OPENAI_RUNG, "gpt-5.6-terra", Some("high")),
-            entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode",
-                    "vercel"
-                ],
-                "claude-sonnet-5",
-                Some("low")
-            ),
-            entry(
-                &[
-                    "qwen-token-plan",
-                    "alibaba-token-plan",
-                    "qwen-token-plan-cn",
-                    "alibaba-token-plan-cn"
-                ],
-                "qwen3.8-max-preview",
-                Some("max")
-            ),
-            entry(
-                &["deepseek", "opencode-go", "vercel"],
-                "deepseek-v4-pro",
-                Some("max")
-            ),
-            entry(
-                &["xiaomi", "opencode-go", "vercel"],
-                "mimo-v2.5-pro",
-                Some("max")
-            ),
-        ]
-    );
-}
-
-// ---- category/gpt-5.6-sol-routing.test.ts ----
-
-fn assert_sol_rung(category: &str, variant: &str) {
-    let resolved = expect_resolved(resolve(
-        category,
-        json!({}),
-        &registry(vec![model("opencode", "gpt-5.6-sol")]),
-    ));
-    assert_eq!(
+fn unspecified_low_keeps_sol_versions_in_order_and_copilot_on_legacy_sol() {
+    for (provider, models, winner) in [
         (
-            resolved.spec.provider.as_str(),
-            resolved.spec.model_id.as_str(),
-            resolved.spec.variant.as_deref()
+            "openai",
+            vec!["gpt-5.6-sol", "gpt-6.1-sol", "gpt-6.2-sol"],
+            "gpt-6.2-sol",
         ),
-        ("opencode", "gpt-5.6-sol", Some(variant))
-    );
-    assert_eq!(
-        resolved.selection.fallback_entry.expect("entry").model,
-        "gpt-5.6-sol"
-    );
-}
-
-#[test]
-fn sol_routing_ultrabrain_uses_migrated_rung() {
-    assert_sol_rung("ultrabrain", "max");
-}
-
-#[test]
-fn sol_routing_deep_uses_migrated_rung() {
-    assert_sol_rung("deep", "medium");
-}
-
-#[test]
-fn sol_routing_unspecified_low_is_unavailable_with_only_sol() {
-    let result = resolve(
-        "unspecified-low",
-        json!({}),
-        &registry(vec![model("opencode", "gpt-5.6-sol")]),
-    );
-    assert_eq!(result.kind(), "model_unavailable");
-}
-
-#[test]
-fn sol_routing_unspecified_low_uses_grok_xhigh() {
-    let resolved = expect_resolved(resolve(
-        "unspecified-low",
-        json!({}),
-        &registry(vec![model("xai", "grok-4.6")]),
-    ));
-    assert_eq!(
+        ("openai", vec!["gpt-5.6-sol", "gpt-6.1-sol"], "gpt-6.1-sol"),
         (
-            resolved.spec.provider.as_str(),
-            resolved.spec.model_id.as_str(),
-            resolved.spec.variant.as_deref()
+            "github-copilot",
+            vec!["gpt-5.6-sol", "gpt-6.2-sol"],
+            "gpt-5.6-sol",
         ),
-        ("xai", "grok-4.6", Some("xhigh"))
-    );
-}
-
-#[test]
-fn sol_routing_unspecified_low_uses_vercel_terra_high() {
-    let models = registry(vec![model("vercel", "openai/gpt-5.6-terra")]);
-    let resolved = expect_resolved(resolve("unspecified-low", json!({}), &models));
-    assert_eq!(
-        (
-            resolved.spec.provider.as_str(),
-            resolved.spec.model_id.as_str(),
-            resolved.spec.variant.as_deref()
-        ),
-        ("vercel", "openai/gpt-5.6-terra", Some("high"))
-    );
-    assert_eq!(
-        resolved.selection.fallback_entry.expect("entry").model,
-        "gpt-5.6-terra"
-    );
+        ("zai", vec!["glm-5.3"], "glm-5.3"),
+    ] {
+        let host = registry(models.into_iter().map(|id| model(provider, id)).collect());
+        let got = expect_resolved(resolve("unspecified-low", json!({}), &host));
+        assert_eq!(got.spec.model_id, winner);
+        assert_eq!(
+            got.spec.variant.as_deref(),
+            Some(if provider == "zai" { "high" } else { "medium" })
+        );
+    }
 }
 
 // ---- category/dead-chain.test.ts ----
@@ -688,7 +515,7 @@ fn sol_routing_unspecified_low_uses_vercel_terra_high() {
 fn opus_only() -> crate::host::fake::FakeRegistry {
     registry(vec![
         model("omo-mock", "mock-parent"),
-        model("anthropic", "claude-opus-5"),
+        model("anthropic", "claude-opus-5-5"),
     ])
 }
 
@@ -704,18 +531,20 @@ fn dead_chain_fails_with_attempted_chain_and_missing_providers() {
         unavailable.missing_providers,
         Some(
             [
-                "kimi-coding",
-                "kimi-for-coding",
-                "openai-codex",
+                "chatgpt-subscription",
+                "openai",
+                "anthropic-subscription",
+                "anthropic-api",
+                "github-copilot",
                 "deepseek",
                 "qwen-token-plan",
                 "alibaba-token-plan",
                 "bailian-coding-plan",
-                "vercel",
                 "opencode-go",
                 "xai",
-                "anthropic-api",
-                "github-copilot",
+                "zai",
+                "zai-coding-cn",
+                "xiaomi",
             ]
             .map(String::from)
             .to_vec()
@@ -761,14 +590,14 @@ fn dead_chain_kimi_transform_keeps_category_alive() {
 }
 
 #[test]
-fn dead_chain_gateway_unwrapped_id_keeps_category_available() {
+fn dead_chain_unlisted_gateway_leaves_category_unavailable() {
     let result = resolve(
-        "deep",
+        "deep-low",
         json!({}),
-        &registry(vec![model("vercel", "openai/gpt-5.6-sol")]),
+        &registry(vec![model("vercel", "openai/gpt-6.2-sol")]),
     );
-    assert_eq!(result.kind(), "resolved");
-    assert!(contains(result.available_categories(), "deep"));
+    assert_eq!(result.kind(), "model_unavailable");
+    assert!(!contains(result.available_categories(), "deep-low"));
 }
 
 #[test]
@@ -808,7 +637,7 @@ fn dead_chain_disabled_result_returns_gated_list() {
         result.available_categories(),
         "visual-engineering"
     ));
-    assert!(!contains(result.available_categories(), "deep"));
+    assert!(!contains(result.available_categories(), "deep-low"));
 }
 
 #[test]
@@ -820,7 +649,7 @@ fn dead_chain_unknown_result_returns_gated_list() {
         "visual-engineering"
     ));
     assert!(!contains(result.available_categories(), "quick"));
-    assert!(!contains(result.available_categories(), "deep"));
+    assert!(!contains(result.available_categories(), "deep-low"));
 }
 
 // ---- category/gating.test.ts ----
@@ -843,7 +672,7 @@ fn gating_architect_unavailable_on_cross_family_models() {
     ));
     assert_eq!(
         unavailable.attempted_model.as_deref(),
-        Some("anthropic/claude-fable-5")
+        Some("anthropic/claude-fable-5-2")
     );
     assert!(!contains(&unavailable.available_categories, "architect"));
 }
@@ -851,7 +680,7 @@ fn gating_architect_unavailable_on_cross_family_models() {
 #[test]
 fn gating_architect_resolves_with_fable() {
     let mut models = pre_gating_models();
-    models.push(model("anthropic", "claude-fable-5"));
+    models.push(model("anthropic", "claude-fable-5-2"));
     let resolved = expect_resolved(resolve("architect", json!({}), &registry(models)));
     assert_eq!(
         (
@@ -859,7 +688,7 @@ fn gating_architect_resolves_with_fable() {
             resolved.spec.model_id.as_str(),
             resolved.spec.variant.as_deref()
         ),
-        ("anthropic", "claude-fable-5", Some("xhigh"))
+        ("anthropic", "claude-fable-5-2", Some("xhigh"))
     );
     assert!(contains(&resolved.available_categories, "architect"));
 }
@@ -895,17 +724,17 @@ fn gating_ultrabrain_unavailable_on_cross_family_models() {
     ));
     assert_eq!(
         unavailable.attempted_model.as_deref(),
-        Some("openai/gpt-5.6-sol")
+        Some("chatgpt-subscription/gpt-6.2-astra")
     );
     assert!(!contains(&unavailable.available_categories, "ultrabrain"));
 }
 
 #[test]
-fn gating_ultrabrain_resolves_with_sol_at_max() {
+fn gating_ultrabrain_resolves_with_astra_at_max() {
     let resolved = expect_resolved(resolve(
         "ultrabrain",
         json!({}),
-        &registry(vec![model("openai", "gpt-5.6-sol")]),
+        &registry(vec![model("openai", "gpt-6.2-astra")]),
     ));
     assert_eq!(
         (
@@ -913,38 +742,41 @@ fn gating_ultrabrain_resolves_with_sol_at_max() {
             resolved.spec.model_id.as_str(),
             resolved.spec.variant.as_deref()
         ),
-        ("openai", "gpt-5.6-sol", Some("max"))
+        ("openai", "gpt-6.2-astra", Some("max"))
     );
 }
 
 #[test]
-fn gating_ultrabrain_copilot_sol_satisfies_gate() {
+fn gating_ultrabrain_zen_astra_satisfies_gate() {
     let resolved = expect_resolved(resolve(
         "ultrabrain",
         json!({}),
-        &registry(vec![model("github-copilot", "gpt-5.6-sol")]),
+        &registry(vec![model("opencode", "gpt-6.2-astra")]),
     ));
-    assert_eq!(resolved.spec.provider, "github-copilot");
+    assert_eq!(resolved.spec.provider, "opencode");
     assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
 }
 
 #[test]
 fn gating_deep_unavailable_on_cross_family_models() {
-    let unavailable =
-        expect_unavailable(resolve("deep", json!({}), &registry(pre_gating_models())));
+    let unavailable = expect_unavailable(resolve(
+        "deep-low",
+        json!({}),
+        &registry(pre_gating_models()),
+    ));
     assert_eq!(
         unavailable.attempted_model.as_deref(),
-        Some("openai/gpt-5.6-sol")
+        Some("chatgpt-subscription/gpt-6.2-sol")
     );
-    assert!(!contains(&unavailable.available_categories, "deep"));
+    assert!(!contains(&unavailable.available_categories, "deep-low"));
 }
 
 #[test]
 fn gating_deep_resolves_with_sol_at_medium() {
     let resolved = expect_resolved(resolve(
-        "deep",
+        "deep-low",
         json!({}),
-        &registry(vec![model("openai", "gpt-5.6-sol")]),
+        &registry(vec![model("openai", "gpt-6.2-sol")]),
     ));
     assert_eq!(
         (
@@ -952,16 +784,16 @@ fn gating_deep_resolves_with_sol_at_medium() {
             resolved.spec.model_id.as_str(),
             resolved.spec.variant.as_deref()
         ),
-        ("openai", "gpt-5.6-sol", Some("medium"))
+        ("openai", "gpt-6.2-sol", Some("medium"))
     );
-    assert!(contains(&resolved.available_categories, "deep"));
+    assert!(contains(&resolved.available_categories, "deep-low"));
 }
 
 #[test]
 fn gating_deep_explicit_entry_bypasses_gate() {
-    let config = json!({ "categories": { "deep": { "model": "anthropic/claude-opus-5" } } });
+    let config = json!({ "categories": { "deep-low": { "model": "anthropic/claude-opus-5" } } });
     let resolved = expect_resolved(resolve(
-        "deep",
+        "deep-low",
         config,
         &registry(vec![model("anthropic", "claude-opus-5")]),
     ));
@@ -984,7 +816,7 @@ fn gating_artistry_fable_is_primary_hit() {
     let resolved = expect_resolved(resolve(
         "artistry",
         json!({}),
-        &registry(vec![model("anthropic", "claude-fable-5-1")]),
+        &registry(vec![model("anthropic", "claude-fable-5-2")]),
     ));
     assert!(!resolved.selection.matched_fallback);
 }
@@ -994,7 +826,7 @@ fn gating_unrelated_vendor_does_not_open_fable_gate() {
     let result = resolve(
         "architect",
         json!({}),
-        &registry(vec![model("custom", "unrelated/claude-fable-5")]),
+        &registry(vec![model("custom", "unrelated/claude-fable-5-2")]),
     );
     assert_eq!(result.kind(), "model_unavailable");
     assert!(!contains(result.available_categories(), "architect"));
@@ -1012,14 +844,14 @@ fn gating_unrelated_vendor_does_not_open_sol_gate() {
 }
 
 #[test]
-fn gating_real_vercel_gateway_id_opens_gate() {
+fn gating_vercel_gateway_does_not_open_gate() {
     let result = resolve(
         "ultrabrain",
         json!({}),
-        &registry(vec![model("vercel", "openai/gpt-5.6-sol")]),
+        &registry(vec![model("vercel", "openai/gpt-6.2-astra")]),
     );
-    assert_eq!(result.kind(), "resolved");
-    assert!(contains(result.available_categories(), "ultrabrain"));
+    assert_eq!(result.kind(), "model_unavailable");
+    assert!(!contains(result.available_categories(), "ultrabrain"));
 }
 
 #[test]
@@ -1027,9 +859,9 @@ fn gating_ungated_category_keeps_chain_fallback() {
     let resolved = expect_resolved(resolve(
         "quick",
         json!({}),
-        &registry(vec![model("openai-codex", "gpt-5.6-luna-fast")]),
+        &registry(vec![model("openai", "gpt-6-luna-fast")]),
     ));
-    assert_eq!(resolved.spec.model_id, "gpt-5.6-luna-fast");
+    assert_eq!(resolved.spec.model_id, "gpt-6-luna-fast");
     assert!(contains(&resolved.available_categories, "quick"));
 }
 
@@ -1038,21 +870,21 @@ fn gating_unmet_gates_leave_other_categories_listed() {
     let result = resolve(
         "quick",
         json!({}),
-        &registry(vec![model("quotio-openai", "gpt-5.6-luna-fast")]),
+        &registry(vec![model("openai", "gpt-6-luna-fast")]),
     );
     let names = result.available_categories();
     assert!(!contains(names, "architect"));
     assert!(!contains(names, "ultrabrain"));
-    assert!(!contains(names, "deep"));
+    assert!(!contains(names, "deep-low"));
     assert!(contains(names, "quick"));
 }
 
 // ---- category/resolve-category-boundary.test.ts ----
 
-const QUICK_DEFAULT: &str = "kimi-coding/kimi-for-coding-highspeed";
+const QUICK_DEFAULT: &str = "chatgpt-subscription/gpt-6-luna-fast";
 
 fn quick_model() -> Value {
-    model("kimi-coding", "kimi-for-coding-highspeed")
+    model("chatgpt-subscription", "gpt-6-luna-fast")
 }
 
 fn assert_sanitized(result: CategoryResolutionResult, available: &[&str], hidden: &[&str]) {
@@ -1077,15 +909,15 @@ fn assert_sanitized(result: CategoryResolutionResult, available: &[&str], hidden
 #[test]
 fn boundary_header_bearing_model_is_accepted() {
     let header_model = json!({
-        "provider": "kimi-coding", "id": "kimi-for-coding-highspeed", "headers": { "User-Agent": "test" }
+        "provider": "chatgpt-subscription", "id": "gpt-6-luna-fast", "headers": { "User-Agent": "test" }
     });
     let resolved = expect_resolved(resolve(
         "quick",
         json!({}),
         &registry(vec![header_model.clone()]),
     ));
-    assert_eq!(resolved.spec.provider, "kimi-coding");
-    assert_eq!(resolved.spec.model_id, "kimi-for-coding-highspeed");
+    assert_eq!(resolved.spec.provider, "chatgpt-subscription");
+    assert_eq!(resolved.spec.model_id, "gpt-6-luna-fast");
     assert_eq!(resolved.spec.model, header_model);
 }
 
@@ -1100,7 +932,7 @@ fn boundary_malformed_available_entry_is_sanitized() {
 fn boundary_non_string_available_identity_is_sanitized() {
     // A throwing accessor has no JSON equivalent; the nearest boundary input is a provider field
     // that is not a string, which must be dropped the same way without leaking its content.
-    let entry = json!({ "provider": { "marker": "hidden available accessor marker" }, "id": "kimi-for-coding-highspeed" });
+    let entry = json!({ "provider": { "marker": "hidden available accessor marker" }, "id": "gpt-6-luna-fast" });
     let result = resolve("quick", json!({}), &fixed_registry(json!([entry]), None));
     assert_sanitized(result, &[], &["hidden available accessor marker"]);
 }
@@ -1109,10 +941,10 @@ fn boundary_non_string_available_identity_is_sanitized() {
 fn boundary_malformed_find_results_are_sanitized() {
     let malformed = [
         json!({}),
-        json!({ "provider": { "secret": "hidden" }, "id": ["kimi-for-coding-highspeed"] }),
-        json!({ "provider": "kimi-coding", "id": "kimi-for-coding-highspeed", "password": "hidden" }),
-        json!({ "provider": "kimi-coding", "id": "kimi-for-coding-highspeed", "accessToken": "hidden" }),
-        json!({ "provider": "kimi-coding", "id": "kimi-for-coding-highspeed", "privateToken": "hidden" }),
+        json!({ "provider": { "secret": "hidden" }, "id": ["gpt-6-luna-fast"] }),
+        json!({ "provider": "chatgpt-subscription", "id": "gpt-6-luna-fast", "password": "hidden" }),
+        json!({ "provider": "chatgpt-subscription", "id": "gpt-6-luna-fast", "accessToken": "hidden" }),
+        json!({ "provider": "chatgpt-subscription", "id": "gpt-6-luna-fast", "privateToken": "hidden" }),
     ];
     for find_result in malformed {
         let models = fixed_registry(json!([quick_model()]), Some(find_result));
@@ -1128,7 +960,7 @@ fn boundary_malformed_find_results_are_sanitized() {
 fn boundary_non_string_find_identity_is_sanitized() {
     // Throwing-accessor analogue for `find`: a non-string provider is rejected without leaking.
     let find_result =
-        json!({ "provider": ["hidden find accessor marker"], "id": "kimi-for-coding-highspeed" });
+        json!({ "provider": ["hidden find accessor marker"], "id": "gpt-6-luna-fast" });
     let models = fixed_registry(json!([quick_model()]), Some(find_result));
     assert_sanitized(
         resolve("quick", json!({}), &models),
@@ -1142,7 +974,7 @@ fn boundary_empty_or_mismatched_find_identity_is_rejected() {
     let malformed = [
         json!({ "provider": "", "id": "" }),
         json!({ "provider": "evil", "id": "other" }),
-        json!({ "provider": "kimi-coding", "id": "" }),
+        json!({ "provider": "chatgpt-subscription", "id": "" }),
     ];
     for find_result in malformed {
         let models = fixed_registry(json!([quick_model()]), Some(find_result));
@@ -1159,7 +991,7 @@ fn boundary_inherited_identity_fields_are_rejected() {
     // JSON has no prototype chain; the equivalent untrusted shape nests the identity one level
     // down, where it must not be read as the model's own fields.
     let find_result = json!({ "__proto__": {
-        "provider": "kimi-coding", "id": "kimi-for-coding-highspeed", "privateToken": "hidden"
+        "provider": "chatgpt-subscription", "id": "gpt-6-luna-fast", "privateToken": "hidden"
     } });
     let models = fixed_registry(json!([quick_model()]), Some(find_result));
     assert_sanitized(
@@ -1174,7 +1006,7 @@ fn boundary_non_array_availability_is_sanitized() {
     let malformed = [
         Value::Null,
         json!({ "0": quick_model(), "length": 1 }),
-        json!("kimi-coding/kimi-for-coding-highspeed"),
+        json!("chatgpt-subscription/gpt-6-luna-fast"),
     ];
     for available in malformed {
         let models = fixed_registry(available, Some(quick_model()));
@@ -1264,7 +1096,7 @@ fn excluded_user_pin_is_treated_like_a_model_with_no_login() {
 fn category_with_every_rung_excluded_is_gone_from_the_listing() {
     let fable_only = registry(vec![
         model("anthropic", "claude-fable-5-1"),
-        model("anthropic", "claude-fable-5"),
+        model("anthropic", "claude-fable-5-2"),
     ]);
     let filtered = resolve_available_category_names(
         &json!({ "exclude_models": ["claude-fable-*"] }),
@@ -1291,7 +1123,7 @@ fn not_found_listing_observes_excluded_models() {
 
 #[test]
 fn empty_exclude_models_list_leaves_the_listing_alone() {
-    let fable_only = registry(vec![model("anthropic", "")]);
+    let fable_only = registry(vec![model("anthropic", "claude-fable-5-2")]);
     assert_eq!(
         resolve_available_category_names(&json!({ "exclude_models": [] }), &fable_only),
         resolve_available_category_names(&json!({}), &fable_only)

@@ -5,6 +5,27 @@ use maho_omo_skill_pointers::*;
 use support::*;
 
 #[tokio::test]
+async fn advice_in_a_user_prompt_injects_only_the_later_requested_pointer() {
+    let harness = setup_harness("/skills/");
+    let result = dispatch_input(
+        &harness,
+        "Skip ulw-plan and ulw-research, just run ulw-loop.",
+        InputSource::Interactive,
+        None,
+        "advice",
+    )
+    .await;
+    expect_pointer_injections(
+        &harness,
+        &result,
+        &[ExpectedPointer {
+            custom_type: ULW_LOOP_CUSTOM_TYPE,
+            skill_name: "ulw-loop",
+        }],
+    );
+}
+
+#[tokio::test]
 async fn delegated_roles_suppress_skill_pointers_while_root_sessions_inject() {
     for role in ["child", "dag_child", "member", "future-role"] {
         let harness = setup_harness_with_role("/skills/", Some(role));

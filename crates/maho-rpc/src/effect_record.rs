@@ -85,6 +85,12 @@ pub enum EffectState {
     Failed,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectDeliveries {
+    pub deliveries: Vec<String>,
+}
+
 /// One `rpc_effect` entry's data. `kind` never holds `input` (inputs use the admission entry).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +105,10 @@ pub struct RpcEffectRecord {
     /// What a queued-input change answered beyond its status, so a replay answers as the live call did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<QueuedChangeAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<EffectDeliveries>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<EffectDeliveries>,
     pub by: EffectActor,
     pub accepted_at: String,
     pub updated_at: String,
@@ -132,6 +142,10 @@ pub struct EffectStatus {
     pub outcome: Option<EffectOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<QueuedChangeAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<EffectDeliveries>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<EffectDeliveries>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<EffectActor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,7 +201,15 @@ impl EffectCommandKind {
             Self::Abort => &["awaitIdle", "clearQueue", "graceMs"],
             Self::SetModel => &["provider", "modelId", "thinkingLevel"],
             Self::SetThinkingLevel => &["level", "scope"],
-            Self::Unload => &["interrupt", "clearQueue", "children", "force"],
+            Self::Unload => &[
+                "interrupt",
+                "clearQueue",
+                "children",
+                "force",
+                "deliveries",
+                "graceful",
+                "waitMs",
+            ],
             Self::Dequeue => &["queuedId", "expectedRevision"],
             Self::EditQueued => &["queuedId", "text", "expectedRevision"],
         }

@@ -1,5 +1,42 @@
+use super::eval_language_inference::{EvalLanguageInferenceBasis, infer_eval_language};
 use super::types::{EvalLanguage, EvalToolInput, EvalToolRequest, TimeoutBehavior};
 use serde_json::Value;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalRunField {
+    Language,
+    Code,
+    Summary,
+}
+
+impl EvalRunField {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Language => "language",
+            Self::Code => "code",
+            Self::Summary => "summary",
+        }
+    }
+}
+
+/// The teaching error for a run call missing one of its fields, shared by argument validation and
+/// execution.
+pub fn eval_run_field_required_message(field: EvalRunField, languages: &[EvalLanguage]) -> String {
+    match field {
+        EvalRunField::Language => format!(
+            "eval run requires language: one of {}",
+            languages
+                .iter()
+                .map(|lang| match lang {
+                    EvalLanguage::Js => "\"js\"",
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        EvalRunField::Code => "eval run requires code: the cell body to execute, verbatim".into(),
+        EvalRunField::Summary => "eval run requires summary (one line in the user's language): what you are working on and for what purpose".into(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -68,21 +105,54 @@ pub fn parse_eval_request_with_sandbox(
             js_string(value)
         )));
     }
-    let language = match params.get("language").and_then(Value::as_str) {
-        Some("js") => EvalLanguage::Js,
-        Some(value) => {
+    let enabled_languages = [EvalLanguage::Js];
+    let inference = if params.get("language").is_none() {
+        infer_eval_language(
+            params.get("code").and_then(Value::as_str),
+            &enabled_languages,
+        )
+    } else {
+        None
+    };
+    let language = match (
+        inference.map(|entry| entry.language),
+        params.get("language").and_then(Value::as_str),
+    ) {
+        (Some(inferred), None) => inferred,
+        (None, Some("js")) => EvalLanguage::Js,
+        (None, Some(value)) => {
             return Err(EvalRequestError(format!(
                 "Unsupported eval language \"{value}\"; expected \"js\""
             )));
         }
-        None => return Err(EvalRequestError("eval run requires language \"js\"".into())),
+        (None, None) => {
+            return Err(EvalRequestError(eval_run_field_required_message(
+                EvalRunField::Language,
+                &enabled_languages,
+            )));
+        }
+        (Some(_), Some(_)) => unreachable!(),
     };
+    let inferred_by: Option<EvalLanguageInferenceBasis> = inference.map(|entry| entry.basis);
     let code = params
         .get("code")
         .and_then(Value::as_str)
-        .ok_or_else(|| EvalRequestError("eval run requires code".into()))?
+        .ok_or_else(|| {
+            EvalRequestError(eval_run_field_required_message(
+                EvalRunField::Code,
+                &enabled_languages,
+            ))
+        })?
         .to_owned();
-    let summary = params.get("summary").and_then(normalize_eval_summary).ok_or_else(|| EvalRequestError("eval run requires summary — one line in the user's language: what you are working on and for what purpose".into()))?;
+    let summary = params
+        .get("summary")
+        .and_then(normalize_eval_summary)
+        .ok_or_else(|| {
+            EvalRequestError(eval_run_field_required_message(
+                EvalRunField::Summary,
+                &enabled_languages,
+            ))
+        })?;
     let on_timeout = match params.get("on_timeout") {
         None => None,
         Some(Value::String(value)) if value == "detach" => Some(TimeoutBehavior::Detach),
@@ -111,6 +181,7 @@ pub fn parse_eval_request_with_sandbox(
         on_timeout,
         reset: params.get("reset").and_then(Value::as_bool),
         isolate,
+        language_inferred: inferred_by,
     }))
 }
 

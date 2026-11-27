@@ -76,6 +76,16 @@ async fn fire_one<D: Delivery + ?Sized>(
             due_at: job.due_at, fired_at, every_ms: job.every_ms, fire_count: occurrence,
         };
         let outcome = options.delivery.deliver(&event, &mut lock, options.probes, options.delivery_timeout_ms).await;
+        if let Err(error) = &outcome
+            && let Some(reason) = error.strip_prefix(super::schedule_delivery::SESSION_HELD_ERROR_PREFIX)
+        {
+            // Opened elsewhere after should_defer: put claimed generation back and retry like any deferral.
+            if job.every_ms.is_some() {
+                rearm_recurring_job(options.dir, &job)?;
+            }
+            restore_pending(options.dir, &record, &job.id)?;
+            return Ok(Some(serde_json::json!({"event":"deferred","id":job.id,"sessionId":job.session_id,"reason":reason})));
+        }
         settle_occurrence(options.dir, &record, &ScheduledJob { fire_count: occurrence, last_fired_at: Some(fired_at), ..job.clone() }, occurrence, outcome.clone())?;
         let mut event = serde_json::json!({"event":"fired","id":job.id,"sessionId":job.session_id,"occurrence":occurrence,
             "outcome":if outcome.is_ok() {"delivered"} else {"failed"},"firedAt":fired_at,"dueAt":job.due_at});

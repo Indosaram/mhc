@@ -66,6 +66,14 @@ pub fn register(
     api: &mut ExtensionApi,
     options: CodemodeExtensionOptions,
 ) -> Result<(), ExtensionFailure> {
+    register_with_loop_remote(api, options, None)
+}
+
+pub fn register_with_loop_remote(
+    api: &mut ExtensionApi,
+    options: CodemodeExtensionOptions,
+    is_loop_remote: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> Result<(), ExtensionFailure> {
     let options = Arc::new(options);
     let proxy = Arc::new(extension::session_manager_proxy::SessionManagerProxy::default());
     let state = Arc::new(Mutex::new(ExtensionState {
@@ -111,7 +119,10 @@ pub fn register(
             }),
         ),
     ));
-    let notifier = Arc::new(Mutex::new(extension::eval_notifier::EvalNotifier::default()));
+    let notifier = Arc::new(Mutex::new(match is_loop_remote {
+        Some(check) => extension::eval_notifier::EvalNotifier::with_loop_remote(check),
+        None => extension::eval_notifier::EvalNotifier::default(),
+    }));
     let cells =
         create_extension_cells(&host, &state, &ticker, &notifier, &Default::default(), None);
     state.lock().expect("extension state").cells = cells;
@@ -175,6 +186,7 @@ pub fn register(
                     extension::runtime_factory::RuntimePreparationOptions {
                         cwd: &context.cwd,
                         home_dir: &options.home_dir,
+                        agent_dir: Some(&context.agent_dir),
                         environment: &options.environment,
                         event: &event,
                         session_file: context.session_manager.session_file(),
@@ -544,12 +556,7 @@ fn install_eval(
             .map(|tools| {
                 tools
                     .into_iter()
-                    .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-                        name: tool.name,
-                        description: Some(tool.description),
-                        parameters: Some(tool.parameters),
-                        kernel_prelude: None,
-                    })
+                    .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
                     .collect()
             })
             .map_err(|error| error.to_string())
@@ -620,12 +627,7 @@ fn install_eval(
             .get_all_tools()
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-                name: tool.name,
-                description: Some(tool.description),
-                parameters: Some(tool.parameters),
-                kernel_prelude: tool.kernel_prelude,
-            })
+            .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
             .collect::<Vec<_>>();
         Ok(extension::kernel_preludes::active_kernel_preludes(
             &active, &all,
@@ -636,24 +638,24 @@ fn install_eval(
         .get_all_tools()
         .unwrap_or_default()
         .into_iter()
-        .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-            name: tool.name,
-            description: Some(tool.description),
-            parameters: Some(tool.parameters),
-            kernel_prelude: tool.kernel_prelude,
-        })
+        .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
         .collect::<Vec<_>>();
     let prompt_preludes =
         extension::kernel_preludes::active_kernel_preludes(&prompt_active, &prompt_tools);
+    let eval_only_tools = extension::reachable_tools::eval_only_tool_names(api);
+    let host_line =
+        extension::host_facts::host_line(&options.js_runtime).map_err(ExtensionFailure::new)?;
+    let renderers = registered_renderers(host);
     let prompt = prompt::eval_prompt::EvalPromptOptions {
         model_id: state.model_id.clone(),
         spawns: runtime.as_ref().is_some_and(|runtime| runtime.spawns),
         monitor: runtime.is_some() && monitor_is_registered(api),
         spawn_default_agent: Some(settings.task_tools.task.clone()),
-        host_line: Some(host_line(&options.js_runtime)),
+        host_line: Some(host_line),
         js_runtime: Some(options.js_runtime.clone()),
         bun_skill_path: active_bun_skill_path(&options.js_runtime),
         kernel_preludes: prompt_preludes,
+        eval_only_tools,
         ..Default::default()
     };
     let mut definition = tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {
@@ -693,6 +695,7 @@ fn install_eval(
             .as_ref()
             .map(|context| context.session_manager.session_id().to_owned()),
         completion_handles: state.completion_handles.clone(),
+        renderer_lookup: Some(renderers.clone()),
     }))
     .map_err(ExtensionFailure::new)?;
     state.eval_execute = Some(definition.execute.clone());
@@ -758,7 +761,28 @@ fn install_eval(
             execute(retry).await
         })
     });
-    api.register_tool_with_renderers(definition, tool::render::eval_tool_renderers())
+    api.register_tool_with_renderers(
+        definition,
+        tool::render::eval_tool_renderers_with(Some(renderers)),
+    )
+}
+
+fn registered_renderers(
+    host: &Arc<Mutex<ExtensionApi>>,
+) -> tool::tool_widgets::NestedToolRendererLookup {
+    let weak_host = Arc::downgrade(host);
+    Arc::new(move |tool_name| {
+        let host = weak_host.upgrade()?;
+        let api = host.lock().expect("extension api");
+        let tool = api
+            .get_all_tools()
+            .ok()?
+            .into_iter()
+            .find(|tool| tool.name == tool_name)?;
+        api.runtime
+            .live_erased_tool_renderer(&tool.source_info.path, &tool.name)
+            .flatten()
+    })
 }
 
 /// Whether the session registry holds `monitor`; false when the runtime cannot be read yet.
@@ -775,56 +799,6 @@ fn active_bun_skill_path(js_runtime: &tool::types::EvalRuntimeInfo) -> Option<St
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
     )
     .map(|path| path.to_string_lossy().into_owned())
-}
-
-fn host_line(js_runtime: &tool::types::EvalRuntimeInfo) -> String {
-    let platform = match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        "x86" => "ia32",
-        other => other,
-    };
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    [
-        Some(format!("{platform} {arch}")),
-        CPU_MODEL.get_or_init(cpu_model).clone(),
-        Some(format!("{cores} cores")),
-        Some(format!("{} {}", js_runtime.name, js_runtime.version)),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|part| !part.trim().is_empty())
-    .collect::<Vec<_>>()
-    .join(" \u{00b7} ")
-}
-
-/// The CPU model never changes within a process; read it once instead of on every `TurnStart`.
-static CPU_MODEL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-
-fn cpu_model() -> Option<String> {
-    if cfg!(target_os = "macos") {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", "machdep.cpu.brand_string"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())?;
-        return Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            .filter(|model| !model.is_empty());
-    }
-    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
-    cpuinfo
-        .lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(key, _)| matches!(key.trim(), "model name" | "Hardware" | "Processor"))
-                .map(|(_, value)| value.trim().to_owned())
-        })
-        .filter(|model| !model.is_empty())
 }
 
 async fn complete_with_signal(
@@ -895,12 +869,13 @@ mod host_line_tests {
 
     #[test]
     fn host_line_names_platform_cores_and_js_runtime() {
-        let line = host_line(&tool::types::EvalRuntimeInfo {
+        let line = extension::host_facts::host_line(&tool::types::EvalRuntimeInfo {
             name: "bun".into(),
             version: "1.4.0".into(),
             path: None,
             isolation: None,
-        });
+        })
+        .expect("host line");
         assert!(line.contains(" cores"), "{line}");
         assert!(line.ends_with(" \u{00b7} bun 1.4.0"), "{line}");
     }
@@ -924,6 +899,7 @@ mod reload_veto_tests {
             on_timeout: None,
             reset: None,
             isolate: None,
+            language_inferred: None,
         };
         let cell = cells.create("cell-1".into(), input).expect("create cell");
         cells.bind_kernel(

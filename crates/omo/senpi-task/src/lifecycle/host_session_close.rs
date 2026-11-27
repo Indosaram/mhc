@@ -66,6 +66,7 @@ pub fn close_host_session(
                 payload: serde_json::json!({
                     "session_path": host_session.session_path,
                     "socket": host_session.socket,
+                    "via": "close_session",
                 }),
             };
             if let Err(error) = context.store.append_event(task_id, &event) {

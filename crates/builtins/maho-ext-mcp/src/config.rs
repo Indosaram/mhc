@@ -469,6 +469,13 @@ fn hashable_config(config: &McpServerDeclaredConfig) -> Result<String, McpConfig
         .map_err(|e| McpConfigValidationError(e.to_string()))?;
     if let Some(obj) = value.as_object_mut() {
         obj.remove("startupTimeoutMs");
+        // Reattaching a skill with an explicit (even default-valued) deadline must re-key its pool.
+        if config.skill_timeout_explicit {
+            obj.insert(
+                "skillRequestTimeoutMs".into(),
+                serde_json::json!(config.request_timeout_ms),
+            );
+        }
     }
     Ok(stable_stringify(&value))
 }
@@ -585,23 +592,37 @@ fn read_config(
         }
     }
 }
+fn resolve_trusted_config(
+    raw: Value,
+    env: &BTreeMap<String, String>,
+) -> Result<RawConfig, McpConfigValidationError> {
+    let original = validate_raw(raw.clone())?;
+    let mut resolved = validate_raw(interpolate_value(&raw, "mcp", env)?)?;
+    if let (Some(original), Some(resolved)) = (original.mcp_servers, resolved.mcp_servers.as_mut())
+    {
+        for (name, target) in resolved {
+            if let Some(source) = original.get(name) {
+                crate::sharing_policy::inherit_mcp_sharing_scope(source, target);
+            }
+        }
+    }
+    Ok(resolved)
+}
+/// Throws `McpConfigValidationError` loading `raw` as a trusted config would throw, without loading it:
+/// a candidate is checked with the loader's own steps before anything writes it (senpi#6485).
+pub fn assert_loadable_mcp_config(
+    raw: Value,
+    env: &BTreeMap<String, String>,
+) -> Result<(), McpConfigValidationError> {
+    resolve_trusted_config(raw, env).map(|_| ())
+}
 fn trusted_config(
     raw: Option<Value>,
     env: &BTreeMap<String, String>,
     path: &Path,
 ) -> Result<Option<RawConfig>, McpConfigValidationError> {
     raw.map(|raw| {
-        let original = validate_raw(raw.clone())?;
-        let mut resolved = validate_raw(interpolate_value(&raw, "mcp", env)?)?;
-        if let (Some(original), Some(resolved)) =
-            (original.mcp_servers, resolved.mcp_servers.as_mut())
-        {
-            for (name, target) in resolved {
-                if let Some(source) = original.get(name) {
-                    crate::sharing_policy::inherit_mcp_sharing_scope(source, target);
-                }
-            }
-        }
+        let mut resolved = resolve_trusted_config(raw, env)?;
         // Each reference resolves against the trusted file that declares it.
         crate::config_references::remember_mcp_reference_origins(
             resolved.mcp_servers.as_mut(),

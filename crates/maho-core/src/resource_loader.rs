@@ -197,11 +197,94 @@ pub fn find_shadowed_context_file(cwd: &str) -> Option<String> {
     )
 }
 
-/// senpi loadProjectContextFiles: the agent-dir file first, then the nearest ancestor files.
+struct GlobalContextFileResult {
+    file: Option<ContextFile>,
+    diagnostic: Option<ResourceDiagnostic>,
+}
+
+fn load_global_context_file(agent_dir: &str, global_path: Option<&str>) -> GlobalContextFileResult {
+    let explicit = global_path.map(str::trim).unwrap_or("");
+    if explicit.is_empty() {
+        return GlobalContextFileResult {
+            file: load_context_file_from_dir(agent_dir),
+            diagnostic: None,
+        };
+    }
+    let resolved = resolve_path(explicit, agent_dir, &PathInputOptions::default());
+    let fall_back = |problem: String| GlobalContextFileResult {
+        file: load_context_file_from_dir(agent_dir),
+        diagnostic: Some(ResourceDiagnostic {
+            diagnostic_type: ResourceDiagnosticType::Warning,
+            category: None,
+            path: Some(resolved.clone()),
+            message: format!(
+                "contextFiles.globalPath {problem}; using the global context file from {agent_dir} instead."
+            ),
+            collision: None,
+        }),
+    };
+    let meta = match std::fs::metadata(&resolved) {
+        Ok(meta) => meta,
+        Err(error) => {
+            let problem = if error.kind() == std::io::ErrorKind::NotFound
+                || error.kind() == std::io::ErrorKind::NotADirectory
+            {
+                "does not exist".to_owned()
+            } else {
+                format!("could not be read ({error})")
+            };
+            return fall_back(problem);
+        }
+    };
+    if meta.is_dir() {
+        return match load_context_file_from_dir(&resolved) {
+            Some(file) => GlobalContextFileResult {
+                file: Some(file),
+                diagnostic: None,
+            },
+            None => fall_back("is a directory with no AGENTS.md or CLAUDE.md".to_owned()),
+        };
+    }
+    if !meta.is_file() {
+        return fall_back("is not a regular file or directory".to_owned());
+    }
+    match std::fs::read_to_string(&resolved) {
+        Ok(content) => GlobalContextFileResult {
+            file: Some(ContextFile {
+                path: resolved,
+                content: crate::text::strip_bom(&content).to_owned(),
+                scope: None,
+            }),
+            diagnostic: None,
+        },
+        Err(error) => fall_back(format!("could not be read ({error})")),
+    }
+}
+
+fn context_path_key(path: &str, process_cwd: &str) -> String {
+    let resolved = resolve_path(path, process_cwd, &PathInputOptions::default());
+    let real = canonicalize_path(&resolved);
+    if cfg!(windows) {
+        real.to_lowercase()
+    } else {
+        real
+    }
+}
+
+/// senpi loadProjectContextFiles: the agent-dir file (or `global_path`, senpi#5567) first, then the nearest ancestor files.
 pub fn load_project_context_files(
     cwd: &str,
     agent_dir: &str,
     limits: Option<crate::context_files::ContextFileLimits>,
+) -> crate::context_files::ContextFiles {
+    load_project_context_files_with_global_path(cwd, agent_dir, limits, None)
+}
+
+pub fn load_project_context_files_with_global_path(
+    cwd: &str,
+    agent_dir: &str,
+    limits: Option<crate::context_files::ContextFileLimits>,
+    global_path: Option<&str>,
 ) -> crate::context_files::ContextFiles {
     let process_cwd = std::env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
@@ -212,9 +295,10 @@ pub fn load_project_context_files(
     let mut context_files: Vec<ContextFile> = Vec::new();
     let mut seen_paths: Vec<String> = Vec::new();
 
-    if let Some(global_context) = load_context_file_from_dir(&resolved_agent_dir) {
-        seen_paths.push(global_context.path.clone());
-        context_files.push(global_context);
+    let global_context = load_global_context_file(&resolved_agent_dir, global_path);
+    if let Some(file) = global_context.file {
+        seen_paths.push(context_path_key(&file.path, &process_cwd));
+        context_files.push(file);
     }
 
     let mut ancestor_context_files: Vec<ContextFile> = Vec::new();
@@ -233,10 +317,12 @@ pub fn load_project_context_files(
         });
         if let Some(context_file) = context_file
             && !is_shadowed
-            && !seen_paths.contains(&context_file.path)
         {
-            seen_paths.push(context_file.path.clone());
-            ancestor_context_files.insert(0, context_file);
+            let key = context_path_key(&context_file.path, &process_cwd);
+            if !seen_paths.contains(&key) {
+                seen_paths.push(key);
+                ancestor_context_files.insert(0, context_file);
+            }
         }
 
         let parent = Path::new(&current_dir)
@@ -249,7 +335,12 @@ pub fn load_project_context_files(
     }
 
     context_files.extend(ancestor_context_files);
-    crate::context_files::apply_context_file_limits(context_files, limits.unwrap_or_default())
+    let mut limited =
+        crate::context_files::apply_context_file_limits(context_files, limits.unwrap_or_default());
+    if let Some(diagnostic) = global_context.diagnostic {
+        limited.diagnostics.insert(0, diagnostic);
+    }
+    limited
 }
 
 /// The CLI inputs senpi `DefaultResourceLoader` keeps across reloads: `-e` sources

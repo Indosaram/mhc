@@ -511,7 +511,7 @@ async fn origin_bound_resource_read_refreshes_first_and_redacts_the_failure() {
         request_timeout: Duration::from_secs(2),
         resources: vec![],
         connection: Some(connection.clone()),
-        request_origin: Some(Arc::new(move || Some(issued.clone()))),
+        request_origin: Some(Arc::new(move |_| Some(issued.clone()))),
         ensure_fresh: Some(Arc::new(move || {
             observed.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err(McpError::new(McpErrorKind::Auth, "refresh rejected")) })

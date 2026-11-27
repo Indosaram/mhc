@@ -59,6 +59,16 @@ pub fn create_eval_tool(options: Arc<CreateEvalToolOptions>) -> Result<ToolDefin
     };
     let parameters =
         create_eval_input_schema(&settings.languages, &deadlines).map_err(str::to_owned)?;
+    let validator_languages: Vec<super::types::EvalLanguage> = settings
+        .languages
+        .js
+        .then_some(super::types::EvalLanguage::Js)
+        .into_iter()
+        .collect();
+    super::eval_argument_validator::register_eval_argument_validator(
+        &parameters,
+        &validator_languages,
+    );
     let max_detached_cells = options
         .cell_manager
         .lock()
@@ -113,6 +123,8 @@ pub fn create_eval_tool(options: Arc<CreateEvalToolOptions>) -> Result<ToolDefin
                     .await
                     .map(|snapshot| create_detached_control_result(&snapshot)),
                     EvalToolRequest::Run(input) => {
+                        let inferred_basis = input.language_inferred;
+                        let inferred_language = input.language;
                         let enabled = match input.language {
                             super::types::EvalLanguage::Js => options.settings.languages.js,
                         };
@@ -172,14 +184,32 @@ pub fn create_eval_tool(options: Arc<CreateEvalToolOptions>) -> Result<ToolDefin
                                 ()=call.signal.cancelled()=>{controller.abort(None);operation.await}
                             }
                         };
-                        if let Some(tracker) = tracker {
+                        let outcome = if let Some(tracker) = tracker {
                             tracker
                                 .track_eval_execution(execution, lifecycle_controller)
                                 .await
                                 .map_err(|error| ToolError::Message(error.to_string()))?
                         } else {
                             execution.await
-                        }
+                        };
+                        outcome.map(|mut result| {
+                            if let Some(basis) = inferred_basis {
+                                let note =
+                                    super::eval_language_inference::eval_language_inferred_note(
+                                        inferred_language,
+                                        basis,
+                                    );
+                                result.content.insert(
+                                    0,
+                                    ContentBlock::Text(maho_ai::types::TextContent {
+                                        text: note,
+                                        audience: None,
+                                        text_signature: None,
+                                    }),
+                                );
+                            }
+                            result
+                        })
                     }
                 }
                 .map_err(ToolError::Message)?;

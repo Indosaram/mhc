@@ -33,21 +33,70 @@ pub struct HandoffOptions {
     pub readiness_ms: u64,
     pub launch: Option<crate::host_launch::HostLaunch>,
 }
+/// Additional engine/downgrade guard options for [`handoff_host_with_engine`] (senpi#7018).
+#[derive(Debug, Clone, Default)]
+pub struct HandoffEngineOptions {
+    pub successor_engine: Option<maho_core::engine_build_identity::EngineBuildIdentity>,
+    pub allow_downgrade: bool,
+}
+
+/// Checks whether handing the running host to `options` would be a downgrade (senpi#7018).
+pub fn downgrade_refusal(
+    host: &HostProtocolInfo,
+    engine: &HandoffEngineOptions,
+) -> Option<HandoffRefusal> {
+    if engine.allow_downgrade {
+        return None;
+    }
+    let ordinal = host.engine_ordinal?;
+    let running = maho_core::engine_build_identity::engine_identity_of(
+        host.engine_version.as_deref().unwrap_or(""),
+        ordinal.map(|v| v as i64),
+    );
+    let successor = engine
+        .successor_engine
+        .as_ref()
+        .unwrap_or_else(|| maho_core::engine_build_identity::engine_build_identity());
+    let detail = maho_core::engine_build_identity::older_engine_detail(successor, &running)?;
+    Some(HandoffRefusal {
+        reason: "older_engine",
+        upgradeable: false,
+        detail: Some(detail),
+    })
+}
+
 pub async fn handoff_host(
     socket: &str,
     agent_dir: &std::path::Path,
     options: HandoffOptions,
 ) -> std::io::Result<Result<crate::host_successor::RunningSuccessor, HandoffRefusal>> {
+    handoff_host_with_engine(socket, agent_dir, options, HandoffEngineOptions::default()).await
+}
+
+pub async fn handoff_host_with_engine(
+    socket: &str,
+    agent_dir: &std::path::Path,
+    options: HandoffOptions,
+    engine: HandoffEngineOptions,
+) -> std::io::Result<Result<crate::host_successor::RunningSuccessor, HandoffRefusal>> {
     let socket = crate::host_ensure::normalize_socket_path(socket);
     let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);
     crate::host_daemon_paths::create_daemon_directories(&paths).map_err(|error| error.source)?;
-    let mut lock = crate::ownership_safe_lock::acquire_ownership_safe_lock(
-        &paths.lock_file,
-        Default::default(),
-    )
-    .await
-    .map_err(std::io::Error::other)?;
-    let result = handoff_host_locked(socket, agent_dir, options).await;
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let lock_wait = crate::host_startup_policy::startup_envelope(Some(
+        crate::host_stalled_evidence::child_stalled_stop_max_ms(&env),
+    ))
+    .lock_wait;
+    let retries = crate::ownership_safe_lock::LockRetries {
+        retries: (lock_wait / 100).max(1) as u32,
+        min_timeout: std::time::Duration::from_millis(20),
+        max_timeout: std::time::Duration::from_millis(100),
+    };
+    let mut lock =
+        crate::ownership_safe_lock::acquire_ownership_safe_lock(&paths.lock_file, retries)
+            .await
+            .map_err(std::io::Error::other)?;
+    let result = handoff_host_locked_with_engine(socket, agent_dir, options, engine).await;
     lock.release().map_err(std::io::Error::other)?;
     result
 }
@@ -57,6 +106,16 @@ pub async fn handoff_host_locked(
     socket: &str,
     agent_dir: &std::path::Path,
     options: HandoffOptions,
+) -> std::io::Result<Result<crate::host_successor::RunningSuccessor, HandoffRefusal>> {
+    handoff_host_locked_with_engine(socket, agent_dir, options, HandoffEngineOptions::default())
+        .await
+}
+
+pub async fn handoff_host_locked_with_engine(
+    socket: &str,
+    agent_dir: &std::path::Path,
+    options: HandoffOptions,
+    engine: HandoffEngineOptions,
 ) -> std::io::Result<Result<crate::host_successor::RunningSuccessor, HandoffRefusal>> {
     let socket = crate::host_ensure::normalize_socket_path(socket);
     let context = match prepare_handoff(
@@ -73,6 +132,9 @@ pub async fn handoff_host_locked(
         Ok(context) => context,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if let Some(refusal) = downgrade_refusal(&context.host, &engine) {
+        return Ok(Err(refusal));
+    }
     if context.owner.is_none() {
         return crate::host_handoff_unregistered::handoff_unregistered_host(
             socket, agent_dir, options, context,

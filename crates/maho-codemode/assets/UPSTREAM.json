@@ -21,10 +21,8 @@
     {
       "path": "kernels/js/inline-worker-entry.js",
       "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "3cfbdf41a73b44aaac3685e5080b637c55aabf6e6411d0d1ccdcfbb015fbbf6c",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "7c0ca94905ad26ac480bcf3570d30978c5e4f0a3be3c0a8cab71800f963a8c42"
     },
     {
       "path": "kernels/js/kernel-tools-context.js",
@@ -59,11 +57,9 @@
     {
       "path": "kernels/js/kernel-tools-pump.js",
       "status": "patched",
-      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "sha256": "866d8e0f088d244d96890c0e5eb9f1d6d54f026fac31db5d6f999aac91443f8a",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump",
-      "change": "reply always carries a value: a tool returning undefined would otherwise serialize the frame without the required field and the host rejects it"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "change": "reply always carries a value (value ?? null): a tool returning undefined would otherwise serialize without the required field",
+      "sha256": "09a2fbb28e6b2d2afd6144431f5ecd0f09aaab960bde5fbde328ba066c7b3fc3"
     },
     {
       "path": "kernels/js/kernel-tools-registry.js",
@@ -86,45 +82,35 @@
     {
       "path": "kernels/js/process-tree.js",
       "status": "verbatim",
-      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
-      "sha256": "d8528ffba3a0210c852c6c8fb91737076c653160b6bd4844285f0934de8a91a5",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "verbatim at 59d58cee5; the later initializeProcessCleanup hook is after the senpi pin 59d58cee5 (v2026.10.27-2), part of the JS eval permission core / interposition (42e0e2707c, b4e76ace01)"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "229a8c0449330c1615168212f9ff826fd0ad36e7dbe1ffabf9f099cc99ee7e6d"
     },
     {
       "path": "kernels/js/worker-core.js",
       "status": "patched",
-      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting; webview-connect/webview-port bridge with installKernelWebView",
-      "sha256": "8a7e9ce84a20ca8195914b3d2d89021d3f0a6e839e634a890b67791364ae1f9d",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "port gap predating this release range (unchanged upstream between f2354d970 and 59d58cee5): upstream's cell release lifecycle (cell-ownership.js, runInCell/releaseCell: 5d68b2faf9, 14d8a35324, ae45b67537, a81a155bee), unhandled-rejection reports (rejection-reports.js, eae861282a; in mhc an unhandled rejection still ends the worker), session cwd patching (worker-cwd.js, 65b03c7410; mhc runs each kernel in its own bun relay process started in the session cwd), kernelTools.enabled=false (92eb8db6ac) and OMO_BROWSER_ENGINE (e8136d4435) are not ported; the package resolver is installed by the local-module-loader prelude instead (25d8d2d20e); mhc adds process-mode footprint memory and error.data bridging. Later upstream changes (42e0e2707c, b4e76ace01) are after the senpi pin 59d58cee5 (v2026.10.27-2)"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting; webview-connect/webview-port bridge with installKernelWebView; retain handles.js wiring",
+      "sha256": "ec573ba480bfa11e637e18ee946312bba7e0fee9cb13f9c5683df90a7d66d096"
     },
     {
       "path": "kernels/js/worker-entry.js",
       "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "f80879f6fba0ede8b767f4038540d81779c71889ee13aec8483686e1eff72339",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "7c0ca94905ad26ac480bcf3570d30978c5e4f0a3be3c0a8cab71800f963a8c42"
     },
     {
       "path": "kernels/js/worker-indirect-eval.js",
       "status": "patched",
-      "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "5f369c2e9e135f0116e6b92c1fb4b001f337860d7d65b1a1f3df67f9fb8e5f02",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
       "change": "use shared isKernelGlobal predicate",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "port gap predating this release range: upstream's per-kernel user scope for cells that shadow a kernel global (d34a1867a3) is not ported; mhc refuses such a top-level declaration instead (pairs with worker-runtime.js). The lint comments from b621a01c25 are applied"
+      "sha256": "5f369c2e9e135f0116e6b92c1fb4b001f337860d7d65b1a1f3df67f9fb8e5f02"
     },
     {
       "path": "kernels/js/worker-runtime.js",
       "status": "patched",
-      "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun; tool.defined()/tool.undefine() wired as upstream 4998e97f58",
-      "sha256": "909b35274cf7272db1855e5c528d82ff2823d6d37b5530afe88f51aa84aa0152",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "port gap predating this release range (unchanged upstream between f2354d970 and 59d58cee5): cell require/createRequire (worker-require.js, f61208eee8), shadowed-global user scope (d34a1867a3), stable prelude source URL (b755c442d2), release() split for stopped cells (5d68b2faf9, 14d8a35324), injected process-group marker (worker-cwd.js INJECTED_GROUP, 7bb160e2bf), %load source file names (1d37a776bd), completion handles (f56aebf74f) and kernelTools.enabled=false (92eb8db6ac) are not ported; packages.install lives in the local-module-loader prelude; mhc owns worker memory collection here and adds handles.js wait()/handle(). Later upstream change b4e76ace01 is after the senpi pin 59d58cee5 (v2026.10.27-2)"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "change": "retain wait/handle globals (handles.js), 1-arg wrapUserCode, bindKernelBun and local packages.install prelude compatibility",
+      "sha256": "b90d631765cdec530cf2f5ba22ff997f326561a1922db72ad5471dc9e0a09ce9"
     },
     {
       "path": "kernels/js/worker-shadow-guard.js",
@@ -134,85 +120,15 @@
     },
     {
       "path": "kernels/js/worker-shell-capture.js",
-      "status": "patched",
-      "upstreamCommit": "c44e259d177bc65b02e5912395dbc3f58ae5e741",
-      "sha256": "c23722472c34b0514ee7182efc07507d35870204a502fe5c277ab6ad227ffce2",
-      "change": "track shell waits and process groups",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "port gap predating this release range: group-signal notices (group-signal-notice.js, 7bb160e2bf) and the released-cell guard assertCellLive (14d8a35324) are not ported; mhc normalizes spawn options for its process-group tracking. The lint comment from b621a01c25 is applied"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "7a7d79e83b66b7eb2152117dbaf0f60230425f8534a0d1ca9c6029666af01007"
     },
     {
       "path": "kernels/js/workpool.js",
       "status": "verbatim",
       "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
       "sha256": "776b3a59befbb84ce5574c909f971f2542341d7ec613018596f9dd8928d514a4"
-    },
-    {
-      "path": "skill/bun-1-4/references/breaking-changes.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "953d1aa28738df1ec2da77b3c69c7da5068e12fa8ceb4e221e29d0c8b1bc8dca"
-    },
-    {
-      "path": "skill/bun-1-4/references/build.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "f0d463fb48197cb52b9c2e7982bfa0c2b525444e629137b03d9bac0ade5ccdd4"
-    },
-    {
-      "path": "skill/bun-1-4/references/dev-tooling.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "2cd1f5b3751c2449cf13987d384932b8a9aa894a1b81d2a821346861bae21c84"
-    },
-    {
-      "path": "skill/bun-1-4/references/http-networking.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "a0186b25dff5ee8aaa948a3f526ada667362609183fc1190f1e0b5314f7fb260"
-    },
-    {
-      "path": "skill/bun-1-4/references/install.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "8300dde1e05b3b68aa145c3120d2b36e111f4e22524aadbb41dc3e143cdae22d"
-    },
-    {
-      "path": "skill/bun-1-4/references/node-compat-platforms.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "1a6b528281b6266a56bb779d737d5c76cc6eb1235bf8ed738d399b03b605538d"
-    },
-    {
-      "path": "skill/bun-1-4/references/performance.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "e40a59c0882cb4b9aa5f3e81cfa241f4c3a5f5e141f706a7670e1b8382136e8e"
-    },
-    {
-      "path": "skill/bun-1-4/references/runtime-apis.md",
-      "status": "verbatim",
-      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
-      "sha256": "f1ef3670989673f40bde8f9f3da8525166b323069d023a40b8aa3b97ec267e46"
-    },
-    {
-      "path": "skill/bun-1-4/references/security.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "c9a6ea6f1611a3b0562f134eff9f92d100382a0bd31af522c158afbf07a875c7"
-    },
-    {
-      "path": "skill/bun-1-4/references/test.md",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "cc2237e210da3ac237b8c9ed2aeced43beec127e78acfe6a1e1b5e49622964db"
-    },
-    {
-      "path": "skill/bun-1-4/SKILL.md",
-      "status": "patched",
-      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
-      "sha256": "b41c6ca115e8ad3338f52ec63decc0efd8d6c2e1778bbead731ab7c5b27e62cc",
-      "change": "clarify eval-first skill loading; add rule 6"
     },
     {
       "path": "kernels/js/worker-global-sizes.js",
@@ -244,24 +160,21 @@
     {
       "path": "kernels/js/worker-webview.js",
       "status": "verbatim",
-      "upstreamCommit": "b621a01c2527b21684923ecf3fef3f7998307731",
-      "sha256": "2a8170cba1de08be6125450f37426505fbd3fe7518d92488e35dbf5fccb45874",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "verbatim at 59d58cee5; later changes are after the senpi pin 59d58cee5 (v2026.10.27-2): main-thread WebKit views (c253693a4d), goBack/goForward proxy (cb5e852dc5), interposition (b4e76ace01)"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "9d383f0ed56902891a828c5936f9b1b143dcefefad049a1f62cf4a0687e77299"
     },
     {
       "path": "kernels/js/windows-tree-kill.js",
-      "status": "local",
-      "upstreamCommit": null,
-      "change": "native kernel Windows process-tree cleanup with ancestor and system-process protection",
-      "sha256": "2b868a633d7ba3a1471f4e3bd0f68769e98205178f89acba2f32c9865c10c343"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "c32ef8bd0c9ef80a310abdb8e71ee3db241654833aef975db6713d83017c1ab1"
     },
     {
       "path": "kernels/js/process-entry.js",
       "status": "patched",
-      "upstreamCommit": "903b83367545bea516f35fc7f7c7cb692847988d",
-      "change": "Bun-only direct process entry; marks process mode for the WebView bridge (native views on the child main thread)",
-      "sha256": "29e346dd7b3d6665e453e95b867cb9cebf9e384acc7b6e92d1907b0b0534dc0e"
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "change": "Bun-only direct process entry with reviveFrameValues frame codec and process-mode WebView bridge marker",
+      "sha256": "91be2de30c245c97fca8f0ea12d473514195fd7d30425f60a60af1ffd2f9cfc9"
     },
     {
       "path": "kernels/js/process-drain-scan.js",
@@ -322,147 +235,148 @@
     },
     {
       "path": "kernels/js/cell-ownership.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (stopped-cell ownership of timers, streams, sockets: a81a155bee)"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "e3f60dcc00bf63bfceae0086a3ec0e2973770de01d1d6cc946aa618cd1caabb9"
     },
     {
       "path": "kernels/js/group-signal-notice.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (group-signal warnings: 7bb160e2bf)"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "bca610883bfc2c07a5533150af9b870b35cec7af99e83b8e3b898837d7e179fa"
     },
     {
       "path": "kernels/js/interpose-bun.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "82d2d738bb6c5625574f7daddf2721d1b2b7cb1c10800c2e6d8ed903caf0d667"
     },
     {
       "path": "kernels/js/interpose-capabilities.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "feb97ec34fe25ab3d11c7a2a1b705caaadd03adb1aca38b9ddfa27a84f285fde"
     },
     {
       "path": "kernels/js/interpose-code.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "a03a9c9a94ae71ac8d335f17d3d4676190855d87898509d190817fe9a6b018ea"
     },
     {
       "path": "kernels/js/interpose-fs.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "a90ecabf6b39e9ef600de563d8c45aa7bee43a94a21e6e6007c65b0ec3208938"
     },
     {
       "path": "kernels/js/interpose-modules.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "5bcedb691d297207e047ac3803d053a02b2b4b6a1ec7a2d9b321791b69d91ea7"
     },
     {
       "path": "kernels/js/interpose-paths.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "40aa5523a9aa63038ef769b69384de7fec85f3e2a5cc2415149c38d30d901f4e"
     },
     {
       "path": "kernels/js/interpose-process.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "90df3406d0b427dee35a7fd644116b878be93344b65680b2ec70b2eee08db436"
     },
     {
       "path": "kernels/js/interpose-resources.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "fda4888a4538fd41faf45f20bfeb4404a061198cdeae8fc59132635e9187173e"
     },
     {
       "path": "kernels/js/interpose-sqlite.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "5888f4ffa8a2ef77d068d849e996ed6e053b96b4d3050c23810a022edb45a9a4"
     },
     {
       "path": "kernels/js/interpose.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "1a677bced1a72c1ef156422d6b4447ed8f2cb92b99352130f77e8f15b2ee5579"
     },
     {
       "path": "kernels/js/permission-authority.d.mts",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "fdc718bcfb8f67af8d3d36efaceec7a04c33d79700753a2c53457c275481baee"
     },
     {
       "path": "kernels/js/permission-authority.mjs",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "dde864d23668f52725cbeeb3879cdb0ffce9259896bb589d6854b9a913d80a80"
     },
     {
       "path": "kernels/js/permission-core.md",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "0d5a2e366561faeb82cdc73b8408de419a5b93c85f1a45ff37e107cca000a664"
     },
     {
       "path": "kernels/js/permission-runtime.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "patched",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "change": "P1-KG: bind process.exit before cell prelude runs so close() exits cleanly if user code shadows or deletes process.exit",
+      "sha256": "029c9140aa5763775a8f6e45b0273f5fa526993276bc2682653f2b0cf4ed7b8a"
     },
     {
       "path": "kernels/js/permission-slots.d.mts",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "a1d5b7b27066148207c94b6d63c461ed4fabe6ffebccee39b8689e4d8a0f4ffe"
     },
     {
       "path": "kernels/js/permission-slots.mjs",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "da7fa31cb87f3a03c6f4b7df06716d4cc87273f547bffc97d280e72f7ae7ec4e"
     },
     {
       "path": "kernels/js/permission-worker-entry.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "7c0ca94905ad26ac480bcf3570d30978c5e4f0a3be3c0a8cab71800f963a8c42"
     },
     {
       "path": "kernels/js/rejection-reports.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (unhandled rejections reported instead of ending the worker: eae861282a)"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "9191fbc6873ac9333cdb0340741ae10b15ebeea921aad5fed8726ed878e759d4"
     },
     {
       "path": "kernels/js/worker-cwd.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (session cwd patching for a worker thread in a shared host: 65b03c7410; mhc starts each kernel relay process in the session cwd)"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "fc1c435dbabde3a60965f305f2c504bd3fac9f1b741f6367deb06695f0e49c79"
     },
     {
       "path": "kernels/js/worker-file-helpers.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "d934f28552aa09b7fe2a6e37c161aa178eb37fee108cb1ff43232a6ba84a3f75"
     },
     {
       "path": "kernels/js/worker-package-resolve.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "shipped outside the runtime asset table: src/kernels/js/worker-package-resolve.js is byte-identical to 59d58cee5 and is inlined by local_module_loader.rs (include_str!, data: URL). The later upstream change b4e76ace01 is after the senpi pin 59d58cee5 (v2026.10.27-2)"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "49a26d04c7c5b1e3f09cb2b93865a8e1c0526c8b6da7cfebf5c0cc80fb67d1f8"
     },
     {
       "path": "kernels/js/worker-require.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (cell require/createRequire: f61208eee8)"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "4e07f60ccc7e0f694d4f3383b12da18066759c24170170ae0e9b9a0c999e1650"
     },
     {
       "path": "kernels/py/interpose.py",
@@ -550,15 +464,15 @@
     },
     {
       "path": "kernels/shared/path-identity.d.mts",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2) (7e9330f865) for the permission core path checks; not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "c4c3d908b5a642bafda6834ae2807aeb4272b53683e3bf60e200930ee9307d65"
     },
     {
       "path": "kernels/shared/path-identity.mjs",
-      "status": "unported",
-      "upstreamCommit": null,
-      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2) (7e9330f865) for the permission core path checks; not in this release range"
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "e09ce12ad7e11d2e82583c767ce0d6b3177fd70512451599d520c231ee7096f4"
     },
     {
       "path": "kernels/js/frame-values.js",
@@ -566,6 +480,121 @@
       "upstreamCommit": null,
       "change": "shared JSON frame codec: forwards non-JSON values (BigInt, undefined, V8-serialized clone) between the relay, the process entry and the worker so the host never re-encodes them",
       "sha256": "c1d7b150360ea3e1f08d62881da33904838139a6d93e91392122a3d9776dada5"
+    },
+    {
+      "path": "kernels/js/power-throttling.js",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "8be576cf6370569a50079af68d6a50387779da251ffdeadd2c4fb33d0fa677a3"
+    },
+    {
+      "path": "kernels/js/power-throttling.d.ts",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "6a8cd0fd890ebd308d9f95064dba76eec0c8562dd7a33f945febf9a42fd1b1b9"
+    },
+    {
+      "path": "kernels/js/power-throttling-startup.js",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "5f79eb839a91cfc50b3f89dfbf1f3b8132e3598f7c4cd597febb4b1091dbfb2a"
+    },
+    {
+      "path": "kernels/js/worker-kill-guard.js",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "d45daf431fee5e35f38c33c7f939760506d1e0cec0b7b0b59a188dfa461ee788"
+    },
+    {
+      "path": "kernels/js/kill-guard-bridge.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "local bridge adapter for worker-kill-guard.js forwarding synchronous kill-guard checks over HTTP /kill_guard_check to maho_core::kill_guard",
+      "sha256": "3d703f9e31e128f85498c3085cb4df43acbea52eda80318af556bfaed9832e27"
+    },
+    {
+      "path": "skill/bun/SKILL.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "39ae331de5f9b5c1cb86809245cb6ebc1c9454e4007db7624d59f48d532eddf3"
+    },
+    {
+      "path": "skill/bun/references/breaking-changes.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "1ba1c3ee663fe5f6c0b772e4724f39ffb9fd21515ccf95d19d58fc92a0cb30ac"
+    },
+    {
+      "path": "skill/bun/references/build.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "82741a28b8aa96e540a3be254bac9343f1a8daf164819b8655f341337fbcfb18"
+    },
+    {
+      "path": "skill/bun/references/dev-tooling.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "0209872364a92d8cdacc99179c1abb4c3077cd8be37d7a00070e6198f037f964"
+    },
+    {
+      "path": "skill/bun/references/http-networking.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "a02dff8a7a6648353b69105dd770e98ee37a78ce22f2d3281b8e64a304313cbc"
+    },
+    {
+      "path": "skill/bun/references/install.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "6868af84ce435274fcbd6e9fa7c49ad9ee7866ac26df40b1312a377354f5f280"
+    },
+    {
+      "path": "skill/bun/references/node-compat-platforms.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "0c4074186b1b9d25455be3edd43d112bc1a9cd1ccb5d30de37a175dd42ced74f"
+    },
+    {
+      "path": "skill/bun/references/performance.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "31048675c55a1e2a7c5f5ca8c54ee8d027c0c3d9d9020f77f28063e0748cebd5"
+    },
+    {
+      "path": "skill/bun/references/runtime-apis.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "858a805cd79b91adcbcb87df4d39be5a5681e62e55eb6b7769680f4074fce01a"
+    },
+    {
+      "path": "skill/bun/references/security.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "43133945310aa552b1db6548314239815d36fc068a89677441cd6c63dba89263"
+    },
+    {
+      "path": "skill/bun/references/session-recipes.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "1d60216616bd0828b441e71b560457da04f30d94bdd829e8322685b7f15409ec"
+    },
+    {
+      "path": "skill/bun/references/test.md",
+      "status": "verbatim",
+      "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",
+      "sha256": "56240f0dc138028af40047307318bc6f71166897d5e120276bb7a0810e9e3255"
+    },
+    {
+      "path": "kernels/py/kill_guard.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/sqlite_uri.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
     }
   ]
 }

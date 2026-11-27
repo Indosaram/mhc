@@ -1489,6 +1489,10 @@ async fn perform_structural_attempt(
             .as_ref()
             .is_some_and(is_retryable_assistant_error)
     };
+    let summary_context = crate::harness::context::with_session_cwd(
+        lane.session.metadata().cwd.as_deref(),
+        &drive.context,
+    );
     if summary_kind(&effect.pending.scope.task) == "compaction" {
         let StructuralPreparationView::Compaction(preparation) = preparation else {
             return Err(session_invariant_error(
@@ -1507,7 +1511,7 @@ async fn perform_structural_attempt(
                     .thinking_level,
             ),
         };
-        let outcome = compact_with_request(preparation, &options, &request, &drive.context).await;
+        let outcome = compact_with_request(preparation, &options, &request, &summary_context).await;
         if cancelled.load(Ordering::SeqCst) {
             return Ok(StructuralAttempt::CancelRequested);
         }
@@ -1529,7 +1533,8 @@ async fn perform_structural_attempt(
         replace_instructions: false,
     };
     let outcome =
-        generate_branch_summary_with_request(preparation, &options, &request, &drive.context).await;
+        generate_branch_summary_with_request(preparation, &options, &request, &summary_context)
+            .await;
     if cancelled.load(Ordering::SeqCst) {
         return Ok(StructuralAttempt::CancelRequested);
     }

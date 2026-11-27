@@ -7,7 +7,6 @@ use maho_ext_anthropic_subscription::{
 };
 use std::sync::Arc;
 
-struct Flow;
 #[tokio::test]
 #[cfg(unix)]
 async fn native_oauth_constructor_probes_configured_executable() {
@@ -39,32 +38,6 @@ async fn native_oauth_constructor_probes_configured_executable() {
         .expect("check");
     assert!(result.is_some());
 }
-#[async_trait::async_trait]
-impl OAuthAuth for Flow {
-    fn name(&self) -> &str {
-        "synthetic"
-    }
-    async fn login(
-        &self,
-        interaction: &ProviderAuthInteraction,
-    ) -> anyhow::Result<OAuthCredential> {
-        interaction.signal.throw_if_aborted()?;
-        Ok(OAuthCredential::new("fresh", "refresh", 60_000.0))
-    }
-    async fn refresh(
-        &self,
-        credential: &OAuthCredential,
-        _: &maho_ai::utils::abort::AbortSignal,
-    ) -> anyhow::Result<OAuthCredential> {
-        Ok(credential.clone())
-    }
-    async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth {
-            api_key: Some(credential.access.clone()),
-            ..Default::default()
-        })
-    }
-}
 struct Interaction(&'static str);
 #[async_trait::async_trait]
 impl AuthInteraction for Interaction {
@@ -87,96 +60,22 @@ impl AuthContext for Context {
     }
 }
 fn config(store: Arc<InMemoryCredentialStore>) -> AnthropicSubscriptionOAuth {
-    AnthropicSubscriptionOAuth {
+    let mut oauth = AnthropicSubscriptionOAuth::native_with_resolver(
         store,
-        flow: Arc::new(Flow),
-        settings: Arc::new(|| {
-            maho_ext_anthropic_subscription::settings::load(
-                &serde_json::json!({}),
-                &serde_json::Value::Null,
-                &Default::default(),
-            )
-        }),
-        ambient: AmbientAuthStatusReader::new(
-            Arc::new(|| Box::pin(async { panic!("ambient probe requires opt-in") })),
-            Arc::new(|| 0),
-            30_000,
-        ),
-    }
-}
-fn interaction(answer: &'static str) -> ProviderAuthInteraction {
-    ProviderAuthInteraction::new(
-        AbortController::new().signal(),
-        Arc::new(Interaction(answer)),
-    )
-}
-async fn seed(store: &InMemoryCredentialStore, provider: &str, credential: OAuthCredential) {
-    store
-        .modify(
-            provider,
-            Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
-            None,
-        )
-        .await
-        .expect("seed");
-}
-#[tokio::test]
-async fn import_moves_existing_grant_without_fresh_login() {
-    let store = Arc::new(InMemoryCredentialStore::new());
-    seed(
-        &store,
-        "anthropic",
-        OAuthCredential::new("imported", "refresh", 1.0),
-    )
-    .await;
-    let credential = config(store.clone())
-        .login(&interaction("y"))
-        .await
-        .expect("login");
-    let slots = list_accounts(&credential, None).expect("slots");
-    assert_eq!(slots[0].name, "imported-anthropic");
-    assert_eq!(slots[0].source, AccountSource::Import);
-    assert!(store.read("anthropic", None).await.expect("read").is_none());
-}
-#[tokio::test]
-async fn declined_import_keeps_original_and_creates_default() {
-    let store = Arc::new(InMemoryCredentialStore::new());
-    seed(
-        &store,
-        "anthropic",
-        OAuthCredential::new("imported", "refresh", 1.0),
-    )
-    .await;
-    let credential = config(store.clone())
-        .login(&interaction("n"))
-        .await
-        .expect("login");
-    let slots = list_accounts(&credential, None).expect("slots");
-    assert_eq!(slots[0].name, "default");
-    assert_eq!(slots[0].source, AccountSource::Login);
-    assert!(store.read("anthropic", None).await.expect("read").is_some());
-}
-#[tokio::test]
-async fn second_login_adds_named_account_without_dropping_slots() {
-    let store = Arc::new(InMemoryCredentialStore::new());
-    let oauth = config(store.clone());
-    let first = oauth.login(&interaction("")).await.expect("first");
-    seed(&store, "anthropic-subscription", first).await;
-    let second = oauth.login(&interaction("work")).await.expect("second");
-    assert_eq!(
-        list_accounts(&second, None)
-            .expect("slots")
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect::<Vec<_>>(),
-        ["default", "work"]
+        Arc::new(Default::default),
+        Arc::new(|| anyhow::bail!("no CLI in the auth check fixture")),
     );
+    oauth.ambient = AmbientAuthStatusReader::new(
+        Arc::new(|| Box::pin(async { panic!("ambient probe requires opt-in") })),
+        Arc::new(|| 0),
+        30_000,
+    );
+    oauth
 }
 #[tokio::test]
-async fn login_and_request_auth_keep_managed_sentinel() {
+async fn request_auth_for_the_managed_pool_keeps_sentinel() {
     let oauth = config(Arc::new(InMemoryCredentialStore::new()));
-    let credential = oauth.login(&interaction("")).await.expect("login");
-    assert_sentinel_invariant(&credential).expect("sentinel");
+    let credential = empty_credential();
     assert_eq!(
         oauth
             .to_auth(&credential)
@@ -188,31 +87,16 @@ async fn login_and_request_auth_keep_managed_sentinel() {
     );
 }
 #[tokio::test]
-async fn login_passes_abort_signal_to_underlying_flow() {
+async fn pre_cancelled_login_never_resolves_executable() {
     let controller = AbortController::new();
     controller.abort(None);
     let input = ProviderAuthInteraction::new(controller.signal(), Arc::new(Interaction("")));
-    assert!(
-        config(Arc::new(InMemoryCredentialStore::new()))
-            .login(&input)
-            .await
-            .is_err()
-    );
+    let mut oauth = config(Arc::new(InMemoryCredentialStore::new()));
+    oauth.cli.resolve = Arc::new(|| panic!("pre-cancelled login spawned"));
+    assert!(oauth.login(&input).await.is_err());
 }
 #[tokio::test]
-async fn refresh_preserves_pool_and_sentinel() {
-    let oauth = config(Arc::new(InMemoryCredentialStore::new()));
-    let credential = oauth.login(&interaction("")).await.expect("login");
-    assert_eq!(
-        oauth
-            .refresh(&credential, &AbortController::new().signal())
-            .await
-            .expect("refresh"),
-        credential
-    );
-}
-#[tokio::test]
-async fn check_accepts_projected_concrete_slot() {
+async fn check_rejects_a_flat_legacy_token_credential() {
     let oauth = config(Arc::new(InMemoryCredentialStore::new()));
     assert!(
         oauth
@@ -223,6 +107,53 @@ async fn check_accepts_projected_concrete_slot() {
             )
             .await
             .expect("check")
+            .is_none()
+    );
+}
+#[tokio::test]
+async fn check_rejects_a_stored_slot_from_retired_token_login() {
+    let oauth = config(Arc::new(InMemoryCredentialStore::new()));
+    let retired = add_account(
+        &empty_credential(),
+        AccountSlot {
+            name: "old".into(),
+            access: "fake-a".into(),
+            refresh: "fake-r".into(),
+            expires: 1.0,
+            ..Default::default()
+        },
+    )
+    .expect("retired credential fixture");
+    assert!(
+        oauth
+            .check(&Context, Some(&retired), &AbortController::new().signal())
+            .await
+            .expect("auth check")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn auth_check_reads_only_anthropic_tokens_from_request_environment() {
+    let oauth = config(Arc::new(InMemoryCredentialStore::new()));
+    let irrelevant = empty_credential().with_extra("env", serde_json::json!({"PATH": "/fixture"}));
+    let with_token = empty_credential().with_extra(
+        "env",
+        serde_json::json!({"PATH": "/fixture", "CLAUDE_CODE_OAUTH_TOKEN_3": "fixture"}),
+    );
+    let signal = AbortController::new().signal();
+    assert!(
+        oauth
+            .check(&Context, Some(&irrelevant), &signal)
+            .await
+            .expect("unrelated env check")
+            .is_none()
+    );
+    assert!(
+        oauth
+            .check(&Context, Some(&with_token), &signal)
+            .await
+            .expect("request token check")
             .is_some()
     );
 }

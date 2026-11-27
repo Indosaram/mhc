@@ -1,25 +1,17 @@
-use crate::{
-    definition::*,
-    filesystem_policy::{FilesystemOperation, FilesystemPolicyChecker, check_filesystem_policy},
-};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
+//! Port of `packages/coding-agent/src/core/tools/write.ts`.
+
+pub use crate::write_core::{
+    WriteBaseline, WriteOperations, WriteToolDetails, WriteToolInput, create_write_details,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct WriteToolDetails {
-    pub operation: &'static str,
-    pub patch: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WriteBaseline {
-    Missing,
-    Present { content: String },
-    Unavailable,
-}
+use crate::definition::{ToolDefinition, ToolFuture};
+use crate::file_tool_host::run_local_file_mutation_queue;
+use crate::filesystem_policy::{FilesystemPolicyChecker, canonicalize_filesystem_path};
+use crate::machine::{ToolMachine, default_tool_machine};
+use crate::write_core::{CoreWriteToolOptions, create_core_write_tool_definition};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 pub async fn read_local_write_baseline(path: &Path) -> WriteBaseline {
     match tokio::fs::read(path).await {
         Ok(content) => WriteBaseline::Present {
@@ -29,122 +21,59 @@ pub async fn read_local_write_baseline(path: &Path) -> WriteBaseline {
         Err(_) => WriteBaseline::Unavailable,
     }
 }
-pub fn create_write_details(
-    path: &str,
-    content: &str,
-    baseline: WriteBaseline,
-) -> Option<WriteToolDetails> {
-    match baseline {
-        WriteBaseline::Missing => Some(WriteToolDetails {
-            operation: "add",
-            patch: crate::unified_diff::create_unified_patch("/dev/null", path, "", content, 4),
-        }),
-        WriteBaseline::Present { content: old } => {
-            if old == content {
-                None
-            } else {
-                Some(WriteToolDetails {
-                    operation: "update",
-                    patch: crate::unified_diff::create_unified_patch(path, path, &old, content, 4),
-                })
-            }
-        }
-        WriteBaseline::Unavailable => None,
-    }
-}
-pub trait WriteOperations: Send + Sync {
-    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> ToolFuture<'a, ()>;
-    fn mkdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()>;
-}
+
 pub struct LocalWriteOperations;
+
 impl WriteOperations for LocalWriteOperations {
     fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> ToolFuture<'a, ()> {
         Box::pin(async move {
             Ok(tokio::fs::write(path, content)
                 .await
-                .map_err(|e| node_fs_error(e, "open", path))?)
+                .map_err(|e| crate::definition::node_fs_error(e, "open", path))?)
         })
     }
     fn mkdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> {
         Box::pin(async move {
             Ok(tokio::fs::create_dir_all(path)
                 .await
-                .map_err(|e| node_fs_error(e, "mkdir", path))?)
+                .map_err(|e| crate::definition::node_fs_error(e, "mkdir", path))?)
         })
     }
 }
+
 #[derive(Clone, Default)]
 pub struct WriteToolOptions {
     pub operations: Option<Arc<dyn WriteOperations>>,
     pub filesystem_policy: Option<FilesystemPolicyChecker>,
+    pub machine: Option<ToolMachine>,
 }
-#[derive(Deserialize)]
-pub struct WriteToolInput {
-    pub path: String,
-    pub content: String,
-}
+
 pub fn create_write_tool_definition(cwd: PathBuf, options: WriteToolOptions) -> ToolDefinition {
     let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
-    let local = options.operations.is_none();
-    let ops = options
-        .operations
-        .unwrap_or_else(|| Arc::new(LocalWriteOperations));
-    let policy = options.filesystem_policy;
-    let execute: ToolExecutor = Arc::new(move |call| {
-        let cwd = cwd.clone();
-        let ops = Arc::clone(&ops);
-        let policy = policy.clone();
-        Box::pin(async move {
-            let input: WriteToolInput = serde_json::from_value(call.params)?;
-            let path = crate::path_utils::resolve_to_cwd(
-                &input.path,
-                call.context.map_or(cwd.as_path(), ToolContext::cwd),
-            );
-            let _guard = crate::file_mutation_queue::lock_file_mutation(&path).await?;
-            call.signal.check()?;
-            check_filesystem_policy(policy.as_ref(), &path, FilesystemOperation::Write, "write")
-                .await?;
-            call.signal.check()?;
-            let baseline = if local {
-                read_local_write_baseline(&path).await
-            } else {
-                WriteBaseline::Unavailable
-            };
-            call.signal.check()?;
-            if let Some(parent) = path.parent() {
-                ops.mkdir(parent).await?;
-            }
-            call.signal.check()?;
-            ops.write_file(&path, &input.content).await?;
-            call.signal.check()?;
-            Ok(ToolResult {
-                content: vec![ToolContent::text(format!(
-                    "Successfully wrote to {}",
-                    input.path
-                ))],
-                details: create_write_details(&input.path, &input.content, baseline)
-                    .map(serde_json::to_value)
-                    .transpose()?,
-                structured_content: None,
-                is_error: None,
-            })
-        })
-    });
-    let mut tool = ToolDefinition::new(
-        "write",
-        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-        json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to write (relative or absolute)"},"content":{"type":"string","description":"Content to write to the file"}},"required":["path","content"]}),
-        execute,
-    );
-    tool.prompt_snippet = Some("Create or overwrite files".into());
-    tool.prompt_guidelines = Some(vec![
-        "Use write only for new files or complete rewrites.".into(),
-    ]);
-    tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(
-        maho_ai::types::ConstrainedSamplingConfig::JsonSchema {
-            strict: maho_ai::types::JsonSchemaStrictness::Prefer,
+    let machine = options.machine.unwrap_or_else(default_tool_machine);
+    let mut tool = create_core_write_tool_definition(
+        cwd,
+        CoreWriteToolOptions {
+            machine,
+            operations: options.operations,
+            filesystem_policy: options.filesystem_policy,
+            resolve_path: Some(Arc::new(|path, cwd| {
+                crate::path_utils::resolve_to_cwd(path, cwd)
+            })),
+            dirname: Some(Arc::new(|path| {
+                path.parent().unwrap_or(Path::new(".")).to_path_buf()
+            })),
+            with_mutation_queue: Some(Arc::new(|path, f| {
+                Box::pin(async move { run_local_file_mutation_queue(&path, f).await })
+            })),
+            canonicalize_path: Some(Arc::new(|path| {
+                Box::pin(async move { canonicalize_filesystem_path(&path).await })
+            })),
+            read_baseline: Some(Arc::new(|path| {
+                Box::pin(async move { read_local_write_baseline(&path).await })
+            })),
         },
-    ));
+    );
     if server_pinned {
         tool.server_pinned = Some(true);
     }

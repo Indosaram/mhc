@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::host::HostError;
-use crate::manager::child_handle::{
-    ManagedChildHandle, ManagedChildListener, Unsubscribe,
-};
+use crate::manager::child_handle::Unsubscribe;
 use crate::manager::types::{
     ManagedRunner, ManagedRunnerError, ManagedRunnerResult, ManagedStartSpec,
 };
@@ -352,7 +350,10 @@ impl CloudPoolBackend for FerryxCliCloudBackend {
             .map_err(|error| format!("failed to run {}: {error}", bin.display()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("ferryx-cli cloud release failed: {}", stderr.trim()));
+            return Err(format!(
+                "ferryx-cli cloud release failed: {}",
+                stderr.trim()
+            ));
         }
         Ok(())
     }
@@ -401,11 +402,7 @@ impl RemoteSocketRpcClient {
         Ok(client)
     }
 
-    pub fn open_session(
-        &self,
-        cwd: &str,
-        model: Option<&str>,
-    ) -> Result<String, RpcClientError> {
+    pub fn open_session(&self, cwd: &str, model: Option<&str>) -> Result<String, RpcClientError> {
         let mut command = json!({
             "type": "open_session",
             "cwd": cwd,
@@ -460,9 +457,7 @@ impl RemoteSocketRpcClient {
 
         if let Some(obj) = command.as_object_mut() {
             obj.insert("id".into(), Value::String(req_id.clone()));
-            if attach_session
-                && let Some(sid) = session_id
-            {
+            if attach_session && let Some(sid) = session_id {
                 obj.entry("sessionId".to_string())
                     .or_insert_with(|| Value::String(sid));
             }
@@ -594,8 +589,11 @@ fn handle_socket_frame(client: &RemoteSocketRpcClient, parsed: Value) {
 
     let (expected_sid, listeners) = {
         let state = client.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let listeners: Vec<RpcEventListener> =
-            state.event_listeners.iter().map(|(_, l)| Arc::clone(l)).collect();
+        let listeners: Vec<RpcEventListener> = state
+            .event_listeners
+            .iter()
+            .map(|(_, l)| Arc::clone(l))
+            .collect();
         (state.session_id.clone(), listeners)
     };
     if let (Some(expected), Some(frame_sid)) = (
@@ -630,8 +628,11 @@ fn notify_socket_exit(client: &RemoteSocketRpcClient) {
         };
         state.exited = Some(exit_input.clone());
         let pending: Vec<PendingSender> = state.pending.drain().map(|(_, tx)| tx).collect();
-        let exit_listeners: Vec<RpcExitListener> =
-            state.exit_listeners.iter().map(|(_, l)| Arc::clone(l)).collect();
+        let exit_listeners: Vec<RpcExitListener> = state
+            .exit_listeners
+            .iter()
+            .map(|(_, l)| Arc::clone(l))
+            .collect();
         (pending, exit_listeners, exit_input)
     };
     for tx in pending {
@@ -647,7 +648,9 @@ fn notify_socket_exit(client: &RemoteSocketRpcClient) {
 #[cfg(not(unix))]
 impl RemoteSocketRpcClient {
     pub fn connect(_socket_path: &Path) -> io::Result<Arc<Self>> {
-        Err(io::Error::other("cloud Unix socket transport requires Unix"))
+        Err(io::Error::other(
+            "cloud Unix socket transport requires Unix",
+        ))
     }
 
     pub fn open_session(&self, _cwd: &str, _model: Option<&str>) -> Result<String, RpcClientError> {
@@ -682,7 +685,9 @@ impl RpcClientPort for RemoteSocketRpcClient {
         let shared = Arc::clone(&self.state);
         Box::new(move || {
             let mut state = shared.lock().unwrap_or_else(PoisonError::into_inner);
-            state.event_listeners.retain(|(existing, _)| *existing != id);
+            state
+                .event_listeners
+                .retain(|(existing, _)| *existing != id);
         })
     }
 
@@ -730,7 +735,9 @@ struct SyncContext {
 }
 
 pub struct CloudChildHandle {
-    inner: Arc<RpcChildHandle>,
+    pub(crate) inner: Arc<RpcChildHandle>,
+    pub(crate) operation: Mutex<CloudOperation>,
+    pub(crate) finished: AtomicBool,
     backend: Arc<dyn CloudPoolBackend>,
     acquired: AcquiredCloudBox,
     sync_ctx: Option<SyncContext>,
@@ -739,19 +746,32 @@ pub struct CloudChildHandle {
     released: AtomicBool,
 }
 
+#[derive(Default)]
+pub(crate) struct CloudOperation {
+    pub(crate) closing: bool,
+}
+
 impl CloudChildHandle {
-    fn ensure_released(&self) {
+    pub(crate) fn ensure_released(&self) -> Result<(), HostError> {
         if self.released.swap(true, Ordering::AcqRel) {
-            return;
+            return Ok(());
         }
-        let _ = self.backend.release(
+        match self.backend.release(
             &self.acquired.machine,
             &self.acquired.lease_id,
             self.delete_on_release,
-        );
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.released.store(false, Ordering::Release);
+                Err(HostError {
+                    message: format!("cloud lease release failed: {error}"),
+                })
+            }
+        }
     }
 
-    fn settle_workspace_changes(&self, outcome: RunnerOutcome) -> RunnerOutcome {
+    pub(crate) fn settle_workspace_changes(&self, outcome: RunnerOutcome) -> RunnerOutcome {
         if self.settled_sync.swap(true, Ordering::AcqRel) {
             return outcome;
         }
@@ -762,10 +782,16 @@ impl CloudChildHandle {
             .state_dir
             .join("cloud-patches")
             .join(format!("{}.patch", ctx.task_id));
-        let sync_res = self
-            .backend
-            .sync_out(&self.acquired.machine, &ctx.task_id, &patch_path, true);
+        let sync_res =
+            self.backend
+                .sync_out(&self.acquired.machine, &ctx.task_id, &patch_path, true);
         let RunnerOutcome::Completed { mut final_response } = outcome else {
+            if let Err(error) = sync_res {
+                utils::logger::log(
+                    "senpi-task cloud sync-out failed",
+                    Some(&json!({ "taskId": ctx.task_id, "error": error })),
+                );
+            }
             return outcome;
         };
         match sync_res {
@@ -794,82 +820,12 @@ impl CloudChildHandle {
             }
             Ok(_) => {}
             Err(error) => {
-                let suffix = format!("\n\n[cloud sync] warning: failed to retrieve remote diff: {error}");
+                let suffix =
+                    format!("\n\n[cloud sync] warning: failed to retrieve remote diff: {error}");
                 final_response = format!("{}{suffix}", final_response.trim_end());
             }
         }
         RunnerOutcome::Completed { final_response }
-    }
-}
-
-impl Drop for CloudChildHandle {
-    fn drop(&mut self) {
-        self.ensure_released();
-    }
-}
-
-impl ManagedChildHandle for CloudChildHandle {
-    fn task_id(&self) -> &str {
-        self.inner.task_id()
-    }
-
-    fn session_id(&self) -> Option<String> {
-        self.inner.session_id()
-    }
-
-    fn pid(&self) -> Option<i64> {
-        None
-    }
-
-    fn steer(&self, text: &str) -> Result<(), HostError> {
-        self.inner.steer(text)
-    }
-
-    fn follow_up(&self, text: &str) -> Result<(), HostError> {
-        self.inner.follow_up(text)
-    }
-
-    fn abort(&self) -> Result<(), HostError> {
-        self.inner.abort()
-    }
-
-    fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe {
-        self.inner.subscribe(listener)
-    }
-
-    fn wait_for_outcome(&self) -> RunnerOutcome {
-        let raw = self.inner.wait_for_outcome();
-        let settled = self.settle_workspace_changes(raw);
-        let _ = self.inner.dispose();
-        self.ensure_released();
-        settled
-    }
-
-    fn get_entries(
-        &self,
-        since: Option<&str>,
-    ) -> Option<Result<crate::runners::types::RpcEntriesResult, HostError>> {
-        self.inner.get_entries(since)
-    }
-
-    fn last_assistant_text(&self) -> Option<String> {
-        self.inner.last_assistant_text()
-    }
-
-    fn has_terminate(&self) -> bool {
-        true
-    }
-
-    fn terminate(&self) -> Result<(), HostError> {
-        let res = self.inner.terminate();
-        self.ensure_released();
-        res
-    }
-
-    fn dispose(&self) -> Result<(), HostError> {
-        let res = self.inner.dispose();
-        self.ensure_released();
-        res
     }
 }
 
@@ -916,6 +872,17 @@ impl CloudManagedRunner {
     pub fn is_available(&self) -> bool {
         self.backend.is_available()
     }
+
+    fn release_after_start_failure(&self, acquired: &AcquiredCloudBox, message: String) -> String {
+        match self.backend.release(
+            &acquired.machine,
+            &acquired.lease_id,
+            self.settings.delete_on_release,
+        ) {
+            Ok(()) => message,
+            Err(error) => format!("{message}; cloud lease release failed: {error}"),
+        }
+    }
 }
 
 impl ManagedRunner for CloudManagedRunner {
@@ -950,14 +917,12 @@ impl ManagedRunner for CloudManagedRunner {
                     }),
                 ),
                 Err(error) => {
-                    let _ = self.backend.release(
-                        &acquired.machine,
-                        &acquired.lease_id,
-                        self.settings.delete_on_release,
-                    );
                     return Err(ManagedRunnerError::Runner(RunnerFailure::new(
                         RunnerFailureKind::SessionCreateFailed,
-                        format!("cloud workspace sync-in failed: {error}"),
+                        self.release_after_start_failure(
+                            &acquired,
+                            format!("cloud workspace sync-in failed: {error}"),
+                        ),
                     )));
                 }
             }
@@ -966,35 +931,36 @@ impl ManagedRunner for CloudManagedRunner {
         };
 
         let connect_result = RemoteSocketRpcClient::connect(Path::new(&acquired.socket_path))
-            .or_else(|first_err| match self.backend.ensure_socket(&acquired.machine) {
-                Ok(reopened_path) => RemoteSocketRpcClient::connect(Path::new(&reopened_path)),
-                Err(_) => Err(first_err),
-            });
+            .or_else(
+                |first_err| match self.backend.ensure_socket(&acquired.machine) {
+                    Ok(reopened_path) => RemoteSocketRpcClient::connect(Path::new(&reopened_path)),
+                    Err(_) => Err(first_err),
+                },
+            );
         let client = match connect_result {
             Ok(client) => client,
             Err(error) => {
-                let _ = self.backend.release(
-                    &acquired.machine,
-                    &acquired.lease_id,
-                    self.settings.delete_on_release,
-                );
                 return Err(ManagedRunnerError::Runner(RunnerFailure::new(
                     RunnerFailureKind::SessionCreateFailed,
-                    format!("cloud socket connect failed ({}): {error}", acquired.socket_path),
+                    self.release_after_start_failure(
+                        &acquired,
+                        format!(
+                            "cloud socket connect failed ({}): {error}",
+                            acquired.socket_path
+                        ),
+                    ),
                 )));
             }
         };
 
         if let Err(error) = client.open_session(&remote_cwd, spec.model.as_deref()) {
             client.detach();
-            let _ = self.backend.release(
-                &acquired.machine,
-                &acquired.lease_id,
-                self.settings.delete_on_release,
-            );
             return Err(ManagedRunnerError::Runner(RunnerFailure::new(
                 RunnerFailureKind::SessionCreateFailed,
-                format!("cloud open_session failed: {error}"),
+                self.release_after_start_failure(
+                    &acquired,
+                    format!("cloud open_session failed: {error}"),
+                ),
             )));
         }
 
@@ -1017,28 +983,29 @@ impl ManagedRunner for CloudManagedRunner {
             None => spec.prompt.clone(),
         };
 
-        if let Err(error) = inner.start_initial_prompt(&initial_prompt) {
-            inner.dispose_handle();
-            let _ = self.backend.release(
-                &acquired.machine,
-                &acquired.lease_id,
-                self.settings.delete_on_release,
-            );
-            return Err(ManagedRunnerError::Runner(RunnerFailure::new(
-                RunnerFailureKind::ChildPromptFailed,
-                format!("cloud initial prompt failed: {error}"),
-            )));
-        }
-
-        Ok(Arc::new(CloudChildHandle {
+        let handle = Arc::new(CloudChildHandle {
             inner,
+            operation: Mutex::default(),
+            finished: AtomicBool::new(false),
             backend: Arc::clone(&self.backend),
             acquired,
             sync_ctx,
             delete_on_release: self.settings.delete_on_release,
             settled_sync: AtomicBool::new(false),
             released: AtomicBool::new(false),
-        }))
+        });
+        if let Err(error) = handle.inner.start_initial_prompt(&initial_prompt) {
+            let cleanup = crate::lifecycle::destroy::destroy_unregistered(handle.as_ref());
+            let cleanup_message = cleanup
+                .err()
+                .map(|error| format!("; lifecycle cleanup failed: {error}"))
+                .unwrap_or_default();
+            return Err(ManagedRunnerError::Runner(RunnerFailure::new(
+                RunnerFailureKind::ChildPromptFailed,
+                format!("cloud initial prompt failed: {error}{cleanup_message}"),
+            )));
+        }
+        Ok(handle)
     }
 }
 
@@ -1047,11 +1014,98 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
+    use crate::lifecycle::lifecycle_tests::ManagedResident;
+
+    #[derive(Default)]
+    struct ManagerRegistry(Mutex<std::sync::Weak<crate::manager::TaskManager>>);
+
+    impl ManagerRegistry {
+        fn manager(&self) -> Arc<crate::manager::TaskManager> {
+            self.0
+                .lock()
+                .expect("lock test manager registry")
+                .upgrade()
+                .expect("manager is alive")
+        }
+    }
+
+    impl crate::lifecycle::ResidencyRegistry for ManagerRegistry {
+        fn get(&self, task_id: &str) -> Option<Arc<dyn crate::lifecycle::ResidentHandle>> {
+            self.manager().get_resident_handle(task_id).map(|handle| {
+                Arc::new(ManagedResident(handle)) as Arc<dyn crate::lifecycle::ResidentHandle>
+            })
+        }
+        fn entries(&self) -> Vec<Arc<dyn crate::lifecycle::ResidentHandle>> {
+            self.manager()
+                .resident_task_ids()
+                .iter()
+                .filter_map(|task_id| self.get(task_id))
+                .collect()
+        }
+        fn forget(&self, task_id: &str) {
+            self.manager().forget(task_id);
+        }
+        fn has_pending_sends(&self, task_id: &str) -> bool {
+            self.manager().has_pending_sends(task_id)
+        }
+        fn try_begin_send(&self, task_id: &str) -> bool {
+            self.manager().try_begin_send(task_id)
+        }
+        fn end_send(&self, task_id: &str) {
+            self.manager().end_send(task_id);
+        }
+    }
+
+    struct LifecycleDestruction {
+        lifecycle: crate::lifecycle::TaskLifecycle,
+        finished: std::sync::mpsc::Sender<()>,
+    }
+
+    impl crate::steering::DestructionPort for LifecycleDestruction {
+        fn supports_fenced_eviction(&self) -> bool {
+            true
+        }
+        fn destroy_resident_task(
+            &self,
+            task_id: &str,
+            cause: crate::lifecycle::DestroyCause,
+        ) -> Result<(), HostError> {
+            let result = self.lifecycle.destroy_resident_task(task_id, cause);
+            self.finished.send(()).expect("test watches destruction");
+            result.map_err(|error| HostError {
+                message: error.to_string(),
+            })
+        }
+        fn evict_managed_if_current(
+            &self,
+            task_id: &str,
+            handle: &Arc<dyn crate::manager::ManagedChildHandle>,
+        ) -> Result<(), HostError> {
+            let result = self.lifecycle.evict_managed_if_current(task_id, handle);
+            self.finished.send(()).expect("test watches destruction");
+            result.map_err(|error| HostError {
+                message: error.to_string(),
+            })
+        }
+    }
+
     struct FakeCloudBackend {
         socket_path: PathBuf,
         patch_content: Option<String>,
         released: Arc<Mutex<Vec<(String, String, bool)>>>,
         synced_in: Arc<Mutex<Vec<String>>>,
+        fail_release_once: AtomicBool,
+        release_gate: Option<(mpsc::Sender<()>, Mutex<mpsc::Receiver<()>>)>,
+    }
+
+    impl FakeCloudBackend {
+        fn workspace(&self, task_id: &str) -> PathBuf {
+            self.socket_path
+                .parent()
+                .expect("fake socket has a parent")
+                .join("remote-workspaces")
+                .join(task_id)
+        }
     }
 
     impl CloudPoolBackend for FakeCloudBackend {
@@ -1082,14 +1136,16 @@ mod tests {
             _local_cwd: &Path,
             task_id: &str,
         ) -> Result<SyncedWorkspace, String> {
+            let workspace = self.workspace(task_id);
+            std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
             self.synced_in
                 .lock()
-                .unwrap()
+                .expect("lock fake synced-in records")
                 .push(format!("{machine}:{task_id}"));
             Ok(SyncedWorkspace {
                 machine: machine.into(),
                 task_id: task_id.into(),
-                remote_cwd: format!("/home/daytona/.ferryx-cloud/workspaces/{task_id}"),
+                remote_cwd: workspace.to_string_lossy().into_owned(),
                 file_count: 1,
                 archive_bytes: 128,
             })
@@ -1100,13 +1156,17 @@ mod tests {
             machine: &str,
             task_id: &str,
             patch_out: &Path,
-            _cleanup: bool,
+            cleanup: bool,
         ) -> Result<SyncOutResult, String> {
+            if cleanup {
+                std::fs::remove_dir_all(self.workspace(task_id))
+                    .map_err(|error| error.to_string())?;
+            }
             if let Some(patch) = &self.patch_content {
                 if let Some(parent) = patch_out.parent() {
-                    std::fs::create_dir_all(parent).unwrap();
+                    std::fs::create_dir_all(parent).expect("create fake patch directory");
                 }
-                std::fs::write(patch_out, patch).unwrap();
+                std::fs::write(patch_out, patch).expect("write fake cloud patch");
                 Ok(SyncOutResult {
                     machine: machine.into(),
                     task_id: task_id.into(),
@@ -1128,29 +1188,43 @@ mod tests {
         }
 
         fn release(&self, machine: &str, lease_id: &str, delete: bool) -> Result<(), String> {
+            if self.fail_release_once.swap(false, Ordering::SeqCst) {
+                return Err("fixture release failed".into());
+            }
+            if let Some((entered, proceed)) = &self.release_gate {
+                entered.send(()).expect("release observer");
+                proceed
+                    .lock()
+                    .expect("lock release gate")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("release gate");
+            }
             self.released
                 .lock()
-                .unwrap()
+                .expect("lock fake release records")
                 .push((machine.into(), lease_id.into(), delete));
             Ok(())
         }
     }
 
     fn spawn_fake_host_server(socket_path: PathBuf) -> thread::JoinHandle<Vec<Value>> {
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let listener = UnixListener::bind(&socket_path).expect("bind fake cloud host socket");
         thread::spawn(move || {
             let mut received = Vec::new();
-            let (stream, _) = listener.accept().unwrap();
-            let mut writer = stream.try_clone().unwrap();
+            let (stream, _) = listener.accept().expect("accept cloud host connection");
+            let mut writer = stream.try_clone().expect("clone cloud host connection");
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             loop {
                 line.clear();
-                let n = reader.read_line(&mut line).unwrap_or(0);
+                let n = reader
+                    .read_line(&mut line)
+                    .expect("read cloud host command");
                 if n == 0 {
                     break;
                 }
-                let cmd: Value = serde_json::from_str(line.trim()).unwrap();
+                let cmd: Value =
+                    serde_json::from_str(line.trim()).expect("parse cloud host command");
                 let cmd_type = cmd["type"].as_str().unwrap_or("").to_string();
                 let id = cmd["id"].as_str().unwrap_or("").to_string();
                 received.push(cmd.clone());
@@ -1163,7 +1237,7 @@ mod tests {
                             "success": true,
                             "data": { "sessionId": "rpc-cloud-1" }
                         });
-                        writeln!(writer, "{resp}").unwrap();
+                        writeln!(writer, "{resp}").expect("send open-session response");
                     }
                     "prompt" => {
                         let resp = json!({
@@ -1173,7 +1247,7 @@ mod tests {
                             "success": true,
                             "data": { "disposition": "started" }
                         });
-                        writeln!(writer, "{resp}").unwrap();
+                        writeln!(writer, "{resp}").expect("send prompt response");
                         let msg = json!({
                             "type": "message_end",
                             "sessionId": "rpc-cloud-1",
@@ -1183,14 +1257,14 @@ mod tests {
                                 "stopReason": "stop"
                             }
                         });
-                        writeln!(writer, "{msg}").unwrap();
+                        writeln!(writer, "{msg}").expect("send assistant message");
                         let end = json!({
                             "type": "agent_end",
                             "sessionId": "rpc-cloud-1",
                             "willRetry": false,
                             "messages": []
                         });
-                        writeln!(writer, "{end}").unwrap();
+                        writeln!(writer, "{end}").expect("send agent-end event");
                     }
                     "close_session" => {
                         break;
@@ -1203,16 +1277,326 @@ mod tests {
     }
 
     #[test]
+    fn fake_host_reports_invalid_utf8_instead_of_treating_it_as_eof() {
+        let dir = tempfile::tempdir().expect("create fake host directory");
+        let socket_path = dir.path().join("invalid-command.sock");
+        let server = spawn_fake_host_server(socket_path.clone());
+        let mut client =
+            std::os::unix::net::UnixStream::connect(socket_path).expect("connect to fake host");
+        client
+            .write_all(&[0xff, b'\n'])
+            .expect("send invalid host command");
+        assert!(server.join().is_err());
+    }
+
+    struct CloudManagerFixture {
+        server: thread::JoinHandle<Vec<Value>>,
+        released: Arc<Mutex<Vec<(String, String, bool)>>>,
+        store: crate::store::TaskRecordStore,
+        manager: Arc<crate::manager::TaskManager>,
+        lifecycle: crate::lifecycle::TaskLifecycle,
+        destruction_done: mpsc::Receiver<()>,
+        task_id: String,
+        _dir: tempfile::TempDir,
+    }
+
+    fn start_cloud_manager(
+        release_gate: Option<(mpsc::Sender<()>, Mutex<mpsc::Receiver<()>>)>,
+    ) -> CloudManagerFixture {
+        use crate::manager::cloud_router::{CloudOffloadConfig, CloudOffloadMode};
+        use crate::manager::types::{
+            ManagedRunners, ManagerStartSpec, ResolvedChildPlan, StartResult, TaskManagerOptions,
+        };
+        use crate::store::{StateDirConfig, TaskRecordStore};
+        let dir = tempfile::tempdir().expect("create cloud manager fixture directory");
+        let socket_path = dir.path().join("manager-cloud.sock");
+        let server = spawn_fake_host_server(socket_path.clone());
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(CloudManagedRunner::new(
+            Arc::new(FakeCloudBackend {
+                socket_path,
+                patch_content: None,
+                released: released.clone(),
+                synced_in: Arc::new(Mutex::new(Vec::new())),
+                fail_release_once: AtomicBool::new(false),
+                release_gate,
+            }),
+            CloudRunnerSettings::default(),
+        ));
+        let store = TaskRecordStore::new(&StateDirConfig {
+            project_dir: dir.path().to_path_buf(),
+            task_state_dir: Some(dir.path().join("state")),
+        });
+        let registry = Arc::new(ManagerRegistry::default());
+        let lifecycle =
+            crate::lifecycle::create_task_lifecycle(crate::lifecycle::LifecycleDeps::new(
+                Arc::new(store.clone()),
+                registry.clone(),
+                crate::lifecycle::TaskSettings::resolve(&json!({}))
+                    .expect("valid test lifecycle settings"),
+            ));
+        let (finished, destruction_done) = std::sync::mpsc::channel();
+        let mut options = TaskManagerOptions::new(
+            store.clone(),
+            ManagedRunners {
+                in_process: runner.clone(),
+                process: runner.clone(),
+            },
+            Arc::new(|_| {
+                Ok(ResolvedChildPlan {
+                    model: "hms/deepseek-v4.1-flash-free".into(),
+                    ..ResolvedChildPlan::default()
+                })
+            }),
+            dir.path().to_string_lossy(),
+        );
+        options.cloud_runner = Some(runner);
+        options.cloud_available = Some(Arc::new(|| true));
+        options.cloud_offload = CloudOffloadConfig {
+            mode: CloudOffloadMode::Always,
+            ..CloudOffloadConfig::default()
+        };
+        options.destruction = Some(Arc::new(LifecycleDestruction {
+            lifecycle: lifecycle.clone(),
+            finished,
+        }));
+        let manager = Arc::new(crate::manager::TaskManager::new(options));
+        *registry.0.lock().expect("lock test manager registry") = Arc::downgrade(&manager);
+        let StartResult::Started(started) = manager.start(&ManagerStartSpec {
+            prompt: "run".into(),
+            parent_session_id: "parent-1".into(),
+            depth: 1,
+            ..ManagerStartSpec::default()
+        }) else {
+            panic!("cloud task should start");
+        };
+        CloudManagerFixture {
+            _dir: dir,
+            server,
+            released,
+            store,
+            manager,
+            lifecycle,
+            destruction_done,
+            task_id: started.task_id,
+        }
+    }
+
+    #[test]
+    fn manager_completion_evicts_cloud_session_and_releases_lease_immediately() {
+        use crate::state::{ResidencyState, TaskStatus};
+        let fixture = start_cloud_manager(None);
+        fixture
+            .destruction_done
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("completion must invoke lifecycle eviction");
+        let record = fixture
+            .manager
+            .wait_for(&fixture.task_id, None, Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(record.status, TaskStatus::Completed);
+        assert_eq!(record.residency_state, ResidencyState::Evicted);
+        assert_eq!(fixture.released.lock().unwrap().len(), 1);
+        assert!(
+            fixture
+                .manager
+                .get_resident_handle(&fixture.task_id)
+                .is_none()
+        );
+        let received = fixture.server.join().unwrap();
+        assert_eq!(
+            received
+                .iter()
+                .filter(|cmd| cmd["type"] == "close_session")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn completion_and_concurrent_eviction_close_cloud_once() {
+        let (entered, release_entered) = mpsc::channel();
+        let (proceed, release_gate) = mpsc::channel();
+        let fixture = start_cloud_manager(Some((entered, Mutex::new(release_gate))));
+        release_entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("completion eviction entered cloud lease release");
+        let before = fixture.store.load(&fixture.task_id).unwrap().unwrap();
+        assert_eq!(before.status, crate::state::TaskStatus::Running);
+        let outcome = fixture
+            .manager
+            .send_to_task(&crate::steering::SendInput::new(
+                &fixture.task_id,
+                "must not enter the removed workspace",
+            ));
+        assert!(outcome.is_err(), "input must be rejected during cleanup");
+        let after = fixture.store.load(&fixture.task_id).unwrap().unwrap();
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.notification.run_epoch, before.notification.run_epoch);
+        let (contended, second_contended) = mpsc::channel();
+        *fixture
+            .lifecycle
+            .context()
+            .on_destroy_contended
+            .lock()
+            .unwrap() = Some(Arc::new(move |_| {
+            contended.send(()).unwrap();
+        }));
+        let lifecycle = fixture.lifecycle.clone();
+        let task_id = fixture.task_id.clone();
+        let competing = thread::spawn(move || {
+            lifecycle.destroy_resident_task(&task_id, crate::lifecycle::DestroyCause::Evict)
+        });
+        second_contended
+            .recv_timeout(Duration::from_secs(5))
+            .expect("explicit eviction must overlap completion eviction");
+        proceed.send(()).unwrap();
+        fixture
+            .destruction_done
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        competing.join().unwrap().unwrap();
+        let done = fixture
+            .manager
+            .wait_for(&fixture.task_id, None, Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(done.status, crate::state::TaskStatus::Completed);
+        assert_eq!(fixture.released.lock().unwrap().len(), 1);
+        assert!(
+            fixture
+                .manager
+                .get_resident_handle(&fixture.task_id)
+                .is_none()
+        );
+        let received = fixture.server.join().unwrap();
+        assert_eq!(
+            received
+                .iter()
+                .filter(|cmd| cmd["type"] == "close_session")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn completion_and_concurrent_shutdown_close_cloud_once() {
+        let (entered, release_entered) = mpsc::channel();
+        let (proceed, release_gate) = mpsc::channel();
+        let fixture = start_cloud_manager(Some((entered, Mutex::new(release_gate))));
+        release_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let (contended, shutdown_contended) = mpsc::channel();
+        *fixture
+            .lifecycle
+            .context()
+            .on_destroy_contended
+            .lock()
+            .unwrap() = Some(Arc::new(move |_| {
+            contended.send(()).unwrap();
+        }));
+        let lifecycle = fixture.lifecycle.clone();
+        let shutdown = thread::spawn(move || {
+            lifecycle.suspend_on_session_shutdown(&crate::lifecycle::SuspendInput {
+                parent_session_id: "parent-1".into(),
+                own_task_id: None,
+                reason: "quit".into(),
+            })
+        });
+        shutdown_contended
+            .recv_timeout(Duration::from_secs(5))
+            .expect("shutdown must overlap completion eviction");
+        proceed.send(()).unwrap();
+        fixture
+            .destruction_done
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        shutdown.join().unwrap().unwrap();
+        let done = fixture
+            .manager
+            .wait_for(&fixture.task_id, None, Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(done.status, crate::state::TaskStatus::Completed);
+        assert_eq!(done.residency_state, crate::state::ResidencyState::Evicted);
+        assert_eq!(fixture.released.lock().unwrap().len(), 1);
+        let received = fixture.server.join().unwrap();
+        assert_eq!(
+            received
+                .iter()
+                .filter(|cmd| cmd["type"] == "close_session")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn lifecycle_reports_a_failed_cloud_release_and_can_retry_it() {
+        let dir = tempfile::tempdir().expect("create cloud fixture directory");
+        let socket_path = dir.path().join("cloud.sock");
+        let server = spawn_fake_host_server(socket_path.clone());
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let backend = Arc::new(FakeCloudBackend {
+            socket_path,
+            patch_content: None,
+            released: released.clone(),
+            synced_in: Arc::new(Mutex::new(Vec::new())),
+            fail_release_once: AtomicBool::new(true),
+            release_gate: None,
+        });
+        let runner = CloudManagedRunner::new(backend, CloudRunnerSettings::default());
+        let handle = runner
+            .start(&ManagedStartSpec {
+                task_id: "st_0000000a".into(),
+                cwd: dir.path().to_string_lossy().into_owned(),
+                state_dir: dir.path().join("state").to_string_lossy().into_owned(),
+                prompt: "run".into(),
+                ..ManagedStartSpec::default()
+            })
+            .expect("start cloud runner");
+        assert!(matches!(
+            handle.wait_for_outcome(),
+            RunnerOutcome::Completed { .. }
+        ));
+
+        assert!(crate::lifecycle::lifecycle_tests::evict_managed_handle(handle.clone()).is_err());
+        assert!(released.lock().unwrap().is_empty());
+        crate::lifecycle::lifecycle_tests::evict_managed_handle(handle)
+            .expect("retry cloud lease release");
+        assert_eq!(released.lock().unwrap().len(), 1);
+        server.join().expect("fake host exited");
+    }
+
+    #[test]
     fn cloud_runner_completes_turn_applies_patch_and_releases_lease() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
-        Command::new("git").args(["config", "user.email", "t@t"]).current_dir(&repo).status().unwrap();
-        Command::new("git").args(["config", "user.name", "t"]).current_dir(&repo).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@t"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
         std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(&repo).status().unwrap();
-        Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&repo).status().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
 
         let socket_path = dir.path().join("fake-cloud.sock");
         let server = spawn_fake_host_server(socket_path.clone());
@@ -1232,11 +1616,13 @@ diff --git a/hello.txt b/hello.txt
             patch_content: Some(patch.into()),
             released: Arc::clone(&released),
             synced_in: Arc::clone(&synced_in),
+            fail_release_once: AtomicBool::new(false),
+            release_gate: None,
         });
         let runner = CloudManagedRunner::new(backend, CloudRunnerSettings::default());
 
         let spec = ManagedStartSpec {
-            task_id: "st_cloud_1".into(),
+            task_id: "st_0000000b".into(),
             cwd: repo.to_string_lossy().into_owned(),
             state_dir: dir.path().join("state").to_string_lossy().into_owned(),
             prompt: "update hello.txt".into(),
@@ -1245,12 +1631,36 @@ diff --git a/hello.txt b/hello.txt
         };
 
         let handle = runner.start(&spec).unwrap();
+        let remote_workspace = dir.path().join("remote-workspaces").join(&spec.task_id);
+        assert!(
+            remote_workspace.is_dir(),
+            "the remote workspace starts present"
+        );
         let outcome = handle.wait_for_outcome();
+        assert!(
+            !remote_workspace.exists(),
+            "sync-out removes the remote workspace"
+        );
+        assert!(
+            handle
+                .follow_up("must not use the removed workspace")
+                .is_err(),
+            "a completed cloud handle must reject input before lifecycle eviction"
+        );
+        assert!(
+            released.lock().unwrap().is_empty(),
+            "a completed turn must not release a resident lease"
+        );
+        crate::lifecycle::lifecycle_tests::evict_managed_handle(handle.clone())
+            .expect("evict cloud handle");
         let received = server.join().unwrap();
 
         match outcome {
             RunnerOutcome::Completed { final_response } => {
-                assert!(final_response.contains("REMOTE_SOCKET_OK"), "unexpected text: {final_response}");
+                assert!(
+                    final_response.contains("REMOTE_SOCKET_OK"),
+                    "unexpected text: {final_response}"
+                );
                 assert!(
                     final_response.contains("[cloud sync] applied 1 file change(s)"),
                     "unexpected text: {final_response}"
@@ -1259,8 +1669,14 @@ diff --git a/hello.txt b/hello.txt
             other => panic!("expected Completed, got {other:?}"),
         }
 
-        assert_eq!(std::fs::read_to_string(repo.join("hello.txt")).unwrap(), "after-from-cloud\n");
-        assert_eq!(synced_in.lock().unwrap().as_slice(), &["fx-pool-test:st_cloud_1"]);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("hello.txt")).unwrap(),
+            "after-from-cloud\n"
+        );
+        assert_eq!(
+            synced_in.lock().unwrap().as_slice(),
+            &["fx-pool-test:st_0000000b"]
+        );
         assert_eq!(
             released.lock().unwrap().as_slice(),
             &[("fx-pool-test".into(), "lease-test-1".into(), false)]

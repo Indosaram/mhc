@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::runners::designated_fallback_profile::designated_fallback_profile;
 use crate::state::ResolvedModelRecord;
 
 /// `ChildRetryOverride`: a child's own same-model retry budget, merged over the engine defaults.
@@ -31,18 +32,20 @@ pub fn create_runtime_fallback_settings(
     fallback_models: Option<&[ResolvedModelRecord]>,
     retry: Option<&ChildRetryOverride>,
 ) -> RetryFallbackSettings {
-    let chains = match (selected_model, fallback_models) {
-        (Some(selected), Some(fallbacks)) if !fallbacks.is_empty() => BTreeMap::from([(
-            selected.to_string(),
-            fallbacks.iter().map(model_selector).collect(),
-        )]),
-        _ => BTreeMap::new(),
+    let (model_fallback, chains) = match selected_model {
+        Some(selected) => {
+            let selectors: Vec<String> = fallback_models
+                .unwrap_or(&[])
+                .iter()
+                .map(model_selector)
+                .collect();
+            let profile = designated_fallback_profile(selected, &selectors);
+            (profile.model_fallback, profile.fallback_chains)
+        }
+        None => (false, BTreeMap::new()),
     };
-    // `modelFallback` mirrors the chain's presence; the retry budget is merged over the engine
-    // defaults independently, so a child with a budget but no chain still carries it (upstream
-    // spreads `retryOverride` into `retry` regardless of `chained`).
     RetryFallbackSettings {
-        model_fallback: !chains.is_empty(),
+        model_fallback,
         chains,
         max_retries: retry.and_then(|retry| retry.max_retries),
         base_delay_ms: retry.and_then(|retry| retry.base_delay_ms),

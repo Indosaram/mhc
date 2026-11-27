@@ -1,119 +1,122 @@
+use model_core::latest_models::{
+    CLAUDE_FABLE, CLAUDE_HAIKU, CLAUDE_OPUS, CLAUDE_SONNET, GEMINI_PRO, GLM, GLM_FLASH, GPT_ASTRA,
+    GPT_LUNA_FAST, GPT_SOL, KIMI,
+};
 use std::sync::LazyLock;
 
 use crate::delegate_adapter::DelegateFallbackEntry;
 
 const ANTHROPIC: &[&str] = &[
+    "anthropic-subscription",
     "anthropic",
     "anthropic-api",
     "github-copilot",
     "opencode",
-    "vercel",
 ];
-const KIMI: &[&str] = &[
+const KIMI_PROVIDERS: &[&str] = &[
     "kimi-coding",
     "kimi-for-coding",
     "moonshotai",
     "opencode-go",
 ];
-const OPENAI: &[&str] = &[
-    "openai",
-    "quotio-openai",
-    "github-copilot",
-    "opencode",
-    "vercel",
-];
+const OPENAI: &[&str] = &["chatgpt-subscription", "openai"];
+const OPENAI_ZEN: &[&str] = &["chatgpt-subscription", "openai", "opencode"];
 
 fn rung(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
     crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
 
-/// Mirrors model-core `category-model-requirements.ts`; senpi's kimi rungs carry both the
-/// `kimi-coding` registry id and the `kimi-for-coding` models.dev id. Kimi rungs name the latest
-/// Kimi (`LATEST_MODEL_BY_FAMILY.kimi`, kimi-k3.1-pro since omo v5.1.52).
+/// senpi-task category routing: provider order prefers the subscription over a metered API.
 pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallbackEntry>)>> =
     LazyLock::new(|| {
         vec![
             (
                 "visual-engineering",
                 vec![
-                    rung(ANTHROPIC, "claude-opus-5", Some("max")),
-                    rung(KIMI, "kimi-k3.1-pro", Some("max")),
                     rung(
-                        &["zai-coding-plan", "opencode-go", "vercel"],
-                        "glm-5.2",
-                        Some("max"),
+                        &["google", "google-vertex", "opencode"],
+                        GEMINI_PRO,
+                        Some("low"),
                     ),
-                    rung(OPENAI, "gpt-5.6-sol", Some("medium")),
+                    rung(ANTHROPIC, CLAUDE_FABLE, Some("max")),
+                    rung(ANTHROPIC, "claude-fable-5-1", Some("max")),
+                    rung(ANTHROPIC, CLAUDE_OPUS, Some("max")),
+                    rung(KIMI_PROVIDERS, KIMI, Some("max")),
                 ],
             ),
             (
                 "architect",
-                vec![rung(ANTHROPIC, "claude-fable-5", Some("xhigh"))],
-            ),
-            (
-                "ultrabrain",
                 vec![
-                    rung(
-                        &["openai", "quotio-openai", "vercel"],
-                        "gpt-5.6-sol",
-                        Some("max"),
-                    ),
-                    rung(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-                    rung(
-                        &["openai", "opencode", "vercel"],
-                        "gpt-5.6-sol",
-                        Some("max"),
-                    ),
+                    rung(ANTHROPIC, CLAUDE_FABLE, Some("xhigh")),
+                    rung(ANTHROPIC, "claude-fable-5-1", Some("xhigh")),
                 ],
             ),
-            ("deep", vec![rung(OPENAI, "gpt-5.6-sol", Some("medium"))]),
+            ("ultrabrain", vec![rung(OPENAI_ZEN, GPT_ASTRA, Some("max"))]),
+            ("deep-low", vec![rung(OPENAI, GPT_SOL, Some("medium"))]),
+            ("deep-high", vec![rung(OPENAI_ZEN, GPT_ASTRA, Some("high"))]),
             (
                 "artistry",
                 vec![
+                    rung(ANTHROPIC, CLAUDE_FABLE, Some("max")),
                     rung(ANTHROPIC, "claude-fable-5-1", Some("max")),
-                    rung(ANTHROPIC, "claude-opus-5-5", Some("max")),
-                    rung(KIMI, "kimi-k3.1-pro", Some("max")),
+                    rung(ANTHROPIC, CLAUDE_OPUS, Some("max")),
+                    rung(KIMI_PROVIDERS, KIMI, Some("max")),
                 ],
             ),
             (
                 "quick",
                 vec![
+                    rung(OPENAI, GPT_LUNA_FAST, Some("low")),
                     rung(
-                        &["kimi-coding", "kimi-for-coding"],
-                        "kimi-for-coding-highspeed",
-                        None,
+                        &[
+                            "anthropic-subscription",
+                            "anthropic",
+                            "anthropic-api",
+                            "github-copilot",
+                        ],
+                        CLAUDE_HAIKU,
+                        Some("medium"),
                     ),
-                    rung(&["openai-codex"], "gpt-5.6-luna-fast", Some("low")),
-                    rung(&["deepseek"], "deepseek-v4-flash", Some("off")),
+                    rung(&["deepseek"], "deepseek-flash", Some("off")),
                     rung(
                         &[
                             "qwen-token-plan",
                             "alibaba-token-plan",
                             "bailian-coding-plan",
-                            "vercel",
                         ],
                         "qwen3.6-flash",
                         Some("low"),
                     ),
-                    rung(&["opencode-go", "vercel"], "minimax-m3", Some("max")),
-                    rung(&["opencode-go", "vercel"], "minimax-m2.7", Some("max")),
+                    rung(&["opencode-go"], "minimax-m3", None),
+                    rung(&["opencode-go"], "minimax-m2.7", None),
                     rung(&["xai"], "grok-4.20-0309-non-reasoning", None),
-                    rung(
-                        &["anthropic", "anthropic-api", "github-copilot", "vercel"],
-                        "claude-haiku-4-5",
-                        Some("off"),
-                    ),
+                    rung(&["zai", "zai-coding-cn"], GLM_FLASH, Some("low")),
+                    rung(&["xiaomi"], "mimo-v2.6-flash", Some("low")),
                 ],
             ),
             (
                 "unspecified-low",
                 vec![
+                    rung(ANTHROPIC, CLAUDE_SONNET, Some("medium")),
+                    rung(&["xiaomi", "opencode-go"], "mimo-v2.6-pro", Some("high")),
                     rung(
-                        &["xai", "github-copilot", "opencode", "vercel"],
-                        "grok-4.6",
+                        &["xai", "github-copilot", "opencode-go"],
+                        "grok-4.7",
                         Some("xhigh"),
                     ),
-                    rung(OPENAI, "gpt-5.6-terra", Some("high")),
+                    rung(&["zai", "zai-coding-cn", "opencode-go"], GLM, Some("high")),
+                    rung(OPENAI, GPT_SOL, Some("medium")),
+                    rung(OPENAI, "gpt-6.1-sol", Some("medium")),
+                    rung(
+                        &[
+                            "chatgpt-subscription",
+                            "openai",
+                            "github-copilot",
+                            "opencode",
+                        ],
+                        "gpt-5.6-sol",
+                        Some("medium"),
+                    ),
                     rung(ANTHROPIC, "claude-sonnet-5", Some("low")),
                     rung(
                         &[
@@ -123,38 +126,30 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
                             "alibaba-token-plan-cn",
                         ],
                         "qwen3.8-max-preview",
-                        Some("max"),
+                        Some("high"),
                     ),
-                    rung(
-                        &["deepseek", "opencode-go", "vercel"],
-                        "deepseek-v4-pro",
-                        Some("max"),
-                    ),
-                    rung(
-                        &["xiaomi", "opencode-go", "vercel"],
-                        "mimo-v2.5-pro",
-                        Some("max"),
-                    ),
+                    rung(&["deepseek", "opencode-go"], "deepseek-v4-pro", Some("max")),
+                    rung(&["xiaomi", "opencode-go"], "mimo-v2.5-pro", Some("high")),
                 ],
             ),
             (
                 "unspecified-high",
                 vec![
-                    rung(KIMI, "kimi-k3.1-pro", Some("max")),
-                    rung(ANTHROPIC, "claude-opus-5", Some("xhigh")),
-                    rung(OPENAI, "gpt-5.6-sol", Some("high")),
+                    rung(ANTHROPIC, CLAUDE_OPUS, Some("medium")),
+                    rung(&["zai", "zai-coding-cn", "opencode-go"], GLM, Some("max")),
+                    rung(KIMI_PROVIDERS, KIMI, Some("max")),
                 ],
             ),
             (
                 "writing",
                 vec![
-                    rung(KIMI, "kimi-k3.1-pro", Some("low")),
-                    rung(ANTHROPIC, "claude-opus-5", Some("low")),
                     rung(
-                        &["google", "github-copilot", "opencode", "vercel"],
-                        "gemini-3.1-pro",
-                        None,
+                        &["google", "google-vertex", "opencode"],
+                        GEMINI_PRO,
+                        Some("low"),
                     ),
+                    rung(ANTHROPIC, CLAUDE_OPUS, Some("low")),
+                    rung(ANTHROPIC, "claude-opus-4-6", Some("max")),
                 ],
             ),
         ]

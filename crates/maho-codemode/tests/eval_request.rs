@@ -140,3 +140,44 @@ fn ignores_wrong_optional_field_types() {
     assert!(input.timeout.is_none());
     assert!(input.reset.is_none());
 }
+
+#[test]
+fn omitted_language_is_inferred_and_noted_while_invalid_language_fails() {
+    use maho_codemode::tool::eval_language_inference::{
+        EvalLanguageInferenceBasis, eval_language_inferred_note,
+    };
+
+    assert_eq!(
+        eval_run_field_required_message(EvalRunField::Language, &[EvalLanguage::Js]),
+        "eval run requires language: one of \"js\""
+    );
+    assert_eq!(
+        eval_run_field_required_message(EvalRunField::Code, &[EvalLanguage::Js]),
+        "eval run requires code: the cell body to execute, verbatim"
+    );
+
+    let EvalToolRequest::Run(inferred) =
+        parse_eval_request(&json!({"code": "const x = 1; return x;", "summary": "inferred"}))
+            .unwrap()
+    else {
+        panic!("expected inferred run");
+    };
+    assert_eq!(inferred.language, EvalLanguage::Js);
+    assert_eq!(
+        inferred.language_inferred,
+        Some(EvalLanguageInferenceBasis::OnlyEnabledLanguage)
+    );
+    assert!(
+        eval_language_inferred_note(
+            EvalLanguage::Js,
+            EvalLanguageInferenceBasis::OnlyEnabledLanguage,
+        )
+        .contains(": js (")
+    );
+
+    let err =
+        parse_eval_request(&json!({"language": "", "code": "const x = 1;", "summary": "bad"}))
+            .unwrap_err()
+            .to_string();
+    assert!(err.contains("Unsupported eval language"), "{err}");
+}

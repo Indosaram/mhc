@@ -176,7 +176,8 @@ async fn serve(
         capabilities,
     )
     .await
-    .with_tool_runtime(tool_runtime);
+    .with_tool_runtime(tool_runtime)
+    .with_retry_fallback_command(true);
     handler.last_abort_source = last_abort_source;
     // senpi rpc-mode.ts `ClientAdmissions.sealQueuedOnReplace` / `EffectLedger.sealOnReplace`: the stdio session's
     // ledgers are keyed by its durable id, read as the outgoing session is replaced.

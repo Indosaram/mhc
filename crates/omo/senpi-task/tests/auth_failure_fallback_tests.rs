@@ -73,8 +73,7 @@ fn missing_key_skips_api_key_sibling_and_runs_subscription_parent() {
     let luna = rung("openai", "gpt-6-luna-fast");
     let sibling = rung("openai", "another");
     let parent = rung("chatgpt-subscription", "gpt-6-luna-fast");
-    let mut rec = record(&luna, &[sibling.clone(), parent.clone()]);
-    rec.parent_model = Some(parent.display.clone());
+    let rec = record(&luna, &[sibling.clone(), parent.clone()]);
     let missing =
         "No API key found for openai.\n\nUse /login to log into a provider via OAuth or API key.";
     assert!(is_credential_failure(missing, Some("gpt-6-luna-fast")));

@@ -19,6 +19,7 @@ use std::{
 /// What the connection factory hands dispatch (upstream `MaterializeMcpTransportOptions`).
 pub struct NegotiationInputs<'a> {
     pub spec: &'a McpTransportSpec,
+    pub skill_sse: bool,
     pub logger: Arc<Mutex<McpLogger>>,
     pub auth: Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
     pub ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
@@ -71,14 +72,19 @@ where
         let fetch = |_url: url::Url, request: ProbeHttpRequest| {
             modern_http_fetch(inputs.spec, inputs.auth.as_ref(), request, timeout, true)
         };
-        let outcome = probe_http_era(url, fetch, &options).await?;
+        // An explicit skill SSE URL is an EventSource, not a streamable HTTP discovery endpoint.
+        let outcome = if inputs.skill_sse {
+            None
+        } else {
+            Some(probe_http_era(url, fetch, &options).await?)
+        };
         match outcome {
-            EraOutcome::Modern {
+            Some(EraOutcome::Modern {
                 version,
                 discovery,
                 error,
                 ..
-            } => {
+            }) => {
                 let Some(discovery) = discovery else {
                     let detail = error.map_or_else(String::new, |error| error.message);
                     return Err(connect_error(
@@ -116,13 +122,13 @@ where
                 log_version(&inputs.logger, server_name, Some(&version), None);
                 return Ok(client);
             }
-            EraOutcome::Indeterminate {
+            Some(EraOutcome::Indeterminate {
                 reason,
                 action,
                 modern_era,
                 cause,
                 ..
-            } if modern_era || reason == "invalid-discovery" => {
+            }) if modern_era || reason == "invalid-discovery" => {
                 return Err(connect_error(
                     server_name,
                     format!("MCP server {server_name}: {reason}. {action}"),

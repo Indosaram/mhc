@@ -1,10 +1,18 @@
 use crate::errors::SdkErrorKind;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Only a committed login or an explicit block reset is an account remedy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountsChangedRemedy {
+    Login,
+    Reset,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderAccountEvent {
     AccountsChanged {
         provider: String,
+        remedy: Option<AccountsChangedRemedy>,
     },
     Failover {
         provider: String,
@@ -63,8 +71,12 @@ pub fn provider_account_events() -> &'static Arc<ProviderAccountEvents> {
     EVENTS.get_or_init(|| Arc::new(ProviderAccountEvents::default()))
 }
 pub fn emit_provider_accounts_changed(provider: &str) {
+    emit_accounts_changed(provider, None);
+}
+pub fn emit_accounts_changed(provider: &str, remedy: Option<AccountsChangedRemedy>) {
     provider_account_events().emit(ProviderAccountEvent::AccountsChanged {
         provider: provider.into(),
+        remedy,
     });
     maho_core::provider_account_events::emit_provider_accounts_changed(provider);
 }
@@ -110,6 +122,7 @@ mod tests {
         let duplicate = events.subscribe(listener);
         let changed = ProviderAccountEvent::AccountsChanged {
             provider: "provider".into(),
+            remedy: None,
         };
         events.emit(changed.clone());
         assert_eq!(
@@ -181,6 +194,31 @@ mod tests {
                     to: "b".into(),
                     reason: "rate_limit".into()
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn remedy_is_delivered_only_for_explicit_login_and_reset_changes() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink = observed.clone();
+        let unsubscribe = provider_account_events().subscribe(Arc::new(move |event| {
+            if let ProviderAccountEvent::AccountsChanged { provider, remedy } = event
+                && provider == "remedy-fixture"
+            {
+                sink.lock().expect("observed").push(*remedy);
+            }
+        }));
+        emit_provider_accounts_changed("remedy-fixture");
+        emit_accounts_changed("remedy-fixture", Some(AccountsChangedRemedy::Login));
+        emit_accounts_changed("remedy-fixture", Some(AccountsChangedRemedy::Reset));
+        unsubscribe();
+        assert_eq!(
+            observed.lock().expect("observed").as_slice(),
+            [
+                None,
+                Some(AccountsChangedRemedy::Login),
+                Some(AccountsChangedRemedy::Reset)
             ]
         );
     }

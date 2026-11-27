@@ -50,11 +50,18 @@ pub enum TimeoutAction {
     Kill,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TerminalNotify {
     Wake,
     NextTurn,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KillGuardSetting {
+    On,
     Off,
 }
 
@@ -86,6 +93,8 @@ pub struct TerminalSettings {
     pub monitor_runaway_lines_per_minute: Option<i64>,
     /// Default 5 (runaway guard: consecutive flood minutes before a persistent command monitor is paused, max 1440).
     pub monitor_runaway_minutes: Option<i64>,
+    /// Default `"on"` (refuse agent signals that match everything or hit protected processes); read from user settings only.
+    pub kill_guard: Option<KillGuardSetting>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

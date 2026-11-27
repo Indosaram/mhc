@@ -14,6 +14,12 @@ pub trait LifecycleBindingHost: Send + Sync {
     /// `SessionLifecycleController::mark_interrupted_from_custody(delivered)` so consumed work holds the reopened
     /// session for a person (senpi#4204). `delivered` reports whether the transcript already holds a ticket's delivery.
     fn mark_interrupted_from_custody(&self, _delivered: &dyn Fn(&str) -> bool) {}
+    /// Current run id if this process already started a run during extension binding (`senpi#7033`).
+    fn run_started_here(&self) -> Option<String> {
+        None
+    }
+    /// Install interrupted-run hold if restoration discovered an interruption after initial bind.
+    fn hold_interrupted_run(&self) {}
 }
 pub struct LifecycleSessionBinding {
     pub session_id: String,
@@ -218,6 +224,7 @@ impl LifecycleSessionBinding {
             });
         self.host
             .mark_interrupted_from_custody(&|ticket| delivered.contains(ticket));
+        let live_run = self.host.run_started_here();
         self.session.with_session_manager_mut(|manager| {
             let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let mut custody = std::collections::BTreeMap::new();
@@ -227,6 +234,7 @@ impl LifecycleSessionBinding {
             }
             for record in custody.values() {
                 let Some(ticket) = record["ticketId"].as_str() else { continue };
+                if let Some(live) = live_run.as_deref() && record["runId"].as_str() == Some(live) { continue; }
                 if !matches!(record["state"].as_str(), Some("open" | "queued" | "consumed")) { continue; }
                 let transcript = entries.iter().find(|entry| entry["type"] == "custom_message" && entry.pointer("/details/ticketId").and_then(Value::as_str) == Some(ticket));
                 if record["state"] != "consumed" && transcript.is_none() { continue; }
@@ -237,6 +245,7 @@ impl LifecycleSessionBinding {
             }
         });
         self.restored = true;
+        self.host.hold_interrupted_run();
         self.host.event("restore_complete", Value::Null);
         let queued = self.session.with_session_manager(|manager| {
             let mut records = std::collections::BTreeMap::new();

@@ -232,6 +232,7 @@ fn fixture(configuration: &str) -> Fixture {
         configuration: configuration.into(),
         context_required: false,
         session_id: None,
+        serves_session: None,
         is_current: {
             let current = Arc::clone(&current);
             Arc::new(move || current.load(Ordering::SeqCst))

@@ -9,6 +9,7 @@ mod doctor_receipts_tests;
 pub mod dream;
 pub mod dream_staging;
 pub mod facts;
+pub mod facts_failure_cause;
 pub mod facts_status;
 pub mod init;
 pub mod memfs;

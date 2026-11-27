@@ -406,7 +406,13 @@ async fn wake_runs_the_drain_and_answers_its_admissions() {
         .await,
         json!({"admitted": [{"delivery_id": "d2", "kind": "started"}]})
     );
-    let last = lock(&fixture.wakes).last().cloned().expect("a wake ran");
+    // The endpoint's startup `inbox` passes run asynchronously and may be recorded after the command.
+    let last = lock(&fixture.wakes)
+        .iter()
+        .rev()
+        .find(|wake| wake["reason"] != "inbox")
+        .cloned()
+        .expect("a requested wake ran");
     assert_eq!(last["reason"], "command");
     assert_eq!(last["delivery_ids"], json!(["d2"]));
     fixture.endpoint.dispose().await;

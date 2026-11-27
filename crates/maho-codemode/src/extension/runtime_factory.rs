@@ -1,7 +1,18 @@
 use maho_ext_api::{
-    AgentToolResult, ExecuteToolError, ExecuteToolOptions, ExtensionApi, ExtensionFailure,
-    JsonValue, ToolContext,
+    AgentToolResult, ExecuteToolError, ExecuteToolErrorCode, ExecuteToolOptions, ExtensionApi,
+    ExtensionFailure, JsonValue, ToolContext,
 };
+
+pub const TOP_LEVEL_ONLY_TOOL_REFUSALS: &[(&str, &str)] = &[(
+    "show_html_page",
+    "show_html_page cannot run inside eval: a page shown from a cell never reaches the reader. Build the HTML in the cell if you like, then call show_html_page directly as its own tool call.",
+)];
+
+pub fn top_level_only_tool_refusal(tool_name: &str) -> Option<&'static str> {
+    TOP_LEVEL_ONLY_TOOL_REFUSALS
+        .iter()
+        .find_map(|(name, message)| (*name == tool_name).then_some(*message))
+}
 
 pub async fn execute_tool(
     api: &ExtensionApi,
@@ -9,6 +20,14 @@ pub async fn execute_tool(
     params: JsonValue,
     mut options: ExecuteToolOptions,
 ) -> Result<AgentToolResult, ExecuteToolError> {
+    if let Some(refusal) = top_level_only_tool_refusal(tool_name) {
+        return Err(ExecuteToolError {
+            code: ExecuteToolErrorCode::Blocked,
+            tool_name: tool_name.to_owned(),
+            message: refusal.to_owned(),
+            active_tools: Vec::new(),
+        });
+    }
     options.activate_inactive_tool = Some(true);
     api.execute_tool(tool_name, params, options).await
 }
@@ -20,7 +39,9 @@ pub fn is_tool_available(
 ) -> Result<bool, ExtensionFailure> {
     match active_tools {
         Some(tools) => Ok(tools.iter().any(|tool| tool == name)),
-        None => Ok(api.get_active_tools()?.iter().any(|tool| tool == name)),
+        None => super::reachable_tools::try_reachable_tool_names(api)
+            .map(|names| names.contains(name))
+            .map_err(ExtensionFailure::new),
     }
 }
 
@@ -63,6 +84,7 @@ impl crate::bridges::output_bridge::OutputExecuteTool for RuntimeExecuteTool {
 pub struct RuntimePreparationOptions<'a> {
     pub cwd: &'a std::path::Path,
     pub home_dir: &'a std::path::Path,
+    pub agent_dir: Option<&'a std::path::Path>,
     pub environment: &'a crate::config::settings::Environment,
     pub event: &'a JsonValue,
     pub session_file: Option<&'a std::path::Path>,
@@ -72,6 +94,7 @@ pub struct RuntimePreparationOptions<'a> {
 pub struct PreparedRuntime {
     pub session_id: String,
     pub cwd: std::path::PathBuf,
+    pub agent_dir: std::path::PathBuf,
     pub parallel_pool_width: u64,
     pub enabled_languages: crate::config::settings::Languages,
     pub runtimes: Vec<(
@@ -109,6 +132,7 @@ pub async fn prepare_runtime(
     Ok(PreparedRuntime {
         session_id: session_id_from(options.event),
         cwd: options.cwd.into(),
+        agent_dir: options.agent_dir.unwrap_or(options.home_dir).to_path_buf(),
         parallel_pool_width,
         enabled_languages,
         runtimes,
@@ -168,14 +192,28 @@ where
         .active_tools
         .iter()
         .any(|name| name == &prepared.settings.task_tools.task);
+    let kill_guard = maho_core::kill_guard::host::read_kill_guard_setting(
+        &prepared.cwd,
+        Some(&prepared.agent_dir),
+    ) == maho_core::kill_guard::host::KillGuardSetting::On;
+    let mut session_env = host.session_env;
+    if kill_guard {
+        let base_env: std::collections::BTreeMap<String, String> =
+            maho_ext_api::process_env::vars().into_iter().collect();
+        session_env
+            .extend(maho_core::kill_guard::runtime::active_kill_guard_environment(&base_env));
+    }
     let manager = create(
         super::session_manager::CreateCodemodeSessionManagerOptions {
             session_id: prepared.session_id.clone(),
+            owner_session_id: None,
             cwd: prepared.cwd.clone(),
             settings: prepared.settings.clone(),
             local_roots: None,
             artifacts_dir: Some(prepared.artifacts.dir.clone()),
-            session_env: Some(host.session_env),
+            session_env: Some(session_env),
+            inherited_env: None,
+            kill_guard,
             executor: host.executor.clone(),
             list_tools: host.list_tools,
             complete: host.complete,
@@ -206,24 +244,23 @@ pub fn runtime_host_from_api(
         api: api.clone(),
         active_tools: active_tools.clone(),
     });
+    let api_for_list = api.clone();
     let list_tools = std::sync::Arc::new(move || {
-        api.get_all_tools()
+        api_for_list
+            .get_all_tools()
             .map(|tools| {
                 tools
                     .into_iter()
-                    .map(|tool| crate::bridges::schema_bridge::EvalSchemaToolInfo {
-                        name: tool.name,
-                        description: Some(tool.description),
-                        parameters: Some(tool.parameters),
-                        kernel_prelude: tool.kernel_prelude,
-                    })
+                    .map(crate::bridges::schema_bridge::EvalSchemaToolInfo::from)
                     .collect()
             })
             .map_err(|error| error.to_string())
     });
     Ok(RuntimeHostOptions {
         executor,
-        active_tools,
+        active_tools: super::reachable_tools::reachable_tool_names(api.as_ref())
+            .into_iter()
+            .collect(),
         list_tools: Some(list_tools),
         complete,
         session_env: crate::kernels::session_env::session_environment_from_context(context),

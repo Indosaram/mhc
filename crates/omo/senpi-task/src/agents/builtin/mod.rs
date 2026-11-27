@@ -2,6 +2,9 @@
 
 mod prompts;
 
+use model_core::latest_models::{
+    CLAUDE_FABLE, CLAUDE_HAIKU, CLAUDE_OPUS, GEMINI_PRO, GPT_ASTRA, GPT_LUNA_FAST, KIMI, KIMI_K3,
+};
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -122,12 +125,12 @@ fn fast_search_chain() -> Vec<DelegateFallbackEntry> {
         ),
         entry(
             &["chatgpt-subscription", "openai"],
-            "gpt-6-luna-fast",
+            GPT_LUNA_FAST,
             Some("low"),
         ),
         entry(
             &["anthropic-subscription", "anthropic", "github-copilot"],
-            "claude-haiku-5-5",
+            CLAUDE_HAIKU,
             Some("medium"),
         ),
         entry(&["deepseek"], "deepseek-flash", Some("max")),
@@ -155,20 +158,25 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
             (
                 "plan-consultant",
                 vec![
+                    entry(&claude, CLAUDE_FABLE, Some("max")),
                     entry(&claude, "claude-fable-5-1", Some("max")),
-                    entry(&claude, "claude-opus-5-5", Some("max")),
+                    entry(&claude, CLAUDE_OPUS, Some("max")),
                     entry(
                         &["opencode-go", "kimi-for-coding", "moonshotai"],
-                        "kimi-k3.1-pro",
+                        KIMI,
                         Some("max"),
                     ),
-                    // OpenCode Zen does not serve K3.1, so its lane keeps the previous Kimi (`kimiK3`).
-                    entry(&["opencode"], "kimi-k3", Some("max")),
+                    entry(&["opencode"], KIMI_K3, Some("max")),
                 ],
             ),
             (
                 "plan-reviewer",
                 vec![
+                    entry(
+                        &["chatgpt-subscription", "openai"],
+                        GPT_ASTRA,
+                        Some("xhigh"),
+                    ),
                     entry(
                         &["chatgpt-subscription", "openai"],
                         "gpt-6-astra",
@@ -177,14 +185,18 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
                     entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                     entry(
                         &["chatgpt-subscription", "openai", "opencode"],
+                        GPT_ASTRA,
+                        Some("high"),
+                    ),
+                    entry(
+                        &["chatgpt-subscription", "openai", "opencode"],
                         "gpt-6-astra",
                         Some("high"),
                     ),
-                    entry(&["github-copilot"], "gpt-6-astra", Some("high")),
-                    entry(&claude, "claude-opus-5-5", Some("max")),
+                    entry(&claude, CLAUDE_OPUS, Some("max")),
                     entry(
                         &["google", "google-vertex", "opencode"],
-                        "gemini-4-argon",
+                        GEMINI_PRO,
                         Some("high"),
                     ),
                     entry(

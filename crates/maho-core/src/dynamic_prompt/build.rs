@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 
-use super::identity::build_identity_section;
-use super::intent_gate::build_intent_gate;
-use super::policies::build_policies_section;
-use super::style::build_style_section;
+use super::handoff::{HandoffSectionOptions, build_handoff_section};
+use super::identity::build_identity_section_for_sections;
+use super::intent_gate::build_intent_gate_with_options;
+use super::policies::build_policies_section_with_options;
+use super::style::build_style_section_for_sections;
 use super::tool_categorization::categorize_tools;
-use super::tool_section::build_tool_section;
-use super::types::{AvailableTool, PromptSurface};
-use super::verification::build_verification_section;
-use super::working_task::build_working_task_section;
+use super::tool_section::build_tool_section_for_sections;
+use super::types::{AvailableTool, PromptSurface, SharedSections};
+use super::verification::build_verification_section_for_sections;
+use super::working_task::build_working_task_section_with_options;
 use super::workstation::{
     BuildWorkstationSectionOptions, WorkstationDialect, build_workstation_section,
 };
@@ -39,6 +40,10 @@ pub struct DynamicPromptCoreContext {
     pub tools: Vec<AvailableTool>,
     pub tool_section: String,
     pub surface: PromptSurface,
+    /// The wording the shared section builders render for this prompt (senpi#5665).
+    pub shared_sections: SharedSections,
+    /// A provider-native search tool is available even without the builtin `web_search` (senpi#2935).
+    pub native_search_available: bool,
 }
 
 pub type PromptPartsObserver<'a> = &'a dyn Fn(&[DynamicSystemPromptPart]);
@@ -51,6 +56,11 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub selected_tools: Vec<String>,
     pub tool_snippets: HashMap<String, String>,
     pub prompt_guidelines: Vec<String>,
+    /// Tool contributions for `SharedSections::Full`; without it the full render uses the snippets above.
+    pub full_tool_prompt: Option<FullToolPrompt>,
+    /// Wording of the shared section builders; a prompt preset declares it (senpi#5665).
+    pub shared_sections: SharedSections,
+    pub native_search_available: bool,
     pub context_files: Vec<ContextFile>,
     pub skills: Vec<Skill>,
     pub tuning_section: Option<String>,
@@ -67,6 +77,13 @@ fn part(name: &str, source: &str, text: String) -> DynamicSystemPromptPart {
         source: Some(source.to_owned()),
         text,
     }
+}
+
+/// Tool snippets and guidelines as the pre-diet prompt listed them, rendered for `SharedSections::Full`.
+#[derive(Debug, Clone, Default)]
+pub struct FullToolPrompt {
+    pub tool_snippets: HashMap<String, String>,
+    pub prompt_guidelines: Vec<String>,
 }
 
 pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>) -> String {
@@ -92,36 +109,60 @@ pub fn build_dynamic_system_prompt_parts(
         return parts;
     }
     let tools = categorize_tools(&options.selected_tools);
+    let shared_sections = options.shared_sections;
+    let tool_prompt = if shared_sections == SharedSections::Full {
+        options.full_tool_prompt.as_ref()
+    } else {
+        None
+    };
 
-    let tool_section =
-        build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
+    let tool_section = build_tool_section_for_sections(
+        &tools,
+        tool_prompt
+            .map(|p| &p.tool_snippets)
+            .unwrap_or(&options.tool_snippets),
+        tool_prompt
+            .map(|p| &p.prompt_guidelines)
+            .unwrap_or(&options.prompt_guidelines),
+        shared_sections,
+    );
 
     let sections: Vec<String> = match options.core_prompt {
         Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext {
             tools: tools.clone(),
             tool_section: tool_section.clone(),
             surface: options.surface,
+            shared_sections,
+            native_search_available: options.native_search_available,
         })],
-        None => vec![
-            build_identity_section(),
-            String::new(),
-            build_intent_gate(&tools, options.surface),
-            String::new(),
-            build_working_task_section(),
-            String::new(),
-            build_verification_section(options.surface),
-            String::new(),
-            tool_section.clone(),
-            String::new(),
-            build_policies_section(),
-            String::new(),
-            super::handoff::build_handoff_section(super::handoff::HandoffSectionOptions {
-                surface: options.surface,
-                ..Default::default()
-            }),
-            String::new(),
-            build_style_section(options.surface),
-        ],
+        None => {
+            let mut list = vec![
+                build_identity_section_for_sections(shared_sections),
+                String::new(),
+                build_intent_gate_with_options(&tools, options.surface, None, shared_sections),
+                String::new(),
+                build_working_task_section_with_options(None, shared_sections),
+                String::new(),
+                build_verification_section_for_sections(options.surface, shared_sections),
+                String::new(),
+            ];
+            if !tool_section.is_empty() {
+                list.push(tool_section.clone());
+                list.push(String::new());
+            }
+            list.extend([
+                build_policies_section_with_options(None, shared_sections),
+                String::new(),
+                build_handoff_section(HandoffSectionOptions {
+                    surface: options.surface,
+                    shared_sections,
+                    ..Default::default()
+                }),
+                String::new(),
+                build_style_section_for_sections(options.surface, shared_sections),
+            ]);
+            list
+        }
     };
 
     let mut parts = vec![part("core", "dynamic-prompt", sections.join("\n"))];
@@ -206,6 +247,9 @@ mod tests {
             selected_tools: vec!["read".to_string()],
             tool_snippets,
             prompt_guidelines: Vec::new(),
+            full_tool_prompt: None,
+            shared_sections: Default::default(),
+            native_search_available: false,
             context_files: Vec::new(),
             skills: Vec::new(),
             tuning_section: None,
@@ -261,7 +305,7 @@ mod tests {
         let working = prompt.find("## Working the Task").expect("working");
         let verification = prompt.find("## Verification").expect("verification");
         let tools = prompt.find("## Available Tools").expect("tools");
-        let policies = prompt.find("## Policies").expect("policies");
+        let policies = prompt.find("## Hard Limits").expect("hard limits");
         let style = prompt.find("## Style").expect("style");
         let workstation = prompt.find("<workstation>").expect("workstation");
         assert!(
@@ -385,10 +429,17 @@ mod tests {
     #[test]
     fn policies_are_language_agnostic_and_style_names_the_smallest_change() {
         let prompt = build_dynamic_system_prompt(&options());
-        assert!(prompt.contains("Hard Blocks"));
+        assert!(prompt.contains("Hard Limits"));
         assert!(!prompt.contains("as any"));
         assert!(!prompt.contains("ts-ignore"));
-        assert!(prompt.contains("Smallest correct change"));
+        assert!(prompt.contains("Targeted edit over file rewrite"));
+
+        let full_prompt = build_dynamic_system_prompt(&BuildDynamicSystemPromptOptions {
+            shared_sections: SharedSections::Full,
+            ..options()
+        });
+        assert!(full_prompt.contains("Hard Blocks"));
+        assert!(full_prompt.contains("Prefer a targeted edit"));
     }
 
     #[test]

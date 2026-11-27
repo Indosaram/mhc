@@ -4,6 +4,7 @@
 //! injects the core contract once per session, answers re-mentions with a short notice, re-arms on
 //! demand after compaction or a contract revision change, and adds the todo sizing reminder.
 
+mod advice;
 mod classify;
 mod engine;
 mod extension;
@@ -12,13 +13,15 @@ mod mask;
 mod mask_phrases;
 mod state;
 mod texts;
+mod variant;
 
+pub use advice::mask_keyword_advice;
 pub use classify::{
     Classification, ClassifyInput, KeywordSpan, Route, Stage, Suppression, classify,
     classify_with_session_role, has_visible_keyword, visible_keyword_spans,
 };
 pub use engine::{Engine, InputOutcome, InputRequest, TodoResultView};
-pub use extension::{DISABLE_FLAG, UltraworkExtension};
+pub use extension::{DISABLE_FLAG, UltraworkExtension, keyword_activation_allowed};
 pub use state::{SessionArming, Sessions};
 pub use texts::{CORE_CONTRACT, DIRECTIVE_MESSAGE_TYPE, REMINDER_MESSAGE_TYPE, mass_block};
 
@@ -46,10 +49,9 @@ pub fn mark_compact_rearm(session: &str) {
     GLOBAL_SESSIONS.mark_compact_rearm(session);
 }
 
-/// Identifier of the shipped contract text (FNV-1a over its bytes).
+/// Identifier of the shipped contract set (FNV-1a over both whole texts).
 pub fn contract_revision() -> u64 {
-    const fn fnv(bytes: &[u8]) -> u64 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    const fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
         let mut i = 0;
         while i < bytes.len() {
             hash ^= bytes[i] as u64;
@@ -58,6 +60,11 @@ pub fn contract_revision() -> u64 {
         }
         hash
     }
-    const REVISION: u64 = fnv(CORE_CONTRACT.as_bytes());
+    const DEFAULT_HASH: u64 = fnv(0xcbf2_9ce4_8422_2325, CORE_CONTRACT.as_bytes());
+    // Separate the two UTF-8 inputs with a byte neither can contain.
+    const REVISION: u64 = fnv(
+        fnv(DEFAULT_HASH, &[0xff]),
+        variant::Variant::Gpt.contract().as_bytes(),
+    );
     REVISION
 }

@@ -24,7 +24,7 @@ use crate::dag::types::{
 };
 
 const LOCK_RETRY_MS: u64 = 10;
-const LOCK_WAIT_TIMEOUT_MS: i64 = 1_000;
+const LOCK_WAIT_TIMEOUT_MS: i64 = 30_000;
 const WINDOWS_CLEANUP_RETRIES: usize = 8;
 const WINDOWS_CLEANUP_RETRY_MS: u64 = 5;
 const READ_BUFFER_BYTES: usize = 64 * 1024;

@@ -32,8 +32,8 @@ use crate::rpc_types::{
     RPC_ERROR_SESSION_CLOSING, RPC_ERROR_TURN_ACTIVE,
 };
 use crate::session_release_interrupt::{
-    ReleasableSession, ReleaseDropped, ReleaseSettlePort, ReleaseWriteError, abort_and_settle,
-    take_queued_input,
+    ReleasableSession, ReleaseDropped, ReleaseSettlePort, ReleaseWriteError,
+    abort_and_settle_returning_deliveries, take_queued_input,
 };
 use async_trait::async_trait;
 use maho_core::session_manager::load_entries_from_file;
@@ -491,7 +491,10 @@ pub async fn release_session(
         if interrupted {
             first.session.admission_close(RELEASED_ADMISSION_CLOSED);
             dropped = take_queued_input(first.session.as_ref());
-            abort_and_settle(port, &command.session_id, &first.session).await;
+            let handed_back =
+                abort_and_settle_returning_deliveries(port, &command.session_id, &first.session)
+                    .await;
+            dropped.deliveries.extend(handed_back);
             // What the clear retired is on disk before `session_released` seals the file (senpi#3549).
             first.session.when_queue_clear_recorded().await;
         }

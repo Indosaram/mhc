@@ -178,12 +178,19 @@ pub struct EvaluationResult {
     pub action: EvaluationAction,
 }
 
-/// State transition details upon completing a reflection run.
+/// State transition details upon completing or promoting a reflection run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteTransition {
     pub state: ReservationState,
     pub finalize: Vec<CapturedConversation>,
     pub clear_pending_compaction: Vec<String>,
+    pub launch: Option<ReservedRun>,
+}
+
+/// Result of promoting a lone `pending.json` when no `active.lock` exists (`promote_transition`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromoteTransition {
+    pub state: ReservationState,
     pub launch: Option<ReservedRun>,
 }
 
@@ -486,6 +493,45 @@ pub fn complete_transition(
         clear_pending_compaction,
         launch,
     })
+}
+
+/// Promotes a lone `pending` run left behind when a release without promotion cleared `active.lock`
+/// (#12517, DESIGN.r2 4.1b), dropping it if the referenced journals no longer trigger it.
+pub fn promote_transition(
+    mut state: ReservationState,
+    journals: &BTreeMap<String, JournalSnapshot>,
+    config: &TriggerConfig,
+) -> PromoteTransition {
+    if state.active.is_some() || state.pending.is_none() {
+        return PromoteTransition {
+            state,
+            launch: None,
+        };
+    }
+    let Some(pending) = state.pending.take() else {
+        return PromoteTransition {
+            state,
+            launch: None,
+        };
+    };
+    let pending = cap_pending_run(pending);
+    if !is_still_triggered(&pending.request, journals, config) {
+        return PromoteTransition {
+            state: ReservationState {
+                active: None,
+                pending: None,
+            },
+            launch: None,
+        };
+    }
+    let launch = pending.clone();
+    PromoteTransition {
+        state: ReservationState {
+            active: Some(pending),
+            pending: None,
+        },
+        launch: Some(launch),
+    }
 }
 
 fn make_request(

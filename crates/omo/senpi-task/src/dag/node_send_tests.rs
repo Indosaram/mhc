@@ -33,7 +33,6 @@ fn test_record(status: crate::dag::types::DagRunStatus, node: DagNode) -> DagRun
         name: "name".into(),
         parent_session_id: "parent".into(),
         root_session_id: "root".into(),
-        parent_model: None,
         definition_fingerprint: "fingerprint".into(),
         definition: crate::dag::manager::DagPersistedDefinition {
             key: "key".into(),

@@ -49,6 +49,8 @@ pub type RpcModelAdmission = Arc<dyn Fn(&RpcRunnerSpec) -> Result<(), RunnerFail
 #[derive(Clone, Default)]
 pub struct RpcModelAdmissionOptions {
     pub exclude_models: Vec<String>,
+    /// Live exclusion source (e.g. live `omo.json` reload); overrides `exclude_models` when set.
+    pub exclude_models_provider: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pub on_inconclusive: Option<InconclusiveListener>,
     pub build_spawn: Option<CatalogSpawnBuilder>,
     pub probe: Option<ModelCatalogProbe>,
@@ -303,6 +305,7 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
         })));
     }));
     let patterns = options.exclude_models;
+    let exclude_provider = options.exclude_models_provider;
     let catalogs: Arc<Mutex<HashMap<String, CachedCatalog>>> = Arc::default();
     let last_good: Arc<Mutex<HashMap<String, CachedCatalog>>> = Arc::default();
     let in_flight: Arc<InFlightProbes> = Arc::default();
@@ -315,7 +318,10 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
         else {
             return Ok(());
         };
-        if let Some(pattern) = excluded(base_model(model), &patterns) {
+        let active_patterns = exclude_provider
+            .as_ref()
+            .map_or_else(|| patterns.clone(), |provider| provider());
+        if let Some(pattern) = excluded(base_model(model), &active_patterns) {
             return Err(admission_failure(
                 model,
                 &format!("exclude_models in omo.json keeps it out ({pattern:?})"),

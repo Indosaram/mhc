@@ -7,15 +7,62 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAuthorizationProof {
+    pub credential_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_credential_identity: Option<String>,
+    pub issuer: String,
+    pub resource: String,
+    pub client_identity: String,
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_scope: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAuthorization {
+    pub version: u8,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<McpAuthorizationProof>,
+}
+
+fn deserialize_optional_authorization<'de, D>(
+    deserializer: D,
+) -> Result<Option<McpAuthorization>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+}
+
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpStoredAuth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_scope: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_authorization",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub authorization: Option<McpAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_info: Option<Value>,
+    /// Registered by an authorization flow that has not completed; replaces `client_info`, and the
+    /// refresh token issued to it, only when that flow's code exchange succeeds (senpi#6327).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_client_info: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_verifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,6 +123,9 @@ impl McpTokenStore {
     }
     pub fn root_dir(&self) -> PathBuf {
         self.agent_dir.join("mcp-auth")
+    }
+    pub fn agent_dir(&self) -> &Path {
+        &self.agent_dir
     }
     pub fn dir(&self) -> PathBuf {
         self.root_dir().join(&self.hash)

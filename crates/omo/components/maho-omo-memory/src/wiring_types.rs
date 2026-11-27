@@ -51,6 +51,8 @@ pub struct MemoryWiringSeams {
     pub device_name: Option<crate::projection_pin::DeviceNameResolver>,
     /// Settles the recall term-store save at session shutdown (the recall wiring's `settled`).
     pub recall_store_settle: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Settles the compiled prompt-block cache reads/writes at session shutdown (`#11671`).
+    pub prompt_cache_settle: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// A memory repository's sync status for the footer and its notice; production passes the sync runner's.
     pub sync_status: Option<crate::sync_status_cached::SyncStatusReader>,
     /// Settles reflection runs for an identity (the runtime's `reconcile`); the stale-holder recovery

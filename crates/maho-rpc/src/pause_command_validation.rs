@@ -10,6 +10,15 @@ fn seq(value: &Value) -> bool {
         .as_f64()
         .is_some_and(|n| n.is_finite() && n >= 0. && n.fract() == 0.)
 }
+/// `interrupt`'s `background` field, shared by the RPC host and the terminal control endpoint.
+pub fn interrupt_background_error(background: Option<&Value>) -> Option<&'static str> {
+    match background {
+        None => None,
+        Some(Value::String(s)) if s == "stop" => None,
+        _ => Some("background must be \"stop\"."),
+    }
+}
+
 pub fn validate_pause_command(value: &Value) -> Option<&'static str> {
     let kind = value["type"].as_str().unwrap_or_default();
     if matches!(kind, "abort" | "interrupt")
@@ -17,6 +26,11 @@ pub fn validate_pause_command(value: &Value) -> Option<&'static str> {
         && !matches!(value["intent"].as_str(), Some("stop" | "abort"))
     {
         return Some("intent must be \"stop\" or \"abort\".");
+    }
+    if kind == "interrupt"
+        && let Some(error) = interrupt_background_error(value.get("background"))
+    {
+        return Some(error);
     }
     if kind == "resume_session" {
         if value.get("expectedSeq").is_some() && !seq(&value["expectedSeq"]) {
@@ -32,6 +46,9 @@ pub fn validate_pause_command(value: &Value) -> Option<&'static str> {
         }
         if value.get("effectId").is_some() && !non_empty(&value["effectId"]) {
             return Some("effectId must be 1-256 characters.");
+        }
+        if value.get("unlessStopped").is_some() && !value["unlessStopped"].is_boolean() {
+            return Some("unlessStopped must be a boolean.");
         }
     }
     if kind == "hold_input" {

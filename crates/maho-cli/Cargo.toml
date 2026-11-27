@@ -122,6 +122,7 @@ rpassword = "=7.5.4"
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-omo-idle-injection = { path = "../omo/idle-injection", optional = true }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
+maho-ext-kill-guard = { path = "../builtins/maho-ext-kill-guard" }
 maho-ext-hooks = { path = "../builtins/maho-ext-hooks", default-features = false }
 maho-ext-relocate-session = { path = "../builtins/maho-ext-relocate-session" }
 maho-ext-prompt-preset = { path = "../builtins/maho-ext-prompt-preset" }

@@ -20,10 +20,16 @@ pub const TOOL_CHILD_PLACEMENTS: [&str; 5] = [
 ];
 /// `unload_session` and `session_parked.reason` (senpi#3225).
 pub const UNLOAD_SESSION_CAPABILITY: &str = "unload_session";
+/// `unload_session { deliveries: "refuse" }` and `pending.deliveries` on `work_pending` (senpi#7004).
+pub const UNLOAD_REFUSE_DELIVERIES_CAPABILITY: &str = "unload_refuse_deliveries";
 /// `get_subscription_limits` and the `subscription_limits` host record (senpi#3370).
 pub const SUBSCRIPTION_LIMITS_CAPABILITY: &str = "subscription_limits";
 /// `resolve_path`: which file a message's path means, the engine's one rule (senpi#3415).
 pub const RESOLVE_PATH_CAPABILITY: &str = "resolve_path";
+/// `find_session`: which session file of this host carries a durable id, read-only (senpi#6429).
+pub const FIND_SESSION_CAPABILITY: &str = "find_session";
+/// `set_permission_preset`: a live session's approval mode can be set and is echoed back.
+pub const SET_PERMISSION_PRESET_CAPABILITY: &str = "set_permission_preset_v1";
 const TOOL_RUNTIME_PREFIX: &str = "tool_runtime:";
 const PLACEMENT_PREFIX: &str = "placement:";
 
@@ -106,6 +112,16 @@ pub fn multi_session_host_capabilities(
     negotiated: &[String],
     mcp_presenters: bool,
 ) -> Vec<String> {
+    multi_session_host_capabilities_with_park(warm, false, tool_runtime, negotiated, mcp_presenters)
+}
+
+pub fn multi_session_host_capabilities_with_park(
+    warm: bool,
+    park_claim: bool,
+    tool_runtime: ToolRuntimeKind,
+    negotiated: &[String],
+    mcp_presenters: bool,
+) -> Vec<String> {
     use crate::custom_capability::*;
     let mut capabilities = Vec::<String>::new();
     let mut push = |capability: &str| {
@@ -124,6 +140,7 @@ pub fn multi_session_host_capabilities(
     if mcp_presenters {
         push(MCP_FORM_PRESENTER_CAPABILITY);
     }
+    push("secret_input_v1");
     for capability in [
         "session_lifecycle",
         "expected_host_instance",
@@ -137,6 +154,8 @@ pub fn multi_session_host_capabilities(
         crate::effect_record::EFFECT_LEDGER_CAPABILITY,
         SUBSCRIPTION_LIMITS_CAPABILITY,
         RESOLVE_PATH_CAPABILITY,
+        FIND_SESSION_CAPABILITY,
+        SET_PERMISSION_PRESET_CAPABILITY,
         crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
         "continue_from_leaf",
         "eval_cells",
@@ -155,8 +174,27 @@ pub fn multi_session_host_capabilities(
         RETAIN_ON_DISCONNECT_CAPABILITY,
         DETACH_CONNECTION_CAPABILITY,
         UNLOAD_SESSION_CAPABILITY,
+        UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
+        UNLOAD_GRACEFUL_CAPABILITY,
+        OPEN_SESSION_HEADER_CWD_CAPABILITY,
+        DELEGATED_CONNECTION_CAPABILITY,
+        DELEGATION_ROLES_CAPABILITY,
+        PEER_AGENT_ROLE_CAPABILITY,
+        SAME_ACCOUNT_DELEGATION_CAPABILITY,
+        crate::machine_op::wire::MACHINE_OP_CAPABILITY,
         crate::session_move_wire::MOVE_SESSION_CAPABILITY,
         crate::session_move_wire::MOVE_SESSION_REVOKE_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_COPY_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_EXPORT_INLINE_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IMPORT_OPEN_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IMPORT_FILES_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IMPORT_SESSION_DIR_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_INLINE_MAX_BYTES_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_PREPARE_REPOSITORY_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IDENTITY_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_STATUS_LANDING_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_STATUS_LANDED_PATH_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_STATUS_WRITABLE_CAPABILITY,
         SESSION_RELOCATION_CAPABILITY,
         SESSION_CONTEXT_CAPABILITY,
         SESSION_KIND_CAPABILITY,
@@ -167,6 +205,8 @@ pub fn multi_session_host_capabilities(
         PROMPT_SURFACE_CAPABILITY,
         PROMPT_SURFACE_CHAT_CAPABILITY,
         BROWSER_ENGINE_CAPABILITY,
+        HOST_TOOLS_CAPABILITY,
+        SESSION_ENV_CAPABILITY,
         RETRY_FALLBACK_PROFILE_CAPABILITY,
         "permission_preset_accept_edits",
         "permission_preset_auto",
@@ -177,7 +217,21 @@ pub fn multi_session_host_capabilities(
     if warm {
         push(WARM_CAPABILITY);
     }
-    for capability in host_tool_runtime_capabilities(tool_runtime, negotiated) {
+    if park_claim {
+        push(PARK_CLAIM_CAPABILITY);
+    }
+    let compact_on = maho_core::engine_socket_flag::compact_updates_enabled();
+    let filtered_negotiated: Vec<String> = negotiated
+        .iter()
+        .filter(|cap| {
+            cap.as_str() != PARK_CLAIM_CAPABILITY
+                && (!compact_on
+                    || (cap.as_str() != "compact_message_updates_v1"
+                        && cap.as_str() != COMPACT_EVENTS_CAPABILITY))
+        })
+        .cloned()
+        .collect();
+    for capability in host_tool_runtime_capabilities(tool_runtime, &filtered_negotiated) {
         push(capability.as_str());
     }
     capabilities

@@ -437,6 +437,19 @@ impl ConnectionQuestionBridge {
             json!({"type":"question_updated","id":id,"deadlineAtMs":now+pending.timeout,"remainingMs":pending.timeout}),
         )
     }
+    /// Outcome-bearing `progress` (`connection-question-bridge.ts`, senpi#5761).
+    pub fn progress_outcome(&mut self, draft: &Value, now: u64) -> Result<Value, &'static str> {
+        let Some(id) = draft.get("id").and_then(Value::as_str) else {
+            return Err("unknown_extension_ui_request");
+        };
+        if let Some(frame) = self.progress(draft, now) {
+            Ok(frame)
+        } else if self.resolved.contains(id) {
+            Err("question_already_resolved")
+        } else {
+            Err("unknown_extension_ui_request")
+        }
+    }
     pub fn expire(&mut self, now: u64) -> Vec<Value> {
         let ids = self
             .pending

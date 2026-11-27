@@ -125,6 +125,8 @@ pub enum SessionPendingInputError {
         recorded: String,
         native: String,
     },
+    /// A steer refused at its enqueue because the turn it named is no longer running (senpi#5776).
+    TurnConflict(crate::turn_conflict::TurnConflictError),
     Store(PendingInputError),
 }
 
@@ -133,6 +135,7 @@ impl SessionPendingInputError {
         match self {
             Self::ClientMessageIdConflict { .. } => "client_message_id_conflict",
             Self::Divergence { .. } => "pending_input_divergence",
+            Self::TurnConflict(_) => "turn_conflict",
             Self::Store(error) => error.code(),
         }
     }
@@ -157,6 +160,7 @@ impl fmt::Display for SessionPendingInputError {
                     "Queued input {client_message_id} was {recorded} in its record but {native} in the queue."
                 )
             }
+            Self::TurnConflict(error) => fmt::Display::fmt(error, f),
             Self::Store(error) => fmt::Display::fmt(error, f),
         }
     }
@@ -167,6 +171,12 @@ impl std::error::Error for SessionPendingInputError {}
 impl From<PendingInputError> for SessionPendingInputError {
     fn from(error: PendingInputError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<crate::turn_conflict::TurnConflictError> for SessionPendingInputError {
+    fn from(error: crate::turn_conflict::TurnConflictError) -> Self {
+        Self::TurnConflict(error)
     }
 }
 
@@ -245,9 +255,31 @@ impl SessionPendingInputs {
         input: IdentifiedInput,
         enqueue: impl FnOnce(&str) + Send,
     ) -> Result<Option<PendingInputOperationResult>, SessionPendingInputError> {
+        self.admit_with_refusal(input, enqueue, || {
+            None::<crate::turn_conflict::TurnConflictError>
+        })
+        .await
+    }
+
+    /// `refusal` is read before the input is recorded (a refusal there records nothing) and again in the same
+    /// synchronous step as `enqueue`. A turn that ended while the record was written makes the second read
+    /// refuse: the record is cancelled `turn_conflict`, which a later submit under the same id replaces, and
+    /// the refusal is returned as an error.
+    pub async fn admit_with_refusal<E>(
+        &self,
+        input: IdentifiedInput,
+        enqueue: impl FnOnce(&str) + Send,
+        refusal: impl Fn() -> Option<E> + Send + Sync,
+    ) -> Result<Option<PendingInputOperationResult>, SessionPendingInputError>
+    where
+        E: Into<SessionPendingInputError> + Send,
+    {
         let store = self.store().await?;
         store
             .transaction(move |tx| async move {
+                if let Some(early) = refusal() {
+                    return Err(early.into());
+                }
                 let request = SubmitRequest {
                     client_message_id: input.client_message_id.clone(),
                     fingerprint: admission_fingerprint(&input),
@@ -265,6 +297,17 @@ impl SessionPendingInputs {
                 if outcome == Some(OperationOutcome::Admitted)
                     && let Some(admitted) = tx.current(&input.client_message_id)
                 {
+                    if let Some(refused) = refusal() {
+                        tx.apply(
+                            &input.client_message_id,
+                            PendingInputEvent::Cancel {
+                                cause: CancelCause::TurnConflict,
+                                consumer_fenced: true,
+                            },
+                        )
+                        .await?;
+                        return Err(refused.into());
+                    }
                     enqueue(&admitted.handle.queued_id);
                 }
                 Ok::<_, SessionPendingInputError>(result)

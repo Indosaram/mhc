@@ -1,9 +1,24 @@
-use crate::{host_registry::HostMcpRegistry, service::McpService};
+use crate::{
+    host_registry::HostMcpRegistry,
+    service::{McpAttachOptions, McpService},
+};
 use maho_ext_api::{
     BeforeAgentStartEventResult, EventKind, EventResult, ExtensionApi, ExtensionEvent,
-    ExtensionFailure,
+    ExtensionFailure, ExtensionHandlerOptions,
 };
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+type ScopeAttachRx = (
+    tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+    bool,
+);
+
 pub fn register_mcp_lifecycle(
     api: &mut ExtensionApi,
     registry: Arc<HostMcpRegistry>,
@@ -11,21 +26,33 @@ pub fn register_mcp_lifecycle(
 ) -> Arc<tokio::sync::Mutex<McpService>> {
     register_mcp_lifecycle_with_tool_search(api, registry, owner, None)
 }
+
 pub fn register_mcp_lifecycle_with_tool_search(
     api: &mut ExtensionApi,
     registry: Arc<HostMcpRegistry>,
     owner: u64,
     tool_search: Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
 ) -> Arc<tokio::sync::Mutex<McpService>> {
-    let service = Arc::new(tokio::sync::Mutex::new(McpService::new(registry, owner)));
+    let service = McpService::new(registry, owner);
+    let subscriptions = service.wire_status_subscriptions();
+    let service = Arc::new(tokio::sync::Mutex::new(service));
     let publish_events = api.events.clone();
-    let inventory_service = service.clone();
-    let inventory=api.events.on_native::<crate::control_inventory::McpControlInventoryRequest>(crate::control_inventory::MCP_CONTROL_INVENTORY_REQUEST_EVENT,Arc::new(move |request| {
-        let sender=request.respond.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        let service=inventory_service.clone();
-        if let Some(sender)=sender { tokio::spawn(async move { let snapshot=service.lock().await.wire_status_snapshot().await; match serde_json::to_value(snapshot) { Ok(snapshot) => { if sender.send(snapshot).is_err() { /* Requesting connection was disposed. */ } }, Err(error) => maho_ext_api::diagnostic(&format!("MCP inventory serialization failed: {error}")) } }); }
-    }));
-    let inventory = Arc::new(std::sync::Mutex::new(Some(inventory)));
+    let attached_session_ids: Arc<Mutex<BTreeSet<String>>> = Arc::default();
+    let wire_status_sink: Arc<dyn Fn(&crate::service_types::McpWireStatusSnapshot) + Send + Sync> = {
+        let events = publish_events.clone();
+        Arc::new(move |snapshot| {
+            // Dropped by design when the runtime went stale before the update landed.
+            let _stale = publish_wire_status(&events, snapshot);
+        })
+    };
+    let inventory = crate::control_inventory::forward_mcp_control_inventory(
+        &api.events,
+        &service,
+        attached_session_ids.clone(),
+        Some(wire_status_sink),
+        &subscriptions,
+    );
+    let inventory = Arc::new(Mutex::new(Some(inventory)));
     let registrar: Arc<dyn crate::tool_registrar::McpToolRegistrar> = Arc::new(
         crate::tool_registrar::SessionMcpToolRegistrar::from_api(api),
     );
@@ -43,17 +70,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
             service: service.clone(),
             pending_attach: Arc::new(move || {
                 let service = pending_service.clone();
-                Box::pin(async move {
-                    let (deferred, deferred_reg) = {
-                        let service = service.lock().await;
-                        (service.deferred_attach(), service.deferred_registration())
-                    };
-                    let timeout = std::time::Duration::from_millis(
-                        crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
-                    );
-                    deferred.wait(timeout).await;
-                    deferred_reg.wait(timeout).await;
-                })
+                Box::pin(async move { wait_for_startup_registration(&service).await })
             }),
             append_entry: Some(Arc::new(move |message| {
                 if let Err(error) = entry_api.append_entry(
@@ -71,238 +88,580 @@ pub fn register_mcp_lifecycle_with_tool_search(
             open_browser: Some(crate::auth::challenge_login::system_browser_opener()),
         },
     );
-    // The deferred attach publisher outlives `session_start`; shutdown (which precedes every reload
-    // or replacement invalidation) aborts it so the old runtime's work stops with the runtime.
-    let attach_publisher: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> = Arc::default();
-    let start_publisher = attach_publisher.clone();
-    let start = service.clone();
-    let start_registrar = registrar.clone();
-    let start_search = tool_search.clone();
-    let start_events = publish_events.clone();
-    // The live binding, so the input hook rebinds presentation without waiting on an attach in flight.
-    let binding: Arc<std::sync::Mutex<Option<Arc<crate::service::McpSessionBinding>>>> =
-        Arc::default();
-    let input_binding = binding.clone();
-    api.on(
-        EventKind::Input,
-        Arc::new(move |_, ctx| {
-            let binding = input_binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            Box::pin(async move {
-                // Upstream `pi.on("input")`: `service.bindMcpMrtrPresentation(pi, ctx.ui)` on every input.
-                if let Some(binding) = binding {
-                    binding.bind_presentation(&ctx.ui);
-                }
-                Ok(EventResult::None)
-            })
-        }),
-    );
-    api.on(
-        EventKind::SessionStart,
-        Arc::new(move |event, ctx| {
-            // index.ts: a sizes-only diagnostic startup skips the built-in MCP attach entirely.
-            if matches!(event, ExtensionEvent::SessionStart(start) if start.sizes_only) {
-                return Box::pin(async { Ok(EventResult::None) });
-            }
-            let start_binding = binding.clone();
-            let service_handle = start.clone();
-            let registrar = start_registrar.clone();
-            let tool_search = start_search.clone();
-            let events = start_events.clone();
-            let attach_publisher = start_publisher.clone();
-            Box::pin(async move {
-                let env = std::env::vars().collect();
-                let mut service = service_handle.lock().await;
-                service.set_elicitation_ui(if ctx.has_ui {
-                    Some(ctx.ui.clone())
-                } else {
-                    None
-                });
-                service.set_session_mode(ctx.mode);
-                // Upstream `sessionManager: binding.context.sessionManager`: tools registered for
-                // this binding serve only calls from this session.
-                service
-                    .session_binding()
-                    .bind_session(ctx.session_manager.session_id());
-                // Bind the registration seam once; `attach_session` registers through it
-                // (upstream `attachSession`) and the deferred startup connects re-use it.
-                service.set_policy_notice_event(Arc::new({
-                    let events = events.clone();
-                    move |notice| {
-                        // Notices from a connect that outlived a reload are dropped with the runtime.
-                        let _stale = events.try_emit("security_notice", &notice);
-                    }
-                }));
-                service.bind_self(Arc::downgrade(&service_handle));
-                service.bind_registration(registrar, tool_search);
-                service
-                    .attach_session(
-                        &ctx.cwd,
-                        &ctx.agent_dir,
-                        &env,
-                        ctx.is_project_trusted(),
-                        &ctx.registered_mcp_servers,
-                    )
-                    .await
-                    .map_err(|error| ExtensionFailure::new(error.to_string()))?;
-                // Upstream `bindMcpMrtrPresentation(pi, ctx.ui)` after attach: the binding's MRTR presentation.
-                service.bind_mcp_mrtr_presentation(&ctx.ui);
-                *start_binding
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(service.session_binding());
-                drop(service);
-                // Attach no longer completes inside session_start, so publish the session-owned snapshot on
-                // the bound runner bus once the deferred startup connect settles (pinned
-                // `onWireStatusChanged`); later changes publish via the reconnect/command paths.
-                let publish_service = service_handle.clone();
-                let publisher = tokio::spawn(async move {
-                    // PERF-DIVERGENCE(senpi mcp index.ts): upstream awaits attach settle without any lock; this port wrapped the wait in the service Mutex guard, blocking other lockers up to 5s. Now the guard is dropped before awaiting. Output is identical.
-                    let (deferred, deferred_reg) = {
-                        let service = publish_service.lock().await;
-                        (service.deferred_attach(), service.deferred_registration())
-                    };
-                    let timeout = std::time::Duration::from_millis(
-                        crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
-                    );
-                    deferred.wait(timeout).await;
-                    deferred_reg.wait(timeout).await;
-                    let service = publish_service.lock().await;
-                    let snapshot = service.wire_status_snapshot().await;
-                    // Dropped by design when the runtime went stale before the attach settled.
-                    let _stale = publish_wire_status(&events, &snapshot);
-                });
-                if let Some(previous) = attach_publisher
+
+    let skill_reveal = Arc::new(crate::skill_reveal::create_mcp_skill_reveal(
+        Arc::new(Vec::new),
+        Arc::new(|_| {}),
+    ));
+    let attach_publisher: Arc<Mutex<Option<tokio::task::AbortHandle>>> = Arc::default();
+    let binding: Arc<Mutex<Option<Arc<crate::service::McpSessionBinding>>>> = Arc::default();
+    let session_started = Arc::new(AtomicBool::new(false));
+    let attach_started = Arc::new(AtomicBool::new(false));
+    let attached_contexts: Arc<Mutex<BTreeSet<String>>> = Arc::default();
+    let scope_attaches: Arc<Mutex<BTreeMap<String, ScopeAttachRx>>> = Arc::default();
+    let scope_tasks: Arc<Mutex<BTreeMap<String, tokio::task::AbortHandle>>> = Arc::default();
+
+    // Input: rebind presentation for this scope and reveal `/skill:<name>` if present.
+    {
+        let input_binding = binding.clone();
+        let input_reveal = skill_reveal.clone();
+        let input_service = service.clone();
+        api.on(
+            EventKind::Input,
+            Arc::new(move |event, ctx| {
+                let binding = input_binding
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .replace(publisher.abort_handle())
-                {
-                    previous.abort();
-                }
-                Ok(EventResult::None)
-            })
-        }),
-    );
-    let shutdown = service.clone();
-    api.on(
-        EventKind::SessionShutdown,
-        Arc::new(move |_, _| {
-            inventory
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(publisher) = attach_publisher
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
-                publisher.abort();
-            }
-            let service = shutdown.clone();
-            Box::pin(async move {
-                service
-                    .lock()
-                    .await
-                    .dispose()
-                    .await
-                    .map_err(|error| ExtensionFailure::new(error.to_string()))?;
-                Ok(EventResult::None)
-            })
-        }),
-    );
-    // Prompt preparation reuses the in-flight attach, then reads skill declarations on real
-    // turns (never previews) before composing the known MCP instructions.
-    let before = service.clone();
-    let before_events = publish_events.clone();
-    api.on(
-        EventKind::BeforeAgentStart,
-        Arc::new(move |event, _| {
-            let service = before.clone();
-            let events = before_events.clone();
-            Box::pin(async move {
-                let ExtensionEvent::BeforeAgentStart(event) = event else {
-                    return Ok(EventResult::None);
+                    .clone();
+                let reveal = input_reveal.clone();
+                let service = input_service.clone();
+                let session_id = ctx.session_manager.session_id().to_owned();
+                let text = match &event {
+                    ExtensionEvent::Input(input) => Some(input.text.clone()),
+                    _ => None,
                 };
-                // PERF-DIVERGENCE(senpi mcp index.ts): upstream awaits `whenAttachSettled` lock-free; this port held the service Mutex across the wait. Now the guard is dropped before awaiting. Output is identical.
-                let (deferred, deferred_reg) = {
-                    let service = service.lock().await;
-                    (service.deferred_attach(), service.deferred_registration())
-                };
-                let timeout = std::time::Duration::from_millis(
-                    crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
-                );
-                deferred.wait(timeout).await;
-                deferred_reg.wait(timeout).await;
-                let mut service = service.lock().await;
-                if !event.preview && !event.system_prompt_options.skills.is_empty() {
-                    let skills = event
-                        .system_prompt_options
-                        .skills
-                        .iter()
-                        .map(|skill| crate::skills::SkillLike {
-                            name: skill.name.clone(),
-                            file_path: skill.file_path.clone().into(),
-                            base_dir: skill.base_dir.clone().into(),
-                            scope: Some(
-                                match skill.source_info.scope {
-                                    maho_ext_api::SourceScope::Project => "project",
-                                    _ => "user",
-                                }
-                                .into(),
-                            ),
-                            provenance: skill.provenance.as_ref().map(|provenance| {
-                                crate::skills::SkillProvenance {
-                                    kind: provenance.kind.clone(),
-                                    selected_root: provenance.selected_root.clone().into(),
-                                    project_root: provenance.project_root.clone().map(Into::into),
-                                }
-                            }),
-                            allowed_set: skill.allowed_set.as_ref().map(|allowed| {
-                                crate::skills::SkillAllowedSet {
-                                    roots: allowed
-                                        .roots
-                                        .iter()
-                                        .map(|path| std::path::PathBuf::from(path.as_str()))
-                                        .collect(),
-                                    files: allowed
-                                        .files
-                                        .iter()
-                                        .map(|path| std::path::PathBuf::from(path.as_str()))
-                                        .collect(),
-                                    digest: allowed.digest.clone(),
-                                }
-                            }),
-                        })
-                        .collect::<Vec<_>>();
-                    let declarations = crate::skills::parse_skill_mcp_declarations(&skills);
-                    let mut warnings = declarations.warnings.clone();
-                    if !declarations.servers.is_empty() {
-                        warnings.extend(
-                            service
-                                .attach_skill_mcp_servers(&declarations)
-                                .await
-                                .map_err(|error| ExtensionFailure::new(error.to_string()))?,
-                        );
+                Box::pin(async move {
+                    if let Some(binding) = binding {
+                        binding.bind_presentation_for(&ctx.ui, Some(&session_id));
                     }
-                    publish_skill_warnings(&events, &warnings);
+                    if let Some(text) = text
+                        && let Some(skill_name) = parse_skill_slash_command(&text)
+                        && let Some(declarations) = reveal.take_reveal(&session_id, &skill_name)
+                    {
+                        let service = service.lock().await;
+                        let registered = service.tier_b_searchable();
+                        let targets = crate::skills::skill_activation_targets(
+                            &declarations,
+                            &skill_name,
+                            &registered,
+                        );
+                        if !targets.is_empty()
+                            && let Err(error) = service.activate_skill_mcp_tools(&targets)
+                        {
+                            reveal.retry_reveal(&session_id, &skill_name);
+                            return Err(error);
+                        }
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+    }
+
+    // ToolCall: (1) first-use attach / scope-join for session-less runtimes (senpi#5229 / S16c);
+    // (2) reveal skill MCP tools when `read` opens a listed skill's SKILL.md.
+    {
+        let tc_started = session_started.clone();
+        let tc_attach_started = attach_started.clone();
+        let tc_contexts = attached_contexts.clone();
+        let tc_sessions = attached_session_ids.clone();
+        let tc_scopes = scope_attaches.clone();
+        let tc_tasks = scope_tasks.clone();
+        let tc_service = service.clone();
+        let tc_registrar = registrar.clone();
+        let tc_search = tool_search.clone();
+        let tc_events = publish_events.clone();
+        let tc_binding = binding.clone();
+        let tc_reveal = skill_reveal.clone();
+        api.on(
+            EventKind::ToolCall,
+            Arc::new(move |event, ctx| {
+                let session_id = ctx.session_manager.session_id().to_owned();
+                let started = tc_started.clone();
+                let attach_started = tc_attach_started.clone();
+                let contexts = tc_contexts.clone();
+                let sessions = tc_sessions.clone();
+                let scopes = tc_scopes.clone();
+                let tasks = tc_tasks.clone();
+                let service_handle = tc_service.clone();
+                let registrar = tc_registrar.clone();
+                let tool_search = tc_search.clone();
+                let events = tc_events.clone();
+                let binding = tc_binding.clone();
+                let reveal = tc_reveal.clone();
+                let read_path = match &event {
+                    ExtensionEvent::ToolCall(call) if call.tool_name == "read" => call
+                        .input
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    _ => None,
+                };
+                Box::pin(async move {
+                    if !started.load(Ordering::SeqCst) {
+                        let first_for_context = contexts
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(session_id.clone());
+                        if first_for_context {
+                            sessions
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(session_id.clone());
+                            let (tx, rx) = tokio::sync::watch::channel(None);
+                            let is_primary = !attach_started.swap(true, Ordering::SeqCst);
+                            scopes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(session_id.clone(), (rx, is_primary));
+                            let service_for_task = service_handle.clone();
+                            let ctx_for_task = ctx.clone();
+                            let registrar = registrar.clone();
+                            let tool_search = tool_search.clone();
+                            let events = events.clone();
+                            let binding = binding.clone();
+                            let session_id_for_task = session_id.clone();
+                            let task = tokio::spawn(async move {
+                                let outcome = if is_primary {
+                                    attach_context(
+                                        &service_for_task,
+                                        &ctx_for_task,
+                                        registrar,
+                                        tool_search,
+                                        events,
+                                        binding,
+                                    )
+                                    .await
+                                    .map_err(|error| error.message)
+                                } else {
+                                    let mut service = service_for_task.lock().await;
+                                    service
+                                        .attach_scope(
+                                            &session_id_for_task,
+                                            if ctx_for_task.has_ui {
+                                                Some(ctx_for_task.ui.clone())
+                                            } else {
+                                                None
+                                            },
+                                            ctx_for_task.has_ui,
+                                        )
+                                        .await;
+                                    Ok(())
+                                };
+                                tx.send_replace(Some(outcome));
+                            });
+                            tasks
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(session_id.clone(), task.abort_handle());
+                        }
+                    }
+                    if let Some(path) = read_path {
+                        let mut to_reveal = Vec::new();
+                        for (name, skill) in reveal.skills(&session_id) {
+                            let skill_path = skill.file_path.to_string_lossy();
+                            if path == skill_path.as_ref() || path.ends_with(skill_path.as_ref()) {
+                                to_reveal.push(name);
+                            }
+                        }
+                        for name in to_reveal {
+                            if let Some(declarations) = reveal.take_reveal(&session_id, &name) {
+                                let service = service_handle.lock().await;
+                                let registered = service.tier_b_searchable();
+                                let targets = crate::skills::skill_activation_targets(
+                                    &declarations,
+                                    &name,
+                                    &registered,
+                                );
+                                if !targets.is_empty()
+                                    && let Err(error) = service.activate_skill_mcp_tools(&targets)
+                                {
+                                    reveal.retry_reveal(&session_id, &name);
+                                    return Err(error);
+                                }
+                            }
+                        }
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+    }
+
+    // SessionStart
+    {
+        let start_binding = binding.clone();
+        let start = service.clone();
+        let start_registrar = registrar.clone();
+        let start_search = tool_search.clone();
+        let start_events = publish_events.clone();
+        let start_publisher = attach_publisher.clone();
+        let start_sessions = attached_session_ids.clone();
+        let start_contexts = attached_contexts.clone();
+        let start_scopes = scope_attaches.clone();
+        let start_session_flag = session_started.clone();
+        let start_attach_flag = attach_started.clone();
+        api.on(
+            EventKind::SessionStart,
+            Arc::new(move |event, ctx| {
+                start_session_flag.store(true, Ordering::SeqCst);
+                // index.ts: a sizes-only diagnostic startup skips the built-in MCP attach entirely.
+                if matches!(event, ExtensionEvent::SessionStart(start) if start.sizes_only) {
+                    return Box::pin(async { Ok(EventResult::None) });
                 }
-                let block =
-                    crate::instructions::refresh_mcp_instructions_for_session(&service).await;
-                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
-                    system_prompt_parts: None,
-                    message: None,
-                    system_prompt: crate::instructions::inject_mcp_instructions(
-                        &block,
-                        &event.system_prompt,
-                    ),
-                }))
-            })
-        }),
-    );
+                let session_id = ctx.session_manager.session_id().to_owned();
+                {
+                    let mut sessions = start_sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    sessions.clear();
+                    sessions.insert(session_id.clone());
+                }
+                start_contexts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(session_id.clone());
+                start_attach_flag.store(true, Ordering::SeqCst);
+                let (tx, rx) = tokio::sync::watch::channel(None);
+                start_scopes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(session_id, (rx, true));
+                let start_binding = start_binding.clone();
+                let service_handle = start.clone();
+                let registrar = start_registrar.clone();
+                let tool_search = start_search.clone();
+                let events = start_events.clone();
+                let attach_publisher = start_publisher.clone();
+                Box::pin(async move {
+                    let result = attach_context(
+                        &service_handle,
+                        ctx,
+                        registrar,
+                        tool_search,
+                        events.clone(),
+                        start_binding,
+                    )
+                    .await;
+                    tx.send_replace(Some(result.clone().map_err(|error| error.message)));
+                    result?;
+                    if ctx.mode != maho_ext_api::ExtensionMode::Rpc {
+                        // Non-RPC sessions still publish the settled snapshot after the deferred race settles.
+                        let publish_service = service_handle.clone();
+                        let publisher = tokio::spawn(async move {
+                            wait_for_startup_registration(&publish_service).await;
+                            let service = publish_service.lock().await;
+                            let snapshot = service.wire_status_snapshot().await;
+                            // Dropped by design when the runtime went stale before the attach settled.
+                            let _stale = publish_wire_status(&events, &snapshot);
+                        });
+                        if let Some(previous) = attach_publisher
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .replace(publisher.abort_handle())
+                        {
+                            previous.abort();
+                        }
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+    }
+
+    // SessionShutdown
+    {
+        let shutdown = service.clone();
+        let shutdown_tasks = scope_tasks.clone();
+        api.on(
+            EventKind::SessionShutdown,
+            Arc::new(move |_, _| {
+                if let Some(forwarder) = inventory
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    forwarder.dispose();
+                }
+                if let Some(publisher) = attach_publisher
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    publisher.abort();
+                }
+                for (_, task) in std::mem::take(
+                    &mut *shutdown_tasks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                ) {
+                    task.abort();
+                }
+                let service = shutdown.clone();
+                Box::pin(async move {
+                    service
+                        .lock()
+                        .await
+                        .dispose()
+                        .await
+                        .map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+    }
+
+    // BeforeAgentStart: prompt preparation reuses the in-flight attach (or attaches lazily on real turns),
+    // then reads skill declarations before composing the known MCP instructions.
+    {
+        let before = service.clone();
+        let before_events = publish_events.clone();
+        let before_scopes = scope_attaches;
+        let before_tasks = scope_tasks;
+        let before_contexts = attached_contexts;
+        let before_attach_flag = attach_started;
+        let before_registrar = registrar;
+        let before_search = tool_search;
+        let before_binding = binding;
+        let before_reveal = skill_reveal;
+        api.on_with_options(
+            EventKind::BeforeAgentStart,
+            Arc::new(move |event, ctx| {
+                let service = before.clone();
+                let events = before_events.clone();
+                let scopes = before_scopes.clone();
+                let tasks = before_tasks.clone();
+                let contexts = before_contexts.clone();
+                let attach_flag = before_attach_flag.clone();
+                let registrar = before_registrar.clone();
+                let tool_search = before_search.clone();
+                let binding = before_binding.clone();
+                let reveal = before_reveal.clone();
+                Box::pin(async move {
+                    let ExtensionEvent::BeforeAgentStart(event) = event else {
+                        return Ok(EventResult::None);
+                    };
+                    let session_id = ctx.session_manager.session_id().to_owned();
+                    let own_attach = scopes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(&session_id)
+                        .cloned();
+                    if let Some((mut rx, is_primary)) = own_attach {
+                        let outcome = tokio::time::timeout(
+                            std::time::Duration::from_millis(
+                                crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
+                            ),
+                            async {
+                                loop {
+                                    if let Some(result) = rx.borrow().clone() {
+                                        break result.map_err(ExtensionFailure::new);
+                                    }
+                                    rx.changed().await.map_err(|_| {
+                                        ExtensionFailure::new(
+                                            "MCP attach task ended without a result",
+                                        )
+                                    })?;
+                                }
+                            },
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err(ExtensionFailure::new("MCP attach timed out")));
+                        if let Err(error) = outcome {
+                            if let Some(task) = tasks
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&session_id)
+                            {
+                                task.abort();
+                            }
+                            scopes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&session_id);
+                            contexts
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&session_id);
+                            if is_primary {
+                                attach_flag.store(false, Ordering::SeqCst);
+                            }
+                            return Err(error);
+                        }
+                        tasks
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&session_id);
+                    }
+                    if !event.preview
+                        && !attach_flag.swap(true, Ordering::SeqCst)
+                        && let Err(error) = attach_context(
+                            &service,
+                            ctx,
+                            registrar,
+                            tool_search,
+                            events.clone(),
+                            binding,
+                        )
+                        .await
+                    {
+                        attach_flag.store(false, Ordering::SeqCst);
+                        return Err(error);
+                    }
+                    wait_for_startup_registration(&service).await;
+                    if !event.preview {
+                        let mut service_guard = service.lock().await;
+                        service_guard.set_elicitation_ui(if ctx.has_ui {
+                            Some(ctx.ui.clone())
+                        } else {
+                            None
+                        });
+                        service_guard.bind_mcp_mrtr_presentation_for(&ctx.ui, Some(&session_id));
+                        if !event.system_prompt_options.skills.is_empty() {
+                            let skills = event
+                                .system_prompt_options
+                                .skills
+                                .iter()
+                                .map(|skill| crate::skills::SkillLike {
+                                    name: skill.name.clone(),
+                                    file_path: skill.file_path.clone().into(),
+                                    base_dir: skill.base_dir.clone().into(),
+                                    scope: Some(
+                                        match skill.source_info.scope {
+                                            maho_ext_api::SourceScope::Project => "project",
+                                            _ => "user",
+                                        }
+                                        .into(),
+                                    ),
+                                    provenance: skill.provenance.as_ref().map(|provenance| {
+                                        crate::skills::SkillProvenance {
+                                            kind: provenance.kind.clone(),
+                                            selected_root: provenance.selected_root.clone().into(),
+                                            project_root: provenance
+                                                .project_root
+                                                .clone()
+                                                .map(Into::into),
+                                        }
+                                    }),
+                                    allowed_set: skill.allowed_set.as_ref().map(|allowed| {
+                                        crate::skills::SkillAllowedSet {
+                                            roots: allowed
+                                                .roots
+                                                .iter()
+                                                .map(|path| std::path::PathBuf::from(path.as_str()))
+                                                .collect(),
+                                            files: allowed
+                                                .files
+                                                .iter()
+                                                .map(|path| std::path::PathBuf::from(path.as_str()))
+                                                .collect(),
+                                            digest: allowed.digest.clone(),
+                                        }
+                                    }),
+                                })
+                                .collect::<Vec<_>>();
+                            let declarations = reveal.start_turn(&session_id, &skills);
+                            let mut warnings = declarations.warnings.clone();
+                            if !declarations.servers.is_empty() {
+                                warnings.extend(
+                                    service_guard
+                                        .attach_skill_mcp_servers(&declarations)
+                                        .await
+                                        .map_err(|error| {
+                                            ExtensionFailure::new(error.to_string())
+                                        })?,
+                                );
+                            }
+                            publish_skill_warnings(&events, &warnings);
+                        }
+                    }
+                    let service_guard = service.lock().await;
+                    let block =
+                        crate::instructions::refresh_mcp_instructions_for_session(&service_guard)
+                            .await;
+                    Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                        system_prompt_parts: None,
+                        message: None,
+                        system_prompt: crate::instructions::inject_mcp_instructions(
+                            &block,
+                            &event.system_prompt,
+                        ),
+                    }))
+                })
+            }),
+            ExtensionHandlerOptions {
+                preview_safe: true,
+                run_last: true,
+                ..Default::default()
+            },
+        );
+    }
+
     service
 }
+
+async fn wait_for_startup_registration(service_handle: &tokio::sync::Mutex<McpService>) {
+    let (deferred, registration) = {
+        let service = service_handle.lock().await;
+        (service.deferred_attach(), service.deferred_registration())
+    };
+    // Registration takes the service lock and may be enqueued by a settling connect.
+    let timeout =
+        std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS);
+    deferred.wait(timeout).await;
+    registration.wait(timeout).await;
+}
+
+async fn attach_context(
+    service_handle: &Arc<tokio::sync::Mutex<McpService>>,
+    ctx: &maho_ext_api::ExtensionContext,
+    registrar: Arc<dyn crate::tool_registrar::McpToolRegistrar>,
+    tool_search: Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
+    events: maho_ext_api::EventBus,
+    binding: Arc<Mutex<Option<Arc<crate::service::McpSessionBinding>>>>,
+) -> Result<(), ExtensionFailure> {
+    let env = std::env::vars().collect();
+    let declarations = if ctx.extension_connects_mcp_servers() {
+        Vec::new()
+    } else {
+        ctx.get_registered_mcp_servers()
+    };
+    let mut service = service_handle.lock().await;
+    let ui = if ctx.has_ui {
+        Some(ctx.ui.clone())
+    } else {
+        None
+    };
+    service.set_elicitation_ui(ui.clone());
+    service.set_session_mode(ctx.mode);
+    service.set_policy_notice_event(Arc::new(move |notice| {
+        // Notices from a connect that outlived a reload are dropped with the runtime.
+        let _stale = events.try_emit("security_notice", &notice);
+    }));
+    service.bind_self(Arc::downgrade(service_handle));
+    service.bind_registration(registrar, tool_search);
+    service
+        .attach_session_with_options(McpAttachOptions {
+            cwd: &ctx.cwd,
+            agent_dir: &ctx.agent_dir,
+            env: &env,
+            project_trusted: ctx.is_project_trusted(),
+            declarations: &declarations,
+            mode: Some(ctx.mode),
+            session_id: Some(ctx.session_manager.session_id()),
+            ui,
+            has_ui: ctx.has_ui,
+            extension_connects_mcp_servers: ctx.extension_connects_mcp_servers(),
+        })
+        .await
+        .map_err(|error| ExtensionFailure::new(error.to_string()))?;
+    service.bind_mcp_mrtr_presentation_for(&ctx.ui, Some(ctx.session_manager.session_id()));
+    *binding
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service.session_binding());
+    Ok(())
+}
+
+fn parse_skill_slash_command(text: &str) -> Option<String> {
+    static SKILL_CMD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^\s*/skill:([A-Za-z0-9._-]+)").expect("skill command regex")
+    });
+    SKILL_CMD
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_owned())
+}
+
 fn publish_skill_warnings(events: &maho_ext_api::EventBus, warnings: &[String]) {
     for warning in warnings {
         if !warning.starts_with("Project MCP server") {

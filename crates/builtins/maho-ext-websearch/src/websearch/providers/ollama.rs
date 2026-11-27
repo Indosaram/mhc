@@ -19,7 +19,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> BuiltSearchRequest {
         )])),
         body: Some(json!({
             "query": append_domain_filters(ctx.query, ctx.allowed_domains, ctx.blocked_domains),
-            "max_results": clamp(ctx.max_results, 1.0, 20.0),
+            "max_results": clamp(ctx.max_results, 1.0, 10.0),
         })),
     }
 }
@@ -29,9 +29,9 @@ pub fn normalize_response(data: &Value) -> Vec<SearchResultItem> {
     collect(items.iter().map(|item| {
         let url = item["url"].as_str()?;
         let title = item["title"].as_str().unwrap_or(url);
-        let snippet = item["snippet"]
+        let snippet = item["content"]
             .as_str()
-            .or_else(|| item["content"].as_str());
+            .or_else(|| item["snippet"].as_str());
         result(Some(title), Some(url), snippet, None, None)
     }))
 }
@@ -59,7 +59,7 @@ mod tests {
         assert_eq!(request.headers["Authorization"], "Bearer ollama-key");
         assert_eq!(
             request.body.unwrap(),
-            json!({"query":"local models","max_results":20.0})
+            json!({"query":"local models","max_results":10.0})
         );
     }
 

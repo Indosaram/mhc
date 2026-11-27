@@ -247,11 +247,19 @@ pub async fn run_eval_cell(
             eval_handle_host: options.eval_handle_host.clone(),
             owner_session_id: invocation.owner_session_id.clone(),
             completion_handles: options.completion_handles.clone(),
+            renderer_lookup: options.renderer_lookup.clone(),
             deliver_reply: Arc::new(move |reply| {
                 let _ = reply_kernel.deliver_tool_reply(reply);
             }),
         },
     );
+    let mut bridge_cell = super::bridge_cell_binding::bind_bridge_cell(
+        options.kernel_manager.as_ref(),
+        invocation.input.language,
+        handler.tool_updates(),
+    );
+    let bridge_cell_token = bridge_cell.token.clone();
+    let nested_update_notify = handler.builder.nested_update_notify();
     // Frame updates are published with the live snapshot below; `finish` always emits the final one.
     let environments = options.kernel_manager.js_environments();
     handler.set_environments(environments.clone());
@@ -338,7 +346,7 @@ pub async fn run_eval_cell(
             let _ = messages_tx.send(message.clone());
         })),
         resolve_at_start: load_at_start(&invocation, &options),
-        bridge_cell_token: None,
+        bridge_cell_token,
         host_executor: super::magic_cell_host::plan_magic_cell(
             &invocation.input.code,
             environments.clone(),
@@ -407,6 +415,14 @@ pub async fn run_eval_cell(
                 ()=tokio::time::sleep_until(live_gate.trailing()),if handler.builder.update_pending()=>{
                     handler.builder.flush_update();
                     *live.lock().expect("live result lock")=handler.builder.live_result();live_gate.rebuilt();
+                },
+                () = nested_update_notify.notified() => {
+                    handler.builder.request_update();
+                    if live_gate.due(false) {
+                        handler.builder.flush_update();
+                        *live.lock().expect("live result lock") = handler.builder.live_result();
+                        live_gate.rebuilt();
+                    }
                 },
                 message=messages.recv()=>if let Some(message)=message {
                     if !active.load(std::sync::atomic::Ordering::SeqCst) {continue;}
@@ -531,6 +547,7 @@ pub async fn run_eval_cell(
                 cell.source.interrupt_note = note;
             }
         }
+        bridge_cell.release();
         let settles_as_result = capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst)
             || session_disposed.load(std::sync::atomic::Ordering::SeqCst);
         let final_result = match result {

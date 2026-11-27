@@ -76,7 +76,9 @@ fn regex(pattern: &str) -> Regex {
 
 fn matches_openai_fast(model_id: &str) -> bool {
     static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-        regex(r"^(?:gpt-5\.6-(?:sol|terra|luna)|gpt-6-(?:astra|sol|luna)|gpt-6\.1-sol)-fast$")
+        regex(
+            r"^(?:gpt-5\.6-(?:sol|terra|luna)|gpt-6-(?:astra|sol|luna)|gpt-6\.1-sol|gpt-6\.2-(?:astra|sol))-fast$",
+        )
     });
     PATTERN.is_match(model_id)
 }
@@ -240,6 +242,8 @@ mod tests {
             "gpt-6-astra-fast",
             "gpt-6-sol-fast",
             "gpt-6.1-sol-fast",
+            "gpt-6.2-astra-fast",
+            "gpt-6.2-sol-fast",
             "gpt-6-luna-fast",
         ] {
             let canonical = alias

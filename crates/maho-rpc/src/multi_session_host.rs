@@ -178,13 +178,13 @@ pub struct HostCore {
     pending_capabilities: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>>,
     /// Each connection's opens still in flight (senpi `opensByConnection`): an open's barrier settles when it answers.
     opens_by_connection: std::sync::Mutex<OpensByConnection>,
-    bindings: tokio::sync::Mutex<
+    pub(crate) bindings: tokio::sync::Mutex<
         std::collections::BTreeMap<
             String,
             std::sync::Arc<crate::session_binding::RpcSessionBinding>,
         >,
     >,
-    options: HostCoreOptions,
+    pub(crate) options: HostCoreOptions,
     /// Resolved `--tool-runtime` (senpi `MultiSessionHostOptions.toolRuntime`); absent means `in-process`.
     /// Advertised as `tool_runtime:<value>`.
     tool_runtime: crate::host_capabilities::ToolRuntimeKind,
@@ -198,7 +198,8 @@ pub struct HostCore {
     handoff_parks: std::sync::atomic::AtomicUsize,
     /// Set when the host runs every session in its own worker process (senpi `createHostCore` selects
     /// `WorkerSessionRegistry` when a `workerConfiguration` is passed); `None` is the in-process registry.
-    workers: Option<std::sync::Arc<crate::worker_session_registry::WorkerSessionRegistry>>,
+    pub(crate) workers:
+        Option<std::sync::Arc<crate::worker_session_registry::WorkerSessionRegistry>>,
     /// Who each connection speaks for (senpi `SessionCommandRouter.connectionRoles`, senpi#3811).
     connection_roles: crate::session_binding::SharedConnectionRoles,
     /// `<daemonDir>` the handoff-parked record lives under (senpi `handoverParkedDir`); set once a socket host
@@ -219,7 +220,9 @@ pub struct HostCore {
         std::sync::Mutex<Option<std::sync::Arc<crate::mcp_presenter_control::McpPresenterControl>>>,
     /// The conditional idle handover a POSIX socket host can perform, with its endpoint and loaded runtime (senpi
     /// `HostCoreGate`); unset, `begin_handover` is refused `handover_unsupported`.
-    handover: std::sync::OnceLock<HostHandoverGate>,
+    pub(crate) handover: std::sync::OnceLock<HostHandoverGate>,
+    /// Host-level machine-ops & engine-owned terminal handler (`senpi#6752`).
+    pub machine_ops: crate::machine_op::handler::MachineOpHandler,
     /// The public endpoint clients dial (senpi `hostSessionContext(...).host_socket`), set once a socket host knows it:
     /// a hosted session's control endpoint is this socket.
     public_socket: std::sync::OnceLock<String>,
@@ -317,7 +320,7 @@ impl Drop for HandoverObserve<'_> {
     }
 }
 /// Counts one routed request against its session until dropped.
-struct RequestGuard<'a> {
+pub(crate) struct RequestGuard<'a> {
     core: &'a HostCore,
     session_id: String,
 }
@@ -360,6 +363,7 @@ impl HostCore {
                     presenters.unregister_connection(id);
                 }
             }));
+        let machine_ops = crate::machine_op::handler::MachineOpHandler::new(&options.agent_dir);
         Self {
             registry: tokio::sync::Mutex::new(
                 crate::session_registry::RpcSessionRegistry::default(),
@@ -389,6 +393,7 @@ impl HostCore {
             presenter_bootstrap: std::sync::Mutex::new(None),
             presenter_control: std::sync::Mutex::new(None),
             handover: std::sync::OnceLock::new(),
+            machine_ops,
             public_socket: std::sync::OnceLock::new(),
             runtime_build_id: std::sync::OnceLock::new(),
             sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
@@ -407,6 +412,8 @@ impl HostCore {
         let idle = std::sync::Arc::downgrade(self);
         let identity_build = runtime_build_id.clone();
         let performer = std::sync::Arc::downgrade(self);
+        let hold_ops = std::sync::Arc::downgrade(self);
+        let release_ops = std::sync::Arc::downgrade(self);
         let perform_endpoint = endpoint.clone();
         let handover = crate::host_idle_handover::HostIdleHandover::new(
             crate::host_idle_handover::HostIdleHandoverOptions {
@@ -416,6 +423,7 @@ impl HostCore {
                         &std::env::vars().collect(),
                     ),
                     runtime_build_id: Some(identity_build.clone()),
+                    engine: Some(maho_core::engine_build_identity::engine_build_identity().clone()),
                 }),
                 is_idle: Box::new(move || idle.upgrade().is_some_and(|core| core.is_host_idle())),
                 perform: Box::new(move |request| {
@@ -435,6 +443,16 @@ impl HostCore {
                         .await
                     })
                 }),
+                hold_new_work: Some(Box::new(move || {
+                    if let Some(core) = hold_ops.upgrade() {
+                        core.machine_ops.hold();
+                    }
+                })),
+                release_new_work: Some(Box::new(move || {
+                    if let Some(core) = release_ops.upgrade() {
+                        core.machine_ops.release();
+                    }
+                })),
                 poll_ms: None,
                 log: Some(Box::new(|line: &str| eprintln!("senpi rpc host: {line}"))),
             },
@@ -455,6 +473,9 @@ impl HostCore {
     /// made while another task holds it (an open, a close, a sweep) answers "not idle". That is the same answer the
     /// work in progress would give, and the idle handover re-judges on its next poll and after every request.
     fn is_host_idle(&self) -> bool {
+        if self.machine_ops.busy() {
+            return false;
+        }
         let sessionless = self
             .sessionless_requests
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -559,7 +580,7 @@ impl HostCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_draining()
     }
-    fn begin_request(&self, session_id: Option<&str>) -> Option<RequestGuard<'_>> {
+    pub(crate) fn begin_request(&self, session_id: Option<&str>) -> Option<RequestGuard<'_>> {
         let session_id = session_id?.to_owned();
         *self
             .active_requests
@@ -849,7 +870,22 @@ impl HostCore {
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
             crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
+            crate::host_capabilities::UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
+            UNLOAD_GRACEFUL_CAPABILITY,
             DETACH_CONNECTION_CAPABILITY,
+            OPEN_SESSION_HEADER_CWD_CAPABILITY,
+            DELEGATED_CONNECTION_CAPABILITY,
+            DELEGATION_ROLES_CAPABILITY,
+            PEER_AGENT_ROLE_CAPABILITY,
+            SAME_ACCOUNT_DELEGATION_CAPABILITY,
+            crate::machine_op::wire::MACHINE_OP_CAPABILITY,
+            crate::host_capabilities::FIND_SESSION_CAPABILITY,
+            crate::host_capabilities::SET_PERMISSION_PRESET_CAPABILITY,
+            crate::secret_input_presentations::SECRET_INPUT_CAPABILITY,
+            SESSION_MODEL_SCOPE_CAPABILITY,
+            PROVIDER_ACCOUNT_TEST_CAPABILITY,
+            ACCOUNT_RESET_CAPABILITY,
+            crate::host_decision::ENDPOINT_OWNER_FENCE_CAPABILITY,
             MEMORY_WRITE_DENY_CAPABILITY,
             MEMORY_WRITE_DENY_EFFECTS_CAPABILITY,
             EFFECT_TOOLS_DENY_CAPABILITY,
@@ -899,7 +935,7 @@ impl HostCore {
         }
     }
     /// The roles `connection` explicitly declared, handed to a worker isolate that keeps its own registry.
-    fn declared_roles(&self, connection: Option<&str>) -> Option<Vec<String>> {
+    pub(crate) fn declared_roles(&self, connection: Option<&str>) -> Option<Vec<String>> {
         self.connection_roles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1444,7 +1480,7 @@ impl HostCore {
     fn respond_value(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
         self.respond_record(connection, session_id, value);
     }
-    fn respond_record(
+    pub(crate) fn respond_record(
         &self,
         connection: Option<&str>,
         session_id: &str,
@@ -1468,7 +1504,7 @@ impl HostCore {
         }
         let _ = self.default_writer.enqueue(session_id, value);
     }
-    fn error(
+    pub(crate) fn error(
         &self,
         connection: Option<&str>,
         id: Option<String>,
@@ -1498,7 +1534,7 @@ impl HostCore {
         );
     }
     /// A refusal whose stable code is also `errorCode`, with the `errorData` a client acts on (senpi router `error`).
-    fn refuse(
+    pub(crate) fn refuse(
         &self,
         connection: Option<&str>,
         id: Option<String>,
@@ -1598,6 +1634,13 @@ impl HostCore {
                 error,
                 None,
             );
+            return Ok(());
+        }
+        if crate::multi_session_host_p9::handle_extended_host_command(self, connection, &value)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
             return Ok(());
         }
         let command = match serde_json::from_value::<crate::rpc_types::RpcCommand>(value.clone()) {
@@ -2609,7 +2652,7 @@ impl HostCore {
                 "interactive" => Some(maho_ext_api::SessionKind::Interactive),
                 _ => None,
             });
-        let parsed_context = context.as_ref().and_then(|c| {
+        let mut parsed_context = context.as_ref().and_then(|c| {
             c.as_object().map(|obj| {
                 obj.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
@@ -2624,6 +2667,23 @@ impl HostCore {
                 "{}: {error}",
                 crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
             )));
+        }
+        let public_host_socket = self.public_socket.get().and_then(|endpoint| {
+            if endpoint.is_empty() || endpoint.starts_with('\0') {
+                return None;
+            }
+            let path = std::path::Path::new(endpoint);
+            let base = path.file_name()?;
+            let dir = path
+                .parent()
+                .map(crate::session_path_key::canonical_session_path)
+                .unwrap_or_default();
+            Some(dir.join(base).to_string_lossy().into_owned())
+        });
+        if let Some(ref hs) = public_host_socket {
+            let ctx = parsed_context.get_or_insert_with(Default::default);
+            ctx.insert("host_socket".to_owned(), hs.clone());
+            ctx.insert("host_instance".to_owned(), instance_id.to_owned());
         }
         let profile = crate::session_registry::RpcSessionLaunchProfile {
             runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
@@ -2653,7 +2713,7 @@ impl HostCore {
             retry_fallback: retry_fallback.clone(),
             holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
                 host_instance: Some(instance_id.to_owned()),
-                host_socket: None,
+                host_socket: public_host_socket,
                 host_daemon_dir: std::env::var(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV)
                     .ok()
                     .filter(|dir| !dir.is_empty()),
@@ -4725,6 +4785,60 @@ mod handoff_tests {
         ))
     }
     #[tokio::test]
+    async fn open_session_stamps_host_socket_and_instance_when_public_socket_is_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<crate::session_registry::RpcSessionLaunchProfile>,
+        ));
+        let cap_clone = captured.clone();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |profile: crate::session_registry::RpcSessionLaunchProfile| {
+                *cap_clone.lock().unwrap() = Some(profile);
+                Box::pin(async { Err("stop after capture".to_owned()) })
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: temp.path().to_path_buf(),
+                cwd: temp.path().to_string_lossy().into_owned(),
+                create_runtime,
+                capabilities: vec![],
+                close_grace_ms: 10_000,
+            },
+            std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+                tokio::io::sink(),
+            )),
+        ));
+        let sock = temp.path().join("rpc/rpc.sock");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        core.install_endpoint_reservations(Some(&sock.to_string_lossy()))
+            .await;
+        let _ = core
+            .handle(
+                None,
+                r#"{"id":"o","type":"open_session","retain_on_disconnect":true,"context":{"role":"worker"}}"#,
+            )
+            .await;
+        let profile = captured.lock().unwrap().clone().expect("profile captured");
+        let ctx = profile.session_context.expect("session_context stamped");
+        assert_eq!(ctx.get("role").map(String::as_str), Some("worker"));
+        let expected_dir = crate::session_path_key::canonical_session_path(sock.parent().unwrap());
+        let expected_sock = expected_dir.join("rpc.sock").to_string_lossy().into_owned();
+        assert_eq!(
+            ctx.get("host_socket").map(String::as_str),
+            Some(expected_sock.as_str())
+        );
+        assert_eq!(
+            ctx.get("host_instance").map(String::as_str),
+            Some(crate::protocol_identity::host_instance_id())
+        );
+        assert_eq!(
+            profile.holder_endpoint.and_then(|h| h.host_socket),
+            Some(expected_sock)
+        );
+    }
+
+    #[tokio::test]
     async fn handoff_is_advertised_only_after_its_handler_is_installed() {
         let core = idle_core();
         assert!(!core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));
@@ -6192,11 +6306,37 @@ pub async fn run_multi_session_host_with_signals(
     listen: Option<String>,
     signals: HostShutdownSignals,
 ) -> std::io::Result<()> {
+    run_multi_session_host_inner(core, listen, signals, None).await
+}
+
+/// Serve a host and notify the caller once its endpoint is bound and published.
+pub async fn run_multi_session_host_with_signals_and_ready(
+    core: std::sync::Arc<HostCore>,
+    listen: Option<String>,
+    signals: HostShutdownSignals,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> std::io::Result<()> {
+    run_multi_session_host_inner(core, listen, signals, Some(ready)).await
+}
+
+async fn run_multi_session_host_inner(
+    core: std::sync::Arc<HostCore>,
+    listen: Option<String>,
+    signals: HostShutdownSignals,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> std::io::Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = signals;
         match listen.as_deref() {
-            None | Some("stdio://") => run_stdio_host(core).await,
+            None | Some("stdio://") => {
+                if let Some(ready) = ready
+                    && ready.send(()).is_err()
+                {
+                    eprintln!("senpi rpc host: readiness observer dropped");
+                }
+                run_stdio_host(core).await
+            }
             Some(_) => Err(std::io::Error::other(
                 "rpc host sockets are not supported on this platform yet",
             )),
@@ -6208,9 +6348,14 @@ pub async fn run_multi_session_host_with_signals(
             None | Some("stdio://") => {
                 // A stdio host serves no socket: it publishes claims only into a told daemon directory.
                 core.install_endpoint_reservations(None).await;
+                if let Some(ready) = ready
+                    && ready.send(()).is_err()
+                {
+                    eprintln!("senpi rpc host: readiness observer dropped");
+                }
                 run_stdio_host(core).await
             }
-            Some(path) => run_socket_host(core, path.to_owned(), signals).await,
+            Some(path) => run_socket_host(core, path.to_owned(), signals, ready).await,
         }
     }
 }
@@ -6415,6 +6560,7 @@ async fn run_socket_host(
     core: std::sync::Arc<HostCore>,
     listen: String,
     signals: HostShutdownSignals,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> std::io::Result<()> {
     #[cfg(unix)]
     let path = crate::host_ensure::normalize_socket_path(&listen).to_owned();
@@ -6619,6 +6765,9 @@ async fn run_socket_host(
             .await;
         });
     }
+    crate::host_startup_beacon::report_startup_milestone(
+        crate::host_startup_wire::StartupMilestone::HostRuntime,
+    );
     let mut listener = HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?;
     let bound = crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
     // A key record that cannot be published safely ends this host: held connections are refused, never served
@@ -6667,6 +6816,11 @@ async fn run_socket_host(
         crate::child_reaper::start_host_child_reaper(&env, std::env::consts::OS, |message| {
             eprintln!("senpi rpc host: {message}")
         });
+    if let Some(ready) = ready
+        && ready.send(()).is_err()
+    {
+        eprintln!("senpi rpc host: readiness observer dropped");
+    }
     loop {
         tokio::select! {
             biased;
@@ -6699,7 +6853,9 @@ async fn run_socket_host(
                 empty_since=None;
                 let core=core.clone();let counter=connections.clone();let transport=transport.clone();let handoff=handoff.clone();let draining_flag=draining_flag.clone();
                 tokio::spawn(async move{
-                    if let Some(stream)=transport.admit(socket).await{
+                    if let Some((stream, _launch_proof)) =
+                        transport.admit_with_launch_proof(socket).await
+                    {
                         if draining_flag.load(std::sync::atomic::Ordering::SeqCst){
                             let _=handoff.deliver_late(stream,arrived_before_drain);
                         }else{
@@ -6711,7 +6867,7 @@ async fn run_socket_host(
             }
             ()=tokio::time::sleep(tick)=>{
                 if draining&&core.drain_sweep().await{break;}
-                let empty=(draining||connections.load(std::sync::atomic::Ordering::SeqCst)==0)&&core.session_count().await==0;
+                let empty=(draining||connections.load(std::sync::atomic::Ordering::SeqCst)==0)&&core.session_count().await==0&&!core.machine_ops.busy();
                 match empty_exit_ms.filter(|window|window.is_finite()){
                     Some(window) if empty=>{let since=*empty_since.get_or_insert(tokio::time::Instant::now());if since.elapsed().as_secs_f64()*1000.>=window{break;}},
                     _=>empty_since=None,
@@ -6724,6 +6880,7 @@ async fn run_socket_host(
     observers.abort();
     idle.abort();
     core.dispose_handover();
+    core.machine_ops.dispose().await;
     if let Some(reaper) = reaper {
         reaper.stop();
     }

@@ -6,14 +6,17 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+pub use super::lock_lease::{LockLease, LockLeaseOptions, create_lock_lease};
 use super::lock_publish::publish_lock_record;
 pub use super::lock_reclaim::{
     LockReclaimDeps, LockReclaimOutcome, remove_lock_record_if_unchanged,
 };
-pub use super::lock_record::LOCK_OWNER_INSTANCE_ID as lock_owner_instance_id;
+pub use super::lock_record::{
+    LOCK_OWNER_INSTANCE_ID as lock_owner_instance_id, LockHolder, parse_lock_holder,
+};
 use super::lock_record::{
-    build_lock_record, is_lock_record_stale, is_path_absence_error, mark_lock_record_released,
-    read_lock_record,
+    build_lock_record, forget_lock_record, is_lock_record_stale, is_path_absence_error,
+    mark_lock_record_released, read_lock_record,
 };
 use crate::clock::now_ms;
 use crate::error::{Result, TeamCoreError};
@@ -105,54 +108,16 @@ pub fn assert_retryable_lock_open_error_with(
     Err(error)
 }
 
-#[cfg(unix)]
-pub(super) fn is_pid_alive(pid: i64) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // SAFETY: kill with signal 0 only probes for process existence.
-    // Pin `locks.ts:95-104`: any `process.kill(pid, 0)` failure, EPERM included, means not alive.
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0
-}
-
-#[cfg(windows)]
-pub(super) fn is_pid_alive(pid: i64) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let Ok(pid) = u32::try_from(pid) else {
-        return false;
-    };
-    // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        // Pin `locks.ts:95-104`: libuv's `process.kill(pid, 0)` fails on any OpenProcess failure
-        // (access denied included), and upstream reads every failure as not alive.
-        return false;
-    }
-    let mut exit_code = 0u32;
-    // SAFETY: `handle` is a live process handle and `exit_code` outlives the call.
-    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
-    // SAFETY: `handle` came from OpenProcess and is closed exactly once.
-    unsafe { CloseHandle(handle) };
-    queried != 0 && exit_code == STILL_ACTIVE as u32
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(super) fn is_pid_alive(_pid: i64) -> bool {
-    // Without a process probe the safe answer is "still running": a lock is then only reclaimed
-    // through its staleness deadline, never because a live owner was mistaken for a dead one.
-    true
-}
-
 fn acquire_lock(lock_path: &Path, owner_tag: &str, stale_after_ms: i64) -> Result<String> {
     let started_at = now_ms();
     loop {
         if now_ms() - started_at > LOCK_WAIT_TIMEOUT_MS {
-            return Err(TeamCoreError::LockTimeout(lock_path.display().to_string()));
+            let holder =
+                read_lock_record(lock_path).and_then(|record| parse_lock_holder(&record.content));
+            return Err(TeamCoreError::LockWaitTimeout {
+                lock_path: lock_path.display().to_string(),
+                holder,
+            });
         }
         let record = build_lock_record(owner_tag);
         if publish_lock_record(lock_path, &record)? {
@@ -168,10 +133,10 @@ fn acquire_lock(lock_path: &Path, owner_tag: &str, stale_after_ms: i64) -> Resul
     }
 }
 
-/// `withLock`: run `run` while holding the lock file; the lock is released afterwards.
-pub fn with_lock<T>(
+/// `withLock` receiving a [`LockLease`] for worker-handover critical sections (`#11262`).
+pub fn with_lock_lease<T>(
     lock_path: &Path,
-    run: impl FnOnce() -> Result<T>,
+    run: impl FnOnce(&LockLease<'_>) -> Result<T>,
     opts: Option<&LockOptions>,
 ) -> Result<T> {
     let stale_after_ms = opts
@@ -181,15 +146,39 @@ pub fn with_lock<T>(
         .and_then(|opts| opts.owner_tag.as_deref())
         .unwrap_or("owner");
     let record = acquire_lock(lock_path, owner_tag, stale_after_ms)?;
-    let result = run();
+    let lease = create_lock_lease(
+        lock_path,
+        record.clone(),
+        owner_tag,
+        LockLeaseOptions {
+            stale_after_ms: Some(stale_after_ms),
+            before_restore_rename: None,
+        },
+    );
+    let result = run(&lease);
     mark_lock_record_released(&record);
-    remove_lock_record_if_unchanged(
+    let outcome = remove_lock_record_if_unchanged(
         lock_path,
         &record,
         stale_after_ms,
         &LockReclaimDeps::default(),
     )?;
+    if matches!(
+        outcome,
+        LockReclaimOutcome::Removed | LockReclaimOutcome::Absent | LockReclaimOutcome::Changed
+    ) {
+        forget_lock_record(&record);
+    }
     result
+}
+
+/// `withLock`: run `run` while holding the lock file; the lock is released afterwards.
+pub fn with_lock<T>(
+    lock_path: &Path,
+    run: impl FnOnce() -> Result<T>,
+    opts: Option<&LockOptions>,
+) -> Result<T> {
+    with_lock_lease(lock_path, |_| run(), opts)
 }
 
 /// `detectStaleLock`: observe and apply the record's owner and age rules.
@@ -279,6 +268,7 @@ pub fn atomic_write_with(
 #[cfg(test)]
 mod threshold_tests {
     use super::*;
+    use crate::team_state_store::lock_worker_lifetime::mark_lock_record_held;
 
     #[test]
     fn release_preserves_a_republished_record() {
@@ -307,17 +297,30 @@ mod threshold_tests {
     fn acquisition_reclaims_own_leftover_and_recycled_pid() {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("lock");
-        for instance in [lock_owner_instance_id.as_str(), "foreign-instance"] {
+        let pid = std::process::id();
+        let leftover = build_lock_record("owner");
+        mark_lock_record_held(&leftover);
+        mark_lock_record_released(&leftover);
+        fs::write(&path, &leftover).expect("leftover");
+        assert!(detect_stale_lock(&path, 300_000));
+        assert_eq!(
+            with_lock(&path, || Ok("acquired"), None).expect("acquire"),
+            "acquired"
+        );
+        assert!(!path.exists());
+        forget_lock_record(&leftover);
+
+        if let Some(actual) = memory_core::locks::get_process_start_identity(pid) {
+            let scheme = actual.split(':').next().unwrap_or("linux-proc-start-ticks");
             fs::write(
                 &path,
                 format!(
-                    "owner {}\n{}\n{}\n{instance}\n",
+                    "owner {}\n{pid}\n{}\nforeign-instance\n{scheme}:0\n",
                     uuid::Uuid::new_v4(),
-                    std::process::id(),
                     now_ms()
                 ),
             )
-            .expect("leftover");
+            .expect("recycled leftover");
             assert!(detect_stale_lock(&path, 300_000));
             assert_eq!(
                 with_lock(&path, || Ok("acquired"), None).expect("acquire"),

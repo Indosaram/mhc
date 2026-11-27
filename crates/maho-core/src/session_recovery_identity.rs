@@ -21,6 +21,16 @@ pub fn carry_recovery(from: Option<&RecoveryCarrier>) -> Option<RecoveryCarrier>
     from.cloned()
 }
 
+/// Every copy of a record (and its execution call key when present) keeps the original's carrier.
+pub fn carry_recovery_with_call_key<T: crate::session_call_keys::CallKeyCarry>(
+    from: Option<&RecoveryCarrier>,
+    from_key: Option<&str>,
+    to: &mut T,
+) -> Option<RecoveryCarrier> {
+    crate::session_call_keys::carry_execution_call_key(from_key, to);
+    carry_recovery(from)
+}
+
 /// A committed lifecycle delivery can predate its terminal record.
 pub fn hint(
     carrier: Option<RecoveryCarrier>,
@@ -69,6 +79,18 @@ impl SessionRecoveryIdentity {
         self.epoch = epoch.to_owned();
         self.open_assistant = None;
         self.by_message.clear();
+    }
+
+    /// A block control belongs to the assistant message open at its emission; it gets that
+    /// message's identity.
+    pub fn own(&self) -> Option<RecoveryCarrier> {
+        self.open_assistant
+            .as_ref()
+            .map(|message_id| RecoveryCarrier {
+                message_id: message_id.clone(),
+                epoch: self.epoch.clone(),
+                durable_entry_id: None,
+            })
     }
 
     /// Observes one `message_start` / `message_update` / `message_end` event and returns its carrier.

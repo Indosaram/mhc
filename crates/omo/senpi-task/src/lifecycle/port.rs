@@ -44,12 +44,20 @@ pub enum ResidentKind {
 /// The teardown seam of a resident child. Only the lifecycle invokes these.
 pub trait ResidentHandle: Send + Sync {
     fn task_id(&self) -> &str;
+    /// Whether this resident wraps the exact managed handle whose run just settled.
+    fn is_same_managed(&self, _handle: &Arc<dyn ManagedChildHandle>) -> Option<bool> {
+        None
+    }
     fn kind(&self) -> ResidentKind;
     fn pid(&self) -> Option<i64>;
     fn abort(&self) -> Result<(), HostError>;
     fn dispose(&self) -> Result<(), HostError>;
     fn terminate(&self) -> Result<(), HostError>;
     fn mark_stopping(&self) {}
+    /// Host-session: the host answered this handle's end of its session (`#11765`).
+    fn host_end_answered(&self) -> bool {
+        false
+    }
     fn is_host_session(&self) -> bool {
         false
     }

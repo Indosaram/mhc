@@ -39,7 +39,7 @@ mod tests {
                 "monitor"
             ]
         );
-        assert_eq!(super::TERMINAL_COMPANION_TOOLS.len(), 5);
+        assert_eq!(super::TERMINAL_COMPANION_TOOLS.len(), 3);
         let _: super::TerminalExtension = super::TerminalExtension;
     }
 }

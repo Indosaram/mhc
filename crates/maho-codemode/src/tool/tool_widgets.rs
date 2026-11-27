@@ -1,7 +1,9 @@
 //! Port of `tool/tool-widgets.ts`: bounded nested tool-call widgets for eval cards. Core tools
 //! (bash/read/write/grep/find/ls) draw through the native built-in call renderers; every other
 //! call falls back to a compact `tool.name(args)` row.
-use maho_ext_api::Theme;
+use maho_ext_api::{
+    AgentToolResult, ContentBlock, ErasedToolRenderers, Theme, ToolRenderResultOptions,
+};
 use maho_tui::{components::text::Text, terminal_text::sanitize_terminal_label, tui::Component};
 use regex::Regex;
 use serde_json::Value;
@@ -10,8 +12,11 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
 };
+
+pub type NestedToolRendererLookup =
+    Arc<dyn Fn(&str) -> Option<Arc<dyn ErasedToolRenderers>> + Send + Sync>;
 
 pub struct WidgetOptions<'a> {
     pub cwd: &'a Path,
@@ -22,6 +27,7 @@ pub struct WidgetOptions<'a> {
 
 const MIN_RENDERER_WIDTH: usize = 20;
 const MAX_RENDERER_LINES: usize = 5;
+const MAX_EXPANDED_RESULT_LINES: usize = 40;
 const MAX_FALLBACK_ARGUMENT_CODE_POINTS: usize = 120;
 const MAX_COLLAPSED_ERROR_CODE_POINTS: usize = 512;
 const MAX_COLLAPSED_ERROR_LINES: usize = 4;
@@ -347,22 +353,134 @@ fn render_error(error: &str, options: &WidgetOptions<'_>, width: usize) -> Vec<S
     render_collapsed_error(&sanitized, options, width)
 }
 
+pub fn is_core_widget_name(name: &str) -> bool {
+    matches!(
+        name,
+        "bash" | "read" | "write" | "edit" | "grep" | "find" | "ls"
+    )
+}
+
+fn capped_erased_lines(rendered: Vec<String>, max_lines: usize, theme: &Theme) -> Vec<String> {
+    let trimmed: Vec<String> = rendered
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect();
+    let mut retained: Vec<String> = trimmed.iter().take(max_lines).cloned().collect();
+    if trimmed.len() > retained.len() {
+        retained.push(style(Some(theme), "muted", WIDGET_TRUNCATION_MARKER));
+    }
+    indent(retained)
+}
+
+fn render_own_call(
+    own: &dyn ErasedToolRenderers,
+    summary: &Value,
+    options: &WidgetOptions<'_>,
+) -> Option<Vec<String>> {
+    let theme = options.theme?;
+    let inner_width = options.width.checked_sub(2)?;
+    if !own.has_call_renderer()
+        || inner_width < MIN_RENDERER_WIDTH
+        || summary["argsTruncated"] == true
+    {
+        return None;
+    }
+    let rendered = own.render_call(summary.get("args")?, theme, inner_width)?;
+    Some(capped_erased_lines(rendered, MAX_RENDERER_LINES, theme))
+}
+
+fn render_own_result(
+    own: &dyn ErasedToolRenderers,
+    summary: &Value,
+    options: &WidgetOptions<'_>,
+) -> Option<Vec<String>> {
+    let theme = options.theme?;
+    let inner_width = options.width.checked_sub(2)?;
+    let details = summary.get("details")?;
+    if !own.has_result_renderer() || details.is_null() || inner_width < MIN_RENDERER_WIDTH {
+        return None;
+    }
+    let preview = summary["resultPreview"]
+        .as_str()
+        .or_else(|| summary["error"].as_str())
+        .unwrap_or("");
+    let result = AgentToolResult {
+        content: vec![ContentBlock::Text(maho_ai::types::TextContent {
+            text: preview.to_owned(),
+            audience: None,
+            text_signature: None,
+        })],
+        details: details.clone(),
+        structured_content: None,
+        usage: None,
+        nested_calls: None,
+        added_tool_names: None,
+        terminate: None,
+        is_error: None,
+    };
+    let is_error = summary["ok"] != true;
+    let rendered = own.render_result_with(
+        summary.get("args").unwrap_or(&Value::Null),
+        &result,
+        ToolRenderResultOptions {
+            expanded: options.expanded,
+            is_partial: false,
+        },
+        is_error,
+        theme,
+        inner_width,
+    )?;
+    let max_lines = if options.expanded {
+        MAX_EXPANDED_RESULT_LINES
+    } else {
+        MAX_RENDERER_LINES
+    };
+    Some(capped_erased_lines(rendered, max_lines, theme))
+}
+
 /// senpi `renderToolCallWidget`. The theme-less fallback is QA-only: `render.rs` routes theme-less
 /// renders to the legacy rows before this is called.
 pub fn render_tool_call_widget(summary: &Value, options: &WidgetOptions<'_>) -> Vec<String> {
+    render_tool_call_widget_with_renderers(summary, options, None)
+}
+
+pub fn render_tool_call_widget_with_renderers(
+    summary: &Value,
+    options: &WidgetOptions<'_>,
+    renderers: Option<&NestedToolRendererLookup>,
+) -> Vec<String> {
     let inner_width = options.width.saturating_sub(2).max(1);
-    let mut lines = render_core_widget(text(summary, "name"), summary, options)
-        .unwrap_or_else(|| render_fallback(summary, inner_width));
+    let name = text(summary, "name");
+    let is_core = is_core_widget_name(name);
+    let own = if is_core {
+        None
+    } else {
+        renderers.and_then(|lookup| lookup(name))
+    };
+    let call_lines = if is_core {
+        render_core_widget(name, summary, options)
+    } else {
+        own.as_deref()
+            .and_then(|own| render_own_call(own, summary, options))
+    };
+    let mut lines = call_lines.unwrap_or_else(|| render_fallback(summary, inner_width));
     lines.extend(render_status(summary, options, inner_width));
     let ok = summary["ok"] == true;
-    match (
-        ok,
-        summary["resultPreview"].as_str(),
-        summary["error"].as_str(),
-    ) {
-        (true, Some(preview), _) => lines.extend(render_preview(preview, options, inner_width)),
-        (false, _, Some(error)) => lines.extend(render_error(error, options, inner_width)),
-        _ => {}
+    let own_result = own
+        .as_deref()
+        .and_then(|own| render_own_result(own, summary, options));
+    if let Some(own_result) = own_result {
+        lines.extend(own_result);
+    } else {
+        match (
+            ok,
+            summary["resultPreview"].as_str(),
+            summary["error"].as_str(),
+        ) {
+            (true, Some(preview), _) => lines.extend(render_preview(preview, options, inner_width)),
+            (false, _, Some(error)) => lines.extend(render_error(error, options, inner_width)),
+            _ => {}
+        }
     }
     if !options.expanded {
         lines.truncate(MAX_COLLAPSED_WIDGET_LINES);

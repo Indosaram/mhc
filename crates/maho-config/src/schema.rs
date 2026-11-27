@@ -701,6 +701,13 @@ fn sections(include_gateway: bool) -> Vec<Field> {
         ),
         f("computer", computer()),
         f("disabled_skills", array(s())),
+        f("keyword_detector", {
+            const MODES: &[&str] = &["ultrawork", "team", "hyperplan", "hyperplan-ultrawork"];
+            obj(vec![
+                f("enabled_expansions", array(e(MODES))),
+                f("disabled_keywords", array(e(MODES))),
+            ])
+        }),
         f(
             "mcp",
             obj(vec![

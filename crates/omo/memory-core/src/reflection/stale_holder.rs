@@ -168,6 +168,28 @@ fn format_pid(value: f64) -> String {
 
 /// A live pid still counts as gone when its recorded start identity proves the pid was reused. An
 /// unreadable or incomparable start keeps it live.
+pub fn reflection_launcher_liveness(
+    pid: u32,
+    recorded_start: Option<&str>,
+    probe: &dyn ReflectionLockProbe,
+) -> ProcessLiveness {
+    let liveness = probe.pid_liveness(pid);
+    if liveness != ProcessLiveness::Alive {
+        return liveness;
+    }
+    let Some(recorded) = recorded_start else {
+        return liveness;
+    };
+    let actual = probe.process_start_identity(pid).unwrap_or(None);
+    match actual {
+        Some(actual) if start_identities_comparable(recorded, &actual) && recorded != actual => {
+            // rule:pid-reused
+            ProcessLiveness::Dead
+        }
+        _ => ProcessLiveness::Alive,
+    }
+}
+
 fn launcher_liveness(
     pid: f64,
     recorded_start: Option<&str>,
@@ -176,21 +198,7 @@ fn launcher_liveness(
     let Some(pid_value) = pid_u32(pid) else {
         return ProcessLiveness::Unknown;
     };
-    let liveness = probe.pid_liveness(pid_value);
-    if liveness != ProcessLiveness::Alive {
-        return liveness;
-    }
-    let Some(recorded) = recorded_start else {
-        return liveness;
-    };
-    let actual = probe.process_start_identity(pid_value).unwrap_or(None);
-    match actual {
-        Some(actual) if start_identities_comparable(recorded, &actual) && recorded != actual => {
-            // rule:pid-reused
-            ProcessLiveness::Dead
-        }
-        _ => ProcessLiveness::Alive,
-    }
+    reflection_launcher_liveness(pid_value, recorded_start, probe)
 }
 
 /// Classifies the reflection lock holder from `reflection_dir`.

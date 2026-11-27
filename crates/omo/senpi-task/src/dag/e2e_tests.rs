@@ -101,7 +101,6 @@ fn given_a_linear_three_node_definition_when_the_real_engine_runs_then_every_eve
     );
     let started = dag_manager
         .start(DagStartParams {
-            parent_model: None,
             definition: input,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -257,7 +256,6 @@ fn given_a_failed_root_when_the_real_engine_runs_then_the_dependent_chain_is_ski
     );
     let started = dag_manager
         .start(DagStartParams {
-            parent_model: None,
             definition: input,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -360,7 +358,6 @@ impl ScriptedFixture {
     fn start(&self, input: DagDefinition) -> crate::dag::manager::DagStartResult {
         self.manager
             .start(DagStartParams {
-                parent_model: None,
                 definition: input,
                 parent_session_id: PARENT_SESSION_ID.into(),
                 root_session_id: ROOT_SESSION_ID.into(),
@@ -624,7 +621,6 @@ fn changed_prompt_conflict_preserves_checkpoint_events_and_tasks() {
     let error = fixture
         .manager
         .start(DagStartParams {
-            parent_model: None,
             definition: changed,
             parent_session_id: PARENT_SESSION_ID.into(),
             root_session_id: ROOT_SESSION_ID.into(),

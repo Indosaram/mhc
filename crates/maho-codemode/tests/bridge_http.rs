@@ -114,6 +114,7 @@ fn options() -> BridgeServerOptions {
         on_completion: Arc::new(|request| {
             Box::pin(async move { Ok(json!({"prompt":request.prompt,"opts":request.opts})) })
         }),
+        on_kill_guard_check: None,
     }
 }
 
@@ -410,4 +411,73 @@ async fn emit_handler_receives_only_protocol_fields() {
     .await;
     assert_eq!(status, 204);
     assert!(reply.is_none());
+}
+
+#[tokio::test]
+async fn permission_check_and_kill_guard_routes_and_cell_token() {
+    let (status, reply) = dispatch_bridge_http_request(
+        "POST",
+        "/kill_guard_check",
+        None,
+        "test",
+        br#"{"pid":123}"#,
+        &options(),
+        AbortController::new().signal(),
+    )
+    .await;
+    assert_eq!(status, 404);
+    assert_eq!(reply.unwrap()["error"]["code"], "not_found");
+
+    let mut wired = options();
+    wired.on_call = Arc::new(|request| {
+        Box::pin(async move {
+            Ok(json!({
+                "toolName": request.tool_name,
+                "cellToken": request.cell_token,
+            }))
+        })
+    });
+    wired.on_kill_guard_check = Some(Arc::new(|body| {
+        Box::pin(async move { Ok(json!({"allow": body["pid"] == 123})) })
+    }));
+    let (status, reply) = dispatch_bridge_http_request(
+        "POST",
+        "/kill_guard_check",
+        None,
+        "test",
+        br#"{"pid":123}"#,
+        &wired,
+        AbortController::new().signal(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(reply.unwrap()["value"]["allow"], true);
+
+    let (status, reply) = dispatch_bridge_http_request(
+        "POST",
+        "/call",
+        Some("Bearer test"),
+        "test",
+        br#"{"callId":"c-1","toolName":"read","args":{},"cellToken":"cell-tok-1"}"#,
+        &wired,
+        AbortController::new().signal(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(reply.unwrap()["value"]["cellToken"], "cell-tok-1");
+
+    let (status, reply) = dispatch_bridge_http_request(
+        "POST",
+        "/permission_check",
+        Some("Bearer test"),
+        "test",
+        br#"{}"#,
+        &wired,
+        AbortController::new().signal(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = reply.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["message"], "Invalid permission request");
 }

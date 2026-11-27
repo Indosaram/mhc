@@ -1,3 +1,4 @@
+use model_core::latest_models::{CLAUDE_FABLE, GPT_ASTRA, GPT_SOL};
 use std::collections::HashSet;
 
 use serde_json::{Map, Value};
@@ -32,7 +33,7 @@ pub struct BuiltinCategoryDefinition {
     pub description: &'static str,
     pub prompt_append: &'static str,
     pub resolve_prompt_append: Option<fn(Option<&str>) -> &'static str>,
-    pub requires_model: Option<&'static str>,
+    pub requires_model: &'static [&'static str],
 }
 
 const fn config(model: &'static str, variant: Option<&'static str>) -> BuiltinCategoryConfig {
@@ -56,78 +57,86 @@ pub fn resolve_deep_category_prompt_append(model: Option<&str>) -> &'static str 
 }
 
 /// Declared in the TypeScript order: google, openai, anthropic, then kimi categories.
-pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 9] = [
+pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
     BuiltinCategoryDefinition {
         name: "visual-engineering",
-        config: config("anthropic/claude-opus-5", Some("max")),
+        config: config("google/gemini-4-argon", Some("low")),
         description: prompts::VISUAL_ENGINEERING_DESCRIPTION,
         prompt_append: prompts::VISUAL_ENGINEERING_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: None,
+        requires_model: &[],
     },
     BuiltinCategoryDefinition {
         name: "artistry",
-        config: config("anthropic/claude-fable-5-1", Some("max")),
+        config: config("anthropic/claude-fable-5-2", Some("max")),
         description: prompts::ARTISTRY_DESCRIPTION,
         prompt_append: prompts::ARTISTRY_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: None,
+        requires_model: &[],
     },
     BuiltinCategoryDefinition {
         name: "ultrabrain",
-        config: config("openai/gpt-5.6-sol", Some("max")),
+        config: config("chatgpt-subscription/gpt-6.2-astra", Some("max")),
         description: prompts::ULTRABRAIN_DESCRIPTION,
         prompt_append: prompts::ULTRABRAIN_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: Some("gpt-5.6-sol"),
+        requires_model: &[GPT_ASTRA],
     },
     BuiltinCategoryDefinition {
-        name: "deep",
-        config: config("openai/gpt-5.6-sol", Some("medium")),
-        description: prompts::DEEP_DESCRIPTION,
+        name: "deep-low",
+        config: config("chatgpt-subscription/gpt-6.2-sol", Some("medium")),
+        description: "Default deep lane: one goal, one deliverable, decisions the child can settle from what it reads; preferred over deep-high for 3D graphics, computer/browser use, CAPTCHA, multimodal, backend, logic, and algorithm work. Multiple goals fan out as parallel calls.",
         prompt_append: prompts::DEEP_PROMPT_APPEND,
         resolve_prompt_append: Some(resolve_deep_category_prompt_append),
-        requires_model: Some("gpt-5.6-sol"),
+        requires_model: &[GPT_SOL],
+    },
+    BuiltinCategoryDefinition {
+        name: "deep-high",
+        config: config("chatgpt-subscription/gpt-6.2-astra", Some("high")),
+        description: "Escalation deep lane: a goal whose central decision cannot be settled from evidence alone. Same one-goal, one-deliverable contract as deep-low.",
+        prompt_append: prompts::DEEP_PROMPT_APPEND,
+        resolve_prompt_append: Some(resolve_deep_category_prompt_append),
+        requires_model: &[GPT_ASTRA],
     },
     BuiltinCategoryDefinition {
         name: "quick",
-        config: config("kimi-coding/kimi-for-coding-highspeed", None),
+        config: config("chatgpt-subscription/gpt-6-luna-fast", Some("low")),
         description: prompts::QUICK_DESCRIPTION,
         prompt_append: prompts::QUICK_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: None,
+        requires_model: &[],
     },
     BuiltinCategoryDefinition {
         name: "unspecified-low",
-        config: config("xai/grok-4.6", Some("xhigh")),
+        config: config("anthropic/claude-sonnet-5-5", Some("medium")),
         description: prompts::UNSPECIFIED_LOW_DESCRIPTION,
         prompt_append: prompts::UNSPECIFIED_LOW_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: None,
-    },
-    BuiltinCategoryDefinition {
-        name: "architect",
-        config: config("anthropic/claude-fable-5", Some("xhigh")),
-        description: prompts::ARCHITECT_DESCRIPTION,
-        prompt_append: prompts::ARCHITECT_PROMPT_APPEND,
-        resolve_prompt_append: None,
-        requires_model: Some("claude-fable-5"),
+        requires_model: &[],
     },
     BuiltinCategoryDefinition {
         name: "unspecified-high",
-        config: config("kimi-coding/k3", Some("max")),
+        config: config("anthropic/claude-opus-5-5", Some("medium")),
         description: prompts::UNSPECIFIED_HIGH_DESCRIPTION,
         prompt_append: prompts::UNSPECIFIED_HIGH_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: None,
+        requires_model: &[],
+    },
+    BuiltinCategoryDefinition {
+        name: "architect",
+        config: config("anthropic/claude-fable-5-2", Some("xhigh")),
+        description: prompts::ARCHITECT_DESCRIPTION,
+        prompt_append: prompts::ARCHITECT_PROMPT_APPEND,
+        resolve_prompt_append: None,
+        requires_model: &[CLAUDE_FABLE, "claude-fable-5-1"],
     },
     BuiltinCategoryDefinition {
         name: "writing",
-        config: config("kimi-coding/k3", Some("low")),
+        config: config("google/gemini-4-argon", Some("low")),
         description: prompts::WRITING_DESCRIPTION,
         prompt_append: prompts::WRITING_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: None,
+        requires_model: &[],
     },
 ];
 
@@ -137,52 +146,43 @@ pub fn builtin_category(name: &str) -> Option<&'static BuiltinCategoryDefinition
         .find(|definition| definition.name == name)
 }
 
-/// `BUILTIN_CATEGORY_REQUIRES_MODEL` as ordered `(category, gate model)` pairs.
-pub fn builtin_category_requires_model() -> Vec<(&'static str, &'static str)> {
-    BUILTIN_CATEGORY_DEFAULTS
-        .iter()
-        .filter_map(|definition| {
-            definition
-                .requires_model
-                .map(|model| (definition.name, model))
-        })
-        .collect()
+pub fn category_gate_models(category_name: &str) -> &'static [&'static str] {
+    builtin_category(category_name).map_or(&[], |definition| definition.requires_model)
 }
 
-pub fn category_gate_model(category_name: &str) -> Option<&'static str> {
-    builtin_category(category_name).and_then(|definition| definition.requires_model)
+fn provider_serves_model(provider: &str, model: &str, available: &HashSet<String>) -> bool {
+    available.contains(&format!("{provider}/{model}"))
+        || available.contains(&format!(
+            "{provider}/{}",
+            crate::delegate_adapter::transform_model_for_provider(provider, model)
+        ))
 }
 
 pub fn is_category_gate_satisfied(
     category_name: &str,
     has_explicit_user_config: bool,
-    available_model_ids: &HashSet<String>,
+    available: &HashSet<String>,
 ) -> bool {
-    match category_gate_model(category_name) {
-        Some(gate_model) if !has_explicit_user_config => available_model_ids.contains(gate_model),
-        _ => true,
-    }
+    let gates = category_gate_models(category_name);
+    has_explicit_user_config
+        || gates.is_empty()
+        || category_fallback_chain(category_name)
+            .into_iter()
+            .flatten()
+            .any(|rung| {
+                gates.contains(&rung.model.as_str())
+                    && is_category_chain_rung_resolvable(rung, available)
+            })
 }
 
-fn transform_chain_model_id<'a>(provider: &str, model: &'a str) -> &'a str {
-    match (provider, model) {
-        ("kimi-coding" | "kimi-for-coding", "kimi-k3") => "k3",
-        ("kimi-coding" | "kimi-for-coding", "kimi-k3-256k") => "k3-256k",
-        ("kimi-coding" | "kimi-for-coding", "kimi-k3.1-pro") => "k3.1-pro",
-        _ => model,
-    }
-}
-
-/// A rung resolves when the registry exposes its model id directly (including a gateway-unwrapped
-/// id) or through the provider-specific id transform (`kimi-coding/k3` satisfies `kimi-k3`).
 pub fn is_category_chain_rung_resolvable(
     entry: &DelegateFallbackEntry,
-    available_model_ids: &HashSet<String>,
+    available: &HashSet<String>,
 ) -> bool {
-    available_model_ids.contains(&entry.model)
-        || entry.providers.iter().any(|provider| {
-            available_model_ids.contains(transform_chain_model_id(provider, &entry.model))
-        })
+    entry
+        .providers
+        .iter()
+        .any(|provider| provider_serves_model(provider, &entry.model, available))
 }
 
 /// A builtin-only category is usable only when at least one fallback rung resolves; any explicit

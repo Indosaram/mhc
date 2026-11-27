@@ -16,6 +16,7 @@ pub mod manager;
 pub mod model_chain;
 pub mod model_chains;
 pub mod model_exclusion;
+pub mod models_distribution;
 pub mod pause;
 pub mod progress;
 pub mod renderer_text;
@@ -39,16 +40,24 @@ pub use isolation::OwnerProbe;
 pub use isolation::{IsolationRuntime, create_isolation_runtime, isolation_backends};
 
 pub use agents::resolve_task_agents;
-pub use completion::{
-    ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason,
-    describe_parent_model_fallback,
-};
+pub use category::ModelSelectionSource;
 pub use manager::start_admission::{
     AdmissionHeld, HELD_START_KIND, HeldStart, StartAdmission, StartAdmissionError,
     StartAdmissions, StartOutcome, admission_held_result, enter_start_admission,
 };
+pub use models_distribution::{ModelDistributor, ModelsDistribution};
 pub use pause::admission_barrier::{
     AdmissionBarrier, AdmissionBarrierError, AdmissionCheck, AdmissionCommit, AdmissionEntry,
     AdmissionParticipant, AdmissionState, AdmissionTicket, ResumeCredential,
 };
 pub use pause::ports::{RunPauseOwner, RunRef, RunRefKind};
+pub use runners::child_dialogs::{
+    CANCELLED_CHILD_DIALOG, ChildDialogForwarder, ChildDialogSignal, ForegroundDialogOrigins,
+    ForwardableDialog, ForwardedAnswer, ForwardedChild, shared_foreground_dialog_origins,
+};
+pub use runners::designated_chain_error::{
+    DesignatedChainNotHeldError, DesignatedChainNotHeldReason,
+};
+pub use runners::in_process::OwnApprovalMode;
+pub use runners::parent_link::{ChildParentLink, ParentPermissionMode};
+pub use runners::rpc_host::generation_view::create_host_generation_view;

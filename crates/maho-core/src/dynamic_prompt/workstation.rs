@@ -1,6 +1,120 @@
 //! Port of senpi `packages/coding-agent/src/core/dynamic-prompt/workstation.ts`.
 
+use std::path::Path;
 use std::sync::LazyLock;
+
+const WORKSTATION_ENV: &str = "SENPI_TEST_WORKSTATION";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PinnedRepoRoot {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PinnedHost {
+    cpu_model: String,
+    cores: usize,
+    kernel: String,
+    repo_root: Option<PinnedRepoRoot>,
+}
+
+fn parse_pinned_repo_root(value: &serde_json::Value) -> Option<PinnedRepoRoot> {
+    let obj = value.as_object()?;
+    if obj.len() != 2 {
+        return None;
+    }
+    let from = obj.get("from").and_then(serde_json::Value::as_str)?;
+    let to = obj.get("to").and_then(serde_json::Value::as_str)?;
+    if !Path::new(from).is_absolute() || !Path::new(to).is_absolute() {
+        return None;
+    }
+    Some(PinnedRepoRoot {
+        from: from.to_owned(),
+        to: to.to_owned(),
+    })
+}
+
+fn pinned_host_from_env(val: Option<&str>) -> Option<PinnedHost> {
+    let raw = val.filter(|v| !v.is_empty())?;
+    let invalid = || -> ! {
+        panic!(
+            "{WORKSTATION_ENV} must be a JSON object {{\"cpuModel\": non-empty string, \"cores\": positive integer, \"kernel\": non-empty string, optional \"repoRoot\": {{\"from\": absolute path, \"to\": absolute path}}}}, got {}",
+            serde_json::to_string(raw).unwrap_or_default()
+        )
+    };
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(raw)
+    else {
+        invalid();
+    };
+    let extra_ok = fields
+        .keys()
+        .all(|k| matches!(k.as_str(), "cpuModel" | "cores" | "kernel" | "repoRoot"));
+    let repo_root = fields
+        .get("repoRoot")
+        .map(|v| parse_pinned_repo_root(v).unwrap_or_else(|| invalid()));
+    let Some(cpu_model) = fields
+        .get("cpuModel")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+    else {
+        invalid();
+    };
+    let Some(kernel) = fields
+        .get("kernel")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+    else {
+        invalid();
+    };
+    let Some(cores) = fields
+        .get("cores")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|n| *n >= 1)
+        .and_then(|n| usize::try_from(n).ok())
+    else {
+        invalid();
+    };
+    if !extra_ok {
+        invalid();
+    }
+    Some(PinnedHost {
+        cpu_model,
+        cores,
+        kernel,
+        repo_root,
+    })
+}
+
+pub fn pinned_display_path(file_path: &str) -> String {
+    let val = std::env::var(WORKSTATION_ENV).ok();
+    pinned_display_path_with_env(file_path, val.as_deref())
+}
+
+pub fn pinned_display_path_with_env(file_path: &str, env_val: Option<&str>) -> String {
+    let Some(root) = pinned_host_from_env(env_val).and_then(|h| h.repo_root) else {
+        return file_path.to_owned();
+    };
+    if file_path == root.from {
+        return root.to;
+    }
+    let sep = std::path::MAIN_SEPARATOR;
+    let prefix = if root.from.ends_with(sep) {
+        root.from.clone()
+    } else {
+        format!("{}{sep}", root.from)
+    };
+    if let Some(rest) = file_path.strip_prefix(&prefix) {
+        Path::new(&root.to)
+            .join(rest)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        file_path.to_owned()
+    }
+}
 
 /// `WorkstationFacts`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,10 +289,24 @@ fn os_release() -> String {
 static CACHED_FACTS: LazyLock<WorkstationFacts> = LazyLock::new(collect_workstation_facts_uncached);
 
 fn collect_workstation_facts_uncached() -> WorkstationFacts {
-    let cpu = cpu_model();
-    let cores = std::thread::available_parallelism()
-        .map(|cores| cores.get())
-        .unwrap_or(0);
+    read_workstation_facts_with_env(std::env::var(WORKSTATION_ENV).ok().as_deref())
+}
+
+pub fn read_workstation_facts() -> WorkstationFacts {
+    read_workstation_facts_with_env(std::env::var(WORKSTATION_ENV).ok().as_deref())
+}
+
+pub fn read_workstation_facts_with_env(workstation_env: Option<&str>) -> WorkstationFacts {
+    let pinned = pinned_host_from_env(workstation_env);
+    let cpu = pinned
+        .as_ref()
+        .map(|p| p.cpu_model.clone())
+        .or_else(cpu_model);
+    let cores = pinned.as_ref().map(|p| p.cores).unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|cores| cores.get())
+            .unwrap_or(0)
+    });
     let gpu = if cfg!(target_os = "macos")
         && std::env::consts::ARCH == "aarch64"
         && cpu.as_deref().is_some_and(|cpu| cpu.starts_with("Apple "))
@@ -190,7 +318,9 @@ fn collect_workstation_facts_uncached() -> WorkstationFacts {
     let terminal = terminal_name();
     WorkstationFacts {
         os_line: os_platform(),
-        kernel: format!("{} {}", os_type(), os_release()).trim().to_string(),
+        kernel: pinned
+            .map(|p| p.kernel)
+            .unwrap_or_else(|| format!("{} {}", os_type(), os_release()).trim().to_string()),
         arch: os_arch(),
         cpu: cpu.map(|cpu| format!("{cpu} ({cores} cores)")),
         gpu,
@@ -240,16 +370,16 @@ fn instruction(dialect: WorkstationDialect, executors: &str) -> String {
             "<execution_context>\n{executors} on THIS workstation. Match commands, paths, package managers, and parallel pool sizes to it. Code you write may target any machine; code you run always runs here.\n</execution_context>"
         ),
         WorkstationDialect::Codex => format!(
-            "{executors} on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms — executed code runs here."
+            "{executors} on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms: executed code runs here."
         ),
         WorkstationDialect::Kimi => format!(
-            "{executors} on this workstation — choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."
+            "{executors} on this workstation: choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."
         ),
         WorkstationDialect::Gemini => format!(
             "{executors} on this workstation; match commands, paths, package managers, and parallel pool sizes to it. Code you write may target another machine; code you run always runs here."
         ),
         WorkstationDialect::Default => format!(
-            "**EXECUTION HAPPENS HERE.** {executors} on THIS machine — you MUST match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target a different machine; anything you RUN executes HERE."
+            "**EXECUTION HAPPENS HERE.** {executors} on THIS machine: match commands, paths, package managers, parallel pool sizes to the workstation above. Code you WRITE may target another machine; anything you RUN executes HERE."
         ),
     }
 }
@@ -345,16 +475,16 @@ mod tests {
     fn every_dialect_keeps_its_own_wording() {
         let default_section =
             build_workstation_section(&options(WorkstationDialect::Default, &["bash", "eval"]));
-        assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `eval` executes on THIS machine — you MUST match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target a different machine; anything you RUN executes HERE."));
+        assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `eval` executes on THIS machine: match commands, paths, package managers, parallel pool sizes to the workstation above. Code you WRITE may target another machine; anything you RUN executes HERE."));
 
         let claude = build_workstation_section(&options(WorkstationDialect::Claude, &["bash"]));
         assert!(claude.ends_with("<execution_context>\n`bash` executes on THIS workstation. Match commands, paths, package managers, and parallel pool sizes to it. Code you write may target any machine; code you run always runs here.\n</execution_context>"));
 
         let codex = build_workstation_section(&options(WorkstationDialect::Codex, &["bash"]));
-        assert!(codex.ends_with("`bash` executes on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms — executed code runs here."));
+        assert!(codex.ends_with("`bash` executes on this workstation; match commands, paths, and parallelism to it. Written code may target other platforms: executed code runs here."));
 
         let kimi = build_workstation_section(&options(WorkstationDialect::Kimi, &["eval"]));
-        assert!(kimi.ends_with("`eval` executes on this workstation — choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."));
+        assert!(kimi.ends_with("`eval` executes on this workstation: choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."));
     }
 
     #[test]

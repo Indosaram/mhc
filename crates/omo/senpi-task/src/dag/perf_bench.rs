@@ -251,7 +251,6 @@ fn run_once(fixture: &Fixture, definition: DagDefinition) -> DagRunId {
     let started = fixture
         .manager
         .start(DagStartParams {
-            parent_model: None,
             definition,
             parent_session_id: PARENT.into(),
             root_session_id: ROOT.into(),

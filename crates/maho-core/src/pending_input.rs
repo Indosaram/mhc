@@ -25,7 +25,12 @@ pub fn reduce_pending_input(
 }
 
 fn admit_submission(current: Option<&PendingInput>, event: &SubmitEvent) -> PendingInputDecision {
-    if let Some(current) = current {
+    // A steer refused for its turn was never queued, so its id carries no delivery to replay (senpi#5776).
+    let never_queued = current.is_some_and(|item| {
+        item.phase == PendingInputPhase::Removed
+            && item.removed_by == Some(RemovalCause::TurnConflict)
+    });
+    if let Some(current) = current.filter(|_| !never_queued) {
         if current.fingerprint != event.fingerprint {
             return PendingInputDecision {
                 next: Some(current.clone()),

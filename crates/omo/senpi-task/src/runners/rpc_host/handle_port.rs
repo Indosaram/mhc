@@ -44,6 +44,10 @@ pub trait HostSessionPort: Send + Sync {
     fn get_state(&self) -> Result<Value, HostError>;
     fn on_event(&self, listener: ManagedChildListener) -> Unsubscribe;
     fn close(&self) -> Result<(), HostError>;
+    /// `true` only when the host answered this connection's `close_session` (`#11765`).
+    fn close_answered(&self) -> Result<bool, HostError> {
+        self.close().map(|()| true)
+    }
     /// `closeConfirmed`: retain the route after a rejected close so a liveness stop can retry
     /// confirmation. `None` for a port without the confirmed close.
     fn close_confirmed(&self) -> Option<Result<(), HostError>> {
@@ -59,6 +63,12 @@ pub trait HostSessionPort: Send + Sync {
         Ok(None)
     }
     fn detach(&self) -> Result<(), HostError>;
+    /// Updates the hosted session's approval mode (`#6189 F2e`).
+    fn set_permission_preset(&self, _preset: &str) -> Result<(), HostError> {
+        Err(HostError {
+            message: "host set_permission_preset unsupported".into(),
+        })
+    }
     fn task_parent_wire(&self) -> Option<Arc<crate::runners::task_parent_control::TaskParentWire>> {
         None
     }

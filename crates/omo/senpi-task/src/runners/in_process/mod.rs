@@ -13,7 +13,9 @@ pub mod shared_tool_filter;
 pub mod subagent_prompt;
 
 pub use child_handle::ChildCompletionPolicy;
-pub use runner::{ChildPromptEnvelope, ChildSpec, InProcessRunner, InProcessRunnerOptions};
+pub use runner::{
+    ChildPromptEnvelope, ChildSpec, InProcessRunner, InProcessRunnerOptions, OwnApprovalMode,
+};
 pub use runtime_fallback_settings::ChildRetryOverride;
 
 #[cfg(test)]

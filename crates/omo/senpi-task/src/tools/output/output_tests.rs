@@ -473,3 +473,123 @@ fn given_an_unresponsive_host_session_when_read_then_status_says_so_and_running_
     ));
     assert!(!alive.contains("unresponsive"));
 }
+
+#[test]
+fn given_unchanged_status_when_polled_again_then_no_progress_is_returned_and_cleared_by_change_or_forget()
+ {
+    use crate::tools::output::output::{TaskOutputStatusCache, run_task_output_cached};
+
+    let mut record = make_record(RecordOverrides {
+        task_id: Some("st_poll".to_string()),
+        status: Some(status("running")),
+        pid: Some(100),
+        ..RecordOverrides::default()
+    });
+    let cache = TaskOutputStatusCache::new();
+    let deps_1 = deps_from(vec![record.clone()], None);
+
+    let first = run_task_output_cached(
+        &deps_1,
+        &by_id("st_poll", None),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("first status read");
+    assert!(matches!(first.details, TaskOutputDetails::Status { .. }));
+
+    // Tail read must not suppress or corrupt status dedup; unchanged repeat status returns NoProgress.
+    let tail = run_task_output_cached(
+        &deps_1,
+        &by_id("st_poll", Some(TaskOutputMode::Tail)),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("tail read");
+    assert!(matches!(tail.details, TaskOutputDetails::Transcript { .. }));
+
+    let repeat = run_task_output_cached(
+        &deps_1,
+        &by_id("st_poll", None),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("repeat status read");
+    assert!(matches!(
+        repeat.details,
+        TaskOutputDetails::NoProgress { .. }
+    ));
+    assert!(first_text(&repeat).contains("has not changed since the last status read"));
+
+    // A state/pid change yields a fresh Status snapshot.
+    record.pid = Some(101);
+    let deps_2 = deps_from(vec![record], None);
+    let updated = run_task_output_cached(
+        &deps_2,
+        &by_id("st_poll", None),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("changed status read");
+    assert!(matches!(updated.details, TaskOutputDetails::Status { .. }));
+
+    // Forgetting caller session clears prior status fingerprints.
+    cache.forget_session("session-parent");
+    let after_forget = run_task_output_cached(
+        &deps_2,
+        &by_id("st_poll", None),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("post-forget status read");
+    assert!(matches!(
+        after_forget.details,
+        TaskOutputDetails::Status { .. }
+    ));
+}
+
+#[test]
+fn given_more_than_1024_status_reads_then_oldest_entry_is_evicted_fifo() {
+    use crate::tools::output::output::{TaskOutputStatusCache, run_task_output_cached};
+
+    let records: Vec<_> = (0..1025)
+        .map(|idx| {
+            make_record(RecordOverrides {
+                task_id: Some(format!("st_{idx}")),
+                status: Some(status("running")),
+                ..RecordOverrides::default()
+            })
+        })
+        .collect();
+    let deps = deps_from(records, None);
+    let cache = TaskOutputStatusCache::new();
+
+    for idx in 0..1025 {
+        let res = run_task_output_cached(
+            &deps,
+            &by_id(&format!("st_{idx}"), None),
+            Some("session-parent"),
+            Some(&cache),
+        )
+        .expect("read");
+        assert!(matches!(res.details, TaskOutputDetails::Status { .. }));
+    }
+
+    // Oldest (`st_0`) was evicted when `st_1024` was inserted, while `st_1` stays cached.
+    let st_1 = run_task_output_cached(
+        &deps,
+        &by_id("st_1", None),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("read st_1");
+    assert!(matches!(st_1.details, TaskOutputDetails::NoProgress { .. }));
+
+    let st_0 = run_task_output_cached(
+        &deps,
+        &by_id("st_0", None),
+        Some("session-parent"),
+        Some(&cache),
+    )
+    .expect("read st_0");
+    assert!(matches!(st_0.details, TaskOutputDetails::Status { .. }));
+}

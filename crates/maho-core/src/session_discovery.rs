@@ -182,6 +182,18 @@ pub fn list_sessions_from_dir(
     progress_offset: usize,
     progress_total: Option<usize>,
 ) -> Vec<SessionInfo> {
+    list_sessions_from_dir_with_index_dir(dir, on_progress, progress_offset, progress_total, None)
+}
+
+/// Builds picker rows for every .jsonl file in one session directory, keeping any summary index
+/// cache under `index_dir` when provided (a read-only shared session store).
+pub fn list_sessions_from_dir_with_index_dir(
+    dir: &str,
+    on_progress: Option<SessionListProgress<'_>>,
+    progress_offset: usize,
+    progress_total: Option<usize>,
+    _index_dir: Option<&str>,
+) -> Vec<SessionInfo> {
     let files = session_files_newest_first(&[PathBuf::from(dir)]);
     let total = progress_total.unwrap_or(files.len());
     list_session_files(

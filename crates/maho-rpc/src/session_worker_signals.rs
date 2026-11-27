@@ -1,21 +1,27 @@
-use crate::session_worker_protocol::{SessionWriteGrant, WorkerDisplay, worker_credit_code};
+use crate::session_worker_protocol::{
+    SessionWriteGrant, WorkerCreditAnswer, WorkerDisplay, worker_credit_answer_code,
+    worker_credit_code,
+};
 use std::sync::{Arc, Condvar, Mutex};
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct SignalState {
     code: i32,
     rendered: bool,
     width: f64,
     revision: f64,
 }
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WorkerSignal(Arc<(Mutex<SignalState>, Condvar)>);
 impl WorkerSignal {
-    pub fn acknowledge_grant(&self, grant: SessionWriteGrant) {
+    pub fn acknowledge_answer(&self, answer: WorkerCreditAnswer) {
         let (lock, notify) = &*self.0;
         lock.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .code = worker_credit_code(grant);
+            .code = worker_credit_answer_code(answer);
         notify.notify_all();
+    }
+    pub fn acknowledge_grant(&self, grant: SessionWriteGrant) {
+        self.acknowledge_answer(grant.into());
     }
     pub fn acknowledge(&self, granted: bool) {
         self.acknowledge_grant(if granted {

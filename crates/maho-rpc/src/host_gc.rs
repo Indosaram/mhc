@@ -262,10 +262,10 @@ async fn endpoint_in_use(
     let Some(silence) = socket_silence(socket).await else {
         return EndpointEvidence::InUse("reachable");
     };
-    for successor in socket_siblings(socket)
-        .into_iter()
-        .filter(|name| name.starts_with(&format!("{}.next-", base_name(socket))))
-    {
+    for successor in socket_siblings(socket).into_iter().filter(|name| {
+        name.starts_with(&format!("{}.next-", base_name(socket)))
+            && !crate::socket_ownership::is_bind_scratch_name(name)
+    }) {
         if socket_silence(
             &Path::new(socket)
                 .with_file_name(successor)
@@ -287,7 +287,7 @@ async fn judge_and_remove(
 ) -> std::io::Result<Judged> {
     match endpoint_in_use(socket, paths).await {
         EndpointEvidence::InUse(in_use) => match stale_engine {
-            Some(request) if in_use != "live_claim" => {
+            Some(request) if in_use != "live_claim" && in_use != "credential_unavailable" => {
                 stop_if_stale(socket, dir, in_use, request).await
             }
             _ => Ok(Judged::Kept(in_use)),
@@ -344,7 +344,8 @@ fn base_name(socket: &str) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
-/// Every entry beside `socket` that belongs to it: `<name>.next-*` successor binds and `<name>.shield-*`.
+/// Every entry beside `socket` that belongs to it: `<name>.next-*` successor binds, `<name>.shield-*`,
+/// and `<name>.bind-*` scratch directories (`host-socket-bind.ts`).
 pub fn socket_siblings(socket: &str) -> Vec<String> {
     let name = base_name(socket);
     let Some(parent) = Path::new(socket).parent() else {
@@ -358,6 +359,10 @@ pub fn socket_siblings(socket: &str) -> Vec<String> {
         .filter(|entry| {
             entry.starts_with(&format!("{name}.next-"))
                 || entry.starts_with(&format!("{name}.shield-"))
+                || entry.starts_with(&format!(
+                    "{name}{}",
+                    crate::socket_ownership::BIND_SCRATCH_INFIX
+                ))
         })
         .collect()
 }
@@ -389,14 +394,55 @@ async fn socket_silence(socket: &str) -> Option<&'static str> {
 async fn socket_silence(_socket: &str) -> Option<&'static str> {
     None
 }
-/// Siblings first (a directory is not a socket's leftover and stays, reported), then the socket, the endpoint directory LAST.
+/// A bind directory a crashed `listen` left: removed only while it holds nothing but that bind's socket.
+fn reclaim_bind_dir(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name != crate::socket_ownership::BIND_SCRATCH_SOCKET {
+            return false;
+        }
+        names.push(name);
+    }
+    if !names.is_empty() {
+        let bound = path.join(crate::socket_ownership::BIND_SCRATCH_SOCKET);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            let Ok(meta) = std::fs::symlink_metadata(&bound) else {
+                return false;
+            };
+            if !meta.file_type().is_socket() {
+                return false;
+            }
+        }
+        if std::fs::remove_file(&bound).is_err() {
+            return false;
+        }
+    }
+    std::fs::remove_dir(path).is_ok()
+}
+
+/// Siblings first (a directory is not a socket's leftover and stays, reported — except `.bind-*` holding only its own socket), then the socket, the endpoint directory LAST.
 fn remove_endpoint(socket: &str, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut skipped = Vec::new();
     let parent = Path::new(socket).parent().unwrap_or(Path::new(""));
     for sibling in socket_siblings(socket) {
-        let path = parent.join(sibling);
+        let path = parent.join(&sibling);
         match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => skipped.push(path),
+            Ok(metadata) if metadata.is_dir() => {
+                if !crate::socket_ownership::is_bind_scratch_name(&sibling)
+                    || !reclaim_bind_dir(&path)
+                {
+                    skipped.push(path);
+                }
+            }
             Ok(_) => std::fs::remove_file(&path)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),

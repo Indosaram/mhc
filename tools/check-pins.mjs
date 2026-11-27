@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 // tools/check-pins.mjs
-// Verifies agreement among the three upstream senpi pins:
-// 1. PINS.md: senpi row (latest upstream commit whose behavior has been ported / parity baseline)
-// 2. tools/golden/pin.mjs: SENPI_PIN (commit the golden fixtures were generated from)
-// 3. .github/workflows/ci.yml: SENPI_PIN (must equal pin.mjs / fixtures checkout)
+// Verifies agreement among the upstream senpi and oh-my-openagent pins:
+// 1. PINS.md: `senpi` and `oh-my-openagent` rows (parity baselines)
+// 2. tools/golden/pin.mjs: `SENPI_PIN` and `OMO_PIN`
+// 3. .github/workflows/ci.yml & mhc-binary.yml: `SENPI_PIN`
+// 4. tools/parity-audit.mjs: `SENPI_PIN` and `OMO_PIN`
 //
 // Usage:
-//   bun tools/check-pins.mjs [--self-test] [--ancestry <senpi-git-dir>] [--root <repo-root>]
+//   bun tools/check-pins.mjs [--self-test] [--ancestry <senpi-git-dir>] [--omo-ancestry <omo-git-dir>] [--root <repo-root>]
 //
 // Environment overrides:
-//   PIN_CI_OVERRIDE=<sha>  Overrides the CI PIN for testing mismatch detection.
+//   PIN_CI_OVERRIDE=<sha>   Overrides the CI SENPI_PIN for testing mismatch detection.
+//   PIN_OMO_OVERRIDE=<sha>  Overrides the parity-audit OMO_PIN for testing mismatch detection.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -28,12 +30,56 @@ export function parsePinsMd(content) {
 }
 
 /**
+ * Extracts the full 40-character oh-my-openagent commit SHA from PINS.md content.
+ */
+export function parsePinsMdOmo(content) {
+	const match = content.match(/^\|\s*oh-my-openagent\s*\|\s*([a-f0-9]+)\s*\|\s*([a-f0-9]{40})\s*\|/m);
+	if (!match) {
+		throw new Error("Could not find oh-my-openagent row with 40-character commit in PINS.md");
+	}
+	return match[2];
+}
+
+/**
  * Extracts SENPI_PIN from tools/golden/pin.mjs content.
  */
 export function parsePinMjs(content) {
 	const match = content.match(/export\s+const\s+SENPI_PIN\s*=\s*["']([a-f0-9]{40})["']/);
 	if (!match) {
 		throw new Error("Could not find SENPI_PIN in tools/golden/pin.mjs");
+	}
+	return match[1];
+}
+
+/**
+ * Extracts OMO_PIN from tools/golden/pin.mjs content.
+ */
+export function parsePinMjsOmo(content) {
+	const match = content.match(/export\s+const\s+OMO_PIN\s*=\s*["']([a-f0-9]{40})["']/);
+	if (!match) {
+		throw new Error("Could not find OMO_PIN in tools/golden/pin.mjs");
+	}
+	return match[1];
+}
+
+/**
+ * Extracts OMO_PIN from tools/parity-audit.mjs content.
+ */
+export function parseParityAuditOmo(content) {
+	const match = content.match(/const\s+OMO_PIN\s*=\s*["']([a-f0-9]{40})["']/);
+	if (!match) {
+		throw new Error("Could not find OMO_PIN in tools/parity-audit.mjs");
+	}
+	return match[1];
+}
+
+/**
+ * Extracts SENPI_PIN from tools/parity-audit.mjs content.
+ */
+export function parseParityAuditSenpi(content) {
+	const match = content.match(/const\s+SENPI_PIN\s*=\s*["']([a-f0-9]{40})["']/);
+	if (!match) {
+		throw new Error("Could not find SENPI_PIN in tools/parity-audit.mjs");
 	}
 	return match[1];
 }
@@ -57,6 +103,25 @@ export function verifyPinAgreement(ciPin, pinMjsPin) {
 		return {
 			ok: false,
 			error: `PIN mismatch: .github/workflows/ci.yml has SENPI_PIN=${ciPin}, but tools/golden/pin.mjs has SENPI_PIN=${pinMjsPin}`,
+		};
+	}
+	return { ok: true };
+}
+
+/**
+ * Checks that PINS.md, tools/golden/pin.mjs, and tools/parity-audit.mjs agree on OMO_PIN.
+ */
+export function verifyOmoPinAgreement(pinsMdOmo, pinMjsOmo, auditOmo) {
+	if (pinsMdOmo !== pinMjsOmo) {
+		return {
+			ok: false,
+			error: `OMO PIN mismatch: PINS.md has ${pinsMdOmo}, but tools/golden/pin.mjs has OMO_PIN=${pinMjsOmo}`,
+		};
+	}
+	if (pinsMdOmo !== auditOmo) {
+		return {
+			ok: false,
+			error: `OMO PIN mismatch: PINS.md has ${pinsMdOmo}, but tools/parity-audit.mjs has OMO_PIN=${auditOmo}`,
 		};
 	}
 	return { ok: true };
@@ -245,6 +310,28 @@ jobs:
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 
+	const parsedPinsMdOmo = parsePinsMdOmo(samplePinsMd);
+	if (parsedPinsMdOmo !== "7d818abaf97831537271b4af9629a5264649de37") {
+		throw new Error(`Self-test failed: expected omo pin, got ${parsedPinsMdOmo}`);
+	}
+
+	const omoAgree = verifyOmoPinAgreement(
+		"7d818abaf97831537271b4af9629a5264649de37",
+		"7d818abaf97831537271b4af9629a5264649de37",
+		"7d818abaf97831537271b4af9629a5264649de37"
+	);
+	if (!omoAgree.ok) {
+		throw new Error(`Self-test failed: expected omo agreement to succeed, got ${omoAgree.error}`);
+	}
+	const omoMismatch = verifyOmoPinAgreement(
+		"7d818abaf97831537271b4af9629a5264649de37",
+		"7d818abaf97831537271b4af9629a5264649de37",
+		"deadbeef"
+	);
+	if (omoMismatch.ok) {
+		throw new Error("Self-test failed: expected omo mismatch");
+	}
+
 	console.log("Self-test passed: all assertions verified.");
 }
 
@@ -252,6 +339,7 @@ export function main() {
 	const args = process.argv.slice(2);
 	let selfTest = false;
 	let ancestryDir = null;
+	let omoAncestryDir = null;
 	let rootDir = null;
 
 	for (let i = 0; i < args.length; i++) {
@@ -262,12 +350,16 @@ export function main() {
 			ancestryDir = args[++i];
 		} else if (arg.startsWith("--ancestry=")) {
 			ancestryDir = arg.slice("--ancestry=".length);
+		} else if (arg === "--omo-ancestry") {
+			omoAncestryDir = args[++i];
+		} else if (arg.startsWith("--omo-ancestry=")) {
+			omoAncestryDir = arg.slice("--omo-ancestry=".length);
 		} else if (arg === "--root") {
 			rootDir = args[++i];
 		} else if (arg.startsWith("--root=")) {
 			rootDir = arg.slice("--root=".length);
 		} else if (arg === "--help" || arg === "-h") {
-			console.log("Usage: bun tools/check-pins.mjs [--self-test] [--ancestry <senpi-git-dir>] [--root <repo-root>]");
+			console.log("Usage: bun tools/check-pins.mjs [--self-test] [--ancestry <senpi-git-dir>] [--omo-ancestry <omo-git-dir>] [--root <repo-root>]");
 			process.exit(0);
 		} else {
 			console.error(`Unknown argument: ${arg}`);
@@ -287,18 +379,14 @@ export function main() {
 	const pinsMdPath = join(rootDir, "PINS.md");
 	const pinMjsPath = join(rootDir, "tools/golden/pin.mjs");
 	const ciYmlPath = join(rootDir, ".github/workflows/ci.yml");
+	const binYmlPath = join(rootDir, ".github/workflows/mhc-binary.yml");
+	const auditMjsPath = join(rootDir, "tools/parity-audit.mjs");
 
-	if (!existsSync(pinsMdPath)) {
-		console.error(`Error: ${pinsMdPath} does not exist`);
-		process.exit(1);
-	}
-	if (!existsSync(pinMjsPath)) {
-		console.error(`Error: ${pinMjsPath} does not exist`);
-		process.exit(1);
-	}
-	if (!existsSync(ciYmlPath)) {
-		console.error(`Error: ${ciYmlPath} does not exist`);
-		process.exit(1);
+	for (const p of [pinsMdPath, pinMjsPath, ciYmlPath]) {
+		if (!existsSync(p)) {
+			console.error(`Error: ${p} does not exist`);
+			process.exit(1);
+		}
 	}
 
 	const pinsMdContent = readFileSync(pinsMdPath, "utf8");
@@ -315,6 +403,39 @@ export function main() {
 		process.exit(1);
 	}
 
+	if (existsSync(binYmlPath)) {
+		const binPin = parseCiYml(readFileSync(binYmlPath, "utf8"));
+		if (binPin !== pinMjsPin) {
+			console.error(`PIN mismatch: .github/workflows/mhc-binary.yml has SENPI_PIN=${binPin}, but tools/golden/pin.mjs has SENPI_PIN=${pinMjsPin}`);
+			process.exit(1);
+		}
+	}
+
+	if (existsSync(auditMjsPath)) {
+		const auditContent = readFileSync(auditMjsPath, "utf8");
+		const auditSenpi = parseParityAuditSenpi(auditContent);
+		if (auditSenpi !== pinsMdSenpi) {
+			console.error(`PIN mismatch: tools/parity-audit.mjs has SENPI_PIN=${auditSenpi}, but PINS.md has ${pinsMdSenpi}`);
+			process.exit(1);
+		}
+		const pinsMdOmo = parsePinsMdOmo(pinsMdContent);
+		const pinMjsOmo = parsePinMjsOmo(pinMjsContent);
+		const auditOmo = process.env.PIN_OMO_OVERRIDE || parseParityAuditOmo(auditContent);
+		const omoAgreement = verifyOmoPinAgreement(pinsMdOmo, pinMjsOmo, auditOmo);
+		if (!omoAgreement.ok) {
+			console.error(omoAgreement.error);
+			process.exit(1);
+		}
+		if (omoAncestryDir) {
+			const omoPath = resolve(omoAncestryDir);
+			const res = verifyAncestry(omoPath, pinMjsOmo, pinsMdOmo);
+			if (!res.ok) {
+				console.error(res.error);
+				process.exit(1);
+			}
+		}
+	}
+
 	if (ancestryDir) {
 		const senpiPath = resolve(ancestryDir);
 		if (!existsSync(senpiPath)) {
@@ -327,11 +448,11 @@ export function main() {
 			process.exit(1);
 		}
 		console.log(
-			`OK: CI pin (${ciPin}) equals pin.mjs (${pinMjsPin}), and pin.mjs is an ancestor of PINS.md senpi (${pinsMdSenpi}) in ${senpiPath}`
+			`OK: CI/binary/parity-audit SENPI_PIN (${ciPin}) and OMO_PIN agree with PINS.md (${pinsMdSenpi} / ${parsePinsMdOmo(pinsMdContent)}) in ${senpiPath}`
 		);
 	} else {
 		console.log(
-			`OK: CI pin (${ciPin}) equals pin.mjs (${pinMjsPin}); PINS.md senpi pin is ${pinsMdSenpi}`
+			`OK: CI/binary/parity-audit SENPI_PIN (${ciPin}) and OMO_PIN agree with PINS.md (${pinsMdSenpi} / ${parsePinsMdOmo(pinsMdContent)})`
 		);
 	}
 }

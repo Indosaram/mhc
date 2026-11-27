@@ -175,9 +175,18 @@ impl PromptSizeAccounting {
             if part.name == "skills" {
                 part.count = Some(self.skill_count);
                 part.bounding_settings = Some(vec![
-                    "MAX_SKILL_CATALOG_BYTES (49152)".into(),
-                    "COMPACT_SKILL_CATALOG_COUNT (100)".into(),
-                    "COMPACT_SKILL_CATALOG_DESCRIPTION_BYTES (65536)".into(),
+                    format!(
+                        "MAX_SKILL_CATALOG_BYTES ({})",
+                        crate::skills_prompt::MAX_SKILL_CATALOG_BYTES
+                    ),
+                    format!(
+                        "COMPACT_SKILL_CATALOG_COUNT ({})",
+                        crate::skills_prompt::COMPACT_SKILL_CATALOG_COUNT
+                    ),
+                    format!(
+                        "COMPACT_SKILL_CATALOG_DESCRIPTION_BYTES ({})",
+                        crate::skills_prompt::COMPACT_SKILL_CATALOG_DESCRIPTION_BYTES
+                    ),
                 ]);
             }
             sections.push(part);

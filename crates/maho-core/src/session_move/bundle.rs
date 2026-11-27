@@ -102,7 +102,7 @@ pub async fn sha256_file_async(path: &Path) -> std::io::Result<String> {
 }
 
 /// Both separators count: a bundle written on one OS is read on another.
-fn leaves_bundle(path: &str) -> bool {
+pub fn leaves_bundle(path: &str) -> bool {
     let bytes = path.as_bytes();
     let windows_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
     Path::new(path).is_absolute()
@@ -115,6 +115,61 @@ fn leaves_bundle(path: &str) -> bool {
             .any(|component| matches!(component, Component::ParentDir))
 }
 
+/// The most segments a path in a bundle may have (`senpi#6469`).
+pub const MAX_BUNDLE_PATH_SEGMENTS: usize = 32;
+
+/// Both separators count, as in `leaves_bundle`.
+pub fn nests_too_deep(path: &str) -> bool {
+    path.split(['/', '\\']).count() > MAX_BUNDLE_PATH_SEGMENTS
+}
+
+/// A path as an error may show it: quoted, and cut short only when it is long.
+pub fn shown(path: &str) -> String {
+    let truncated = if path.chars().count() > 120 {
+        let prefix: String = path.chars().take(120).collect();
+        format!("{prefix}...")
+    } else {
+        path.to_owned()
+    };
+    serde_json::to_string(&truncated).unwrap_or_else(|_| format!("{truncated:?}"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovePathTooDeepError {
+    pub path: String,
+    pub sealed_already: bool,
+}
+
+impl MovePathTooDeepError {
+    pub const CODE: &'static str = "move_path_too_deep";
+
+    pub fn new(path: impl Into<String>, sealed_already: bool) -> Self {
+        Self {
+            path: path.into(),
+            sealed_already,
+        }
+    }
+}
+
+impl std::fmt::Display for MovePathTooDeepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let suffix = if self.sealed_already {
+            "No bundle was written. The session is sealed for this move: finish the move as declined to take it back."
+        } else {
+            "The session was not sealed for the move and nothing was written."
+        };
+        write!(
+            f,
+            "A file of this session is nested deeper than a move can carry ({} path segments): {}. {}",
+            MAX_BUNDLE_PATH_SEGMENTS,
+            shown(&self.path),
+            suffix
+        )
+    }
+}
+
+impl std::error::Error for MovePathTooDeepError {}
+
 fn parse_file(value: &Value) -> Result<BundleFile, MoveBundleInvalidError> {
     let (Some(path), Some(sha256)) = (
         value.get("path").and_then(Value::as_str),
@@ -125,6 +180,13 @@ fn parse_file(value: &Value) -> Result<BundleFile, MoveBundleInvalidError> {
     if leaves_bundle(path) {
         return Err(MoveBundleInvalidError::new(format!(
             "a listed path leaves the bundle: {path}"
+        )));
+    }
+    if nests_too_deep(path) {
+        return Err(MoveBundleInvalidError::new(format!(
+            "a listed path is nested deeper than {} segments: {}",
+            MAX_BUNDLE_PATH_SEGMENTS,
+            shown(path)
         )));
     }
     Ok(BundleFile {
@@ -168,8 +230,8 @@ pub fn parse_move_id(value: &Value) -> Result<MoveId, MoveBundleInvalidError> {
     parse_plain_id(value, "move id")
 }
 
-/// The importer joins this name onto its session folder, so it must be a plain session file name and nothing else.
-fn parse_session_file_name(value: &str) -> Result<String, MoveBundleInvalidError> {
+/// Whether `value` is a name a session can land under: what a manifest may carry and what a `status` may name.
+pub fn is_session_file_name(value: &str) -> bool {
     let stem = value.strip_suffix(".jsonl");
     let plain = stem.is_some_and(|stem| {
         let mut chars = stem.chars();
@@ -178,7 +240,12 @@ fn parse_session_file_name(value: &str) -> Result<String, MoveBundleInvalidError
             .is_some_and(|first| first.is_ascii_alphanumeric())
             && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     });
-    if !plain || value.contains("..") {
+    plain && !value.contains("..")
+}
+
+/// The importer joins this name onto its session folder, so it must be a plain session file name and nothing else.
+fn parse_session_file_name(value: &str) -> Result<String, MoveBundleInvalidError> {
+    if !is_session_file_name(value) {
         return Err(MoveBundleInvalidError::new(format!(
             "the session file name is not a plain file name: {value}"
         )));
@@ -258,10 +325,61 @@ fn parse_payload(value: &Value) -> Result<MovePayload, MoveBundleInvalidError> {
 }
 
 pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvalidError> {
+    let text = std::fs::read_to_string(bundle_dir.join(MANIFEST_FILE))
+        .map_err(|error| MoveBundleInvalidError::new(format!("manifest unreadable: {error}")))?;
+    parse_manifest(&text)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptBundle {
+    pub move_id: MoveId,
+    pub dropped_user_messages: Vec<String>,
+}
+
+/// What a sender reads back from the bundle it kept: the move it is for and the queued input.
+pub fn read_kept_bundle(bundle_dir: &Path) -> Result<KeptBundle, MoveBundleInvalidError> {
     let raw: Value = std::fs::read_to_string(bundle_dir.join(MANIFEST_FILE))
         .map_err(|error| error.to_string())
         .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
         .map_err(|error| MoveBundleInvalidError::new(format!("manifest unreadable: {error}")))?;
+    if !raw.is_object() {
+        return Err(MoveBundleInvalidError::new("the manifest is not an object"));
+    }
+    let format = raw.get("format");
+    if format.and_then(Value::as_u64) != Some(MOVE_BUNDLE_FORMAT) {
+        let shown_fmt = match format {
+            None => "undefined".to_owned(),
+            Some(Value::String(text)) => text.clone(),
+            Some(other) => other.to_string(),
+        };
+        return Err(MoveBundleInvalidError::new(format!(
+            "unknown bundle format {shown_fmt}"
+        )));
+    }
+    let mut dropped_user_messages = Vec::new();
+    if let Some(messages) = raw.get("droppedUserMessages").and_then(Value::as_array) {
+        for message in messages {
+            dropped_user_messages.push(
+                message
+                    .as_str()
+                    .ok_or_else(|| MoveBundleInvalidError::new("malformed queued input"))?
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(KeptBundle {
+        move_id: parse_move_id(raw.get("moveId").unwrap_or(&Value::Null))?,
+        dropped_user_messages,
+    })
+}
+
+/// The manifest from its own text: an inline bundle's manifest is read before any of its files is written.
+pub fn parse_manifest(text: &str) -> Result<MoveManifest, MoveBundleInvalidError> {
+    let raw: Value = serde_json::from_str(text)
+        .map_err(|error| MoveBundleInvalidError::new(format!("manifest unreadable: {error}")))?;
+    if !raw.is_object() {
+        return Err(MoveBundleInvalidError::new("the manifest is not an object"));
+    }
     let format = raw.get("format");
     if format.and_then(Value::as_u64) != Some(MOVE_BUNDLE_FORMAT) {
         let shown = match format {
@@ -318,24 +436,50 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvali
     })
 }
 
+/// Every file a manifest lists besides itself: the session, its sidecars and the payload files.
+pub fn listed_files(manifest: &MoveManifest) -> Vec<BundleFile> {
+    let mut files = Vec::with_capacity(
+        1 + manifest.sidecars.len()
+            + manifest
+                .payloads
+                .iter()
+                .map(|p| p.files.len())
+                .sum::<usize>(),
+    );
+    files.push(manifest.session.clone());
+    files.extend(manifest.sidecars.iter().cloned());
+    for payload in &manifest.payloads {
+        files.extend(payload.files.iter().cloned());
+    }
+    files
+}
+
 pub fn verify_bundle(
     bundle_dir: &Path,
     manifest: &MoveManifest,
 ) -> Result<(), MoveBundleInvalidError> {
-    for file in std::iter::once(&manifest.session)
-        .chain(manifest.sidecars.iter())
-        .chain(
-            manifest
-                .payloads
-                .iter()
-                .flat_map(|payload| payload.files.iter()),
-        )
-    {
+    verify_bundle_with_sent(bundle_dir, manifest, None)
+}
+
+pub fn verify_bundle_with_sent(
+    bundle_dir: &Path,
+    manifest: &MoveManifest,
+    sent: Option<&std::collections::HashMap<String, String>>,
+) -> Result<(), MoveBundleInvalidError> {
+    for file in listed_files(manifest) {
         let actual = sha256_file(&bundle_dir.join(&file.path))
             .map_err(|_| MoveBundleInvalidError::new(format!("missing {}", file.path)))?;
         if actual != file.sha256 {
             return Err(MoveBundleInvalidError::new(format!(
                 "{} changed in transit",
+                file.path
+            )));
+        }
+        if let Some(sent_map) = sent
+            && sent_map.get(&file.path).map(String::as_str) != Some(actual.as_str())
+        {
+            return Err(MoveBundleInvalidError::new(format!(
+                "{} was sent with a sha256 that is not its bytes'",
                 file.path
             )));
         }
@@ -359,9 +503,17 @@ pub async fn verify_bundle_async(
     bundle_dir: &Path,
     manifest: &MoveManifest,
 ) -> Result<(), MoveBundleInvalidError> {
+    verify_bundle_with_sent_async(bundle_dir, manifest, None).await
+}
+
+pub async fn verify_bundle_with_sent_async(
+    bundle_dir: &Path,
+    manifest: &MoveManifest,
+    sent: Option<std::collections::HashMap<String, String>>,
+) -> Result<(), MoveBundleInvalidError> {
     let dir = bundle_dir.to_owned();
     let manifest = manifest.clone();
-    tokio::task::spawn_blocking(move || verify_bundle(&dir, &manifest))
+    tokio::task::spawn_blocking(move || verify_bundle_with_sent(&dir, &manifest, sent.as_ref()))
         .await
         .map_err(|error| MoveBundleInvalidError::new(error.to_string()))?
 }

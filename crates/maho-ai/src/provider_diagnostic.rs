@@ -1,6 +1,6 @@
 pub use crate::types::{
     PROVIDER_DIAGNOSTIC_MAX_BYTES, ProviderDiagnostic, ProviderDiagnosticCategory,
-    ProviderDiagnosticEvidence,
+    ProviderDiagnosticEvidence, ProviderDiagnosticRoute,
 };
 
 pub fn sanitize_provider_diagnostic(value: &serde_json::Value) -> Option<ProviderDiagnostic> {
@@ -37,5 +37,28 @@ mod tests {
             serde_json::to_value(diagnostic).expect("serialize"),
             json!({"category":"unknown", "httpStatus":429, "evidence":"structured_status"})
         );
+    }
+
+    #[test]
+    fn siwc_route_round_trips_as_a_separate_wire_field() {
+        for (value, evidence) in [
+            (
+                json!({"category":"unknown", "httpStatus":403, "evidence":"structured_status", "route":"siwc"}),
+                ProviderDiagnosticEvidence::SiwcStructuredStatus,
+            ),
+            (
+                json!({"category":"invalid_request", "httpStatus":403, "code":"chatpass_v2_scope_not_authorized",
+                    "evidence":"structured_code", "route":"siwc"}),
+                ProviderDiagnosticEvidence::SiwcStructuredCode,
+            ),
+        ] {
+            let diagnostic = sanitize_provider_diagnostic(&value).expect("SIWC diagnostic");
+            assert_eq!(diagnostic.route(), Some(ProviderDiagnosticRoute::Siwc));
+            assert_eq!(diagnostic.evidence, evidence);
+            assert_eq!(serde_json::to_value(diagnostic).expect("serialize"), value);
+        }
+        assert!(sanitize_provider_diagnostic(&json!({
+            "category":"unknown", "httpStatus":403, "evidence":"structured_status", "route":"api_key"
+        })).is_none());
     }
 }

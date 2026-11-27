@@ -1,5 +1,6 @@
 mod bundled_snapshot;
 mod get_model_capabilities;
+mod gpt_6_2_entries;
 mod runtime_model_readers;
 mod supplemental_entries;
 mod types;

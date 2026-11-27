@@ -34,6 +34,11 @@ pub trait HostRpcClient: Send + Sync {
             message: "host detach unsupported".into(),
         })
     }
+    fn set_permission_preset(&self, _routing_id: &str, _preset: &str) -> Result<(), HostError> {
+        Err(HostError {
+            message: "host set_permission_preset unsupported".into(),
+        })
+    }
     /// `getPendingInputs?`: absent on an engine before senpi#3549 (`Ok(None)`).
     fn get_pending_inputs(
         &self,

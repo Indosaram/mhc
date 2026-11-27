@@ -239,6 +239,7 @@ pub async fn create_rpc_monitor(
             );
         }) as crate::rpc_monitor_source::RpcCheckpointSink
     });
+    let is_remote = matches!(target, crate::rpc_monitor_targets::RpcTarget::Remote { .. });
     let registered = ctx
         .source
         .register(RegisterRpcMonitorOptions {
@@ -257,12 +258,19 @@ pub async fn create_rpc_monitor(
             agent_dir: ctx.agent_dir,
             endpoints: ctx.endpoints,
             opener: ctx.opener,
+            remote_source: None,
             restored_from: None,
             on_checkpoint,
         })
         .await;
     let (runtime_id, monitor_id, rows) = match registered {
         Ok(registered) => registered,
+        Err(error) if is_remote => {
+            return (
+                error_result(format!("Cannot watch {target_text}: {error}")),
+                None,
+            );
+        }
         Err(error) => return (error_result(error.to_string()), None),
     };
     let registration = MonitorRegistration {

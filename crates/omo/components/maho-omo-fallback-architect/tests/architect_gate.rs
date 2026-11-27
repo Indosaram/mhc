@@ -33,13 +33,20 @@ fn live_registry_gate_and_explicit_disable() -> Result<(), Box<dyn std::error::E
         ("USERPROFILE".into(), home.to_string_lossy().into_owned()),
     ]);
     let model: Model = serde_json::from_value(
-        serde_json::json!({"id":"claude-fable-5","name":"Fable","api":"anthropic-messages","provider":"anthropic","baseUrl":"http://localhost","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}),
+        serde_json::json!({"id":"claude-fable-5-2","name":"Fable","api":"anthropic-messages","provider":"anthropic","baseUrl":"http://localhost","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}),
     )?;
     let registry = Registry(vec![model]);
     assert!(has_active_architect_category_with_env(
         &project,
         Some(env.clone()),
         Some(&registry)
+    ));
+    let mut legacy = registry.0[0].clone();
+    legacy.id = "claude-fable-5".into();
+    assert!(!has_active_architect_category_with_env(
+        &project,
+        Some(env.clone()),
+        Some(&Registry(vec![legacy]))
     ));
     assert!(!has_active_architect_category_with_env(
         &project,

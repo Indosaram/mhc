@@ -200,6 +200,14 @@ fn flush_restore_digest(
     let mut state = digests
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ctx
+        .session_manager
+        .extension_context_actions()
+        .is_some_and(|actions| actions.assert_active().is_err())
+    {
+        state.slot = crate::restore_digest::create_digest_slot();
+        return;
+    }
     let notify_off = state.notify_off;
     state.slot.flush(|message| {
         if notify_off {
@@ -767,6 +775,10 @@ impl Extension for TerminalExtension {
         // Upstream `state.ctx`, read by the monitor-ended sink at call time.
         let session_ctx: Arc<Mutex<Option<maho_ext_api::types::ExtensionContext>>> = Arc::default();
         let start_ctx = session_ctx.clone();
+        let reduced_motion = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let agent_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let start_reduced_motion = reduced_motion.clone();
+        let start_agent_busy = agent_busy.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
@@ -774,6 +786,8 @@ impl Extension for TerminalExtension {
                 let manager = configuration_manager.clone();
                 let context_cwd = start_cwd.clone();
                 let session_ctx = start_ctx.clone();
+                let reduced_motion = start_reduced_motion.clone();
+                let agent_busy = start_agent_busy.clone();
                 Box::pin(async move {
                     *context_cwd
                         .lock()
@@ -782,6 +796,11 @@ impl Extension for TerminalExtension {
                     *session_ctx
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
+                    reduced_motion.store(
+                        crate::settings::load_reduced_motion(ctx),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    agent_busy.store(false, std::sync::atomic::Ordering::SeqCst);
                     let loaded = crate::settings::load_session_settings(ctx)?;
                     manager
                         .lock()
@@ -794,6 +813,32 @@ impl Extension for TerminalExtension {
                 })
             }),
         );
+        {
+            let busy = agent_busy.clone();
+            api.on(
+                EventKind::AgentStart,
+                Arc::new(move |_, _| {
+                    let busy = busy.clone();
+                    Box::pin(async move {
+                        busy.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(EventResult::None)
+                    })
+                }),
+            );
+        }
+        {
+            let busy = agent_busy.clone();
+            api.on(
+                EventKind::AgentEnd,
+                Arc::new(move |_, _| {
+                    let busy = busy.clone();
+                    Box::pin(async move {
+                        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+                        Ok(EventResult::None)
+                    })
+                }),
+            );
+        }
         let completion_delivery = Arc::new(Mutex::new(None));
         let terminal_notifier = Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
         let notifier: Arc<Mutex<Option<crate::monitor_notify::MonitorNotifier>>> =
@@ -821,6 +866,8 @@ impl Extension for TerminalExtension {
             delivery: completion_delivery.clone(),
             recorded_background_ids: recorded_background_ids.clone(),
             ensure_persistence: ensure_persistence.clone(),
+            bundle: Arc::default(),
+            register_run_job: Arc::default(),
         };
         let sinks = crate::extension_state::bundle_sinks(&terminal_state);
         let (on_monitor_event, on_monitor_ended) = (
@@ -833,13 +880,17 @@ impl Extension for TerminalExtension {
                 move |event| on_monitor_ended(event),
             ),
         ));
-        let bundle = Arc::new(Mutex::new(
-            crate::session_bundle::TerminalSessionBundle::from_parts(
-                manager.clone(),
-                monitors.clone(),
-                backgrounds.clone(),
-            ),
-        ));
+        let mut initial_bundle = crate::session_bundle::TerminalSessionBundle::from_parts(
+            manager.clone(),
+            monitors.clone(),
+            backgrounds.clone(),
+        );
+        initial_bundle.bind_sinks_quiet(sinks.clone());
+        *terminal_state
+            .bundle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(initial_bundle.clone());
+        let bundle = Arc::new(Mutex::new(initial_bundle));
         let reload_bundle = bundle.clone();
         let reload_configuration = configuration.clone();
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let bundle=reload_bundle.clone();let configuration=reload_configuration.clone();Box::pin(async move {
@@ -856,11 +907,15 @@ impl Extension for TerminalExtension {
         for kind in [EventKind::SessionParked, EventKind::SessionResumed] {
             let monitors = monitors.clone();
             let status = status_task.clone();
+            let ticker_reduced_motion = reduced_motion.clone();
+            let ticker_agent_busy = agent_busy.clone();
             api.on(
                 kind,
                 Arc::new(move |_, ctx| {
                     let monitors = monitors.clone();
                     let status = status.clone();
+                    let reduced_motion = ticker_reduced_motion.clone();
+                    let agent_busy = ticker_agent_busy.clone();
                     Box::pin(async move {
                         let monitors = monitors
                             .lock()
@@ -880,26 +935,32 @@ impl Extension for TerminalExtension {
                             let ui = ctx.ui.clone();
                             let session = ctx.session_manager.clone();
                             let tui = matches!(ctx.mode, maho_ext_api::types::ExtensionMode::Tui);
-                            *status = Some(crate::monitor_status_ticker::bind_monitor_status(
-                                monitors.subscribe_state(),
-                                move |text| {
-                                    if session
-                                        .extension_context_actions()
-                                        .is_some_and(|actions| actions.assert_active().is_err())
-                                    {
-                                        return;
-                                    }
-                                    ui.set_status(
-                                        crate::monitor_status::MONITOR_STATUS_KEY,
-                                        crate::monitor_status::render_monitor_status(
-                                            if tui { "tui" } else { "plain" },
-                                            &ui.theme(),
-                                            text.as_deref(),
-                                        )
-                                        .as_deref(),
-                                    );
-                                },
-                            ));
+                            *status =
+                                Some(crate::monitor_status_ticker::bind_monitor_status_animated(
+                                    monitors.subscribe_state(),
+                                    move |text| {
+                                        if session
+                                            .extension_context_actions()
+                                            .is_some_and(|actions| actions.assert_active().is_err())
+                                        {
+                                            return;
+                                        }
+                                        ui.set_status(
+                                            crate::monitor_status::MONITOR_STATUS_KEY,
+                                            crate::monitor_status::render_monitor_status(
+                                                if tui { "tui" } else { "plain" },
+                                                &ui.theme(),
+                                                text.as_deref(),
+                                            )
+                                            .as_deref(),
+                                        );
+                                    },
+                                    move || {
+                                        tui && !reduced_motion
+                                            .load(std::sync::atomic::Ordering::SeqCst)
+                                            && !agent_busy.load(std::sync::atomic::Ordering::SeqCst)
+                                    },
+                                ));
                         }
                         Ok(EventResult::None)
                     })
@@ -908,11 +969,15 @@ impl Extension for TerminalExtension {
         }
         let status_monitors = monitors.clone();
         let start_status = status_task.clone();
+        let ticker_reduced_motion = reduced_motion.clone();
+        let ticker_agent_busy = agent_busy.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let monitors = status_monitors.clone();
                 let status = start_status.clone();
+                let reduced_motion = ticker_reduced_motion.clone();
+                let agent_busy = ticker_agent_busy.clone();
                 Box::pin(async move {
                     let mut status = status
                         .lock()
@@ -927,7 +992,7 @@ impl Extension for TerminalExtension {
                     let ui = ctx.ui.clone();
                     let tui = matches!(ctx.mode, maho_ext_api::types::ExtensionMode::Tui);
                     let session = ctx.session_manager.clone();
-                    *status = Some(crate::monitor_status_ticker::bind_monitor_status(
+                    *status = Some(crate::monitor_status_ticker::bind_monitor_status_animated(
                         receiver,
                         move |text| {
                             if session
@@ -945,6 +1010,10 @@ impl Extension for TerminalExtension {
                                 )
                                 .as_deref(),
                             );
+                        },
+                        move || {
+                            tui && !reduced_motion.load(std::sync::atomic::Ordering::SeqCst)
+                                && !agent_busy.load(std::sync::atomic::Ordering::SeqCst)
                         },
                     ));
                     Ok(EventResult::None)
@@ -1047,7 +1116,7 @@ impl Extension for TerminalExtension {
                         sender.set_active_tools(active)?;
                         *completion_delivery.lock().map_err(|_| {
                             ExtensionFailure::new("terminal delivery state poisoned")
-                        })? = crate::notify::get_terminal_notification_delivery(
+                        })? = crate::notify::get_terminal_notification_delivery_with_remote(
                             configuration
                                 .lock()
                                 .map_err(|_| {
@@ -1062,6 +1131,8 @@ impl Extension for TerminalExtension {
                             }),
                             model.is_some(),
                             false,
+                            ctx.is_loop_remote(),
+                            false,
                         );
                         Ok(EventResult::None)
                     })
@@ -1075,19 +1146,36 @@ impl Extension for TerminalExtension {
                 let sender = prompt_sender.clone();
                 let stepped_aside = stepped_aside.clone();
                 Box::pin(async move {
-                    if stepped_aside.load(std::sync::atomic::Ordering::SeqCst) {
-                        return Ok(EventResult::None);
-                    }
                     let maho_ext_api::types::ExtensionEvent::BeforeAgentStart(event) = event else {
                         return Ok(EventResult::None);
                     };
                     let eval_only = sender.has_tool("eval")?;
+                    let pty_bash = !stepped_aside.load(std::sync::atomic::Ordering::SeqCst);
+                    let window = crate::tools::foreground_window::resolve_foreground_window_seconds(
+                        std::env::var("PI_BASH_FOREGROUND_SECONDS").ok().as_deref(),
+                    )
+                    .trunc() as u64;
+                    let timeout_defaults =
+                        maho_ext_bash_timeout::timeout::resolve_bash_timeout_defaults(
+                            std::env::var("PI_BASH_DEFAULT_TIMEOUT_SECONDS")
+                                .ok()
+                                .as_deref(),
+                            std::env::var("PI_BASH_MAX_TIMEOUT_SECONDS").ok().as_deref(),
+                        );
                     Ok(EventResult::BeforeAgentStart(
                         maho_ext_api::types::BeforeAgentStartEventResult {
                             system_prompt: Some(format!(
                                 "{}\n{}",
                                 event.system_prompt,
-                                crate::prompt::build_terminal_prompt_section(eval_only)
+                                crate::prompt::build_terminal_prompt_section_with_options(
+                                    crate::prompt::TerminalPromptOptions {
+                                        eval_only,
+                                        pty_bash,
+                                        foreground_window_seconds: window,
+                                        default_timeout_seconds: timeout_defaults.default_seconds,
+                                        shared_sections: crate::prompt::SharedSections::Diet,
+                                    }
+                                )
                             )),
                             ..Default::default()
                         },
@@ -1254,16 +1342,19 @@ impl Extension for TerminalExtension {
                         })?
                         .0
                         .clone();
-                    let delivery_mode = crate::notify::get_terminal_notification_delivery(
-                        settings.notify,
-                        Some(match ctx.mode {
-                            ExtensionMode::Print => "print",
-                            ExtensionMode::Json => "json",
-                            _ => "interactive",
-                        }),
-                        ctx.model.is_some(),
-                        false,
-                    );
+                    let delivery_mode =
+                        crate::notify::get_terminal_notification_delivery_with_remote(
+                            settings.notify,
+                            Some(match ctx.mode {
+                                ExtensionMode::Print => "print",
+                                ExtensionMode::Json => "json",
+                                _ => "interactive",
+                            }),
+                            ctx.model.is_some(),
+                            false,
+                            ctx.is_loop_remote(),
+                            false,
+                        );
                     *lifecycle_delivery
                         .lock()
                         .map_err(|_| ExtensionFailure::new("terminal delivery state poisoned"))? =
@@ -1272,7 +1363,9 @@ impl Extension for TerminalExtension {
                         .lock()
                         .map_err(|_| ExtensionFailure::new("monitor notifier state poisoned"))?
                         .take();
-                    if matches!(ctx.mode, ExtensionMode::Print | ExtensionMode::Json) {
+                    if !ctx.is_loop_remote()
+                        && matches!(ctx.mode, ExtensionMode::Print | ExtensionMode::Json)
+                    {
                         return Ok(EventResult::None);
                     }
                     let available = lifecycle_delivery.clone();
@@ -1391,7 +1484,6 @@ impl Extension for TerminalExtension {
         let bash_configuration = configuration.clone();
         let completion_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
             Arc::new(Mutex::new(vec![]));
-        let bash_tasks = completion_tasks.clone();
         let cleanup_terminal_notifier = terminal_notifier.clone();
         let restored_manager = manager.clone();
         let restored_backgrounds = backgrounds.clone();
@@ -1456,23 +1548,24 @@ impl Extension for TerminalExtension {
         let bash_backgrounds = backgrounds.clone();
         let bash_lifecycle = state_lifecycle.clone();
         let bash_ensure = ensure_persistence.clone();
+        let bash_recorded = recorded_background_ids.clone();
         // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
         // session cwd, the shell environment, and the hooks a background session that lives on the child reports to.
         let terminal_context = crate::extension_state::build_tool_context(&terminal_state);
+        let bash_tool_context = terminal_context.clone();
+        let input_session_hook = terminal_context.on_session_input.clone();
         let mut bash = ToolDefinition::new(
             "bash",
             r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops: subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
             crate::tools::bash::pty_bash_schema(),
             Arc::new(move |call| {
                 let manager = Arc::clone(&bash_manager);
-                let sender = bash_sender.clone();
-                let delivery = completion_delivery.clone();
-                let notifier = terminal_notifier.clone();
-                let tasks = bash_tasks.clone();
                 let bash_configuration = bash_configuration.clone();
                 let backgrounds = bash_backgrounds.clone();
                 let lifecycle = bash_lifecycle.clone();
                 let ensure = bash_ensure.clone();
+                let recorded = bash_recorded.clone();
+                let tool_ctx = bash_tool_context.clone();
                 Box::pin(async move {
                     let (settings, shell) = bash_configuration
                         .lock()
@@ -1480,75 +1573,34 @@ impl Extension for TerminalExtension {
                             ToolError::Message("terminal configuration state poisoned".to_owned())
                         })?
                         .clone();
-                    let description = call
-                        .params
-                        .get("description")
-                        .or_else(|| call.params.get("command"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_owned();
-                    let started_at_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|error| ToolError::Message(error.to_string()))?
-                        .as_secs_f64()
-                        * 1000.0;
-                    let result = crate::tools::bash::execute_configured_bash(
-                        manager.clone(),
+                    let result = crate::tools::bash::execute_configured_bash_with_context(
+                        manager,
                         call,
                         std::env::var("PI_BASH_FOREGROUND_SECONDS").ok().as_deref(),
                         &settings,
                         shell.as_deref(),
+                        None,
+                        Some(&tool_ctx),
+                        None,
                     )
                     .await
                     .map_err(ToolError::Message)?;
                     if let Some(details) = &result.details
                         && details.get("background").and_then(Value::as_bool) == Some(true)
-                        && let Some(id) = details.get("bash_id").and_then(Value::as_str)
                     {
-                        let id = id.to_owned();
-                        backgrounds
+                        crate::extension_state::ensure_persistence(&ensure).await;
+                        let snapshot = backgrounds
                             .lock()
                             .map_err(|_| {
                                 ToolError::Message("terminal backgrounds poisoned".to_owned())
                             })?
-                            .insert(
-                                id.clone(),
-                                crate::session_bundle::BackgroundSession {
-                                    id: id.clone(),
-                                    description: description.clone(),
-                                    started_at_ms,
-                                },
-                            );
-                        publish_backgrounds(&backgrounds, &sender);
-                        // Upstream `onBackgroundState`: a live background session with no
-                        // recorder bound yet binds persistence first.
-                        crate::extension_state::ensure_persistence(&ensure).await;
-                        if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                            lifecycle
-                                .writer
-                                .record_background_start(
-                                    &id,
-                                    &description,
-                                    started_at_ms,
-                                    manifest_now_ms(),
-                                )
-                                .await;
-                        }
-                        if let Some(task) = bind_completion(
-                            id,
-                            manager,
-                            backgrounds,
-                            sender,
-                            delivery,
-                            notifier,
-                            lifecycle,
-                        ) {
-                            let mut tasks = tasks.lock().map_err(|_| {
-                                ToolError::Message("terminal completion tasks poisoned".to_owned())
-                            })?;
-                            tasks.retain(|task| !task.is_finished());
-                            tasks.push(task);
-                        }
+                            .values()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        crate::extension_state::record_background_starts(
+                            &lifecycle, &recorded, snapshot,
+                        )
+                        .await;
                     }
                     tool_result(result)
                 })
@@ -1560,8 +1612,7 @@ impl Extension for TerminalExtension {
                 .to_owned(),
         );
         bash.prompt_guidelines = Some(vec![
-            "You can inspect PI_* environment variables for current model and session details."
-                .to_owned(),
+            "PI_* env vars = current model + session details.".to_owned(),
         ]);
         bash.placement = Some(maho_tools::definition::ToolPlacement::Child);
         bash.child_job = Some(crate::tools::child_placement::terminal_child_job(
@@ -1574,31 +1625,34 @@ impl Extension for TerminalExtension {
             (
                 "bash_output",
                 "Read output from a background bash session without blocking: new output since the last read, the status line, or a rendered full-screen snapshot via view:'screen'. Pattern watches run through monitor; completion arrives as a notification carrying the exit code and output tail.",
-                "Peek at background bash session output (filter, screen view, status); watch patterns with monitor, completion arrives as a notification",
+                Some(
+                    "Peek at background bash session output (filter, screen view, status); watch patterns with monitor, completion arrives as a notification",
+                ),
                 crate::tools::bash_output::bash_output_schema(),
             ),
             (
                 "bash_input",
                 "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session: e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
-                "Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",
+                None,
                 crate::tools::bash_input::bash_input_schema(),
             ),
             (
                 "bash_resize",
                 "Resize a live background bash session's PTY (cols x rows) so full-screen TUIs reflow. No-ops with a note under the pipe fallback.",
-                "Resize a background bash session's PTY so TUIs reflow",
+                None,
                 crate::tools::bash_resize::bash_resize_schema(),
             ),
             (
                 "kill_bash",
                 "Terminate a background bash session (or all of them) and its process tree cleanly.",
-                "Tree-kill a background bash session (or all) with no orphans",
+                Some("Tree-kill a background bash session (or all) with no orphans"),
                 crate::tools::kill_bash::kill_bash_schema(),
             ),
         ] {
             let manager = Arc::clone(&manager);
             let monitors = monitors.clone();
             let kill_session_ctx = session_ctx.clone();
+            let on_session_input = input_session_hook.clone();
             let mut tool = ToolDefinition::new(
                 name,
                 description,
@@ -1607,6 +1661,7 @@ impl Extension for TerminalExtension {
                     let manager = Arc::clone(&manager);
                     let monitors = monitors.clone();
                     let kill_ctx = kill_session_ctx.clone();
+                    let on_session_input = on_session_input.clone();
                     Box::pin(async move {
                         let id = call.params.get("bash_id").and_then(Value::as_str);
                         if name == "kill_bash" {
@@ -1682,7 +1737,7 @@ impl Extension for TerminalExtension {
                                             .collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default();
-                                tool_result(execute_bash_input(
+                                let res = execute_bash_input(
                                     runtime,
                                     BashInputInput {
                                         bash_id: id,
@@ -1690,7 +1745,14 @@ impl Extension for TerminalExtension {
                                         keys: &keys,
                                         submit: call.params.get("submit").and_then(Value::as_bool),
                                     },
-                                ))
+                                );
+                                drop(manager);
+                                if res.is_error != Some(true)
+                                    && let Some(cb) = &on_session_input
+                                {
+                                    cb(&resolved);
+                                }
+                                tool_result(res)
                             }
                             "bash_resize" => tool_result(execute_bash_resize(
                                 runtime.as_deref(),
@@ -1709,7 +1771,26 @@ impl Extension for TerminalExtension {
                     })
                 }),
             );
-            tool.prompt_snippet = Some(prompt_snippet.to_owned());
+            tool.prompt_snippet = prompt_snippet.map(str::to_owned);
+            if name == "bash_input" {
+                tool.exposure = Some(maho_tools::definition::ToolExposure::Search);
+                tool.allow_lazy_activation = Some(true);
+                tool.search_keywords = Some(
+                    ["stdin", "keys", "ctrl+c", "interrupt", "repl", "send input"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                );
+            } else if name == "bash_resize" {
+                tool.exposure = Some(maho_tools::definition::ToolExposure::Search);
+                tool.allow_lazy_activation = Some(true);
+                tool.search_keywords = Some(
+                    ["resize", "pty size", "cols", "rows", "terminal size"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                );
+            }
             let kinds = &crate::tools::child_placement::TERMINAL_CHILD_JOB_KINDS;
             tool.placement = Some(maho_tools::definition::ToolPlacement::Child);
             tool.child_job = Some(crate::tools::child_placement::terminal_child_job(
@@ -1930,14 +2011,7 @@ impl Extension for TerminalExtension {
             }),
         );
         monitor_tool.prompt_snippet=Some("Subscribe to a command's output or a file's create/modify event as injected events instead of polling".to_owned());
-        monitor_tool.prompt_guidelines=Some(vec![
-            "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
-            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already; when the run creates that directory too, use the `command` branch instead."#.to_owned(),
-            r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
-            "A non-persistent command watch is a watcher with a deadline: timeout_ms KILLS the watched command when it fires (the summary says killed at deadline). Put long jobs in a run_in_background session and only watch them.".to_owned(),
-            r#"Waiting on other sessions (your children, a task, every session) is the rpc branch: `monitor({ type: "rpc", target: "children", description: "children status" })` reports each status change and effect receipt as it happens; `events: "all"` adds their content (streaming collapses to one line per 2 s), `exclude` drops kinds."#.to_owned(),
-            "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
-        ]);
+        monitor_tool.prompt_guidelines = None;
         api.register_tool_with_renderers(monitor_tool, crate::tools::render::monitor_renderers())
             .expect("valid builtin monitor registration");
         crate::restore_digest::register_restore_digest_renderer(api);
@@ -4038,5 +4112,45 @@ mod persistence_tests {
         );
 
         teardown(&fixture);
+    }
+
+    #[test]
+    fn search_exposure_for_input_and_resize_and_prompt_guidelines_aligned() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = ExtensionApi::new(
+            LoadedExtension::new("terminal", dir.path().to_owned(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            ExtensionRuntime::default(),
+        );
+        TerminalExtension.register(&mut api);
+        let tool = |name: &str| {
+            &api.registered
+                .tools
+                .iter()
+                .find(|entry| entry.definition.name == name)
+                .expect("tool")
+                .definition
+        };
+        let bash = tool("bash");
+        assert_eq!(
+            bash.prompt_guidelines.as_deref(),
+            Some(&["PI_* env vars = current model + session details.".to_owned()][..])
+        );
+        for name in ["bash_input", "bash_resize"] {
+            let companion = tool(name);
+            assert_eq!(
+                companion.exposure,
+                Some(maho_tools::definition::ToolExposure::Search)
+            );
+            assert_eq!(companion.allow_lazy_activation, Some(true));
+            assert!(
+                companion
+                    .search_keywords
+                    .as_ref()
+                    .is_some_and(|k| !k.is_empty())
+            );
+        }
+        assert!(tool("monitor").prompt_guidelines.is_none());
     }
 }

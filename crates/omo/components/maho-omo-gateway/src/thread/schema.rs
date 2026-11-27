@@ -25,6 +25,18 @@ impl GatewaySchemaVersionError {
     pub fn code(&self) -> &'static str {
         "gateway_schema_too_new"
     }
+
+    pub fn extension(&self) -> Option<&str> {
+        (self.scope != "gateway").then_some(self.scope.as_str())
+    }
+
+    pub fn details_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "found": self.found,
+            "supported": self.supported,
+            "scope": self.scope,
+        })
+    }
 }
 
 impl std::fmt::Display for GatewaySchemaVersionError {
@@ -267,6 +279,119 @@ pub static GATEWAY_MIGRATIONS: &[&[&str]] = &[
      SELECT s.type, s.name, NULL FROM sqlite_schema s
      WHERE NOT EXISTS (SELECT 1 FROM extension_objects e WHERE e.type = s.type AND e.name = s.name COLLATE NOCASE)"#,
     ],
+    // v11 (#13014): what the receiver was parked on when its drain queued a delivery.
+    &[
+        "ALTER TABLE deliveries ADD COLUMN wait_kind TEXT CHECK (wait_kind IS NULL OR wait_kind = 'approval')",
+    ],
+    // v12 (#13037): remote intake row ledger key & verbatim text columns.
+    &[
+        "ALTER TABLE deliveries ADD COLUMN ledger_id TEXT",
+        "ALTER TABLE deliveries ADD COLUMN verbatim_text TEXT",
+        "ALTER TABLE deliveries ADD COLUMN verbatim_display_text TEXT",
+        "CREATE UNIQUE INDEX deliveries_ledger ON deliveries (ledger_id) WHERE ledger_id IS NOT NULL",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('index', 'deliveries_ledger', NULL)",
+    ],
+    // v13 (#13037): woken sessions lease & backoff state.
+    &[
+        r#"CREATE TABLE IF NOT EXISTS woken_sessions (
+      durable_id TEXT PRIMARY KEY,
+      session_file TEXT NOT NULL,
+      host_instance TEXT,
+      state TEXT NOT NULL CHECK (state IN ('requested', 'opening', 'open', 'closing')),
+      requested_at INTEGER NOT NULL,
+      opened_at INTEGER,
+      first_waiting_at INTEGER,
+      lease_owner TEXT,
+      lease_expires_at INTEGER,
+      generation INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER
+    )"#,
+        "CREATE INDEX IF NOT EXISTS woken_sessions_state ON woken_sessions (state)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'woken_sessions', NULL)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('index', 'woken_sessions_state', NULL)",
+    ],
+    // v14 (#13037): session_wait, wake_counts, intake_marks, intake_commands.
+    &[
+        r#"CREATE TABLE IF NOT EXISTS session_wait (
+      durable_id TEXT PRIMARY KEY,
+      wait TEXT NOT NULL CHECK (wait IN ('held', 'waiting')),
+      hold_kinds TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      written_at INTEGER NOT NULL
+    )"#,
+        r#"CREATE TABLE IF NOT EXISTS wake_counts (
+      durable_id TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      human_input_revision INTEGER
+    )"#,
+        r#"CREATE TABLE IF NOT EXISTS intake_marks (
+      sender_device TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      last_command_id TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (sender_device, session_id)
+    )"#,
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'session_wait', NULL)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'wake_counts', NULL)",
+        r#"CREATE TABLE IF NOT EXISTS intake_commands (
+      ledger_id TEXT PRIMARY KEY,
+      command_id TEXT NOT NULL
+    )"#,
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'intake_marks', NULL)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'intake_commands', NULL)",
+    ],
+    // v15 (#14333): `start` is a lane; rebuild `deliveries` to widen `mode_effective` CHECK.
+    &[
+        r#"CREATE TABLE deliveries_v15 (
+      delivery_id TEXT PRIMARY KEY,
+      target_durable_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      sender TEXT NOT NULL,
+      sender_turn TEXT,
+      envelope TEXT NOT NULL,
+      body TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      mode_requested TEXT NOT NULL CHECK (mode_requested IN ('auto', 'steer', 'follow_up')),
+      mode_effective TEXT CHECK (mode_effective IS NULL OR mode_effective IN ('start', 'steer', 'follow_up')),
+      expected_turn_id INTEGER,
+      state TEXT NOT NULL CHECK (state IN ('queued', 'admitting', 'admitted', 'applied', 'refused', 'uncertain')),
+      reason TEXT,
+      admitted_by TEXT,
+      claimed_at INTEGER,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      admission_kind TEXT,
+      turn_epoch INTEGER,
+      root_id TEXT NOT NULL,
+      hop INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      binding_id TEXT,
+      binding_revision INTEGER,
+      actor_user_id TEXT,
+      wait_kind TEXT CHECK (wait_kind IS NULL OR wait_kind = 'approval'),
+      ledger_id TEXT,
+      verbatim_text TEXT,
+      verbatim_display_text TEXT,
+      UNIQUE (target_durable_id, seq)
+    )"#,
+        r#"INSERT INTO deliveries_v15 (rowid, delivery_id, target_durable_id, seq, sender, sender_turn, envelope, body, bytes, mode_requested, mode_effective, expected_turn_id, state, reason, admitted_by, claimed_at, attempt, admission_kind, turn_epoch, root_id, hop, created_at, updated_at, expires_at, binding_id, binding_revision, actor_user_id, wait_kind, ledger_id, verbatim_text, verbatim_display_text)
+      SELECT rowid, delivery_id, target_durable_id, seq, sender, sender_turn, envelope, body, bytes, mode_requested, mode_effective, expected_turn_id, state, reason, admitted_by, claimed_at, attempt, admission_kind, turn_epoch, root_id, hop, created_at, updated_at, expires_at, binding_id, binding_revision, actor_user_id, wait_kind, ledger_id, verbatim_text, verbatim_display_text FROM deliveries"#,
+        "DROP TABLE deliveries",
+        "ALTER TABLE deliveries_v15 RENAME TO deliveries",
+        "CREATE INDEX deliveries_target_state_seq ON deliveries (target_durable_id, state, seq)",
+        "CREATE INDEX deliveries_root ON deliveries (root_id)",
+        "CREATE INDEX deliveries_sender_turn ON deliveries (sender, sender_turn)",
+        "CREATE UNIQUE INDEX deliveries_ledger ON deliveries (ledger_id) WHERE ledger_id IS NOT NULL",
+        PROVENANCE_TRIGGER,
+        PROVENANCE_OBJECT,
+    ],
+    // v16 (#14428): sender collapse key.
+    &[
+        "ALTER TABLE deliveries ADD COLUMN collapse_key TEXT",
+        "CREATE INDEX deliveries_collapse ON deliveries (target_durable_id, sender, collapse_key) WHERE collapse_key IS NOT NULL",
+    ],
 ];
 
 pub const GATEWAY_TABLES: &[&str] = &[
@@ -286,10 +411,24 @@ pub const GATEWAY_TABLES: &[&str] = &[
     "thread_creations",
     "extension_registrations",
     "toolkit_replay_receipts",
+    "woken_sessions",
+    "session_wait",
+    "wake_counts",
+    "intake_marks",
+    "intake_commands",
 ];
 
 /// Migration indexes (0-based) whose steps must run with foreign_keys OFF.
-pub const GATEWAY_NEEDS_FK_OFF: &[usize] = &[6];
+pub const GATEWAY_NEEDS_FK_OFF: &[usize] = &[6, 14];
+
+/// Migration indexes (0-based) that rebuild a table, mapped to the table name for foreign_key_check.
+pub fn gateway_table_rebuild_target(step_index: usize) -> Option<&'static str> {
+    match step_index {
+        6 => Some("bindings"),
+        14 => Some("deliveries"),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -297,20 +436,22 @@ mod tests {
 
     #[test]
     fn every_step_is_non_empty_and_the_count_is_the_supported_version() {
-        assert_eq!(GATEWAY_MIGRATIONS.len(), 10);
+        assert_eq!(GATEWAY_MIGRATIONS.len(), 16);
         for (index, step) in GATEWAY_MIGRATIONS.iter().enumerate() {
             assert!(!step.is_empty(), "step {index} is empty");
         }
-        assert_eq!(GATEWAY_NEEDS_FK_OFF.to_vec(), vec![6usize]);
+        assert_eq!(GATEWAY_NEEDS_FK_OFF.to_vec(), vec![6usize, 14]);
+        assert_eq!(gateway_table_rebuild_target(6), Some("bindings"));
+        assert_eq!(gateway_table_rebuild_target(14), Some("deliveries"));
     }
 
     #[test]
     fn a_newer_store_is_refused_with_its_code() {
-        let error = GatewaySchemaVersionError::new(11, 10, "Gateway");
+        let error = GatewaySchemaVersionError::new(17, 16, "Gateway");
         assert_eq!(error.code(), "gateway_schema_too_new");
         assert_eq!(
             error.to_string(),
-            "Gateway schema 11 is newer than this binary's supported version 10."
+            "Gateway schema 17 is newer than this binary's supported version 16."
         );
     }
 }

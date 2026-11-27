@@ -28,6 +28,8 @@ pub enum TranscriptUnavailableReason {
     TranscriptFileIdentityUnavailable,
     TranscriptTailTrimmed,
     TranscriptTailOverByteLimit,
+    TranscriptAncestryOverByteLimit,
+    TranscriptEntryUnidentified,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,14 +105,19 @@ fn entry_field<'a>(entry: &'a Value, key: &str) -> &'a str {
         .unwrap_or("undefined")
 }
 
+/// One entry's part of `id_fingerprint`, whatever the parsed line holds.
+pub fn fingerprint_line(entry: &Value) -> String {
+    format!(
+        "{}\u{0}{}\n",
+        entry_field(entry, "type"),
+        entry_field(entry, "id")
+    )
+}
+
 fn fingerprint(entries: &[Value]) -> String {
     let mut hash = Sha256::new();
     for entry in entries {
-        hash.update(format!(
-            "{}\u{0}{}\n",
-            entry_field(entry, "type"),
-            entry_field(entry, "id")
-        ));
+        hash.update(fingerprint_line(entry));
     }
     hex::encode(hash.finalize())
 }

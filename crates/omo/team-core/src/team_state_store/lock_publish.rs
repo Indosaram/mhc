@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::lock_record::{mark_lock_record_held, mark_lock_record_released};
+use super::lock_record::{forget_lock_record, mark_lock_record_held};
 pub use super::locks::{
     LockOpenErrorDeps, assert_retryable_lock_open_error, assert_retryable_lock_open_error_with,
 };
@@ -16,13 +16,13 @@ pub fn publish_lock_record(lock_path: &Path, record: &str) -> io::Result<bool> {
     {
         Ok(file) => file,
         Err(error) => {
-            mark_lock_record_released(record);
+            forget_lock_record(record);
             assert_retryable_lock_open_error(lock_path, error)?;
             return Ok(false);
         }
     };
     if let Err(error) = file.write_all(record.as_bytes()) {
-        mark_lock_record_released(record);
+        forget_lock_record(record);
         drop(file);
         // Upstream deliberately ignores rollback unlink failure and preserves the write error.
         let _ = fs::remove_file(lock_path);

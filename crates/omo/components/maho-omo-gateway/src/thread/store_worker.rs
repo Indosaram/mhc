@@ -26,6 +26,9 @@ pub enum WorkerRequest {
     Enqueue {
         request: Box<EnqueueRequest>,
     },
+    Intake {
+        request: Box<super::types::IntakeRequest>,
+    },
     Reconcile {
         request: ReconcileRequest,
     },
@@ -40,6 +43,11 @@ pub enum WorkerRequest {
         delivery_id: String,
         reason: RefusalReason,
     },
+    RefuseReturned {
+        now: i64,
+        delivery_id: String,
+        reason: RefusalReason,
+    },
     DeliveryView {
         delivery_id: String,
     },
@@ -49,6 +57,9 @@ pub enum WorkerRequest {
     },
     IsReferenced {
         durable_id: String,
+    },
+    Backlogs {
+        targets: Vec<String>,
     },
     JournalMode,
     Stats,
@@ -111,6 +122,10 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
             Ok(outcome) => value(&outcome),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },
+        WorkerRequest::Intake { request } => match store.intake(&request) {
+            Ok(outcome) => value(&outcome),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
         WorkerRequest::Reconcile { request } => match store.reconcile(&request) {
             Ok(outcome) => value(&outcome),
             Err(error) => WorkerReply::error(error.message(), error.code()),
@@ -131,6 +146,14 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
             Ok(changed) => value(&changed),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },
+        WorkerRequest::RefuseReturned {
+            now,
+            delivery_id,
+            reason,
+        } => match store.refuse_returned(now, &delivery_id, reason) {
+            Ok(changed) => value(&changed),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
         WorkerRequest::DeliveryView { delivery_id } => match store.delivery_view(&delivery_id) {
             Ok(view) => value(&view),
             Err(error) => WorkerReply::error(error.message(), error.code()),
@@ -144,6 +167,10 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
         },
         WorkerRequest::IsReferenced { durable_id } => match store.is_referenced(&durable_id) {
             Ok(referenced) => value(&referenced),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
+        WorkerRequest::Backlogs { targets } => match store.backlogs(&targets) {
+            Ok(map) => value(&map),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },
         WorkerRequest::JournalMode => match store.journal_mode() {
@@ -193,6 +220,8 @@ mod tests {
                     project: "project".into(),
                     lane: None,
                     session: None,
+                    device: None,
+                    device_absent: None,
                 },
                 now: 1,
                 delivery_id: "d-1".into(),
@@ -202,6 +231,8 @@ mod tests {
                 sender_node: "sender".into(),
                 sender_turn: None,
                 cause_delivery_id: None,
+                inbound_hop: None,
+                authority: None,
                 claimed_root_id: None,
                 origin: super::super::types::EnvelopeOrigin::Session {
                     session: "sender".into(),
@@ -216,6 +247,7 @@ mod tests {
                     args_hash: "h".into(),
                 },
                 endpoint_kind: None,
+                collapse_key: None,
             }),
         };
         let json = serde_json::to_value(&request).expect("serialize");
