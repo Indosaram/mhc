@@ -39,6 +39,10 @@ pub struct EvalToolInput {
     pub reset: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolate: Option<bool>,
+    /// Set when the call omitted `language` and it was filled (`senpi#5154`); the result then
+    /// says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_inferred: Option<super::eval_language_inference::EvalLanguageInferenceBasis>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

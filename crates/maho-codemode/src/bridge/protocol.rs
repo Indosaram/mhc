@@ -241,6 +241,12 @@ pub(crate) fn error(value: &Value) -> bool {
         && ["name", "stack", "code"]
             .iter()
             .all(|key| optional(value, key, Value::is_string))
+        && optional(value, "permissionRule", |rule| {
+            rule.is_object()
+                && ["permission", "pattern", "layer"]
+                    .iter()
+                    .all(|key| string(rule, key))
+        })
 }
 fn connection(value: &Value) -> bool {
     value.is_object()
@@ -258,6 +264,8 @@ fn valid_host_message(value: &Value) -> bool {
             nonempty(value, "sessionId")
                 && value.get("connection").is_some_and(connection)
                 && optional(value, "sessionEnv", map_strings)
+                && optional(value, "removedEnv", strings)
+                && optional(value, "inheritedSet", map_strings)
                 && optional(value, "kernelGeneration", |v| integer(v, 1))
                 && optional(value, "hostToolNames", strings)
                 && optional(value, "foreignLanguageNames", strings)
@@ -267,6 +275,11 @@ fn valid_host_message(value: &Value) -> bool {
                             .iter()
                             .all(|key| v.get(key).is_some_and(|item| integer(item, 0)))
                 })
+                && optional(value, "killGuard", |v| {
+                    v.is_object()
+                        && nonempty(v, "moduleUrl")
+                        && v.get("agentPid").is_some_and(|item| integer(item, 1))
+                })
         }
         Some("run") => {
             nonempty(value, "cellId")
@@ -274,6 +287,9 @@ fn valid_host_message(value: &Value) -> bool {
                 && optional(value, "timeoutMs", |v| integer(v, 1))
                 && optional(value, "envRoot", Value::is_string)
                 && optional(value, "sourceFile", |v| {
+                    v.as_str().is_some_and(|s| !s.is_empty())
+                })
+                && optional(value, "bridgeCellToken", |v| {
                     v.as_str().is_some_and(|s| !s.is_empty())
                 })
                 && optional(value, "preludes", |v| {

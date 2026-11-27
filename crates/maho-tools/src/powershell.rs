@@ -1,6 +1,7 @@
 use crate::{
     bash::*,
     definition::{ToolDefinition, ToolError, ToolFuture},
+    machine::ToolMachine,
 };
 use std::{
     path::{Path, PathBuf},
@@ -57,6 +58,7 @@ fn probe_executable(executable: &str) -> Option<String> {
         .to_owned();
     (!first.is_empty() && Path::new(&first).exists()).then_some(first)
 }
+
 /// senpi utils/shell.ts `getPowerShellConfig`: Windows only, preferring PowerShell 7 (`pwsh.exe`).
 pub async fn get_powershell_config() -> Result<(String, Vec<String>), ToolError> {
     if !cfg!(windows) {
@@ -72,7 +74,11 @@ pub async fn get_powershell_config() -> Result<(String, Vec<String>), ToolError>
         POWERSHELL_ARGS.into_iter().map(str::to_owned).collect(),
     ))
 }
-struct LocalPowerShellOperations;
+
+struct LocalPowerShellOperations {
+    machine: Option<ToolMachine>,
+}
+
 impl BashOperations for LocalPowerShellOperations {
     fn exec<'a>(
         &'a self,
@@ -92,17 +98,28 @@ impl BashOperations for LocalPowerShellOperations {
                 command_transport: None,
                 kind: None,
             };
-            let operations =
-                create_local_shell_operations("PowerShell", Arc::new(move || Ok(config.clone())));
+            let operations = create_local_shell_operations_with_machine(
+                "PowerShell",
+                Arc::new(move || Ok(config.clone())),
+                self.machine.clone(),
+            );
             operations
                 .exec(&format!("{UTF8_OUTPUT_PREFIX}{command}"), cwd, options)
                 .await
         })
     }
 }
+
 pub fn create_local_powershell_operations() -> Arc<dyn BashOperations> {
-    Arc::new(LocalPowerShellOperations)
+    Arc::new(LocalPowerShellOperations { machine: None })
 }
+
+pub fn create_local_powershell_operations_with_machine(
+    machine: Option<ToolMachine>,
+) -> Arc<dyn BashOperations> {
+    Arc::new(LocalPowerShellOperations { machine })
+}
+
 pub fn create_powershell_tool_definition(
     cwd: PathBuf,
     mut options: PowerShellToolOptions,
@@ -110,14 +127,20 @@ pub fn create_powershell_tool_definition(
     // The default PowerShell operations are local, not caller-injected: only a caller's own operations pin the tool.
     let server_pinned = options.operations.is_some() || options.spawn_hook.is_some();
     if options.operations.is_none() {
-        options.operations = Some(create_local_powershell_operations());
+        options.operations = Some(create_local_powershell_operations_with_machine(
+            options.machine.clone(),
+        ));
     }
     let mut tool = create_shell_tool_definition(
         cwd,
         ShellToolConfig {
             name: "powershell".into(),
+            label: "powershell".into(),
             shell_name: "PowerShell".into(),
+            prompt: "PS>".into(),
             prompt_snippet: "Execute PowerShell commands".into(),
+            prompt_guidelines: Some(vec![BASH_PROMPT_GUIDELINE.into()]),
+            full_prompt_guidelines: Some(vec![BASH_PROMPT_GUIDELINE.into()]),
             temp_file_prefix: "pi-powershell".into(),
         },
         options,

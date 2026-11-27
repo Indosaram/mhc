@@ -50,8 +50,13 @@ pub async fn prepare_mcp_service_registration_entries_with(
         let origin = binding.clone().map(|binding| {
             let name = snapshot.name.clone();
             let connection = snapshot.connection.clone();
-            Arc::new(move || Some(binding.upgrade()?.request_origin(&name, &connection)))
-                as crate::request_origin::McpRequestOriginFactory
+            Arc::new(move |caller: Option<&str>| {
+                Some(
+                    binding
+                        .upgrade()?
+                        .request_origin_for(&name, &connection, caller),
+                )
+            }) as crate::request_origin::McpRequestOriginFactory
         });
         let bind_presentation = binding.clone().map(|binding| {
             Arc::new(move |ui: &Arc<dyn maho_ext_api::ExtensionUi>| {
@@ -133,49 +138,53 @@ fn invocation_resolver(
         })
     };
     let ready: McpCatalogCallback = {
-        let (weak_entry, server_config, connection) = (
+        let (weak_entry, server_config, connection, is_current) = (
             weak_entry.clone(),
             server_config.clone(),
             connection.clone(),
+            is_current.clone(),
         );
         Arc::new(move || {
-            let (weak_entry, server_config, connection) = (
+            let (weak_entry, server_config, connection, is_current) = (
                 weak_entry.clone(),
                 server_config.clone(),
                 connection.clone(),
+                is_current.clone(),
             );
             Box::pin(async move {
                 let Some(handle) = weak_entry.upgrade() else {
                     return Ok(());
                 };
-                let ensure_fresh: McpCatalogCallback = {
-                    let handle = Arc::downgrade(&handle);
-                    Arc::new(move || {
-                        let handle = handle.clone();
-                        Box::pin(async move {
-                            let Some(handle) = handle.upgrade() else {
-                                return Ok(());
-                            };
-                            let plan = {
-                                let entry = handle.lock().await;
-                                crate::auth::context::ServerAuthPlan {
-                                    mode: entry.auth_plan.mode,
-                                    provider: entry.auth_plan.provider.clone(),
-                                    refresh: entry.auth_plan.refresh.clone(),
-                                }
-                            };
-                            plan.ensure_fresh().await
-                        })
-                    })
+                let is_current_check = {
+                    let is_current = is_current.clone();
+                    move || is_current()
                 };
-                crate::health::ensure_mcp_tool_call_connection(&connection, Some(&ensure_fresh))
-                    .await?;
+                if !crate::startup_race::prepare_mcp_authentication(
+                    &handle,
+                    Some(&is_current_check),
+                    None,
+                    None,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+                if !(is_current)() {
+                    return Ok(());
+                }
+                crate::health::ensure_mcp_tool_call_connection(&connection, None).await?;
+                if !(is_current)() {
+                    return Ok(());
+                }
                 if let Some(server_config) = &server_config {
                     crate::startup_race::connect_and_refresh_mcp_catalog_unlocked(
                         &handle,
                         server_config,
                     )
                     .await?;
+                }
+                if !(is_current)() {
+                    return Ok(());
                 }
                 Ok(())
             })
@@ -204,6 +213,14 @@ fn invocation_resolver(
         let entry = handle.try_lock().ok()?;
         catalog.find(&entry, tool)
     });
+    let serves_session = binding.as_ref().map(|binding| {
+        let binding = binding.clone();
+        Arc::new(move |session_id: &str| {
+            binding
+                .upgrade()
+                .is_some_and(|binding| binding.serves_scope(Some(session_id)))
+        }) as Arc<dyn Fn(&str) -> bool + Send + Sync>
+    });
     crate::invocation::create_mcp_invocation_resolver(crate::invocation::McpInvocationScope {
         owner: snapshot.dispatch_owner.clone(),
         configuration: snapshot.config_hash.clone(),
@@ -212,6 +229,7 @@ fn invocation_resolver(
             .as_ref()
             .and_then(std::sync::Weak::upgrade)
             .and_then(|binding| binding.session_id()),
+        serves_session,
         is_current,
         ready,
         current,

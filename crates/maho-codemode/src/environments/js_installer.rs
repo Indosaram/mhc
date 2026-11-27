@@ -281,6 +281,8 @@ pub async fn run_js_install(input: JsInstall<'_>) -> Result<(), EnvironmentError
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     let mut child = command.spawn().map_err(|error| EnvironmentError {
         code: "environment_installer_unavailable",
         message: without_host_paths(&error.to_string(), &input),

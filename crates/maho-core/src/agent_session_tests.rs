@@ -18053,6 +18053,7 @@ async fn prompt_size_prefix_request_does_not_hold_extension_runner_lock_across_a
         vec![maho_ext_api::ExtensionHandlerOptions {
             preview_safe: true,
             mutates_messages: None,
+            ..Default::default()
         }],
     );
     extension.handlers.insert(

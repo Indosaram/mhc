@@ -1,11 +1,26 @@
+pub use super::oauth_grant::stored_auth_to_tokens;
 use super::{
     oauth::OAuthRequestError,
     oauth_errors::{OAuthFailureKind, OAuthFlowError},
+    oauth_grant::{
+        McpGrantContext, McpTokenResponse, grant_binding, merge_oauth_token_response,
+        stored_grant_issuer,
+    },
+    oauth_issuer::canonical_authorization_server_issuer,
+    registered_redirect::{
+        RegistrationFlow, grant_for_flow, registration_for_flow, with_promoted_registration,
+        with_registration,
+    },
     token_store::{McpStoredAuth, McpTokenStore, TokenStoreError},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 pub const REFRESH_LEEWAY_MS: f64 = 300000.0;
 pub type McpRedirectHandler = std::sync::Arc<
     dyn Fn(
@@ -15,7 +30,7 @@ pub type McpRedirectHandler = std::sync::Arc<
         + Send
         + Sync,
 >;
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct OAuthTokens {
     pub access_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,44 +38,15 @@ pub struct OAuthTokens {
     pub token_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_in: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 pub fn token_expires_at(tokens: &OAuthTokens, now: f64) -> Option<f64> {
     tokens.expires_in.map(|s| now + s * 1000.0)
 }
-pub fn stored_auth_to_tokens(record: Option<&McpStoredAuth>, now: f64) -> Option<OAuthTokens> {
-    let record = record?;
-    let access = record.access_token.as_ref().filter(|s| !s.is_empty())?;
-    // senpi#2940: an unattributed refresh token is withheld; it would be posted to whichever server is discovered.
-    let refresh_token = record.issuer.as_ref().and(record.refresh_token.clone());
-    Some(OAuthTokens {
-        access_token: access.clone(),
-        refresh_token,
-        token_type: "Bearer".into(),
-        expires_in: record
-            .expires_at
-            .map(|t| ((t - now) / 1000.0).ceil().max(0.0)),
-    })
-}
-pub fn merge_tokens_into_stored_auth(
-    current: Option<McpStoredAuth>,
-    tokens: &OAuthTokens,
-    server_url: &str,
-    now: f64,
-    issuer: Option<&str>,
-) -> McpStoredAuth {
-    let mut next = current.unwrap_or_default();
-    next.access_token = Some(tokens.access_token.clone());
-    if let Some(issuer) = issuer {
-        next.issuer = Some(issuer.into());
-    }
-    next.resource
-        .get_or_insert_with(|| super::oauth::normalize_resource_url(server_url));
-    if let Some(refresh) = &tokens.refresh_token {
-        next.refresh_token = Some(refresh.clone());
-    }
-    next.expires_at = token_expires_at(tokens, now);
-    next
-}
+
 /// Runs a store operation on a blocking thread so the file lock waits there rather than on an async worker.
 async fn spawn_store<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, TokenStoreError> + Send + 'static,
@@ -73,6 +59,8 @@ async fn spawn_store<T: Send + 'static>(
 pub struct McpOAuthProvider {
     pub store: McpTokenStore,
     pub redirect_url: Option<String>,
+    /// This flow sends an authorize request: reuse only a stored registration naming `redirect_url` (senpi#6327).
+    pub require_registered_redirect: bool,
     pub scopes: Option<Vec<String>>,
     pub client_id: Option<String>,
     pub client_metadata_url: Option<String>,
@@ -82,6 +70,10 @@ pub struct McpOAuthProvider {
     pub last_authorization_url: Option<url::Url>,
     pub require_https: bool,
     escalated_scopes: std::sync::Mutex<Vec<String>>,
+    fresh_authorization: AtomicBool,
+    resource: Mutex<Option<String>>,
+    presented_grant: Mutex<Option<McpStoredAuth>>,
+    selected_client: Mutex<Option<Value>>,
 }
 #[derive(Clone, Copy)]
 pub enum CredentialScope {
@@ -96,6 +88,7 @@ impl McpOAuthProvider {
         Self {
             store,
             redirect_url: None,
+            require_registered_redirect: false,
             scopes: None,
             client_id: None,
             client_metadata_url: None,
@@ -105,7 +98,47 @@ impl McpOAuthProvider {
             last_authorization_url: None,
             require_https: true,
             escalated_scopes: std::sync::Mutex::new(Vec::new()),
+            fresh_authorization: AtomicBool::new(false),
+            resource: Mutex::new(None),
+            presented_grant: Mutex::new(None),
+            selected_client: Mutex::new(None),
         }
+    }
+    pub fn grant_context(&self) -> McpGrantContext<'_> {
+        McpGrantContext {
+            server_name: &self.store.server_name,
+            server_url: &self.store.server_url,
+            agent_dir: self.store.agent_dir(),
+            client_id: self.client_id.as_deref(),
+            client_metadata_url: self.client_metadata_url.as_deref(),
+        }
+    }
+    pub fn registration_flow(&self) -> RegistrationFlow<'_> {
+        RegistrationFlow {
+            redirect_url: self.redirect_url.as_deref(),
+            require_registered_redirect: self.require_registered_redirect,
+        }
+    }
+    pub async fn with_fresh_authorization<F, Fut, T>(&self, exchange: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        struct Reset<'a> {
+            flag: &'a AtomicBool,
+            previous: bool,
+        }
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.flag.store(self.previous, Ordering::SeqCst);
+            }
+        }
+        let previous = self.fresh_authorization.swap(true, Ordering::SeqCst);
+        let _reset = Reset {
+            flag: &self.fresh_authorization,
+            previous,
+        };
+        exchange().await
     }
     /// Merges scopes demanded by a step-up challenge into the in-memory escalated set.
     pub fn escalate_scopes(&self, scopes: &[String]) {
@@ -168,7 +201,13 @@ impl McpOAuthProvider {
         {
             return Ok(Some(json!({"client_id":id})));
         }
-        Ok(self.store.read()?.and_then(|r| r.client_info))
+        let record = self.store.read()?;
+        let selected = registration_for_flow(record.as_ref(), &self.registration_flow());
+        *self
+            .selected_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = selected.clone();
+        Ok(selected)
     }
     /// `client_information` on a blocking thread: the stored-record read may wait on the legacy
     /// migration lock.
@@ -181,7 +220,22 @@ impl McpOAuthProvider {
             return Ok(Some(json!({"client_id":id})));
         }
         let store = self.store.clone();
-        spawn_store(move || Ok(store.read()?.and_then(|r| r.client_info))).await
+        let redirect_url = self.redirect_url.clone();
+        let require_registered_redirect = self.require_registered_redirect;
+        let selected = spawn_store(move || {
+            let record = store.read()?;
+            let flow = RegistrationFlow {
+                redirect_url: redirect_url.as_deref(),
+                require_registered_redirect,
+            };
+            Ok(registration_for_flow(record.as_ref(), &flow))
+        })
+        .await?;
+        *self
+            .selected_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = selected.clone();
+        Ok(selected)
     }
     /// Persists a registration stamped with the validated issuer that registered it (senpi#4194).
     pub fn save_client_information(
@@ -189,7 +243,20 @@ impl McpOAuthProvider {
         info: Value,
         issuer: Option<&str>,
     ) -> Result<(), TokenStoreError> {
-        Self::save_client_information_in(&self.store, info, issuer)
+        let saved = Self::save_client_information_in(
+            &self.store,
+            info,
+            issuer,
+            self.registration_flow(),
+            self.client_id.as_deref(),
+            self.client_metadata_url.as_deref(),
+        )?;
+        *self
+            .selected_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            registration_for_flow(saved.as_ref(), &self.registration_flow());
+        Ok(())
     }
     /// `save_client_information` on a blocking thread: the store update waits on the file lock.
     pub async fn save_client_information_async(
@@ -199,27 +266,68 @@ impl McpOAuthProvider {
     ) -> Result<(), OAuthRequestError> {
         let store = self.store.clone();
         let issuer = issuer.map(str::to_owned);
-        spawn_store(move || Self::save_client_information_in(&store, info, issuer.as_deref())).await
+        let redirect_url = self.redirect_url.clone();
+        let require_registered_redirect = self.require_registered_redirect;
+        let client_id = self.client_id.clone();
+        let client_metadata_url = self.client_metadata_url.clone();
+        let saved = spawn_store(move || {
+            let flow = RegistrationFlow {
+                redirect_url: redirect_url.as_deref(),
+                require_registered_redirect,
+            };
+            Self::save_client_information_in(
+                &store,
+                info,
+                issuer.as_deref(),
+                flow,
+                client_id.as_deref(),
+                client_metadata_url.as_deref(),
+            )
+        })
+        .await?;
+        *self
+            .selected_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            registration_for_flow(saved.as_ref(), &self.registration_flow());
+        Ok(())
     }
     fn save_client_information_in(
         store: &McpTokenStore,
         mut info: Value,
         issuer: Option<&str>,
-    ) -> Result<(), TokenStoreError> {
-        let issuer = issuer.map(str::to_owned).or_else(|| {
-            info.get("issuer")
-                .and_then(Value::as_str)
-                .map(super::oauth_issuer::canonical_authorization_server_issuer)
-        });
+        flow: RegistrationFlow<'_>,
+        client_id: Option<&str>,
+        client_metadata_url: Option<&str>,
+    ) -> Result<Option<McpStoredAuth>, TokenStoreError> {
+        let issuer = issuer
+            .map(canonical_authorization_server_issuer)
+            .or_else(|| {
+                info.get("issuer")
+                    .and_then(Value::as_str)
+                    .map(canonical_authorization_server_issuer)
+            });
         if let (Some(issuer), Some(object)) = (issuer, info.as_object_mut()) {
             object.insert("issuer".into(), Value::String(issuer));
         }
-        store.update(|r| {
-            let mut next = r.unwrap_or_default();
-            next.client_info = Some(info);
+        let grant_context = McpGrantContext {
+            server_name: &store.server_name,
+            server_url: &store.server_url,
+            agent_dir: store.agent_dir(),
+            client_id,
+            client_metadata_url,
+        };
+        store.update(|current| {
+            let mut next = with_registration(current.clone(), info, &flow);
+            if let Some(current) = &current
+                && grant_binding(current, &grant_context) != grant_binding(&next, &grant_context)
+            {
+                next.scope = None;
+                next.refresh_scope = None;
+                next.authorization = None;
+            }
             Some(next)
-        })?;
-        Ok(())
+        })
     }
     /// Binds stored credentials to the authorization server discovery validated now (upstream `saveDiscoveryState`):
     /// credentials stamped for another issuer are dropped, and a registration that cannot be attributed is never
@@ -267,12 +375,35 @@ impl McpOAuthProvider {
         Ok(())
     }
     pub fn tokens(&self, now: f64) -> Result<Option<OAuthTokens>, TokenStoreError> {
-        Ok(stored_auth_to_tokens(self.store.read()?.as_ref(), now))
+        let flow = self.registration_flow();
+        let grant = grant_for_flow(self.store.read()?, &flow);
+        let promoted = with_promoted_registration(grant.clone(), &flow);
+        *self
+            .presented_grant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = promoted;
+        Ok(stored_auth_to_tokens(grant.as_ref(), now))
     }
     /// `tokens` on a blocking thread: the stored-record read may wait on the legacy migration lock.
     pub async fn tokens_async(&self, now: f64) -> Result<Option<OAuthTokens>, OAuthRequestError> {
         let store = self.store.clone();
-        spawn_store(move || Ok(stored_auth_to_tokens(store.read()?.as_ref(), now))).await
+        let redirect_url = self.redirect_url.clone();
+        let require_registered_redirect = self.require_registered_redirect;
+        let (grant, promoted) = spawn_store(move || {
+            let flow = RegistrationFlow {
+                redirect_url: redirect_url.as_deref(),
+                require_registered_redirect,
+            };
+            let grant = grant_for_flow(store.read()?, &flow);
+            let promoted = with_promoted_registration(grant.clone(), &flow);
+            Ok((grant, promoted))
+        })
+        .await?;
+        *self
+            .presented_grant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = promoted;
+        Ok(stored_auth_to_tokens(grant.as_ref(), now))
     }
     pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(), TokenStoreError> {
         self.save_tokens_with_issuer(tokens, now, None)
@@ -284,7 +415,40 @@ impl McpOAuthProvider {
         now: f64,
         issuer: Option<&str>,
     ) -> Result<(), TokenStoreError> {
-        Self::save_tokens_with_issuer_in(&self.store, self.logger.as_deref(), tokens, now, issuer)
+        let presented = self
+            .presented_grant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let selected_client = self
+            .selected_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let resource = self
+            .resource
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let fresh = self.fresh_authorization.load(Ordering::SeqCst);
+        let saved = Self::save_tokens_with_issuer_in(
+            &self.store,
+            self.logger.as_deref(),
+            tokens,
+            now,
+            issuer,
+            fresh,
+            resource.as_deref(),
+            presented.as_ref(),
+            selected_client,
+            self.client_id.as_deref(),
+            self.client_metadata_url.as_deref(),
+        )?;
+        *self
+            .presented_grant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = saved;
+        Ok(())
     }
     /// `save_tokens_with_issuer` on a blocking thread: the store update waits on the file lock.
     pub async fn save_tokens_with_issuer_async(
@@ -297,31 +461,97 @@ impl McpOAuthProvider {
         let logger = self.logger.clone();
         let tokens = tokens.clone();
         let issuer = issuer.map(str::to_owned);
-        spawn_store(move || {
+        let fresh = self.fresh_authorization.load(Ordering::SeqCst);
+        let resource = self
+            .resource
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let presented = self
+            .presented_grant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let selected_client = self
+            .selected_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let client_id = self.client_id.clone();
+        let client_metadata_url = self.client_metadata_url.clone();
+        let saved = spawn_store(move || {
             Self::save_tokens_with_issuer_in(
                 &store,
                 logger.as_deref(),
                 &tokens,
                 now,
                 issuer.as_deref(),
+                fresh,
+                resource.as_deref(),
+                presented.as_ref(),
+                selected_client,
+                client_id.as_deref(),
+                client_metadata_url.as_deref(),
             )
         })
-        .await
+        .await?;
+        *self
+            .presented_grant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = saved;
+        Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn save_tokens_with_issuer_in(
         store: &McpTokenStore,
         logger: Option<&std::sync::Mutex<crate::log::McpLogger>>,
         tokens: &OAuthTokens,
         now: f64,
         issuer: Option<&str>,
-    ) -> Result<(), TokenStoreError> {
-        store.update(|r| {
-            Some(merge_tokens_into_stored_auth(
-                r,
-                tokens,
-                &store.server_url,
-                now,
-                issuer,
+        fresh: bool,
+        resource: Option<&str>,
+        presented: Option<&McpStoredAuth>,
+        selected_client: Option<Value>,
+        client_id: Option<&str>,
+        client_metadata_url: Option<&str>,
+    ) -> Result<Option<McpStoredAuth>, TokenStoreError> {
+        let resolved_issuer = tokens
+            .issuer
+            .as_deref()
+            .map(canonical_authorization_server_issuer)
+            .or_else(|| {
+                if fresh {
+                    issuer.map(canonical_authorization_server_issuer)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| stored_grant_issuer(presented));
+        let mut response_tokens = tokens.clone();
+        response_tokens.issuer = resolved_issuer;
+        let resource = resource
+            .map(str::to_owned)
+            .unwrap_or_else(|| super::oauth::normalize_resource_url(&store.server_url));
+        let client_info = selected_client.or_else(|| presented.and_then(|p| p.client_info.clone()));
+        let grant_context = McpGrantContext {
+            server_name: &store.server_name,
+            server_url: &store.server_url,
+            agent_dir: store.agent_dir(),
+            client_id,
+            client_metadata_url,
+        };
+        let saved = store.update(|current| {
+            Some(merge_oauth_token_response(
+                current.unwrap_or_default(),
+                &grant_context,
+                McpTokenResponse {
+                    tokens: &response_tokens,
+                    resource: &resource,
+                    fresh,
+                    presented,
+                    client_info,
+                    now,
+                },
             ))
         })?;
         if let Some(logger) = logger {
@@ -335,7 +565,7 @@ impl McpOAuthProvider {
                     None,
                 );
         }
-        Ok(())
+        Ok(saved)
     }
     pub fn save_code_verifier(&self, verifier: &str) -> Result<(), TokenStoreError> {
         self.store.update(|r| {
@@ -399,10 +629,16 @@ impl McpOAuthProvider {
         Ok(())
     }
     pub fn validate_resource_url(
+        &self,
         server_url: &str,
         resource: Option<&str>,
     ) -> Result<url::Url, url::ParseError> {
-        url::Url::parse(resource.unwrap_or(server_url))
+        let selected = url::Url::parse(resource.unwrap_or(server_url))?;
+        *self
+            .resource
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(selected.to_string());
+        Ok(selected)
     }
     pub fn invalidate_credentials(&self, scope: CredentialScope) -> Result<(), TokenStoreError> {
         Self::invalidate_credentials_in(&self.store, scope)
@@ -434,8 +670,16 @@ impl McpOAuthProvider {
                         next.access_token = None;
                         next.refresh_token = None;
                         next.expires_at = None;
+                        next.scope = None;
+                        next.refresh_scope = None;
+                        next.authorization = None;
                     }
-                    CredentialScope::Client => next.client_info = None,
+                    CredentialScope::Client => {
+                        next.client_info = None;
+                        next.scope = None;
+                        next.refresh_scope = None;
+                        next.authorization = None;
+                    }
                     CredentialScope::Verifier => next.code_verifier = None,
                     CredentialScope::Discovery => (),
                 }

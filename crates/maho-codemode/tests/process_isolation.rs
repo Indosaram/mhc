@@ -2,9 +2,14 @@ use maho_ai::utils::abort::AbortController;
 use maho_codemode::{
     bridge::protocol::{BridgeConnectionConfig, KernelMemoryThresholds},
     config::{
-        feature_settings::{JS_ISOLATION_ENVIRONMENT_FLAG, JsIsolation, resolve_js_isolation},
+        feature_settings::{
+            JS_ISOLATION_ENVIRONMENT_FLAG, JsIsolation, JsIsolationHost,
+            current_js_isolation_host_for, default_js_isolation, resolve_js_isolation,
+            resolve_js_isolation_for_host,
+        },
         settings::{CodemodeSettings, Environment},
     },
+    kernels::js::runtime_name::runtime_name_of,
     kernels::{
         js::{
             context_manager::{JavaScriptKernel, JavaScriptKernelStart},
@@ -125,6 +130,8 @@ async fn process_start_failure_never_downgrades_to_inline() {
                 worker_entry: Some(Path::new("/missing/process-entry.js")),
                 env_passthrough: None,
                 memory: None,
+                inherited_env: None,
+                kill_guard: None,
             },
             &abort.signal(),
         ),
@@ -173,6 +180,8 @@ async fn direct_process_preserves_state_and_replaces_crashed_child() {
                     ceiling_bytes: u64::MAX,
                 },
                 env_passthrough: None,
+                inherited_env: None,
+                kill_guard: None,
             },
         ),
     )
@@ -201,4 +210,71 @@ async fn direct_process_preserves_state_and_replaces_crashed_child() {
     let next = cell(&kernel, "next", "1+1").await;
     assert!(next.get("kernelState").is_none());
     kernel.close().await.expect("close");
+}
+
+#[test]
+fn runtime_name_of_identifies_bun_and_node_binaries() {
+    assert_eq!(runtime_name_of("/usr/local/bin/bun"), Some("bun"));
+    assert_eq!(runtime_name_of("C:\\bun\\bun.exe"), Some("bun"));
+    assert_eq!(runtime_name_of("/opt/node/bin/node"), Some("node"));
+    assert_eq!(runtime_name_of("node.CMD"), Some("node"));
+    assert_eq!(runtime_name_of("/opt/senpi/bin/senpi"), None);
+}
+
+#[test]
+fn host_default_isolation_selects_process_for_posix_bun_hosts() {
+    for (executable, platform, expected) in [
+        (Some("bun"), "darwin", JsIsolation::Process),
+        (Some("bun"), "linux", JsIsolation::Process),
+        (Some("bun"), "win32", JsIsolation::Worker),
+        (Some("node"), "darwin", JsIsolation::Worker),
+        (Some("node"), "linux", JsIsolation::Worker),
+        (None, "darwin", JsIsolation::Worker),
+        (None, "linux", JsIsolation::Worker),
+    ] {
+        let host = JsIsolationHost {
+            executable,
+            platform,
+        };
+        assert_eq!(default_js_isolation(&host), expected);
+        assert_eq!(
+            resolve_js_isolation_for_host(&CodemodeSettings::default(), &Environment::new(), &host),
+            expected
+        );
+    }
+    let posix_bun = current_js_isolation_host_for("/usr/local/bin/bun", "linux");
+    let worker_file: CodemodeSettings =
+        serde_json::from_value(json!({"isolation":{"js":"worker"}})).expect("worker settings");
+    assert_eq!(
+        resolve_js_isolation_for_host(&worker_file, &Environment::new(), &posix_bun),
+        JsIsolation::Worker
+    );
+    let env_worker = Environment::from([(JS_ISOLATION_ENVIRONMENT_FLAG.into(), "worker".into())]);
+    assert_eq!(
+        resolve_js_isolation_for_host(&CodemodeSettings::default(), &env_worker, &posix_bun),
+        JsIsolation::Worker
+    );
+}
+
+#[test]
+fn windows_bun_host_defaults_to_worker_unless_overridden() {
+    let win_bun = current_js_isolation_host_for("C:\\bun\\bun.exe", "win32");
+    assert_eq!(default_js_isolation(&win_bun), JsIsolation::Worker);
+    let env_process = Environment::from([(JS_ISOLATION_ENVIRONMENT_FLAG.into(), "process".into())]);
+    assert_eq!(
+        resolve_js_isolation_for_host(&CodemodeSettings::default(), &env_process, &win_bun),
+        JsIsolation::Process
+    );
+}
+
+#[test]
+fn env_isolation_flag_overrides_file_setting() {
+    let posix_bun = current_js_isolation_host_for("/usr/local/bin/bun", "linux");
+    let process_file: CodemodeSettings =
+        serde_json::from_value(json!({"isolation":{"js":"process"}})).expect("process settings");
+    let env_worker = Environment::from([(JS_ISOLATION_ENVIRONMENT_FLAG.into(), "worker".into())]);
+    assert_eq!(
+        resolve_js_isolation_for_host(&process_file, &env_worker, &posix_bun),
+        JsIsolation::Worker
+    );
 }

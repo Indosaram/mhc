@@ -1,5 +1,11 @@
 use super::{engine::*, pattern::search_pattern};
-use crate::{definition::*, filesystem_policy::*};
+use crate::{
+    definition::*,
+    filesystem_policy::*,
+    fs_error_code::tool_error_from_machine,
+    machine::{ToolMachine, default_tool_machine},
+};
+use maho_machine_ops::{EntryType, OpErrorCode, OpName, StatRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -49,6 +55,30 @@ pub struct GrepToolInput {
 #[derive(Clone, Default)]
 pub struct GrepToolOptions {
     pub filesystem_policy: Option<FilesystemPolicyChecker>,
+    pub machine: Option<ToolMachine>,
+}
+
+async fn path_stat(
+    machine: &ToolMachine,
+    path: &std::path::Path,
+) -> Result<Option<bool>, ToolError> {
+    let ctx = machine.context(None, None);
+    match machine
+        .ops()
+        .files()
+        .stat(
+            StatRequest {
+                path: path.to_string_lossy().into_owned(),
+                access: None,
+            },
+            &ctx,
+        )
+        .await
+    {
+        Ok(info) => Ok(Some(info.entry_type == EntryType::File)),
+        Err(err) if err.code == OpErrorCode::NotFound => Ok(None),
+        Err(err) => Err(tool_error_from_machine(err)),
+    }
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,14 +141,23 @@ fn is_integer(value: f64) -> bool {
 }
 pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> ToolDefinition {
     let server_pinned = options.filesystem_policy.is_some();
+    let machine = options.machine.unwrap_or_else(default_tool_machine);
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone();
         let policy = options.filesystem_policy.clone();
+        let machine = machine.clone();
         Box::pin(async move {
             let started = Instant::now();
             let input: GrepToolInput = serde_json::from_value(call.params)?;
             if input.pattern.is_empty() {
                 return Err(ToolError::Message("Pattern must not be empty".into()));
+            }
+            if let Some(admitted) = machine.begin(
+                OpName::FilesGrep,
+                json!({ "pattern": input.pattern, "path": input.path.as_ref().map(|p| match p { Strings::One(s) => json!(s), Strings::Many(v) => json!(v) }) }),
+                Some(&call.signal),
+            ) {
+                admitted.await?;
             }
             let requested = input
                 .path
@@ -156,18 +195,15 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
             let mut line_end = None;
             for raw in &requested {
                 let mut path = crate::path_utils::resolve_to_cwd(raw, &cwd);
-                let mut info = tokio::fs::metadata(&path).await;
-                if info
-                    .as_ref()
-                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                let mut info = path_stat(&machine, &path).await?;
+                if info.is_none()
                     && let Some((prefix, range)) = path.to_string_lossy().rsplit_once(":L")
                     && let Some((start, end)) = range.split_once('-')
                     && let (Ok(start), Ok(end)) = (
                         start.parse::<u32>(),
                         end.trim_start_matches('L').parse::<u32>(),
                     )
-                    && let Ok(meta) = tokio::fs::metadata(prefix).await
-                    && meta.is_file()
+                    && path_stat(&machine, std::path::Path::new(prefix)).await? == Some(true)
                 {
                     if requested.len() != 1 || start == 0 || end < start {
                         return Err(ToolError::Message("Invalid line selector".into()));
@@ -175,7 +211,7 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
                     let selected = PathBuf::from(prefix);
                     line_start = Some(start);
                     line_end = Some(end);
-                    info = Ok(meta);
+                    info = Some(true);
                     path = selected;
                 }
                 check_filesystem_policy(
@@ -186,14 +222,11 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
                 )
                 .await?;
                 match info {
-                    Ok(info) => {
-                        single_file = info.is_file();
+                    Some(is_file) => {
+                        single_file = is_file;
                         paths.push(path.to_string_lossy().into_owned());
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        missing.push(path.to_string_lossy().into_owned())
-                    }
-                    Err(error) => return Err(error.into()),
+                    None => missing.push(path.to_string_lossy().into_owned()),
                 }
             }
             if paths.is_empty() {

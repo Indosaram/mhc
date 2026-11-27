@@ -87,6 +87,7 @@ async fn test_active_tool_kernel_prelude_js_execution() {
     let all_tools = vec![EvalSchemaToolInfo {
         name: "computer".into(),
         exposure: None,
+        eval_only: None,
         description: Some("Drive desktop GUI".into()),
         parameters: Some(json!({"type": "object"})),
         kernel_prelude: Some(computer_prelude.clone()),
@@ -96,11 +97,14 @@ async fn test_active_tool_kernel_prelude_js_execution() {
     let session = Arc::new(
         CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
             session_id: "test-prelude-session".into(),
+            owner_session_id: None,
             cwd: artifacts.path().into(),
             settings: CodemodeSettings::default(),
             local_roots: None,
             artifacts_dir: Some(artifacts.path().into()),
             session_env: None,
+            inherited_env: None,
+            kill_guard: false,
             executor: executor.clone(),
             list_tools: Some(Arc::new(move || Ok(all_tools_catalog.clone()))),
             complete: Arc::new(|request| {
@@ -138,6 +142,7 @@ async fn test_active_tool_kernel_prelude_js_execution() {
         runtimes: HashMap::new(),
         mode: "print".into(),
         active_kernel_preludes: Some(active_preludes_provider),
+        renderer_lookup: None,
     });
 
     let eval_tool = create_eval_tool(options).unwrap();

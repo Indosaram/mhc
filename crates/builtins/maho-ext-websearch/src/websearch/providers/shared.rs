@@ -288,6 +288,15 @@ pub fn external_result_url(href: Option<&str>, base: &str, own_hosts: &[&str]) -
     }
     Some(url.into())
 }
+/// Accepts only absolute http(s) URLs; control characters would let text merge into the URL on parse.
+pub fn http_url(value: Option<&str>) -> Option<String> {
+    let value = value.filter(|value| !value.is_empty() && value.len() <= 2048)?;
+    if value.contains(['\t', '\n', '\r']) {
+        return None;
+    }
+    let url = url::Url::parse(value).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.into())
+}
 /// Keeps the first result for each URL (`uniqueByUrl`).
 pub fn unique_by_url(items: Vec<SearchResultItem>) -> Vec<SearchResultItem> {
     let mut seen = std::collections::HashSet::new();

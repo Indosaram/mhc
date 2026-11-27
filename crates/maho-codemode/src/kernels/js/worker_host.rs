@@ -164,8 +164,25 @@ impl WorkerHost {
         if let Some(environment) = options.session_env {
             frame["sessionEnv"] = serde_json::to_value(environment)?;
         }
+        if self.mode != JavaScriptKernelMode::Process
+            && let Some(inherited) = options.inherited_env
+        {
+            let base: std::collections::HashMap<String, String> =
+                maho_ext_api::process_env::vars().into_iter().collect();
+            let (removed_env, inherited_set) =
+                crate::kernels::session_env::inherited_environment_delta(&base, &inherited());
+            if !removed_env.is_empty() {
+                frame["removedEnv"] = serde_json::to_value(removed_env)?;
+            }
+            if !inherited_set.is_empty() {
+                frame["inheritedSet"] = serde_json::to_value(inherited_set)?;
+            }
+        }
         if let Some(memory) = options.memory {
             frame["memory"] = serde_json::to_value(memory)?;
+        }
+        if let Some((module_url, agent_pid)) = options.kill_guard {
+            frame["killGuard"] = json!({"moduleUrl": module_url, "agentPid": agent_pid});
         }
         self.post_message(&frame).await?;
         loop {

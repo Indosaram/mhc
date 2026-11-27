@@ -14,6 +14,31 @@ pub fn canonical_authorization_server_issuer(issuer: &str) -> String {
     ORIGIN_SLASH.replace(issuer, "$1").into_owned()
 }
 
+/// Whether a discovery record carries its own evidence for the authorization server it names (senpi#4924):
+/// that server's metadata, the MCP server's protected-resource metadata naming it, or the MCP server's own origin
+/// (the SDK's legacy root fallback).
+pub fn discovery_names_its_server(info: &OAuthServerInfo, server_url: &str) -> bool {
+    if !info.authorization_server_metadata.is_null() {
+        return true;
+    }
+    let named = canonical_authorization_server_issuer(&info.authorization_server_url);
+    if let Ok(parsed) = url::Url::parse(server_url)
+        && named == parsed.origin().ascii_serialization()
+    {
+        return true;
+    }
+    info.resource_metadata
+        .get("authorization_servers")
+        .and_then(Value::as_array)
+        .is_some_and(|servers| {
+            servers.iter().any(|server| {
+                server
+                    .as_str()
+                    .is_some_and(|server| canonical_authorization_server_issuer(server) == named)
+            })
+        })
+}
+
 /// RFC 8414 section 3.3: identifiers from metadata are compared verbatim, not as normalized URLs.
 pub fn validated_authorization_server_issuer(
     info: &OAuthServerInfo,

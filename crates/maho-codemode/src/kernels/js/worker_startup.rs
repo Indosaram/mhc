@@ -43,6 +43,8 @@ pub struct WorkerStartupOptions<'a> {
     pub worker_entry: Option<&'a Path>,
     pub memory: Option<&'a KernelMemoryThresholds>,
     pub env_passthrough: Option<&'a [String]>,
+    pub inherited_env: Option<&'a crate::kernels::session_env::InheritedEnvironment>,
+    pub kill_guard: Option<(&'a str, u32)>,
 }
 
 pub async fn start_worker_with_inline_fallback(

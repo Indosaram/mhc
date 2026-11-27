@@ -69,6 +69,13 @@ pub fn active_kernel_preludes(
         .collect()
 }
 
+/// Identity of the registry-derived parts of the eval description (contribution doc lines and
+/// the eval-only tool names); the eval tool re-registers only when it changes.
+pub fn eval_description_key(preludes: &[KernelPrelude], eval_only_tools: &[String]) -> String {
+    let docs: Vec<&str> = preludes.iter().map(|p| p.documentation.as_str()).collect();
+    serde_json::to_string(&(docs, eval_only_tools)).unwrap_or_default()
+}
+
 pub fn kernel_prelude_docs_key(preludes: &[KernelPrelude]) -> String {
     preludes
         .iter()
@@ -144,6 +151,7 @@ mod tests {
             EvalSchemaToolInfo {
                 name: "t1".into(),
                 exposure: None,
+                eval_only: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p1.clone()),
@@ -151,6 +159,7 @@ mod tests {
             EvalSchemaToolInfo {
                 name: "t2".into(),
                 exposure: Some(ToolExposure::Search),
+                eval_only: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p2.clone()),
@@ -158,6 +167,7 @@ mod tests {
             EvalSchemaToolInfo {
                 name: "t3".into(),
                 exposure: None,
+                eval_only: None,
                 description: None,
                 parameters: None,
                 kernel_prelude: None,

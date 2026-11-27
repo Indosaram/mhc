@@ -13,6 +13,7 @@ fn input(timeout: Option<f64>) -> EvalToolInput {
         on_timeout: None,
         reset: None,
         isolate: None,
+        language_inferred: None,
     }
 }
 #[tokio::test(start_paused = true)]

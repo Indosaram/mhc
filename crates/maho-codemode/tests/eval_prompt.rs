@@ -44,7 +44,8 @@ fn every_enabled_language_combination_resolves_template_tags() {
                 let prompt = build_eval_prompt(&enabled, &options).unwrap();
                 assert!(!prompt.description.contains("{{"));
                 assert!(!prompt.description.contains("}}"));
-                assert_eq!(prompt.prompt_guidelines.len(), 2);
+                assert_eq!(prompt.prompt_guidelines.len(), 1);
+                assert_eq!(prompt.full_prompt_guidelines.len(), 2);
             }
         }
     }
@@ -138,4 +139,39 @@ fn language_line_offers_only_javascript() {
     assert!(!prompt.description.contains("Python"));
     assert!(!prompt.description.contains("Ruby"));
     assert!(!prompt.description.contains("Julia"));
+}
+
+#[test]
+fn eval_only_tools_and_bun_skill_and_pinned_paths_are_rendered() {
+    let prompt = build_eval_prompt(
+        &all_languages(),
+        &EvalPromptOptions {
+            eval_only_tools: vec!["search_docs".into(), "fetch_page".into()],
+            js_runtime: Some(maho_codemode::tool::types::EvalRuntimeInfo {
+                name: "bun".into(),
+                version: "1.3.0".into(),
+                path: None,
+                isolation: None,
+            }),
+            bun_skill_path: Some("/repo/crates/maho-codemode/skill/bun/SKILL.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        prompt
+            .description
+            .contains("Eval-only tools (absent from your direct tool list, reachable only here): search_docs, fetch_page")
+    );
+    assert!(
+        prompt
+            .description
+            .contains("/repo/crates/maho-codemode/skill/bun/SKILL.md")
+    );
+    assert_eq!(prompt.prompt_guidelines.len(), 1);
+    assert_eq!(prompt.full_prompt_guidelines.len(), 2);
+    assert!(
+        prompt.full_prompt_guidelines[1]
+            .contains("Use eval reset only when a language kernel must be wiped")
+    );
 }

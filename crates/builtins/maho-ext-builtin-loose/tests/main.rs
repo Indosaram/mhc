@@ -3,6 +3,8 @@
 
 #[path = "account_display_name.rs"]
 mod account_display_name;
+#[path = "account_list_view.rs"]
+mod account_list_view;
 #[path = "files.rs"]
 mod files;
 #[path = "files_patch.rs"]

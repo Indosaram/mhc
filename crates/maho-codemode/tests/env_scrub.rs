@@ -38,6 +38,7 @@ async fn probe(passthrough: Option<Vec<String>>) -> String {
     };
     let session = CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
         session_id: "env-scrub".into(),
+        owner_session_id: None,
         cwd: root.path().into(),
         settings,
         local_roots: None,
@@ -46,6 +47,8 @@ async fn probe(passthrough: Option<Vec<String>>) -> String {
             ("NPM_TOKEN".into(), "overlay-secret".into()),
             ("KEEP_VAR".into(), "kept".into()),
         ])),
+        inherited_env: None,
+        kill_guard: false,
         executor: Arc::new(Executor),
         list_tools: None,
         complete: Arc::new(|_| Box::pin(async { Ok(json!({})) })),

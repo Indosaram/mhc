@@ -31,5 +31,6 @@ pub fn session_profile(
         shared_host_enabled: false,
         session_kind: session_kind.unwrap_or_default(),
         session_context: session_context.unwrap_or_default(),
+        side: None,
     }
 }

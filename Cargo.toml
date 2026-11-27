@@ -14,6 +14,7 @@ members = [
     "crates/maho-agent",
     "crates/maho-chord",
     "crates/maho-core",
+    "crates/maho-machine-ops",
     "crates/maho-tools",
     "crates/maho-ext-api",
     "crates/maho-ext-host",

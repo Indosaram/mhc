@@ -39,6 +39,8 @@ mod detached_notification_queue;
 mod display_code;
 #[path = "eval_execution_event.rs"]
 mod eval_execution_event;
+#[path = "eval_language_and_nested.rs"]
+mod eval_language_and_nested;
 #[path = "eval_model_context.rs"]
 mod eval_model_context;
 #[path = "eval_notifier.rs"]
@@ -59,6 +61,8 @@ mod eval_tool_lifecycle;
 mod extension_bindings;
 #[path = "extension_factory.rs"]
 mod extension_factory;
+#[path = "host_facts_and_scope.rs"]
+mod host_facts_and_scope;
 #[path = "host_package_installs.rs"]
 mod host_package_installs;
 #[path = "idle_parking_kernel.rs"]
@@ -103,6 +107,8 @@ mod output_bridge;
 mod output_buffer;
 #[path = "output_meta.rs"]
 mod output_meta;
+#[path = "permission_authority.rs"]
+mod permission_authority;
 #[path = "process_isolation.rs"]
 mod process_isolation;
 #[path = "process_tree_host.rs"]

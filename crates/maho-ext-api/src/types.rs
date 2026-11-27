@@ -853,6 +853,20 @@ impl From<&str> for ExtensionFailure {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExtensionSide {
+    Brain,
+    Hand,
+}
+impl ExtensionSide {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Brain => "brain",
+            Self::Hand => "hand",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EventKind {
     ProjectTrust,
     ResourcesDiscover,
@@ -901,13 +915,15 @@ pub enum EventKind {
     Input,
     InputDisposition,
     ProviderStreamEvent,
+    ProviderLoginStart,
     AgentBeforeSettle,
     SessionControlWake,
     ToolActivated,
     HeldWakesReleased,
+    McpServersChange,
 }
 impl EventKind {
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 53] = [
         Self::ProjectTrust,
         Self::ResourcesDiscover,
         Self::SessionStart,
@@ -955,10 +971,12 @@ impl EventKind {
         Self::Input,
         Self::InputDisposition,
         Self::ProviderStreamEvent,
+        Self::ProviderLoginStart,
         Self::AgentBeforeSettle,
         Self::SessionControlWake,
         Self::ToolActivated,
         Self::HeldWakesReleased,
+        Self::McpServersChange,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -1009,10 +1027,12 @@ impl EventKind {
             Self::Input => "input",
             Self::InputDisposition => "input_disposition",
             Self::ProviderStreamEvent => "provider_stream_event",
+            Self::ProviderLoginStart => "provider_login_start",
             Self::AgentBeforeSettle => "agent_before_settle",
             Self::SessionControlWake => "session_control_wake",
             Self::ToolActivated => "tool_activated",
             Self::HeldWakesReleased => "held_wakes_released",
+            Self::McpServersChange => "mcp_servers_change",
         }
     }
     pub fn parse(name: &str) -> Option<Self> {
@@ -1872,7 +1892,21 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_registered_mcp_servers(&self) -> Option<Vec<RegisteredMcpServerDeclaration>> {
         None
     }
+    /// Whether a loaded extension handles `mcp_servers_change` and therefore connects the
+    /// registered servers instead of the built-in MCP gateway.
+    fn extension_connects_mcp_servers(&self) -> bool {
+        false
+    }
+    /// Whether this context runs on a remote hand whose agent loop runs elsewhere (S29 stub).
+    fn is_loop_remote(&self) -> bool {
+        false
+    }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools>;
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionUiCapabilities {
+    pub secret_input: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1895,6 +1929,8 @@ pub struct ExtensionUiDialogOptions {
     pub ephemeral: bool,
     pub signal: Option<AbortSignal>,
     pub timeout_ms: Option<u64>,
+    /// Mask typed input in UIs that support secret prompts (`ExtensionUIInputOptions.secret`).
+    pub secret: bool,
     /// The tool call this dialog is about (senpi `dialogCall`), absent for a dialog that is not a
     /// permission request.
     pub tool_call_id: Option<String>,
@@ -2412,6 +2448,9 @@ pub trait ExtensionUi: Send + Sync {
             "Native side columns are not available",
         ))
     }
+    fn capabilities(&self) -> ExtensionUiCapabilities {
+        ExtensionUiCapabilities::default()
+    }
     fn select<'a>(
         &'a self,
         title: &'a str,
@@ -2847,6 +2886,21 @@ impl ExtensionContext {
             .and_then(ExtensionContextActions::get_registered_mcp_servers)
             .unwrap_or_else(|| self.registered_mcp_servers.clone())
     }
+    /// Whether a loaded extension handles `mcp_servers_change` and therefore connects registered
+    /// servers itself.
+    pub fn extension_connects_mcp_servers(&self) -> bool {
+        self.assert_active_or_panic();
+        self.session_manager
+            .extension_context_actions()
+            .is_some_and(ExtensionContextActions::extension_connects_mcp_servers)
+    }
+    /// Whether this context runs on a remote hand whose agent loop runs elsewhere (S29 stub).
+    pub fn is_loop_remote(&self) -> bool {
+        self.assert_active_or_panic();
+        self.session_manager
+            .extension_context_actions()
+            .is_some_and(ExtensionContextActions::is_loop_remote)
+    }
 }
 impl ToolContext for ExtensionContext {
     fn as_any(&self) -> Option<&(dyn std::any::Any + Send + Sync + 'static)> {
@@ -2993,6 +3047,11 @@ pub struct InputEvent {
 pub struct ExtensionHandlerOptions {
     pub preview_safe: bool,
     pub mutates_messages: Option<bool>,
+    /// The side this handler runs on when a session's agent loop (`Brain`) and tool execution
+    /// (`Hand`) run in separate places (`S28`). `None` registers wherever the extension loads.
+    pub runs: Option<ExtensionSide>,
+    /// Run after ordinary `before_agent_start` handlers (built-ins with `run_last` run last).
+    pub run_last: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEventResult {
@@ -3416,6 +3475,8 @@ pub enum ExtensionEvent {
     HeldWakesReleased {
         sources: BTreeMap<String, u32>,
     },
+    McpServersChange(McpServersChangeEvent),
+    ProviderLoginStart(ProviderLoginStartEvent),
 }
 impl ExtensionEvent {
     pub const fn kind(&self) -> EventKind {
@@ -3467,12 +3528,39 @@ impl ExtensionEvent {
             Self::Input(_) => EventKind::Input,
             Self::InputDisposition { .. } => EventKind::InputDisposition,
             Self::ProviderStreamEvent { .. } => EventKind::ProviderStreamEvent,
+            Self::ProviderLoginStart(_) => EventKind::ProviderLoginStart,
             Self::AgentBeforeSettle { .. } => EventKind::AgentBeforeSettle,
             Self::SessionControlWake { .. } => EventKind::SessionControlWake,
             Self::ToolActivated { .. } => EventKind::ToolActivated,
             Self::HeldWakesReleased { .. } => EventKind::HeldWakesReleased,
+            Self::McpServersChange(_) => EventKind::McpServersChange,
         }
     }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct McpServersChangeEvent {
+    pub servers: Vec<RegisteredMcpServer>,
+}
+#[derive(Clone)]
+pub struct ProviderLoginProgress(Arc<dyn Fn(&str) + Send + Sync>);
+impl ProviderLoginProgress {
+    pub fn new(callback: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        Self(callback)
+    }
+    pub fn report(&self, message: &str) {
+        (self.0)(message);
+    }
+}
+impl fmt::Debug for ProviderLoginProgress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProviderLoginProgress")
+    }
+}
+#[derive(Clone, Debug)]
+pub struct ProviderLoginStartEvent {
+    pub provider: String,
+    pub signal: maho_ai::utils::abort::AbortSignal,
+    pub progress: ProviderLoginProgress,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForkPosition {
@@ -3713,12 +3801,28 @@ pub struct McpOAuth {
     pub client_metadata_url: Option<String>,
     pub flow: Option<OAuthFlow>,
 }
+/// An MCP server registered with `register_mcp_server()`, as `get_mcp_servers()` lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisteredMcpServer {
+    pub name: String,
+    pub config: McpServerDeclaration,
+    pub extension_path: String,
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegisteredMcpServerDeclaration {
     pub name: String,
     pub config: McpServerDeclaration,
     pub extension_path: String,
     pub registration_cwd: PathBuf,
+}
+impl RegisteredMcpServerDeclaration {
+    pub fn to_public(&self) -> RegisteredMcpServer {
+        RegisteredMcpServer {
+            name: self.name.clone(),
+            config: self.config.clone(),
+            extension_path: self.extension_path.clone(),
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlagValue {
@@ -4029,12 +4133,16 @@ pub const DEFAULT_EXTENSION_SESSION_PROFILE: ExtensionSessionProfile = Extension
     shared_host_enabled: false,
     session_kind: SessionKind::Interactive,
     session_context: EMPTY_SESSION_CONTEXT,
+    side: None,
 };
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionSessionProfile {
     pub shared_host_enabled: bool,
     pub session_kind: SessionKind,
     pub session_context: BTreeMap<String, String>,
+    /// The side of a split session to load for; a handler or tool declared `runs` for the other
+    /// side is not registered (`S28`). `None` = fused.
+    pub side: Option<ExtensionSide>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliverAs {
@@ -4978,6 +5086,13 @@ pub type LiveCommandRegistrations = (
     BTreeMap<String, CommandContextHandler>,
 );
 pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
+pub type ProviderLoginStartHook = Arc<
+    dyn Fn(ExtensionRuntime, ProviderLoginStartEvent) -> ExtensionFuture<'static, ()> + Send + Sync,
+>;
+pub type ProviderLoginStartHookWeak = std::sync::Weak<
+    dyn Fn(ExtensionRuntime, ProviderLoginStartEvent) -> ExtensionFuture<'static, ()> + Send + Sync,
+>;
+
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime {
     state: Arc<Mutex<RuntimeState>>,
@@ -4986,6 +5101,8 @@ pub struct ExtensionRuntime {
     registration_classifiers: Arc<Mutex<Vec<u64>>>,
     person_answer_pending: Arc<std::sync::atomic::AtomicBool>,
     subscriptions: Arc<Mutex<TrackedSubscriptions>>,
+    mcp_registry: Arc<crate::mcp_server_registry::McpServerRegistry>,
+    provider_login_start: Arc<Mutex<Option<ProviderLoginStartHookWeak>>>,
 }
 /// senpi `eventBusUnsubscribers`: host subscriptions released when the runtime retires.
 #[derive(Default)]
@@ -5018,6 +5135,28 @@ impl ExtensionRuntime {
             registration_classifiers: Arc::default(),
             person_answer_pending: self.person_answer_pending.clone(),
             subscriptions: self.subscriptions.clone(),
+            mcp_registry: self.mcp_registry.clone(),
+            provider_login_start: self.provider_login_start.clone(),
+        }
+    }
+    pub fn mcp_registry(&self) -> &Arc<crate::mcp_server_registry::McpServerRegistry> {
+        &self.mcp_registry
+    }
+    pub fn set_provider_login_start(&self, hook: Option<ProviderLoginStartHookWeak>) {
+        *self
+            .provider_login_start
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
+    }
+    pub async fn emit_provider_login_start(&self, event: ProviderLoginStartEvent) {
+        let hook = self
+            .provider_login_start
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(hook) = hook {
+            let _ignored = hook(self.clone(), event).await;
         }
     }
     /// senpi `trackEventBusSubscription`: ties a host subscription to this runtime's lifetime.
@@ -5323,6 +5462,11 @@ impl ExtensionRuntime {
     }
     pub fn invalidate(&self, message: &str) {
         self.invalidate_state(message);
+        self.mcp_registry.set_change_listener(None);
+        *self
+            .provider_login_start
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let released = std::mem::take(
             &mut self
                 .subscriptions
@@ -5627,10 +5771,53 @@ impl ExtensionRuntime {
     }
     pub fn register_provider(
         &self,
-        registration: ProviderRegistration,
+        mut registration: ProviderRegistration,
         path: &str,
     ) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
+        let is_pending = self
+            .registration_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if !is_pending {
+            let login_start = self.provider_login_start.clone();
+            let runtime_ref = self.clone();
+            let emit: crate::provider_login_start::ProviderLoginStartEmitter =
+                Arc::new(move |event| {
+                    let dispatcher = login_start
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .and_then(std::sync::Weak::upgrade);
+                    let runtime = runtime_ref.clone();
+                    Box::pin(async move {
+                        if let Some(dispatcher) = dispatcher {
+                            let _ignored = dispatcher(runtime, event).await;
+                        }
+                        Ok(())
+                    })
+                });
+            match &mut registration {
+                ProviderRegistration::Config { name, config } => {
+                    if let Some(oauth) = config.oauth.take() {
+                        config.oauth =
+                            Some(crate::provider_login_start::with_provider_login_start(
+                                name, oauth, emit,
+                            ));
+                    }
+                }
+                ProviderRegistration::ConfigOptions { name, options } => {
+                    if let Some(oauth) = options.config.oauth.take() {
+                        options.config.oauth =
+                            Some(crate::provider_login_start::with_provider_login_start(
+                                name, oauth, emit,
+                            ));
+                    }
+                }
+                ProviderRegistration::Native(_) => {}
+            }
+        }
         let config = match &registration {
             ProviderRegistration::Config { name, config } => Some((name, config.as_ref())),
             ProviderRegistration::ConfigOptions { name, options } => Some((name, &options.config)),
@@ -5853,6 +6040,12 @@ impl ExtensionApi {
         options: ExtensionHandlerOptions,
     ) {
         self.runtime.assert_active_or_panic();
+        if let Some(runs) = options.runs
+            && let Some(session_side) = self.profile.side
+            && runs != session_side
+        {
+            return;
+        }
         let handlers = self.registered.handlers.entry(event).or_default();
         handlers.push(handler);
         self.registered
@@ -6227,7 +6420,20 @@ impl ExtensionApi {
         &mut self,
         definition: ToolDefinition,
     ) -> Result<(), ExtensionFailure> {
+        self.try_register_tool_with_runs(definition, None)
+    }
+    pub fn try_register_tool_with_runs(
+        &mut self,
+        definition: ToolDefinition,
+        runs: Option<ExtensionSide>,
+    ) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
+        if let Some(runs) = runs
+            && let Some(session_side) = self.profile.side
+            && runs != session_side
+        {
+            return Ok(());
+        }
         if definition.name == "tool_search" && self.registered.source_info.source != "builtin" {
             return Err(ExtensionFailure::new(
                 "Tool name \"tool_search\" is reserved for the builtin tool-search extension.",
@@ -6675,8 +6881,63 @@ impl ExtensionApi {
                     self.registered.identity.path.clone(),
                     self.registered.mcp_servers.clone(),
                 );
+            self.runtime.mcp_registry.update_extension(
+                &self.registered.identity.path,
+                self.registered.mcp_servers.clone(),
+            );
+            self.runtime.mcp_registry.changed(&self.runtime);
+        } else {
+            self.runtime.mcp_registry.update_extension(
+                &self.registered.identity.path,
+                self.registered.mcp_servers.clone(),
+            );
         }
         Ok(())
+    }
+    pub fn unregister_mcp_server(&mut self, name: &str) {
+        if let Err(error) = self.try_unregister_mcp_server(name) {
+            std::panic::panic_any(error);
+        }
+    }
+    pub fn try_unregister_mcp_server(&mut self, name: &str) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let before = self.registered.mcp_servers.len();
+        self.registered.mcp_servers.retain(|s| s.name != name);
+        let removed = self.registered.mcp_servers.len() != before;
+        if removed {
+            if self
+                .runtime
+                .registration_pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+            {
+                self.runtime
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .live_mcp_servers
+                    .insert(
+                        self.registered.identity.path.clone(),
+                        self.registered.mcp_servers.clone(),
+                    );
+                self.runtime.mcp_registry.update_extension(
+                    &self.registered.identity.path,
+                    self.registered.mcp_servers.clone(),
+                );
+                self.runtime.mcp_registry.changed(&self.runtime);
+            } else {
+                self.runtime.mcp_registry.update_extension(
+                    &self.registered.identity.path,
+                    self.registered.mcp_servers.clone(),
+                );
+            }
+        }
+        Ok(())
+    }
+    pub fn get_mcp_servers(&self) -> Vec<RegisteredMcpServer> {
+        self.runtime.assert_active_or_panic();
+        self.runtime.mcp_registry.list()
     }
     pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) {
         self.runtime.assert_active_or_panic();

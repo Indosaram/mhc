@@ -45,15 +45,17 @@ impl BashOperations for ChildBashOperations {
                 signal,
                 timeout,
                 env,
+                session_id: _,
             } = options;
             if signal.is_aborted() {
                 return Err(ToolError::Message("aborted".to_owned()));
             }
-            let shell_env: Map<String, Value> =
-                (if env.is_empty() { get_shell_env() } else { env })
-                    .into_iter()
-                    .map(|(name, value)| (name, Value::String(value)))
-                    .collect();
+            let shell_env: Map<String, Value> = env
+                .filter(|env| !env.is_empty())
+                .unwrap_or_else(get_shell_env)
+                .into_iter()
+                .map(|(name, value)| (name, Value::String(value)))
+                .collect();
             let mut args = Map::new();
             args.insert("command".into(), Value::String(command.to_owned()));
             args.insert(

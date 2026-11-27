@@ -158,6 +158,158 @@ fn seed_direct_server(agent_dir: &Path) {
 }
 
 #[tokio::test]
+async fn first_use_attach_failure_is_reported_before_agent_start() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("mcp.json"), "{ invalid").unwrap();
+    let mut ctx = context();
+    ctx.cwd = root.path().into();
+    ctx.agent_dir = root.path().into();
+    let registered = LoadedExtension::new("builtin:mcp", root.path().into(), SourceInfo::default());
+    let mut api = ExtensionApi::new(
+        registered,
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let _service = maho_ext_mcp::index::register_mcp_lifecycle(
+        &mut api,
+        Arc::new(HostMcpRegistry::default()),
+        1,
+    );
+    let mut call = ExtensionEvent::ToolCall(ToolCallEvent {
+        tool_call_id: "call".into(),
+        tool_name: "bash".into(),
+        input: json!({}),
+        parent_tool_call_id: None,
+    });
+    (api.registered.handlers[&EventKind::ToolCall][0])(&mut call, &ctx)
+        .await
+        .expect("tool call starts the attach");
+    let mut before = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: "hello".into(),
+        trigger: "prompt".into(),
+        preview: false,
+        images: None,
+        system_prompt: "base".into(),
+        system_prompt_options: BuildSystemPromptOptions::default(),
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        (api.registered.handlers[&EventKind::BeforeAgentStart][0])(&mut before, &ctx),
+    )
+    .await
+    .expect("attach settles");
+    let error = result.err().expect("attach failure must reach the caller");
+    assert!(error.message.contains("Invalid MCP config"), "{error:?}");
+
+    std::fs::write(root.path().join("mcp.json"), "{}").unwrap();
+    (api.registered.handlers[&EventKind::ToolCall][0])(&mut call, &ctx)
+        .await
+        .expect("tool call retries the attach");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        (api.registered.handlers[&EventKind::BeforeAgentStart][0])(&mut before, &ctx),
+    )
+    .await
+    .expect("retry settles")
+    .expect("corrected config can attach");
+}
+
+#[tokio::test]
+async fn shutdown_cancels_a_first_use_attach_waiting_for_the_service() {
+    let root = tempfile::tempdir().unwrap();
+    let mut ctx = context();
+    ctx.cwd = root.path().into();
+    ctx.agent_dir = root.path().into();
+    let registered = LoadedExtension::new("builtin:mcp", root.path().into(), SourceInfo::default());
+    let mut api = ExtensionApi::new(
+        registered,
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let service = maho_ext_mcp::index::register_mcp_lifecycle(
+        &mut api,
+        Arc::new(HostMcpRegistry::default()),
+        1,
+    );
+    let guard = service.lock().await;
+    let mut call = ExtensionEvent::ToolCall(ToolCallEvent {
+        tool_call_id: "call".into(),
+        tool_name: "bash".into(),
+        input: json!({}),
+        parent_tool_call_id: None,
+    });
+    (api.registered.handlers[&EventKind::ToolCall][0])(&mut call, &ctx)
+        .await
+        .expect("tool call starts the attach");
+    let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        reason: SessionReason::Quit,
+        target_session_file: None,
+        signal: None,
+    });
+    let shutdown = (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx);
+    drop(guard);
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+        .await
+        .expect("shutdown settles")
+        .expect("shutdown succeeds");
+
+    let mut before = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: "hello".into(),
+        trigger: "prompt".into(),
+        preview: false,
+        images: None,
+        system_prompt: "base".into(),
+        system_prompt_options: BuildSystemPromptOptions::default(),
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        (api.registered.handlers[&EventKind::BeforeAgentStart][0])(&mut before, &ctx),
+    )
+    .await
+    .expect("cancelled attach settles");
+    let error = result.err().expect("cancelled attach must not succeed");
+    assert!(error.message.contains("without a result"), "{error:?}");
+}
+
+#[tokio::test]
+async fn direct_before_agent_start_retries_after_attach_failure() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("mcp.json"), "{ invalid").unwrap();
+    let mut ctx = context();
+    ctx.cwd = root.path().into();
+    ctx.agent_dir = root.path().into();
+    let registered = LoadedExtension::new("builtin:mcp", root.path().into(), SourceInfo::default());
+    let mut api = ExtensionApi::new(
+        registered,
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let _service = maho_ext_mcp::index::register_mcp_lifecycle(
+        &mut api,
+        Arc::new(HostMcpRegistry::default()),
+        1,
+    );
+    let mut before = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: "hello".into(),
+        trigger: "prompt".into(),
+        preview: false,
+        images: None,
+        system_prompt: "base".into(),
+        system_prompt_options: BuildSystemPromptOptions::default(),
+    });
+    let handler = &api.registered.handlers[&EventKind::BeforeAgentStart][0];
+    assert!(handler(&mut before, &ctx).await.is_err());
+    assert!(handler(&mut before, &ctx).await.is_err());
+    std::fs::write(root.path().join("mcp.json"), "{}").unwrap();
+    handler(&mut before, &ctx)
+        .await
+        .expect("corrected config can attach");
+}
+
+#[tokio::test]
 async fn session_start_registers_direct_mode_mcp_tools_into_the_real_session() {
     use maho_ai::providers::faux::{
         FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message,

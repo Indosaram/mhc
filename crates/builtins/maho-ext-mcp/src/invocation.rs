@@ -88,6 +88,8 @@ pub type McpInvocationCurrentNow = Arc<dyn Fn(&str) -> Option<McpToolCatalogEntr
 /// The live registered definition by name (senpi `ctx.tools.find`).
 pub type McpToolLookup = Arc<dyn Fn(&str) -> Option<ToolDefinition> + Send + Sync>;
 
+pub type McpServesSessionCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// senpi `InvocationScope`.
 ///
 /// DIVERGENCE: senpi compares `ctx.sessionManager` objects; the host rebuilds that adapter on a
@@ -98,6 +100,8 @@ pub struct McpInvocationScope {
     pub configuration: String,
     pub context_required: bool,
     pub session_id: Option<String>,
+    /// Another session this binding serves as one of its execution scopes (brain/hand S16c).
+    pub serves_session: Option<McpServesSessionCheck>,
     pub is_current: Arc<dyn Fn() -> bool + Send + Sync>,
     pub ready: McpCatalogCallback,
     pub current: McpInvocationCurrent,
@@ -258,10 +262,15 @@ impl McpInvocationResolver {
         let ctx = invocation.and_then(|invocation| invocation.context);
         if scope.context_required
             && ctx.is_none_or(|ctx| {
+                let caller_id = ctx.session_manager.session_id();
                 scope
                     .session_id
                     .as_deref()
-                    .is_some_and(|id| ctx.session_manager.session_id() != id)
+                    .is_some_and(|id| caller_id != id)
+                    && !scope
+                        .serves_session
+                        .as_ref()
+                        .is_some_and(|serves| serves(caller_id))
             })
         {
             return Ok(refuse(
@@ -282,7 +291,16 @@ impl McpInvocationResolver {
                 error.server_name = Some(offered.server.clone());
                 return Err(error);
             }
-            ready = (scope.ready)() => ready?,
+            ready = (scope.ready)() => match ready {
+                Ok(()) => (),
+                Err(error) => {
+                    check_signal(signal)?;
+                    if !(scope.is_current)() {
+                        return Ok(refuse(McpInvocationErrorKind::Unavailable, REPLACED, None));
+                    }
+                    return Err(error);
+                }
+            },
         }
         check_signal(signal)?;
         if !(scope.is_current)() {

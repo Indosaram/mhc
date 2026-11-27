@@ -30,6 +30,7 @@ pub fn build_provider(
         config.url.as_deref().unwrap_or(""),
     ));
     provider.redirect_url = Some(callback_url.unwrap_or("http://127.0.0.1:0/callback").into());
+    provider.require_registered_redirect = callback_url.is_some();
     if let Some(oauth) = &config.oauth {
         provider.client_id = oauth.client_id.clone();
         provider.client_metadata_url = oauth.client_metadata_url.clone();
@@ -138,6 +139,7 @@ where
     .await
     .map_err(|error| OAuthRequestError::Flow(Box::new(error)))?;
     provider.redirect_url = Some(channel.redirect_url.clone());
+    provider.require_registered_redirect = true;
     let begin = if force {
         begin_authorization_forced(&mut provider, client).await?
     } else {
@@ -244,7 +246,8 @@ pub async fn run_auth(deps: &AuthCommandDeps) -> Result<(), OAuthRequestError> {
         .and_then(|oauth| oauth.flow.as_ref())
         == Some(&crate::config_schema::OAuthFlow::ClientCredentials)
     {
-        let provider = deps_provider(deps, deps.callback_url.as_deref().unwrap_or(PASTE_REDIRECT))?;
+        // No authorize request, so no redirect: any stored registration may serve the grant (senpi#6327).
+        let provider = build_provider(name, &deps.config, &deps.agent_dir, None)?;
         client_credentials_grant(&provider, &deps.client).await?;
         (deps.on_reconnect)().await;
         (deps.notify)(

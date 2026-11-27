@@ -16,6 +16,7 @@ fn input(language: EvalLanguage) -> EvalToolInput {
         on_timeout: None,
         reset: None,
         isolate: None,
+        language_inferred: None,
     }
 }
 
@@ -281,4 +282,33 @@ async fn deadline_killed_cell_settles_cancelled_not_failed() {
     let snapshot = manager.peek("killed").unwrap();
     assert_eq!(snapshot.state, EvalDetachedCellState::Cancelled);
     assert!(snapshot.hard_limit_seconds.is_some());
+}
+
+#[tokio::test]
+async fn peek_suggests_closest_cell_id_except_on_tie() {
+    let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
+    let cell = manager
+        .create("build-kernel-alpha".into(), input(EvalLanguage::Js))
+        .unwrap();
+    manager.bind_kernel(
+        &cell,
+        Arc::new(|| AgentToolResult::text("done")),
+        Arc::new(|| (None, vec![])),
+    );
+    let err = manager.peek("build-kernel-alph").unwrap_err();
+    assert!(
+        err.contains("did you mean \"build-kernel-alpha\"?"),
+        "{err}"
+    );
+
+    let second = manager
+        .create("build-kernel-alphb".into(), input(EvalLanguage::Js))
+        .unwrap();
+    manager.bind_kernel(
+        &second,
+        Arc::new(|| AgentToolResult::text("done")),
+        Arc::new(|| (None, vec![])),
+    );
+    let tie_err = manager.peek("build-kernel-alphc").unwrap_err();
+    assert!(!tie_err.contains("did you mean"), "{tie_err}");
 }

@@ -39,11 +39,14 @@ async fn session(root: &std::path::Path, id: &str, process: bool) -> CodemodeSes
     bounded(CodemodeSessionManager::start(
         CreateCodemodeSessionManagerOptions {
             session_id: id.into(),
+            owner_session_id: None,
             cwd: root.into(),
             settings,
             local_roots: None,
             artifacts_dir: Some(root.into()),
             session_env: None,
+            inherited_env: None,
+            kill_guard: false,
             executor: Arc::new(Executor),
             list_tools: None,
             complete: Arc::new(|_| Box::pin(async { Ok(json!({})) })),

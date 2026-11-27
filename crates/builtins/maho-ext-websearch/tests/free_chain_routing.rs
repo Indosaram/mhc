@@ -154,6 +154,7 @@ fn request() -> SearchRequest {
         max_results: 10.,
         allowed_domains: None,
         blocked_domains: None,
+        ..Default::default()
     }
 }
 fn fake_clock() -> (Clock, Arc<AtomicU64>) {

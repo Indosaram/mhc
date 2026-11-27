@@ -116,6 +116,7 @@ async fn callable_eval_uses_each_invocations_model_for_display_images() {
         runtimes: HashMap::new(),
         mode: "print".into(),
         active_kernel_preludes: None,
+        renderer_lookup: None,
     });
     let tool = create_eval_tool(options).unwrap();
     let mut results = Vec::new();

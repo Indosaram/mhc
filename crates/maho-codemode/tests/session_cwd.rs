@@ -33,11 +33,14 @@ async fn session(cwd: &Path, artifacts: &Path) -> CodemodeSessionManager {
     bounded(CodemodeSessionManager::start(
         CreateCodemodeSessionManagerOptions {
             session_id: uuid::Uuid::new_v4().to_string(),
+            owner_session_id: None,
             cwd: cwd.into(),
             settings: Default::default(),
             local_roots: None,
             artifacts_dir: Some(artifacts.into()),
             session_env: None,
+            inherited_env: None,
+            kill_guard: false,
             executor: Arc::new(Executor),
             list_tools: None,
             complete: Arc::new(|_| Box::pin(async { Ok(json!({})) })),

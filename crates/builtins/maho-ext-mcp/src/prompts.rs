@@ -66,7 +66,10 @@ pub fn register_mcp_prompt_commands(
                                 .await?;
                             }
                             let options = crate::request_origin::mcp_request_options(
-                                server.request_origin.as_ref().and_then(|origin| origin()),
+                                server
+                                    .request_origin
+                                    .as_ref()
+                                    .and_then(|origin| origin(None)),
                                 None,
                             );
                             server

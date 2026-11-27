@@ -5,6 +5,9 @@ pub const MAX_AGGREGATED_TOOL_NAMES: usize = 64;
 pub const MAX_CAPTURED_IDENTIFIER_CODE_POINTS: usize = 128;
 pub const MAX_CAPTURED_TOOL_NAME_CODE_POINTS: usize = 128;
 pub const MAX_RPC_EVENT_BYTES: usize = 32 * 1024;
+/// The serialized size above which a nested result's details are not kept for its renderer (the
+/// eval result persists them).
+pub const MAX_CAPTURED_DETAILS_CHARACTERS: usize = 16_384;
 
 pub fn cap_code_points(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -109,6 +112,20 @@ pub fn tool_call_result_preview(result: &maho_ext_api::AgentToolResult) -> Optio
     None
 }
 
+/// A plain JSON copy of a nested result's details for the tool's own `renderResult`, or `None`
+/// when there are none, they serialize to an empty object/`null`, or they serialize past
+/// `MAX_CAPTURED_DETAILS_CHARACTERS`: the summary then keeps only its text preview.
+pub fn tool_call_result_details(result: &maho_ext_api::AgentToolResult) -> Option<Value> {
+    if result.details.is_null() {
+        return None;
+    }
+    let serialized = serde_json::to_string(&result.details).ok()?;
+    if serialized.encode_utf16().count() > MAX_CAPTURED_DETAILS_CHARACTERS {
+        return None;
+    }
+    serde_json::from_str(&serialized).ok()
+}
+
 pub struct ToolCallCapture {
     pub call_id: String,
     pub args: Option<Value>,
@@ -124,6 +141,7 @@ pub fn record_tool_call(
     capture: &mut ToolCallCapture,
     result_preview: Option<&str>,
     error: Option<&str>,
+    details: Option<&Value>,
     completed_at: f64,
 ) {
     settle_tool_call_metric(&mut capture.metric, ok, completed_at);
@@ -148,6 +166,9 @@ pub fn record_tool_call(
         }
         if let Some(preview) = result_preview {
             summary["resultPreview"] = Value::String(preview.into());
+        }
+        if let Some(details) = details {
+            summary["details"] = details.clone();
         }
     }
     tool_calls.push(summary);

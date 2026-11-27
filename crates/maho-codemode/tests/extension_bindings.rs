@@ -34,7 +34,7 @@ fn gates_on_kernel_version_not_installed_binary() {
 #[test]
 fn resolves_shipped_skill_only_for_bun_kernel() {
     let root = tempfile::tempdir().unwrap();
-    let skill = root.path().join("skill/bun-1-4/SKILL.md");
+    let skill = root.path().join("skill/bun/SKILL.md");
     std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
     std::fs::write(&skill, "fixture").unwrap();
     let base = root.path().join("extension");
@@ -52,13 +52,10 @@ fn binary_away_from_build_tree_uses_embedded_skill_tree() {
     let root = tempfile::tempdir().unwrap();
     let skill = active_bun_skill_path(Some("1.4.0"), &root.path().join("extension"))
         .expect("embedded skill");
-    assert!(skill.ends_with("skill/bun-1-4/SKILL.md"));
+    assert!(skill.ends_with("skill/bun/SKILL.md"));
     assert_eq!(
         std::fs::read_to_string(&skill).unwrap(),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/skill/bun-1-4/SKILL.md"
-        ))
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun/SKILL.md"))
     );
     assert!(
         skill

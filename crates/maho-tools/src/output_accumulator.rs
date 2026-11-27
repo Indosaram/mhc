@@ -1,8 +1,117 @@
-use crate::{definition::ToolError, tail_window::TailWindow, truncate::*};
+use crate::{
+    definition::{ToolError, ToolFuture},
+    output_accumulator_core::{
+        CoreFullOutput, OutputSpill, OutputSpillFactory, join_head_and_tail,
+    },
+    tail_window::TailWindow,
+    truncate::*,
+};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
+
+struct LocalTempFileSpill {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    write_error: Option<String>,
+}
+
+impl LocalTempFileSpill {
+    fn open(prefix: &str) -> Result<Self, ToolError> {
+        let temp = tempfile::Builder::new()
+            .prefix(&format!("{prefix}-"))
+            .suffix(".log")
+            .tempfile()?;
+        let (file, path) = temp.keep().map_err(|e| ToolError::Io(e.error))?;
+        Ok(Self {
+            path,
+            file: Some(file),
+            write_error: None,
+        })
+    }
+}
+
+impl OutputSpill for LocalTempFileSpill {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn write(&mut self, chunk: &[u8]) {
+        if self.write_error.is_some() {
+            return;
+        }
+        if let Some(file) = &mut self.file
+            && let Err(err) = file.write_all(chunk)
+        {
+            self.write_error = Some(err.to_string());
+        }
+    }
+
+    fn close(&mut self) -> ToolFuture<'_, ()> {
+        Box::pin(async move {
+            if let Some(err) = self.write_error.take() {
+                self.file.take();
+                return Err(ToolError::Message(err));
+            }
+            if let Some(mut file) = self.file.take() {
+                file.flush()?;
+            }
+            Ok(())
+        })
+    }
+
+    fn remove(&mut self) -> ToolFuture<'_, ()> {
+        Box::pin(async move {
+            self.file.take();
+            match std::fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(ToolError::Io(err)),
+            }
+        })
+    }
+
+    fn read_full(&mut self, max_bytes: usize) -> ToolFuture<'_, CoreFullOutput> {
+        Box::pin(async move {
+            if let Some(file) = &mut self.file {
+                file.flush()?;
+            }
+            let mut file = std::fs::File::open(&self.path)?;
+            let size = file.metadata()?.len();
+            if size <= max_bytes as u64 {
+                file.seek(SeekFrom::Start(0))?;
+                let mut bytes = Vec::with_capacity(size as usize);
+                file.read_to_end(&mut bytes)?;
+                return Ok(CoreFullOutput {
+                    content: String::from_utf8_lossy(&bytes).into_owned(),
+                    truncated: false,
+                });
+            }
+            let head_len = max_bytes / 2;
+            let tail_len = max_bytes - head_len;
+            let tail_offset = size.saturating_sub(tail_len as u64);
+            let mut head = vec![0u8; head_len];
+            let mut tail = vec![0u8; tail_len];
+            file.seek(SeekFrom::Start(0))?;
+            file.read_exact(&mut head)?;
+            file.seek(SeekFrom::Start(tail_offset))?;
+            file.read_exact(&mut tail)?;
+            let omitted = size
+                .saturating_sub(head_len as u64)
+                .saturating_sub(tail_len as u64) as usize;
+            Ok(CoreFullOutput {
+                content: join_head_and_tail(&head, &tail, omitted),
+                truncated: true,
+            })
+        })
+    }
+}
+
+pub fn create_temp_file_spill() -> OutputSpillFactory {
+    Arc::new(|prefix| Ok(Box::new(LocalTempFileSpill::open(prefix)?)))
+}
 pub struct OutputAccumulatorOptions {
     pub max_lines: usize,
     pub max_bytes: usize,

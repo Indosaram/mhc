@@ -142,6 +142,7 @@ async fn host_tool_panic_settles_cell_and_releases_kernel_queue() {
                         on_timeout: Some(TimeoutBehavior::Detach),
                         reset: None,
                         isolate: None,
+                        language_inferred: None,
                     },
                     signal: maho_ai::utils::abort::AbortController::new().signal(),
                     steering_signal: Some(steering_signal),
@@ -255,6 +256,7 @@ async fn load_magic_runs_the_file_read_when_its_turn_comes() {
                     on_timeout: Some(TimeoutBehavior::Error),
                     reset: None,
                     isolate: None,
+                    language_inferred: None,
                 },
                 signal: maho_ai::utils::abort::AbortController::new().signal(),
                 steering_signal: None,
@@ -414,6 +416,7 @@ async fn resolved_file_and_environment_capacity_is_enforced_by_callable() {
             runtimes: HashMap::new(),
             mode: "tui".into(),
             active_kernel_preludes: None,
+            renderer_lookup: None,
         }))
         .unwrap();
         for index in 0..=capacity {
@@ -491,6 +494,7 @@ async fn callable_eval_is_cancelled_by_session_replacement_before_worker_retirem
         runtimes: HashMap::new(),
         mode: "print".into(),
         active_kernel_preludes: None,
+        renderer_lookup: None,
     });
     let tool = create_eval_tool(options).unwrap();
     let execute = tool.execute.clone();
@@ -582,6 +586,7 @@ fn capacity_tool(
         runtimes: HashMap::new(),
         mode: "print".into(),
         active_kernel_preludes: None,
+        renderer_lookup: None,
     }))
     .expect("eval tool")
 }

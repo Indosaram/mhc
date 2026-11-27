@@ -53,9 +53,20 @@ pub async fn call_mcp_tool_for(
     on_update: UpdateFn<'_>,
     invocation: Option<&McpInvocation<'_>>,
 ) -> Result<McpCallOutcome, ToolError> {
+    let caller_session_id = invocation
+        .and_then(|invocation| invocation.context)
+        .map(|ctx| ctx.session_manager.session_id().to_owned());
     let operation = || async {
         let Some(resolver) = &entry.invocation else {
-            let result = call_offered(entry, &args, call_id, signal, on_update).await?;
+            let result = call_offered(
+                entry,
+                &args,
+                call_id,
+                signal,
+                on_update,
+                caller_session_id.as_deref(),
+            )
+            .await?;
             return Ok::<_, McpError>(McpCallOutcome::Called {
                 entry: Box::new(entry.clone()),
                 result,
@@ -94,7 +105,15 @@ pub async fn call_mcp_tool_for(
                 if !ready.is_current() {
                     continue;
                 }
-                let result = send(&ready.entry, &args, call_id, signal, on_update).await?;
+                let result = send(
+                    &ready.entry,
+                    &args,
+                    call_id,
+                    signal,
+                    on_update,
+                    caller_session_id.as_deref(),
+                )
+                .await?;
                 return Ok(McpCallOutcome::Called {
                     entry: Box::new(ready.entry),
                     result,
@@ -141,6 +160,7 @@ async fn call_offered(
     call_id: &str,
     signal: &maho_ext_api::AbortSignal,
     on_update: UpdateFn<'_>,
+    caller_session_id: Option<&str>,
 ) -> Result<Value, McpError> {
     {
         if let Some(ensure_fresh) = &entry.ensure_fresh
@@ -182,11 +202,11 @@ async fn call_offered(
         };
         if let Some(runtime) = &entry.runtime {
             crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection, || {
-                send(entry, args, call_id, signal, on_update)
+                send(entry, args, call_id, signal, on_update, caller_session_id)
             })
             .await
         } else {
-            send(entry, args, call_id, signal, on_update).await
+            send(entry, args, call_id, signal, on_update, caller_session_id).await
         }
     }
 }
@@ -198,6 +218,7 @@ async fn send(
     call_id: &str,
     signal: &maho_ext_api::AbortSignal,
     on_update: UpdateFn<'_>,
+    caller_session_id: Option<&str>,
 ) -> Result<Value, McpError> {
     let client = if let Some(runtime) = &entry.runtime {
         runtime.connection.client()?
@@ -221,11 +242,16 @@ async fn send(
     let mut notifications = client.notifications.subscribe();
     let mut notifications_open = true;
     let call_params = json!({"name":entry.tool,"arguments":args,"_meta":{"progressToken":token}});
-    // `mcpRequestOptions(current.requestOrigin?.(), {signal})`: a fresh binding-issued origin per attempt.
-    let mut options = crate::request_origin::mcp_request_options(
-        entry.request_origin.as_ref().and_then(|origin| origin()),
-        Some(signal.clone()),
-    );
+    // `mcpRequestOptions(current.requestOrigin?.(caller), {signal})`: a fresh binding-issued origin per attempt.
+    let origin = entry
+        .request_origin
+        .as_ref()
+        .and_then(|origin| origin(caller_session_id));
+    // A call of one of several scopes keeps a legacy form it causes in its own scope's UI (S16c).
+    let _scoped_call = origin.as_ref().and_then(|origin| {
+        crate::request_origin::begin_scoped_mcp_call(&client, origin, Some(signal))
+    });
+    let mut options = crate::request_origin::mcp_request_options(origin, Some(signal.clone()));
     // call.ts `onprogress`: the modern engine reports attempt progress and synthesized task status here.
     let (progress_sender, mut engine_progress) = tokio::sync::mpsc::unbounded_channel::<Value>();
     options.on_progress = Some(std::sync::Arc::new(move |progress: Value| {

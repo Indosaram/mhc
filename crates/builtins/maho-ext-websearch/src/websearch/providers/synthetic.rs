@@ -32,11 +32,16 @@ pub fn normalize_response(data: &Value) -> Vec<SearchResultItem> {
     collect(items.iter().map(|item| {
         let url = item["url"].as_str()?;
         let title = item["title"].as_str().unwrap_or(url);
-        let snippet = item["snippet"]
+        let snippet = item["text"]
             .as_str()
+            .or_else(|| item["snippet"].as_str())
             .or_else(|| item["description"].as_str())
             .or_else(|| item["content"].as_str());
-        result(Some(title), Some(url), snippet, None, None)
+        let mut normalized = result(Some(title), Some(url), snippet, None, None)?;
+        if let Some(published) = item["published"].as_str().filter(|text| !text.is_empty()) {
+            normalized.published_at = Some(published.into());
+        }
+        Some(normalized)
     }))
 }
 

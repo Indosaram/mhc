@@ -1,4 +1,5 @@
 pub mod account_display_name;
+pub mod account_list_view;
 pub mod diff;
 pub mod eval_only_routing;
 pub mod files;

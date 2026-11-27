@@ -19,9 +19,13 @@ pub type McpAuthorityResolver = Arc<
     dyn Fn(AbortSignal) -> BoxFuture<'static, Result<Value, crate::errors::McpError>> + Send + Sync,
 >;
 
-/// Upstream `requestOrigin?: () => McpRequestOrigin | undefined`: a fresh origin per request, so presentation
-/// and lifetime are read at call time.
-pub type McpRequestOriginFactory = Arc<dyn Fn() -> Option<Arc<McpRequestOrigin>> + Send + Sync>;
+/// Upstream `McpRequestOriginFor = (caller?: ...) => McpRequestOrigin | undefined`:
+/// a fresh origin per request, resolved for the context of the call that makes it.
+pub type McpRequestOriginFactory =
+    Arc<dyn Fn(Option<&str>) -> Option<Arc<McpRequestOrigin>> + Send + Sync>;
+
+pub type McpElicitationUiLookup =
+    Arc<dyn Fn() -> Option<Arc<dyn maho_ext_api::ExtensionUi>> + Send + Sync>;
 
 pub struct McpRequestOrigin {
     /// Identity of the session binding that issued this origin (upstream: the binding object).
@@ -33,6 +37,9 @@ pub struct McpRequestOrigin {
     pub private_forms_enforced: bool,
     pub server_label: String,
     pub server_source: Option<McpFormServerSource>,
+    /// The execution scope whose call made this request, when its binding serves several (brain/hand S16c).
+    pub scope: Option<String>,
+    pub elicitation_ui: Option<McpElicitationUiLookup>,
     pub is_current: Arc<dyn Fn() -> bool + Send + Sync>,
     pub resolve_authority: McpAuthorityResolver,
 }
@@ -59,9 +66,20 @@ impl McpRequestOrigin {
             private_forms_enforced,
             server_label,
             server_source,
+            scope: None,
+            elicitation_ui: None,
             is_current,
             resolve_authority,
         }
+    }
+    pub fn with_scope(
+        mut self,
+        scope: Option<String>,
+        elicitation_ui: Option<McpElicitationUiLookup>,
+    ) -> Self {
+        self.scope = scope;
+        self.elicitation_ui = elicitation_ui;
+        self
     }
     pub fn current(&self) -> bool {
         (self.is_current)()
@@ -194,5 +212,93 @@ pub fn legacy_mcp_operation(client: &McpClient) -> LegacyMcpOperationLookup {
         }
         [_] => LegacyMcpOperationLookup::None,
         _ => LegacyMcpOperationLookup::Ambiguous,
+    }
+}
+
+/// Tool calls of a binding that serves several execution scopes, by physical client (brain/hand S16c). Kept apart
+/// from the legacy operations above: a default legacy client never routes its calls through the request adapter.
+pub struct ScopedMcpCall {
+    id: u64,
+    pub origin: Arc<McpRequestOrigin>,
+    pub signal: Option<AbortSignal>,
+}
+
+pub struct ScopedMcpCallGuard {
+    client: Arc<McpClient>,
+    id: u64,
+}
+impl Drop for ScopedMcpCallGuard {
+    fn drop(&mut self) {
+        let mut calls = self
+            .client
+            .scoped_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = calls.iter().position(|call| call.id == self.id) {
+            calls.remove(index);
+        }
+    }
+}
+
+/// Record a scoped tool call in flight on `client` until the returned guard drops; an unscoped origin records none.
+pub fn begin_scoped_mcp_call(
+    client: &Arc<McpClient>,
+    origin: &Arc<McpRequestOrigin>,
+    signal: Option<&AbortSignal>,
+) -> Option<ScopedMcpCallGuard> {
+    origin.scope.as_ref()?;
+    let id = NEXT_OPERATION.fetch_add(1, Ordering::Relaxed);
+    client
+        .scoped_calls
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(ScopedMcpCall {
+            id,
+            origin: origin.clone(),
+            signal: signal.cloned(),
+        });
+    Some(ScopedMcpCallGuard {
+        client: client.clone(),
+        id,
+    })
+}
+
+pub enum LegacyMcpCallerUi {
+    None,
+    Refuse,
+    Ui(Option<Arc<dyn maho_ext_api::ExtensionUi>>),
+}
+
+/// Whose UI a legacy form arriving on `client` belongs to: the one scope whose calls are in flight there, or
+/// `Refuse` when calls of different scopes share it. Without scoped calls the caller keeps its own provider.
+pub fn legacy_mcp_caller_ui(client: &McpClient) -> LegacyMcpCallerUi {
+    let calls = client
+        .scoped_calls
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut active_scope: Option<&str> = None;
+    let mut first_ui: Option<&McpElicitationUiLookup> = None;
+    for call in calls.iter() {
+        if call.signal.as_ref().is_some_and(AbortSignal::is_aborted)
+            || call.origin.signal.is_aborted()
+            || !call.origin.current()
+        {
+            continue;
+        }
+        let Some(scope) = call.origin.scope.as_deref() else {
+            continue;
+        };
+        match active_scope {
+            None => {
+                active_scope = Some(scope);
+                first_ui = call.origin.elicitation_ui.as_ref();
+            }
+            Some(existing) if existing == scope => {}
+            Some(_) => return LegacyMcpCallerUi::Refuse,
+        }
+    }
+    match active_scope {
+        None => LegacyMcpCallerUi::None,
+        Some(_) => LegacyMcpCallerUi::Ui(first_ui.and_then(|lookup| lookup())),
     }
 }

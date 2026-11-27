@@ -416,6 +416,7 @@ pub trait AuthInteraction: Send + Sync {
 }
 
 /// Normalized interaction passed to provider login implementations: `signal` is mandatory.
+#[derive(Clone)]
 pub struct ProviderAuthInteraction {
     pub signal: crate::utils::abort::AbortSignal,
     inner: Arc<dyn AuthInteraction>,

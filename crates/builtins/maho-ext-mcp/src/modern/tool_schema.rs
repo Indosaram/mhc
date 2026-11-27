@@ -62,9 +62,31 @@ impl ModernSchemaValidator {
     }
 }
 
+const MAX_CACHED_VALIDATORS: usize = 1024;
+
+#[derive(Default)]
+struct ValidatorCache {
+    order: std::collections::VecDeque<String>,
+    entries: std::collections::HashMap<String, ModernSchemaValidator>,
+}
+
+static VALIDATORS: std::sync::LazyLock<std::sync::Mutex<ValidatorCache>> =
+    std::sync::LazyLock::new(Default::default);
+
 /// No coercion/default insertion/removal, no network resolver, no shared $id namespace.
 pub fn compile_modern_schema(schema: &Value) -> Result<ModernSchemaValidator, McpToolSchemaError> {
     check_bounds(schema)?;
+    let key = serde_json::to_string(schema).ok();
+    if let Some(key) = &key
+        && let Some(cached) = VALIDATORS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .get(key)
+            .cloned()
+    {
+        return Ok(cached);
+    }
     if let Some(declared) = schema.get("$schema")
         && !declared
             .as_str()
@@ -87,9 +109,24 @@ pub fn compile_modern_schema(schema: &Value) -> Result<ModernSchemaValidator, Mc
             "Invalid MCP schema or unresolved schema reference.",
         ));
     }
-    Ok(ModernSchemaValidator {
+    let validator = ModernSchemaValidator {
         schema: schema.clone(),
-    })
+    };
+    if let Some(key) = key {
+        let mut cache = VALIDATORS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cache.entries.contains_key(&key) {
+            if cache.entries.len() >= MAX_CACHED_VALIDATORS
+                && let Some(oldest) = cache.order.pop_front()
+            {
+                cache.entries.remove(&oldest);
+            }
+            cache.order.push_back(key.clone());
+            cache.entries.insert(key, validator.clone());
+        }
+    }
+    Ok(validator)
 }
 
 /// Reject one unusable definition, never its valid siblings; diagnostics contain no schema or arguments.
