@@ -33,7 +33,11 @@ fn read_raw_entries(file: File) -> Vec<Value> {
     read_raw_entries_prepared(file, &mut |_| {})
 }
 
-fn read_raw_entries_prepared(file: File, prepare: &mut dyn FnMut(&mut Value)) -> Vec<Value> {
+fn read_raw_entries_prepared_with_lines(
+    file: File,
+    prepare: &mut dyn FnMut(&mut Value),
+    on_line: &mut dyn FnMut(&str),
+) -> Vec<Value> {
     let mut reader = BufReader::with_capacity(SESSION_READ_BUFFER_SIZE, file);
     let mut entries = Vec::new();
     let mut buffer: Vec<u8> = Vec::new();
@@ -42,10 +46,10 @@ fn read_raw_entries_prepared(file: File, prepare: &mut dyn FnMut(&mut Value)) ->
         match reader.read_until(b'\n', &mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(_) => {
-                let line = String::from_utf8_lossy(&buffer);
-                if let Some(mut entry) = crate::session_manager::parse_session_entry_line(
-                    line.trim_end_matches(['\n', '\r']),
-                ) {
+                let raw_line = String::from_utf8_lossy(&buffer);
+                let trimmed = raw_line.trim_end_matches(['\n', '\r']);
+                if let Some(mut entry) = crate::session_manager::parse_session_entry_line(trimmed) {
+                    on_line(trimmed);
                     prepare(&mut entry);
                     entries.push(entry);
                 }
@@ -53,6 +57,10 @@ fn read_raw_entries_prepared(file: File, prepare: &mut dyn FnMut(&mut Value)) ->
         }
     }
     entries
+}
+
+fn read_raw_entries_prepared(file: File, prepare: &mut dyn FnMut(&mut Value)) -> Vec<Value> {
+    read_raw_entries_prepared_with_lines(file, prepare, &mut |_| {})
 }
 
 fn read_raw_entries_from_file(file_path: &str) -> Vec<Value> {
@@ -66,6 +74,34 @@ fn read_raw_entries_from_file(file_path: &str) -> Vec<Value> {
 /// read from (both from the same descriptor, so a rename in between cannot pair them wrongly).
 pub fn load_entries_from_file_with_identity(file_path: &str) -> (Vec<Value>, Option<FileIdentity>) {
     load_entries_from_file_with_identity_prepared(file_path, &mut |_| {})
+}
+
+/// Like `load_entries_from_file_with_identity`, also capturing the RULING-72 `BaseContentHash` fingerprint.
+pub fn load_entries_from_file_with_identity_and_fingerprint(
+    file_path: &str,
+) -> (Vec<Value>, Option<FileIdentity>, Option<String>) {
+    let resolved = normalize_path(file_path, &PathInputOptions::default());
+    let Ok(file) = File::open(&resolved) else {
+        return (Vec::new(), None, None);
+    };
+    let mut hasher = crate::session_file_identity::BaseContentHash::new();
+    let Ok(identity_handle) = file.try_clone() else {
+        let entries = accept_session_entries(read_raw_entries_prepared_with_lines(
+            file,
+            &mut |_| {},
+            &mut |line| hasher.line(line),
+        ));
+        return (entries, None, Some(hasher.digest()));
+    };
+    let entries = read_raw_entries_prepared_with_lines(file, &mut |_| {}, &mut |line| {
+        hasher.line(line);
+    });
+    let identity = capture_and_close_file_identity(identity_handle, &resolved);
+    (
+        accept_session_entries(entries),
+        identity,
+        Some(hasher.digest()),
+    )
 }
 
 /// `load_entries_from_file_with_identity` with `prepare` applied to each entry as its line is parsed.
@@ -224,6 +260,32 @@ fn final_segment_start(file: &mut File, size: u64) -> std::io::Result<u64> {
         end = start;
     }
     Ok(0)
+}
+
+#[derive(Default)]
+pub struct SessionLineSplitter {
+    carry: Vec<u8>,
+}
+
+impl SessionLineSplitter {
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.carry.extend_from_slice(bytes);
+        let mut lines = Vec::new();
+        while let Some(pos) = self.carry.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8_lossy(&self.carry[..pos])
+                .trim_end_matches('\r')
+                .to_owned();
+            self.carry.drain(..=pos);
+            lines.push(line);
+        }
+        lines
+    }
+
+    pub fn finish(self) -> String {
+        String::from_utf8_lossy(&self.carry)
+            .trim_end_matches('\r')
+            .to_owned()
+    }
 }
 
 #[cfg(test)]

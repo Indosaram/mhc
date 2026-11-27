@@ -33,17 +33,13 @@ impl ProjectTrustContext for CliProjectTrustContext {
     }
 }
 
-fn to_extension_mode(mode: AppMode) -> maho_ext_api::ExtensionMode {
-    match mode {
-        AppMode::Interactive => maho_ext_api::ExtensionMode::Tui,
-        AppMode::Print => maho_ext_api::ExtensionMode::Print,
-        AppMode::Json => maho_ext_api::ExtensionMode::Json,
-        AppMode::Rpc => maho_ext_api::ExtensionMode::Rpc,
-    }
+pub fn to_extension_mode(mode: AppMode) -> maho_ext_api::ExtensionMode {
+    super::project_trust_headless::to_extension_mode(mode)
 }
 
 /// senpi `createProjectTrustContext` `ui`: dialogs answer only in an interactive UI, and notices
-/// print to stderr outside the TUI.
+/// print to stderr outside the TUI. Headless runs return `HeadlessProjectTrustUi` directly
+/// without reaching terminal UI state (senpi#6185).
 pub struct ProjectTrustUi {
     pub mode: AppMode,
     pub has_ui: bool,
@@ -60,53 +56,58 @@ impl ExtensionUi for ProjectTrustUi {
         &'a self,
         title: &'a str,
         options: &'a [String],
-        _: ExtensionUiDialogOptions,
+        dialog: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
-        let selected = if self.prompts() {
-            (self.select)(title, options)
-        } else {
-            None
-        };
+        if !self.prompts() {
+            return Box::pin(async move {
+                super::project_trust_headless::HeadlessProjectTrustUi { mode: self.mode }
+                    .select(title, options, dialog)
+                    .await
+            });
+        }
+        let selected = (self.select)(title, options);
         Box::pin(async move { selected })
     }
     fn confirm<'a>(
         &'a self,
         title: &'a str,
         message: &'a str,
-        _: ExtensionUiDialogOptions,
+        dialog: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, bool> {
-        let confirmed = self.prompts()
-            && (self.select)(
-                &format!("{title}\n{message}"),
-                &["Yes".to_owned(), "No".to_owned()],
-            )
-            .as_deref()
-                == Some("Yes");
+        if !self.prompts() {
+            return Box::pin(async move {
+                super::project_trust_headless::HeadlessProjectTrustUi { mode: self.mode }
+                    .confirm(title, message, dialog)
+                    .await
+            });
+        }
+        let confirmed = (self.select)(
+            &format!("{title}\n{message}"),
+            &["Yes".to_owned(), "No".to_owned()],
+        )
+        .as_deref()
+            == Some("Yes");
         Box::pin(async move { confirmed })
     }
     fn input<'a>(
         &'a self,
         title: &'a str,
         placeholder: Option<&'a str>,
-        _: ExtensionUiDialogOptions,
+        dialog: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
-        let value = if self.prompts() {
-            (self.input)(title, placeholder)
-        } else {
-            None
-        };
+        if !self.prompts() {
+            return Box::pin(async move {
+                super::project_trust_headless::HeadlessProjectTrustUi { mode: self.mode }
+                    .input(title, placeholder, dialog)
+                    .await
+            });
+        }
+        let value = (self.input)(title, placeholder);
         Box::pin(async move { value })
     }
     fn notify(&self, message: &str, kind: NotificationType) {
-        if self.mode == AppMode::Interactive {
-            return;
-        }
-        let color = match kind {
-            NotificationType::Error => "\x1b[31m",
-            NotificationType::Warning => "\x1b[33m",
-            NotificationType::Info => "\x1b[36m",
-        };
-        maho_core::output_guard::maho_write_stderr(&format!("{color}{message}\x1b[39m\n"));
+        super::project_trust_headless::HeadlessProjectTrustUi { mode: self.mode }
+            .notify(message, kind);
     }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(

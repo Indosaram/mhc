@@ -11,7 +11,7 @@
 //! Ported in slices S1..S8; the `agent-session.ts` ledger row in `parity.d/21.md` records what is
 //! still outstanding.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -64,6 +64,7 @@ impl Drop for ExtensionEventSignalSubscription {
     }
 }
 
+use indexmap::IndexMap;
 use maho_agent::Agent;
 use maho_agent::heap_future::heap_future;
 use maho_agent::tool_name_alias::resolve_tool_name_alias;
@@ -71,8 +72,8 @@ use maho_agent::types::{AgentMessage, AgentState, AgentTool, AgentToolResult};
 use maho_ai::model::Model;
 use maho_ai::models::models_are_equal;
 use maho_ai::types::{
-    ImageContent, ModelThinkingLevel, ProviderEnv, ProviderHeaders, ServiceTierPreference,
-    StopReason, ThinkingLevel, ThinkingSelection,
+    AssistantMessage, ImageContent, ModelThinkingLevel, ProviderEnv, ProviderHeaders,
+    ServiceTierPreference, StopReason, ThinkingLevel, ThinkingSelection,
 };
 use maho_ext_api::{
     AgentSessionEvent, CompactionRejectionCause, ExtensionError, ExtensionMode, ExtensionUi,
@@ -83,7 +84,17 @@ use maho_ext_api::{
 use maho_ext_host::ExtensionRunner;
 use serde_json::{Map, Value, json};
 
+use crate::compaction_failure_text::{CompactionFailureKind, format_compaction_failure};
+use crate::dynamic_prompt::FullToolPrompt;
+use crate::engine_turn_hold::{HoldKind, HoldReleaseCause};
 use crate::event_bus::{EventBus, EventHandler, EventSubscription};
+use crate::host_restart_continuation::{
+    HOST_DRAIN_HOLD_KEY, RestartRelease, restart_hold_data, restart_release,
+};
+use crate::lifecycle_event_sequencer::LifecycleEventSequencer;
+use crate::retry_wait::{RetryWait, RetryWaitEvent, next_retry_wait};
+use crate::session_closed::{CLOSING_HOLD_KEY, SESSION_CLOSED_ENTRY, SessionClosedRecord};
+use crate::turn_conflict::{TurnConflictError, turn_conflict};
 
 use crate::model_registry::ModelRegistry;
 use crate::model_runtime::ModelRuntime;
@@ -94,6 +105,57 @@ use crate::session_log::{SessionLogger, SessionLoggerOptions};
 use crate::session_manager::SessionManager;
 use crate::settings_manager::SettingsManager;
 use crate::utils::tool_result_images::normalize_tool_result_images;
+
+#[derive(Default)]
+struct LifecycleEvents {
+    sequencer: LifecycleEventSequencer<Value>,
+    pending: VecDeque<Value>,
+    draining: bool,
+}
+
+pub(crate) struct AgentSessionP8State {
+    lifecycle_events: Mutex<LifecycleEvents>,
+    pub(crate) retry_wait: Mutex<Option<RetryWait>>,
+    pub(crate) closed_on_request: AtomicBool,
+    pub(crate) continued_from_host_restart: AtomicBool,
+    restart_continuing: AtomicBool,
+    pub(crate) restart_continued: AtomicBool,
+    pub(crate) session_env: Mutex<Option<BTreeMap<String, String>>>,
+    pub(crate) tool_call_issuers: Mutex<HashMap<String, AssistantMessage>>,
+    pub(crate) exec_bridge_settled: Mutex<BTreeSet<String>>,
+    pub(crate) full_tool_prompt_guidelines: Mutex<IndexMap<String, Vec<String>>>,
+}
+
+impl Default for AgentSessionP8State {
+    fn default() -> Self {
+        Self {
+            lifecycle_events: Mutex::new(LifecycleEvents::default()),
+            retry_wait: Mutex::new(None),
+            closed_on_request: AtomicBool::new(false),
+            continued_from_host_restart: AtomicBool::new(false),
+            restart_continuing: AtomicBool::new(false),
+            restart_continued: AtomicBool::new(false),
+            session_env: Mutex::new(None),
+            tool_call_issuers: Mutex::new(HashMap::new()),
+            exec_bridge_settled: Mutex::new(BTreeSet::new()),
+            full_tool_prompt_guidelines: Mutex::new(IndexMap::new()),
+        }
+    }
+}
+
+struct RestartAttempt<'a>(&'a AtomicBool);
+
+impl Drop for RestartAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn root_tool_call_id(tool_call_id: &str) -> &str {
+    tool_call_id
+        .split_once('/')
+        .map_or(tool_call_id, |(root, _)| root)
+}
 
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
@@ -1061,7 +1123,7 @@ pub struct ToolChildRow {
 
 #[derive(Clone)]
 pub struct AgentSession {
-    inner: Arc<AgentSessionInner>,
+    pub(crate) inner: Arc<AgentSessionInner>,
 }
 
 /// Settles the session start when dropped, including on cancellation (senpi's `finally`).
@@ -1080,9 +1142,9 @@ type NestedHostCallSlot = (
 
 #[doc(hidden)]
 pub struct AgentSessionInner {
-    agent: Agent,
-    session_manager: Mutex<SessionManager>,
-    lifecycle: Mutex<crate::lifecycle_ledger::LifecycleLedger>,
+    pub(crate) agent: Agent,
+    pub(crate) session_manager: Mutex<SessionManager>,
+    pub(crate) lifecycle: Mutex<crate::lifecycle_ledger::LifecycleLedger>,
     external_admission: crate::external_admission::ExternalAdmission,
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
     /// senpi `_pendingInputs`: identified queued input in durable custody (senpi#3549). Set once the session exists.
@@ -1113,26 +1175,16 @@ pub struct AgentSessionInner {
     /// senpi `_unregisterMemoryReport`: a no-op unless `SENPI_MEMORY_REPORT=1`; released on dispose.
     memory_report_unregister: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
-    model_registry: ModelRegistry,
+    pub(crate) model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
     extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
     boundary_context_changed: AtomicBool,
-    /// Bumped each time a runner is installed, so a renderer snapshot keyed on it (with the
-    /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
     extension_runner_epoch: AtomicU64,
-    /// senpi `_handlerTurnScope`: bumped per admitted prompt turn (`_promptAgent`), so the turn deadline
-    /// releases only the held extension handler waits its own turn started (senpi#3650).
     handler_turn_scope: Arc<AtomicU64>,
-    /// senpi `_deadlineTracker`: the turn's inactivity lease and max-runtime cap (senpi#3227), armed at
-    /// prompt admission and disarmed when the run settles idle. Set once, right after construction.
     deadline_tracker: std::sync::OnceLock<crate::turn_deadline::AgentDeadlineTracker>,
-    /// senpi `SessionLifecycleController.deadlineStop`: the deadline that stopped the current run,
-    /// captured before its durable write. Lock order: `lifecycle`, then this.
     lifecycle_deadline_stop: Mutex<Option<crate::lifecycle_stop::DeadlineStopCapture>>,
-    /// The host's project-trust inputs for a switch into another project (senpi `createServices` re-run
-    /// for the target cwd with `projectTrustByCwd`, `--approve`, and `projectTrustContextFactory`).
     switch_project_trust: Mutex<Option<SwitchProjectTrust>>,
-    event_bus: EventBus,
+    pub(crate) event_bus: EventBus,
     event_listeners: SharedEventListeners,
     next_listener_id: Arc<AtomicU64>,
     human_input_listeners: Arc<Mutex<Vec<(u64, HumanInputListener)>>>,
@@ -1145,7 +1197,7 @@ pub struct AgentSessionInner {
     nested_tool_queue: tokio::sync::Mutex<()>,
     reload_admission: tokio::sync::Mutex<()>,
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
-    retry_fallback: tokio::sync::Mutex<
+    pub(crate) retry_fallback: tokio::sync::Mutex<
         Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>,
     >,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
@@ -1190,8 +1242,7 @@ pub struct AgentSessionInner {
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     /// senpi `_requestShapeRecovery`: one same-model recovery per request-shape failing streak.
     request_shape_recovery: Mutex<crate::retry_fallback::request_shape::RequestShapeRecovery>,
-    /// senpi `_engineTurnHold`: the durable hold ledger. Lock order: hold, then `engine_turn_input`.
-    engine_turn_hold: Arc<Mutex<crate::engine_turn_hold::EngineTurnHold>>,
+    pub(crate) engine_turn_hold: Arc<Mutex<crate::engine_turn_hold::EngineTurnHold>>,
     engine_turn_release: crate::engine_turn_release::EngineTurnRelease,
     engine_turn_input: Mutex<crate::engine_turn_input::EngineTurnInput>,
     /// senpi `_engineTurnStarts`: this process's own record of engine turns since the user's last message.
@@ -1258,8 +1309,8 @@ pub struct AgentSessionInner {
             maho_ext_api::MessageDeliveryReceipt,
         )>,
     >,
-    /// Session-file repairs reported inside a session-manager append; emitted only after its lock is released.
     pending_session_recoveries: Mutex<Vec<crate::session_write_recovery::SessionRecovery>>,
+    pub(crate) p8: AgentSessionP8State,
 }
 
 pub type HtmlThemeResolver = Arc<
@@ -1275,7 +1326,7 @@ pub type HtmlThemeResolver = Arc<
         + Sync,
 >;
 
-struct SessionFallbackDeps(
+pub(crate) struct SessionFallbackDeps(
     std::sync::Weak<AgentSessionInner>,
     crate::retry_fallback::log::FallbackLogger,
 );
@@ -4021,6 +4072,9 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
             });
         }
     }
+    fn recovery_revision(&self, provider: &str) -> Option<String> {
+        weak_provider_recovery_revision(&self.0, provider)
+    }
 }
 
 impl std::ops::Deref for AgentSession {
@@ -4333,7 +4387,7 @@ impl crate::memory_report::memory_report_registry::MemoryReportSessionSource
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4876,6 +4930,7 @@ impl AgentSession {
                 custody_run_id: Mutex::new(uuid::Uuid::new_v4().to_string()),
                 queued_custom_receipts: Mutex::new(Vec::new()),
                 pending_session_recoveries: Mutex::new(Vec::new()),
+                p8: Default::default(),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
@@ -6196,7 +6251,7 @@ impl AgentSession {
         let snapshot = ledger.snapshot().clone();
         drop(ledger);
         if changed {
-            self.event_bus.emit("session_lifecycle", &json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot}));
+            self.emit_sequenced_lifecycle(json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot}));
         }
     }
 
@@ -15546,9 +15601,18 @@ impl AgentSession {
             return files;
         }
         let agent_dir = self.agent_dir();
-        let limits = self.with_settings_manager(|manager| manager.get_context_files_limits());
-        let loaded =
-            crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir, limits);
+        let (limits, global_path) = self.with_settings_manager(|manager| {
+            (
+                manager.get_context_files_limits(),
+                manager.get_global_context_file_path(),
+            )
+        });
+        let loaded = crate::resource_loader::load_project_context_files_with_global_path(
+            &self.cwd(),
+            &agent_dir,
+            limits,
+            global_path.as_deref(),
+        );
         let mut files = loaded.files;
         // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
         // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
@@ -20296,7 +20360,7 @@ impl AgentSession {
             .map_err(|error| error.message)
     }
 
-    fn emit_entry_appended(&self, entry_id: &str) {
+    pub(crate) fn emit_entry_appended(&self, entry_id: &str) {
         if self.state().extension_mode != ExtensionMode::Rpc {
             return;
         }
@@ -20309,6 +20373,7 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
+        self.observe_p8_event(&event);
         let carrier = match &event {
             AgentSessionEvent::Agent(event) => self.observe_recovery(event),
             _ => None,
@@ -23225,6 +23290,368 @@ impl Drop for CompactionHandoffWindow {
     fn drop(&mut self) {
         self.0.state().compaction_handoff_pending = false;
     }
+}
+
+impl AgentSession {
+    /// Current retry wait tracked from session auto-retry events (senpi#7025).
+    pub fn retry_wait(&self) -> Option<RetryWait> {
+        lock(&self.inner.p8.retry_wait).clone()
+    }
+
+    pub(crate) fn observe_p8_event(&self, event: &maho_ext_api::AgentSessionEvent) {
+        use maho_ext_api::AgentSessionEvent;
+        let mapped = match event {
+            AgentSessionEvent::AutoRetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+            } => RetryWaitEvent::AutoRetryStart {
+                attempt: u64::from(*attempt),
+                max_attempts: u64::from(*max_attempts),
+                delay_ms: *delay_ms,
+                error_message,
+            },
+            AgentSessionEvent::AutoRetryEnd { .. } => RetryWaitEvent::AutoRetryEnd,
+            AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentStart) => {
+                RetryWaitEvent::AgentStart
+            }
+            _ => RetryWaitEvent::Other,
+        };
+        let now_ms = maho_ai::utils::diagnostics::now_ms();
+        let mut guard = lock(&self.inner.p8.retry_wait);
+        let prev = guard.take();
+        *guard = next_retry_wait(prev, mapped, now_ms);
+    }
+
+    /// Sequences a `session_lifecycle` event on the session event bus (senpi#5682).
+    pub(crate) fn emit_sequenced_lifecycle(&self, payload: Value) {
+        {
+            let mut state = lock(&self.inner.p8.lifecycle_events);
+            let mut ready = Vec::new();
+            let mut tasks = Vec::new();
+            state
+                .sequencer
+                .emit(payload, &mut |event| ready.push(event), &mut |run| {
+                    tasks.push(run)
+                });
+            for task in tasks {
+                task(&mut state.sequencer, &mut |event| ready.push(event));
+            }
+            state.pending.extend(ready);
+            if state.draining || state.pending.is_empty() {
+                return;
+            }
+            state.draining = true;
+        }
+        loop {
+            let event = {
+                let mut state = lock(&self.inner.p8.lifecycle_events);
+                match state.pending.pop_front() {
+                    Some(event) => event,
+                    None => {
+                        state.draining = false;
+                        return;
+                    }
+                }
+            };
+            self.inner.event_bus.emit("session_lifecycle", &event);
+        }
+    }
+
+    /// Set by `record_closed_on_request`: the teardown's `session_shutdown` then carries `closed: true`.
+    pub fn closed_on_request(&self) -> bool {
+        self.inner.p8.closed_on_request.load(Ordering::SeqCst)
+    }
+
+    /// A graceful close ended this session on request (oh-my-openagent#14313): records `session-closed`.
+    pub fn record_closed_on_request(&self, record: SessionClosedRecord) {
+        self.inner
+            .p8
+            .closed_on_request
+            .store(true, Ordering::SeqCst);
+        let data = serde_json::to_value(record).unwrap_or(Value::Null);
+        let entry =
+            lock(&self.inner.session_manager).append_custom(SESSION_CLOSED_ENTRY, Some(data));
+        if let Some(id) = entry.get("id").and_then(Value::as_str) {
+            self.emit_entry_appended(id);
+        }
+    }
+
+    /// A superseded host generation draining an unattached session (senpi#3114, #7020).
+    pub fn hold_automatic_turns(&self) {
+        lock(&self.inner.engine_turn_hold).add_hold(
+            HoldKind::Unattended,
+            Some(HOST_DRAIN_HOLD_KEY),
+            None,
+        );
+    }
+
+    /// A graceful close drains the running turn (oh-my-openagent#14313).
+    pub fn hold_for_close(&self) {
+        lock(&self.inner.engine_turn_hold).add_hold(
+            HoldKind::Unattended,
+            Some(CLOSING_HOLD_KEY),
+            None,
+        );
+    }
+
+    pub fn release_close_hold(&self) {
+        let _ = lock(&self.inner.engine_turn_hold).release(
+            &[CLOSING_HOLD_KEY.to_owned()],
+            HoldReleaseCause::SessionClose,
+        );
+    }
+
+    pub fn set_continued_from_host_restart(&self, continued: bool) {
+        self.inner
+            .p8
+            .continued_from_host_restart
+            .store(continued, Ordering::SeqCst);
+    }
+
+    pub fn continued_from_host_restart(&self) -> bool {
+        self.inner
+            .p8
+            .continued_from_host_restart
+            .load(Ordering::SeqCst)
+    }
+
+    /// A session reopened after host exit continues as left (senpi#7020, #7079).
+    pub async fn continue_after_host_restart(&self) -> Result<(), String> {
+        if !self.continued_from_host_restart()
+            || self.inner.p8.restart_continued.load(Ordering::SeqCst)
+            || self
+                .inner
+                .p8
+                .restart_continuing
+                .swap(true, Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        let _attempt = RestartAttempt(&self.inner.p8.restart_continuing);
+        if self.inner.p8.restart_continued.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let holds = lock(&self.inner.engine_turn_hold).holds();
+        let release = restart_release(&holds, || {
+            self.with_session_manager(|sm| sm.current_branch())
+        });
+        let Some(release) = release else {
+            self.inner
+                .p8
+                .restart_continued
+                .store(true, Ordering::SeqCst);
+            return Ok(());
+        };
+        let result = match release {
+            RestartRelease::Release { keys } => {
+                lock(&self.inner.engine_turn_hold).release(&keys, HoldReleaseCause::ResumeSession)
+            }
+            RestartRelease::Resume { interrupted_run } => {
+                if interrupted_run {
+                    self.mark_restart_continuation();
+                }
+                let result = self.resume_session().await;
+                if result.is_err() {
+                    let mut turn_hold = lock(&self.inner.engine_turn_hold);
+                    for hold in holds {
+                        if turn_hold.get_hold(&hold.key).is_none() {
+                            turn_hold.add_hold(hold.kind, Some(&hold.key), hold.data);
+                        }
+                    }
+                }
+                result
+            }
+        };
+        if result.is_ok() {
+            self.inner
+                .p8
+                .restart_continued
+                .store(true, Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn mark_restart_continuation(&self) {
+        let holds = lock(&self.inner.engine_turn_hold).holds();
+        if let Some(data) = restart_hold_data(self.continued_from_host_restart(), || {
+            self.with_session_manager(|sm| sm.current_branch())
+        }) && !holds.iter().any(|hold| hold.key == "interrupted-run")
+        {
+            lock(&self.inner.engine_turn_hold).add_hold(
+                HoldKind::SessionHold,
+                Some("interrupted-run"),
+                Some(data),
+            );
+        }
+    }
+}
+
+impl AgentSession {
+    /// Per-session caller env for tool subprocesses (`open_session.env`, senpi#4381).
+    pub fn session_env(&self) -> Option<BTreeMap<String, String>> {
+        lock(&self.inner.p8.session_env).clone()
+    }
+
+    pub fn set_session_env(&self, env: Option<BTreeMap<String, String>>) {
+        *lock(&self.inner.p8.session_env) = env;
+    }
+
+    /// Records the issuing assistant message of a model-issued tool call (senpi#5240).
+    pub fn record_tool_call_issuer(&self, call_id: &str, message: AssistantMessage) {
+        lock(&self.inner.p8.tool_call_issuers).insert(call_id.to_owned(), message);
+    }
+
+    /// Returns the issuing assistant message for `call_id` or its root `<root>/<n>` call.
+    pub fn root_tool_call_issuer(&self, call_id: &str) -> Option<AssistantMessage> {
+        let root = root_tool_call_id(call_id);
+        lock(&self.inner.p8.tool_call_issuers).get(root).cloned()
+    }
+
+    /// Marks an exec-bridge tool call settled on every completion path (senpi#5780).
+    pub fn settle_exec_bridge_tool_call(&self, tool_call_id: &str) {
+        lock(&self.inner.p8.tool_call_issuers).remove(tool_call_id);
+        lock(&self.inner.p8.exec_bridge_settled).insert(tool_call_id.to_owned());
+    }
+
+    /// Active turn id while streaming, if any.
+    pub fn current_turn_id(&self) -> Option<String> {
+        let ledger = lock(&self.inner.lifecycle);
+        if ledger.run_active {
+            ledger.run_id.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Refuses input bound to an `expectedTurnId` that no longer matches or is held (senpi#5776).
+    pub fn refuse_stale_named_turn(
+        &self,
+        expected_turn_id: Option<&str>,
+        is_person: bool,
+    ) -> Result<(), TurnConflictError> {
+        let current = self.current_turn_id();
+        if let Some(err) = turn_conflict(expected_turn_id, current.as_deref()) {
+            return Err(err);
+        }
+        if expected_turn_id.is_some() && is_person && lock(&self.inner.engine_turn_hold).held() {
+            return Err(TurnConflictError::new(current));
+        }
+        Ok(())
+    }
+
+    pub async fn prompt_with_expected_turn(
+        &self,
+        text: &str,
+        options: PromptOptions,
+        expected_turn_id: Option<&str>,
+    ) -> Result<PromptDisposition, String> {
+        let is_person = crate::input_origin::input_origin_of(options.source)
+            == crate::input_origin::InputOrigin::Person;
+        self.refuse_stale_named_turn(expected_turn_id, is_person)
+            .map_err(|err| err.to_string())?;
+        self.prompt(text, options).await
+    }
+
+    pub async fn steer_with_expected_turn(
+        &self,
+        text: &str,
+        images: Option<Vec<ImageContent>>,
+        options: QueuedInputOptions,
+        expected_turn_id: Option<&str>,
+    ) -> Result<(), String> {
+        let is_person = crate::input_origin::input_origin_of(options.source)
+            == crate::input_origin::InputOrigin::Person;
+        self.refuse_stale_named_turn(expected_turn_id, is_person)
+            .map_err(|err| err.to_string())?;
+        self.steer(text, images, options).await
+    }
+
+    pub async fn follow_up_with_expected_turn(
+        &self,
+        text: &str,
+        images: Option<Vec<ImageContent>>,
+        options: QueuedInputOptions,
+        expected_turn_id: Option<&str>,
+    ) -> Result<(), String> {
+        let is_person = crate::input_origin::input_origin_of(options.source)
+            == crate::input_origin::InputOrigin::Person;
+        self.refuse_stale_named_turn(expected_turn_id, is_person)
+            .map_err(|err| err.to_string())?;
+        self.follow_up(text, images, options).await
+    }
+
+    /// Applies senpi#5568/#5590/#6536 account-hold releases before starting a turn on `model`.
+    pub async fn prepare_provider_turn_holds(&self, model: &Model, is_user_turn: bool) {
+        let is_spent = {
+            let mut guard = self.inner.retry_fallback.lock().await;
+            guard
+                .as_mut()
+                .is_some_and(|c| c.is_provider_spent(&model.provider))
+        };
+        if !is_spent {
+            return;
+        }
+        if is_user_turn {
+            crate::subscription_limits::usage_poller::refresh_subscription_usage(&model.provider)
+                .await;
+        }
+        let snapshot = crate::subscription_limits::limit_store::subscription_limits().snapshot();
+        let mut guard = self.inner.retry_fallback.lock().await;
+        if let Some(controller) = guard.as_mut() {
+            controller.release_account_hold_shown_servable(&model.provider, &snapshot);
+            if is_user_turn {
+                controller.release_guessed_account_hold(&model.provider);
+            }
+        }
+    }
+
+    /// Formats compaction failure notices cleanly using senpi#4329 helper.
+    pub fn format_compaction_failure_notice(
+        &self,
+        kind: CompactionFailureKind,
+        error: &str,
+    ) -> String {
+        let model = self.agent.state().model;
+        let label = format!("{}/{}", model.provider, model.id);
+        format_compaction_failure(kind, error, Some(&label))
+    }
+
+    /// Registers full prompt guidelines for a tool (senpi#5665).
+    pub fn set_full_tool_prompt_guidelines(&self, tool_name: &str, guidelines: Vec<String>) {
+        lock(&self.inner.p8.full_tool_prompt_guidelines).insert(tool_name.to_owned(), guidelines);
+    }
+
+    pub fn build_full_tool_prompt(
+        &self,
+        snippets: &BTreeMap<String, String>,
+        fallback_guidelines: &[String],
+    ) -> FullToolPrompt {
+        let stored = lock(&self.inner.p8.full_tool_prompt_guidelines);
+        let mut guidelines: Vec<String> = stored.values().flatten().cloned().collect();
+        if guidelines.is_empty() {
+            guidelines.extend(fallback_guidelines.iter().cloned());
+        }
+        FullToolPrompt {
+            tool_snippets: snippets
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            prompt_guidelines: guidelines,
+        }
+    }
+}
+
+pub(crate) fn weak_provider_recovery_revision(
+    inner: &std::sync::Weak<AgentSessionInner>,
+    provider: &str,
+) -> Option<String> {
+    let inner = inner.upgrade()?;
+    crate::credential_recovery_revision::credential_recovery_revision(
+        Some(&inner.model_registry.auth_storage),
+        provider,
+    )
 }
 
 #[cfg(test)]

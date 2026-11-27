@@ -128,11 +128,46 @@ fn describe_account_limit(provider: &str, raw: &str) -> String {
 
 /// senpi `AccountUsageLimitError`: a spent account with nowhere to route, phrased as the account advice.
 pub fn account_usage_limit_error(provider: &str, raw: Option<&str>) -> String {
-    describe_account_limit(
+    account_usage_limit_error_with_context(provider, raw, None, &[], None)
+}
+
+pub fn format_reset_time(epoch_ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(epoch_ms)
+        .map(|dt| {
+            let local = dt.with_timezone(&chrono::Local);
+            local.format("%b %-d, %-I:%M %p %Z").to_string()
+        })
+        .unwrap_or_default()
+}
+
+pub fn account_usage_limit_error_with_context(
+    provider: &str,
+    raw: Option<&str>,
+    resets_at: Option<i64>,
+    families: &[String],
+    accounts_out: Option<&str>,
+) -> String {
+    let mut message = describe_account_limit(
         provider,
         raw.filter(|raw| !raw.is_empty())
             .unwrap_or("usage limit reached"),
-    )
+    );
+    if let Some(ts) = resets_at {
+        let formatted = format_reset_time(ts);
+        if !formatted.is_empty() && !message.contains("resets ") {
+            message = format!("{message} (resets {formatted})");
+        }
+    }
+    if !families.is_empty() {
+        message = format!(
+            "{message} The limit named no model family; it was confirmed on {}.",
+            families.join(" and ")
+        );
+    }
+    match accounts_out {
+        Some(out) if !out.is_empty() => format!("{message} No account can serve: {out}."),
+        _ => message,
+    }
 }
 
 pub fn describe_usage_limit_entry(mut entry: Value) -> Value {

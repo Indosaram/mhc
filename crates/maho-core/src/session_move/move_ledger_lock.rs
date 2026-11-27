@@ -2,6 +2,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+/// A record lock nobody refreshed for this long is taken over by the next caller that wants it.
+pub const MOVE_RECORD_LOCK_STALE_MS: i64 = 10_000;
 #[derive(Default)]
 pub struct MoveRecordLocks {
     held: Mutex<HashSet<PathBuf>>,

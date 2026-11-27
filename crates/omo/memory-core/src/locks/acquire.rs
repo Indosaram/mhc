@@ -387,7 +387,22 @@ pub fn acquire_lock(
     record: &LockRecord,
     options: &AcquireLockOptions,
 ) -> Result<(), AcquireLockError> {
-    acquire_lock_with_clock(lock_path, record, options, std::time::SystemTime::now)
+    acquire_lock_with_clock(lock_path, record, options, std::time::SystemTime::now, true)
+}
+
+/// Acquire `lock_path` without running the directory-wide stale candidate sweep first.
+pub fn acquire_without_directory_sweep(
+    lock_path: &Path,
+    record: &LockRecord,
+    options: &AcquireLockOptions,
+) -> Result<(), AcquireLockError> {
+    acquire_lock_with_clock(
+        lock_path,
+        record,
+        options,
+        std::time::SystemTime::now,
+        false,
+    )
 }
 
 fn acquire_lock_with_clock(
@@ -395,6 +410,7 @@ fn acquire_lock_with_clock(
     record: &LockRecord,
     options: &AcquireLockOptions,
     now: impl Fn() -> std::time::SystemTime,
+    sweep_candidates: bool,
 ) -> Result<(), AcquireLockError> {
     let wait_timeout_ms = options.wait_timeout_ms.unwrap_or(0);
     let retry_delay_ms = options.retry_delay_ms.unwrap_or(25);
@@ -408,7 +424,7 @@ fn acquire_lock_with_clock(
 
     // Advisory reclamation of crashed contenders' leaked candidates; a sweep failure never blocks
     // or fails the acquisition itself.
-    if let Some(directory) = lock_path.parent() {
+    if sweep_candidates && let Some(directory) = lock_path.parent() {
         let options = CandidateSweepOptions::default();
         let _ = sweep_stale_lock_candidates(
             directory,

@@ -5,6 +5,7 @@ pub mod agent_dir_command;
 pub mod args;
 #[cfg(feature = "omo")]
 pub mod ast_grep_provision;
+pub mod attach_args;
 pub mod auth_check;
 pub mod auth_command;
 #[cfg(not(feature = "omo"))]
@@ -25,6 +26,7 @@ pub mod doctor;
 #[cfg(not(feature = "omo"))]
 #[path = "doctor_mit.rs"]
 pub mod doctor;
+pub mod engine_mode_args;
 pub mod experimental;
 pub mod extension_providers;
 pub mod extension_registry;
@@ -38,6 +40,7 @@ pub mod git_tools;
 pub mod global_default_shims;
 pub mod gpt_account_host;
 pub mod grok_neo_gate;
+pub mod held_session_attach;
 pub mod help_extension_flags;
 pub mod help_fast_path;
 pub mod help_flags_cache;
@@ -85,6 +88,7 @@ pub mod print_prompt_sizes;
 #[cfg(not(feature = "omo"))]
 pub mod project_context;
 pub mod project_trust;
+pub mod project_trust_headless;
 pub mod prompt_size_inventory;
 pub mod reasoning_host;
 #[cfg(feature = "omo")]
@@ -92,6 +96,7 @@ pub mod recall_wiring;
 pub mod runtime;
 #[cfg(not(feature = "omo"))]
 pub mod session_gateway;
+pub mod session_of_pid_command;
 pub mod session_picker;
 #[cfg(feature = "omo")]
 pub mod session_policy;

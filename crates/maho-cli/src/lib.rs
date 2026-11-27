@@ -6,8 +6,11 @@
 pub mod brand_dir_migration;
 pub mod cli;
 pub mod config;
+pub mod engine_trust;
 pub mod experimental;
 pub mod extension_system_migration;
+pub mod extensions;
+pub mod host_tools;
 pub mod import_omo;
 pub mod internal_role;
 pub mod legacy_dir_copy;
@@ -20,6 +23,11 @@ pub mod nearest_parent_config;
 pub mod open_file_limit;
 pub mod package_manager_cli;
 pub mod pi_dir_restore;
+pub mod private_fd_spawn;
+pub mod private_fd_startup_fillers;
+pub mod private_fd_startup_release;
+pub mod private_fd_table;
+pub mod private_fds;
 /// Windows std-handle privacy through `omo_utils` (built only with the `omo` feature).
 #[cfg(feature = "omo")]
 pub mod private_stdio;

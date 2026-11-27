@@ -1,16 +1,26 @@
 use maho_ai::types::ModelThinkingLevel;
 
-fn matches_variant(id: &str, stem: &str) -> bool {
-    id.match_indices(stem).any(|(start, matched)| {
-        !id.as_bytes()
-            .get(start + matched.len())
-            .is_some_and(u8::is_ascii_lowercase)
+fn matches_gpt6_variant(id: &str, suffix: &str) -> bool {
+    id.match_indices("gpt-6").any(|(start, _)| {
+        let remainder = &id[start + 5..];
+        let tail = if let Some(after_dot) = remainder.strip_prefix('.') {
+            let digits = after_dot.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return false;
+            }
+            &after_dot[digits..]
+        } else {
+            let digits = remainder.bytes().take_while(u8::is_ascii_digit).count();
+            &remainder[digits..]
+        };
+        tail.strip_prefix(suffix)
+            .is_some_and(|after| !after.as_bytes().first().is_some_and(u8::is_ascii_lowercase))
     })
 }
 
 pub fn is_sensitive_high_reasoning_model(id: &str) -> bool {
     let id = id.to_lowercase();
-    if matches_variant(&id, "gpt-6-sol") || matches_variant(&id, "gpt-6-astra") {
+    if matches_gpt6_variant(&id, "-sol") || matches_gpt6_variant(&id, "-astra") {
         return true;
     }
     id.match_indices("gpt-5").any(|(start, _)| {
@@ -31,7 +41,7 @@ pub fn is_sensitive_high_reasoning_model(id: &str) -> bool {
 }
 
 pub fn should_warn_high_reasoning(id: &str, level: ModelThinkingLevel) -> bool {
-    let warning_level = if matches_variant(&id.to_lowercase(), "gpt-6-astra") {
+    let warning_level = if matches_gpt6_variant(&id.to_lowercase(), "-astra") {
         level == ModelThinkingLevel::Max
     } else {
         matches!(level, ModelThinkingLevel::Xhigh | ModelThinkingLevel::Max)

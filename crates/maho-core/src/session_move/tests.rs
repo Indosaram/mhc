@@ -95,6 +95,52 @@ impl Fixture {
     }
 }
 #[tokio::test]
+async fn interrupted_import_settles_when_machine_uptime_is_unavailable() {
+    let mut f = Fixture::new().await;
+    let default_clock = move_landing::StampClock::default();
+    let now = (default_clock.now)();
+    let host = default_clock.host;
+    f.ledger = MoveLedger::with_clock(
+        f.ledger.dir(),
+        move_landing::StampClock {
+            now: std::sync::Arc::new(move || now),
+            uptime: std::sync::Arc::new(|| 0),
+            host: host.clone(),
+        },
+    );
+    assert!(
+        with_move_step_hook(
+            std::sync::Arc::new(|step| {
+                if step == MoveStep::ImportStamped {
+                    Err("injected".into())
+                } else {
+                    Ok(())
+                }
+            }),
+            f.import(),
+        )
+        .await
+        .is_err()
+    );
+    let after = MoveLedger::with_clock(
+        f.ledger.dir(),
+        move_landing::StampClock {
+            now: std::sync::Arc::new(move || now + move_landing::COMMIT_SETTLE_AFTER_MS + 1_000),
+            uptime: std::sync::Arc::new(|| 0),
+            host,
+        },
+    );
+    assert_eq!(
+        import::answer_move_status(&after, "m1", None)
+            .await
+            .expect("settled status"),
+        MoveStatus::Failed {
+            reason: move_ledger::FailReason::ImportFailed
+        }
+    );
+}
+
+#[tokio::test]
 async fn import_fault_boundaries_reconcile_from_file_and_never_land_twice() {
     for boundary in [
         MoveStep::ImportReceived,
@@ -124,8 +170,32 @@ async fn import_fault_boundaries_reconcile_from_file_and_never_land_twice() {
                 f.import().await.expect("retry");
             }
             MoveStep::ImportStamped => {
-                assert!(matches!(status, MoveStatus::Failed { .. }));
+                assert_eq!(status, MoveStatus::Receiving);
                 assert!(f.import().await.is_err());
+                let base_clock = move_landing::StampClock::default();
+                let base_now = (base_clock.now)();
+                let base_uptime = (base_clock.uptime)();
+                let after = MoveLedger::with_clock(
+                    f.ledger.dir(),
+                    move_landing::StampClock {
+                        now: std::sync::Arc::new(move || {
+                            base_now + move_landing::COMMIT_SETTLE_AFTER_MS + 1_000
+                        }),
+                        uptime: std::sync::Arc::new(move || {
+                            base_uptime + move_landing::COMMIT_SETTLE_AFTER_MS + 1_000
+                        }),
+                        host: base_clock.host,
+                    },
+                );
+                let settled = import::answer_move_status(&after, "m1", None)
+                    .await
+                    .expect("settled status");
+                assert_eq!(
+                    settled,
+                    MoveStatus::Failed {
+                        reason: move_ledger::FailReason::ImportFailed
+                    }
+                );
             }
             _ => {
                 assert_eq!(status, MoveStatus::Accepted);

@@ -19,7 +19,7 @@ pub const SESSION_NOTICE_ENTRY_TYPE: &str = "session-notice";
 pub const SESSION_NOTICES_CONSUMED_ENTRY_TYPE: &str = "session-notices-consumed";
 pub const PAUSE_NOT_SAVED_NOTICE: &str = "Pause could not be saved; it will not survive a restart.";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HoldKind {
     Unattended,
     SessionHold,
@@ -55,6 +55,7 @@ pub enum HoldReleaseCause {
     RunResume,
     RunCancelled,
     NodeCancelled,
+    SessionClose,
 }
 
 impl HoldReleaseCause {
@@ -65,6 +66,7 @@ impl HoldReleaseCause {
             Self::RunResume => "run_resume",
             Self::RunCancelled => "run_cancelled",
             Self::NodeCancelled => "node_cancelled",
+            Self::SessionClose => "session_close",
         }
     }
 }
@@ -206,6 +208,7 @@ pub struct EngineTurnHold {
     records: Vec<(String, SessionHold)>,
     notices: EngineTurnHoldNotices,
     pause_seq: u64,
+    announced_seq: u64,
     pause_open: bool,
     released: Vec<SessionHold>,
     release_barrier: bool,
@@ -235,6 +238,7 @@ impl EngineTurnHold {
             records: Vec::new(),
             notices,
             pause_seq: 0,
+            announced_seq: 0,
             pause_open: false,
             released: Vec::new(),
             release_barrier: false,
@@ -262,9 +266,11 @@ impl EngineTurnHold {
                     ) else {
                         continue;
                     };
-                    this.pause_seq = this
-                        .pause_seq
-                        .max(data.get("pauseSeq").and_then(Value::as_u64).unwrap_or(0));
+                    let seq = data.get("pauseSeq").and_then(Value::as_u64).unwrap_or(0);
+                    this.pause_seq = this.pause_seq.max(seq);
+                    if kind != HoldKind::RunFence {
+                        this.announced_seq = this.announced_seq.max(seq);
+                    }
                     this.remove_record(key);
                     this.records.push((
                         key.to_owned(),
@@ -318,6 +324,11 @@ impl EngineTurnHold {
 
     pub fn current_pause_seq(&self) -> u64 {
         self.pause_seq
+    }
+
+    /// Whether a Resume quoting `expected_seq` has seen every hold that pauses the session (`senpi#6900`).
+    pub fn is_current_pause_seq(&self, expected_seq: u64) -> bool {
+        expected_seq >= self.announced_seq && expected_seq <= self.pause_seq
     }
 
     pub fn held(&self) -> bool {
@@ -408,7 +419,8 @@ impl EngineTurnHold {
                 false
             }
         };
-        if !self.pause_open && self.is_held() {
+        if kind != HoldKind::RunFence && self.is_held() {
+            self.announced_seq = self.pause_seq;
             self.pause_open = true;
             (self.emit)(SessionHoldEvent::SessionPaused {
                 pause_seq: self.pause_seq,
@@ -711,7 +723,7 @@ mod tests {
         hold.release(&["parent".into()], HoldReleaseCause::RunResume)
             .expect("parent resumes");
         assert!(!hold.held());
-        assert_eq!(events.lock().expect("events").len(), 2);
+        assert_eq!(events.lock().expect("events").len(), 3);
     }
 
     #[test]

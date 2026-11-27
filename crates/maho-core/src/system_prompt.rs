@@ -34,14 +34,32 @@ pub fn get_eval_only_grep_guideline(
     selected_tools: &[String],
     tool_snippets: Option<&HashMap<String, String>>,
 ) -> Option<String> {
+    get_eval_only_grep_guideline_for_sections(
+        selected_tools,
+        tool_snippets,
+        crate::dynamic_prompt::types::SharedSections::Diet,
+    )
+}
+
+pub fn get_eval_only_grep_guideline_for_sections(
+    selected_tools: &[String],
+    tool_snippets: Option<&HashMap<String, String>>,
+    shared_sections: crate::dynamic_prompt::types::SharedSections,
+) -> Option<String> {
     let has_grep_snippet = tool_snippets
         .and_then(|snippets| snippets.get("grep"))
         .is_some_and(|snippet| !snippet.is_empty());
-    if has_grep_snippet && !selected_tools.iter().any(|tool| tool == "grep") {
-        Some("Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell".to_string())
-    } else {
-        None
+    if !has_grep_snippet || selected_tools.iter().any(|tool| tool == "grep") {
+        return None;
     }
+    Some(match shared_sections {
+        crate::dynamic_prompt::types::SharedSections::Full => {
+            "Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell".to_string()
+        }
+        crate::dynamic_prompt::types::SharedSections::Diet => {
+            "Content search: tool.grep({ pattern, path }) in eval, not rg/grep in shell; page full -> skip, narrow with glob/path.".to_string()
+        }
+    })
 }
 
 fn append_context_files(prompt: &mut String, context_files: &[ContextFile]) {
@@ -317,7 +335,7 @@ mod tests {
             ])),
             ..Default::default()
         });
-        assert!(prompt.contains("- Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell"));
+        assert!(prompt.contains("- Content search: tool.grep({ pattern, path }) in eval, not rg/grep in shell; page full -> skip, narrow with glob/path."));
         assert!(!prompt.contains("- Use bash for file operations"));
     }
 

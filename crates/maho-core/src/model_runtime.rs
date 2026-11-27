@@ -744,6 +744,8 @@ pub struct ModelRuntime {
     served_credentials: Arc<crate::served_credentials::ServedCredentials>,
     /// The extension behind each registration that named one (senpi#4328).
     provider_extension_paths: Arc<RwLock<HashMap<String, String>>>,
+    /// Active credential slot per (provider_id, session_id), bounded to 256 recent entries.
+    active_credential_accounts: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 /// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
@@ -883,6 +885,7 @@ impl ModelRuntime {
             served_credentials: Default::default(),
             provider_extension_paths: Default::default(),
             availability: Arc::new(RwLock::new(AvailabilityState::default())),
+            active_credential_accounts: Default::default(),
         };
         runtime.rebuild_providers();
         Ok(runtime)
@@ -1431,6 +1434,135 @@ impl ModelRuntime {
     ) -> Result<Option<AuthResolution>, ModelsError> {
         self.models.get_auth(id, overrides).await
     }
+
+    pub fn get_active_credential_account(
+        &self,
+        provider_id: &str,
+        session_id: &str,
+    ) -> Option<String> {
+        let key = format!("{provider_id}\0{session_id}");
+        self.active_credential_accounts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .rev()
+            .find(|(k, _)| k == &key)
+            .map(|(_, slot)| slot.clone())
+    }
+
+    pub fn record_active_credential_account(
+        &self,
+        provider_id: &str,
+        session_id: &str,
+        slot_name: &str,
+    ) {
+        const MAX_ACTIVE_CREDENTIAL_SESSIONS: usize = 256;
+        let key = format!("{provider_id}\0{session_id}");
+        let changed = {
+            let mut map = self
+                .active_credential_accounts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prev = map.iter().find(|(k, _)| k == &key).map(|(_, s)| s.clone());
+            if prev.as_deref() == Some(slot_name) {
+                false
+            } else {
+                map.retain(|(k, _)| k != &key);
+                map.push((key, slot_name.to_owned()));
+                while map.len() > MAX_ACTIVE_CREDENTIAL_SESSIONS {
+                    map.remove(0);
+                }
+                true
+            }
+        };
+        if changed {
+            crate::provider_account_events::emit_provider_accounts_changed(provider_id);
+        }
+    }
+
+    fn clear_active_credential_accounts_for_provider(&self, provider_id: &str) {
+        let prefix = format!("{provider_id}\0");
+        self.active_credential_accounts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(k, _)| !k.starts_with(&prefix));
+    }
+
+    /// Whether the provider's only credential is a configured header: no configured key, and no key of its own.
+    pub fn provider_auth_is_header_only(&self, id: &str) -> bool {
+        if self.credentials.has_runtime_api_key(id) || self.credentials.get(id).is_some() {
+            return false;
+        }
+        let config = self
+            .config
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_provider(id)
+            .cloned();
+        let extension = self
+            .extensions
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned();
+        if crate::provider_api_key_auth::configured_api_key(
+            config.as_ref(),
+            extension.as_ref().map(|e| &e.config),
+        )
+        .is_some()
+        {
+            return false;
+        }
+        if self.availability_state().snapshot.auth.contains_key(id) {
+            return false;
+        }
+        crate::provider_api_key_auth::configured_request_auth_status(
+            config.as_ref(),
+            extension.as_ref().map(|e| &e.config),
+        )
+        .is_some_and(|status| status.configured)
+    }
+
+    /// Auth for a request a session sends outside the rotation stream (compaction, /btw, look-at,
+    /// cache keepalive), choosing the slot this session's turns would use.
+    pub async fn get_session_auth(
+        &self,
+        model: &Model,
+        session_id: &str,
+    ) -> Result<Option<AuthResolution>, ModelsError> {
+        let request = maho_ai::types::ProviderRequestOptions::default();
+        if let Some(rotation) = self.could_rotate_credentials(model, &request)
+            && let Some(sources) = rotation.sources(&model.provider).await
+            && let Ok(slots) = sources.list_without_leases().await
+            && let Some(slot) = crate::credential_pool::rotation_stream::select_rotation_slot(
+                &slots,
+                session_id,
+                sources.policy.affinity.unwrap_or(true),
+            )
+        {
+            if let Some(env_key) = slot.env_key {
+                return self
+                    .get_auth_with_overrides(
+                        &model.provider,
+                        &AuthResolutionOverrides {
+                            api_key: Some(env_key),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+            }
+            return self
+                .get_auth_with_overrides(
+                    &model.provider,
+                    &AuthResolutionOverrides {
+                        slot_name: Some(slot.slot.name),
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
+        self.get_auth(&model.provider).await
+    }
     pub async fn list_credentials(
         &self,
         options: Option<maho_ai::auth::types::AuthOperationOptions>,
@@ -1489,6 +1621,8 @@ impl ModelRuntime {
                 .await?;
             self.synchronize_credential_state(&id, "login", &signal)
                 .await?;
+            crate::provider_account_events::emit_provider_accounts_changed(&id);
+            self.clear_active_credential_accounts_for_provider(&id);
             Ok(credential)
         })
         .await
@@ -1644,6 +1778,7 @@ impl ModelRuntime {
             };
             self.synchronize_credential_state(&id, "logout", &signal)
                 .await?;
+            self.clear_active_credential_accounts_for_provider(&id);
             Ok(result)
         })
         .await

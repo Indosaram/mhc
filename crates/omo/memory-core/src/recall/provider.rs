@@ -274,6 +274,7 @@ pub struct RecallCorpusCache {
     held: HashMap<PathBuf, SharedCache>,
     /// The corpus this cache holds, reported to the memory report without keeping the cache alive.
     accounting: Arc<CacheAccounting>,
+    reads: Arc<crate::compile::InFlightReads>,
 }
 
 impl Default for RecallCorpusCache {
@@ -300,6 +301,7 @@ impl RecallCorpusCache {
             options,
             held: HashMap::new(),
             accounting,
+            reads: Arc::new(crate::compile::InFlightReads::new()),
         }
     }
 
@@ -322,6 +324,8 @@ impl RecallCorpusCache {
                 .unwrap_or_else(PoisonError::into_inner)
                 .load(repo);
         }
+        let reads = Arc::clone(&self.reads);
+        let _guard = reads.enter();
         let signature = head_signature(&repo.dir);
         if let Some(entry) = &self.entry
             && let Some(signature) = &signature
@@ -365,6 +369,7 @@ impl RecallCorpusCache {
     /// Blocks until no persisted-terms save started by this cache, or a shared cache it holds, is
     /// running.
     pub fn settled(&self) {
+        self.reads.settled();
         for terms in &self.attached {
             terms.settled();
         }

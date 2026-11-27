@@ -56,6 +56,9 @@ fn withheld_search_tool_is_callable_without_being_advertised() {
         &[],
     );
     let advertised = section
+        .split("\n## Tool Guidelines")
+        .next()
+        .unwrap_or("")
         .lines()
         .filter_map(|line| {
             line.strip_prefix("- ")?
@@ -115,6 +118,9 @@ fn selected_tools_without_prompt_snippets_are_not_advertised() {
         &[],
     );
     let advertised = section
+        .split("\n## Tool Guidelines")
+        .next()
+        .unwrap_or("")
         .lines()
         .filter_map(|line| {
             line.strip_prefix("- ")?

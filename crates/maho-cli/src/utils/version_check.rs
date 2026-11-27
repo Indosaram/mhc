@@ -37,28 +37,45 @@ pub fn read_available_version(
 }
 pub fn compare_package_versions(left: &str, right: &str) -> Option<i8> {
     static CALVER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-([2-9]\d*))?$").expect("calver regex")
+        regex::Regex::new(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-([1-9]\d*))?$").expect("calver regex")
     });
+    let canonical_calver = |parts: &[u64]| -> String {
+        if parts[3] > 1 {
+            format!("{}.{}.{}-{}", parts[0], parts[1], parts[2], parts[3])
+        } else {
+            format!("{}.{}.{}", parts[0], parts[1], parts[2])
+        }
+    };
+    let parse_calver = |text: &str| -> Option<Vec<u64>> {
+        let captures = CALVER.captures(text)?;
+        (1..=4)
+            .map(|index| {
+                captures
+                    .get(index)
+                    .map_or(Ok(1), |value| value.as_str().parse())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+    };
     let left = left.trim();
     let right = right.trim();
-    let ordering =
-        if let (Some(left), Some(right)) = (CALVER.captures(left), CALVER.captures(right)) {
-            let parts = |captures: regex::Captures<'_>| -> Option<Vec<u64>> {
-                (1..=4)
-                    .map(|index| {
-                        captures
-                            .get(index)
-                            .map_or(Ok(1), |value| value.as_str().parse())
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .ok()
-            };
-            parts(left)?.cmp(&parts(right)?)
-        } else {
-            semver::Version::parse(left.strip_prefix('v').unwrap_or(left))
-                .ok()?
-                .cmp(&semver::Version::parse(right.strip_prefix('v').unwrap_or(right)).ok()?)
-        };
+    let left_calver = parse_calver(left);
+    let right_calver = parse_calver(right);
+    let ordering = if let (Some(l), Some(r)) = (&left_calver, &right_calver) {
+        l.cmp(r)
+    } else {
+        let l = left_calver
+            .as_deref()
+            .map(canonical_calver)
+            .unwrap_or_else(|| left.strip_prefix('v').unwrap_or(left).to_owned());
+        let r = right_calver
+            .as_deref()
+            .map(canonical_calver)
+            .unwrap_or_else(|| right.strip_prefix('v').unwrap_or(right).to_owned());
+        semver::Version::parse(&l)
+            .ok()?
+            .cmp(&semver::Version::parse(&r).ok()?)
+    };
     Some(match ordering {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
@@ -80,6 +97,35 @@ pub fn get_release_changelog_url(version: &str, channel_url: Option<&str>) -> St
     };
     format!("https://github.com/code-yeongyu/senpi/blob/{tag}/packages/coding-agent/CHANGELOG.md")
 }
+pub const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/code-yeongyu/senpi/releases/latest";
+
+/// Version of the latest GitHub Release, from its tag; drafts and prereleases are not installable (senpi#6633).
+pub fn read_latest_release_version(payload: &serde_json::Value) -> Option<String> {
+    let record = payload.as_object()?;
+    if record.get("draft").and_then(serde_json::Value::as_bool) == Some(true)
+        || record
+            .get("prerelease")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    {
+        return None;
+    }
+    let tag = record
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallMethod {
+    Npm,
+    BunBinary,
+    Unknown,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct LatestRelease {
     pub version: String,
@@ -90,6 +136,7 @@ pub struct LatestRelease {
 pub struct VersionCheckOptions {
     pub timeout_ms: Option<u64>,
     pub retry: bool,
+    pub install_method: Option<InstallMethod>,
 }
 /// One registry request of the version check (senpi `fetch(url, { headers })`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,24 +210,36 @@ pub async fn get_latest_release_with(
     if maho_core::brand::env_value("OFFLINE", &io.env).is_some_and(|value| !value.is_empty()) {
         return Ok(None);
     }
-    let Some(channel) = io.channel.clone() else {
-        return Ok(None);
+    let from_release =
+        io.channel.is_none() && options.install_method == Some(InstallMethod::BunBinary);
+    let url = if from_release {
+        LATEST_RELEASE_URL.to_owned()
+    } else {
+        let Some(channel) = io.channel.clone() else {
+            return Ok(None);
+        };
+        let encoded: String = channel
+            .package_name
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+                    (byte as char).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect();
+        format!("https://registry.npmjs.org/-/package/{encoded}/dist-tags")
     };
-    let encoded: String = channel
-        .package_name
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
-                (byte as char).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect();
     let request = VersionFetchRequest {
-        url: format!("https://registry.npmjs.org/-/package/{encoded}/dist-tags"),
+        url,
         user_agent: super::pi_user_agent::get_pi_user_agent(current_version),
-        accept: "application/json".to_owned(),
+        accept: if from_release {
+            "application/vnd.github+json"
+        } else {
+            "application/json"
+        }
+        .to_owned(),
     };
     let response = super::management_http::retry_attempts(
         None,
@@ -198,10 +257,22 @@ pub async fn get_latest_release_with(
     }
     let payload: serde_json::Value =
         serde_json::from_slice(&response.body).map_err(|error| error.to_string())?;
+    if from_release {
+        return Ok(
+            read_latest_release_version(&payload).map(|version| LatestRelease {
+                version,
+                package_name: None,
+                note: None,
+            }),
+        );
+    }
+    let Some(channel) = io.channel.as_ref() else {
+        return Ok(None);
+    };
     Ok(
         read_available_version(&payload, Some(&channel.dist_tag)).map(|version| LatestRelease {
             version,
-            package_name: Some(channel.package_name),
+            package_name: Some(channel.package_name.clone()),
             note: None,
         }),
     )
@@ -238,4 +309,33 @@ pub async fn check_for_new_version_with(
         .ok()
         .flatten()
         .filter(|release| is_newer_package_version(&release.version, current_version))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_release_skips_draft_and_prerelease_and_compares_calver_rev1() {
+        assert_eq!(
+            read_latest_release_version(&serde_json::json!({ "tag_name": "v2026.11.19-5" })),
+            Some("2026.11.19-5".into())
+        );
+        assert_eq!(
+            read_latest_release_version(
+                &serde_json::json!({ "tag_name": "v2026.11.20", "draft": true })
+            ),
+            None
+        );
+        assert_eq!(
+            read_latest_release_version(
+                &serde_json::json!({ "tag_name": "v2026.11.20-beta.1", "prerelease": true })
+            ),
+            None
+        );
+        assert_eq!(
+            compare_package_versions("2026.11.2-1", "2026.11.2"),
+            Some(0)
+        );
+    }
 }

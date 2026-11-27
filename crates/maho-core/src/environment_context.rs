@@ -22,13 +22,37 @@ pub struct EnvironmentContext {
     pub current_date: String,
 }
 
+/// Test-only date pin (senpi#4660): `SENPI_TEST_CURRENT_DATE=YYYY-MM-DD`.
+const CURRENT_DATE_ENV: &str = "SENPI_TEST_CURRENT_DATE";
+
+fn pinned_current_date() -> Option<String> {
+    let value = std::env::var(CURRENT_DATE_ENV).ok()?;
+    if value.is_empty() {
+        return None;
+    }
+    if chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d").is_ok()
+        && value.len() == 10
+        && value.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            _ => b.is_ascii_digit(),
+        })
+    {
+        Some(value)
+    } else {
+        panic!(
+            "{CURRENT_DATE_ENV} must be a calendar date YYYY-MM-DD, got {:?}",
+            value
+        );
+    }
+}
+
 pub fn resolve_environment_context(
     cwd: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> EnvironmentContext {
     EnvironmentContext {
         cwd: cwd.replace('\\', "/"),
-        current_date: now.format("%Y-%m-%d").to_string(),
+        current_date: pinned_current_date().unwrap_or_else(|| now.format("%Y-%m-%d").to_string()),
     }
 }
 

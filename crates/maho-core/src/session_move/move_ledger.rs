@@ -5,9 +5,14 @@
 //! refused and the sender may safely take its session back. Every writer and the import's final rename share
 //! one lock per move.
 
-use super::move_landing::{Landing, LandingOutcome, lands_at, parse_landing, settled_landing};
+use super::move_landing::{
+    Landing, LandingOutcome, StampClock, held_elsewhere, landed_elsewhere, lands_at, move_folder,
+    parse_landing, settled_at, settled_landing_with_age, stamp_age, stamp_fields,
+};
 use super::move_ledger_lock::MoveRecordLocks;
+use super::move_record_file::MoveRecordFile;
 use super::move_steps::{MoveStep, move_step};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -108,7 +113,7 @@ impl MoveRecord {
         )
     }
 
-    fn to_json(&self) -> Value {
+    pub fn to_json(&self) -> Value {
         match self {
             Self::Ready { expires_at } => json!({"state": "ready", "expiresAt": expires_at}),
             Self::Status(MoveStatus::Receiving) => json!({"state": "receiving"}),
@@ -134,20 +139,56 @@ pub const READY_TTL_MS: i64 = 10 * 60_000;
 pub struct MoveFencedError {
     pub move_id: MoveId,
     pub record: MoveRecord,
+    pub detail: Option<String>,
 }
 
 impl MoveFencedError {
     pub const CODE: &'static str = "move_fenced";
+
+    pub fn new(move_id: impl Into<String>, record: MoveRecord, detail: Option<String>) -> Self {
+        Self {
+            move_id: move_id.into(),
+            record,
+            detail,
+        }
+    }
+
+    pub fn with_detail(
+        move_id: impl Into<String>,
+        record: Option<MoveRecord>,
+        detail: Option<String>,
+    ) -> MoveLedgerError {
+        let move_id = move_id.into();
+        match record {
+            Some(record) => MoveFencedError {
+                move_id,
+                record,
+                detail,
+            }
+            .into(),
+            None => MoveLedgerError::Failed(format!(
+                "move_fenced: Move {move_id} can no longer be imported here: {}.",
+                detail.unwrap_or_else(|| "it was already answered (no record)".to_owned())
+            )),
+        }
+    }
 }
 
 impl std::fmt::Display for MoveFencedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Move {} can no longer be imported here: it was already answered ({}).",
-            self.move_id,
-            self.record.state()
-        )
+        match &self.detail {
+            Some(detail) => write!(
+                f,
+                "Move {} can no longer be imported here: {detail}.",
+                self.move_id
+            ),
+            None => write!(
+                f,
+                "Move {} can no longer be imported here: it was already answered ({}).",
+                self.move_id,
+                self.record.state()
+            ),
+        }
     }
 }
 
@@ -192,7 +233,7 @@ pub fn parse_move_status(value: &Value) -> Option<MoveAnswer> {
     }
 }
 
-fn parse_record(value: &Value) -> Option<MoveRecord> {
+pub fn parse_record(value: &Value) -> Option<MoveRecord> {
     let state = value.get("state")?.as_str()?;
     let reason = value.get("reason").and_then(Value::as_str);
     match state {
@@ -220,24 +261,22 @@ fn parse_record(value: &Value) -> Option<MoveRecord> {
     }
 }
 
-type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
-
-fn system_now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 pub struct MoveLedger {
     dir: PathBuf,
-    now: Clock,
-    locks: MoveRecordLocks,
+    clock: StampClock,
+    locks: Arc<MoveRecordLocks>,
 }
 
 impl MoveLedger {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self::with_clock(dir, StampClock::default())
+    }
+
+    pub fn with_clock(dir: impl Into<PathBuf>, clock: StampClock) -> Self {
         Self {
             dir: dir.into(),
-            now: Arc::new(system_now_ms),
-            locks: MoveRecordLocks::default(),
+            clock,
+            locks: Arc::new(MoveRecordLocks::default()),
         }
     }
 
@@ -246,81 +285,191 @@ impl MoveLedger {
         dir: impl Into<PathBuf>,
         now: impl Fn() -> i64 + Send + Sync + 'static,
     ) -> Self {
-        Self {
-            dir: dir.into(),
-            now: Arc::new(now),
-            locks: MoveRecordLocks::default(),
-        }
+        Self::with_clock(
+            dir,
+            StampClock {
+                now: Arc::new(now),
+                ..StampClock::default()
+            },
+        )
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
+    fn stamp(&self) -> BTreeMap<String, Value> {
+        stamp_fields(&self.clock)
+    }
+
+    fn record_file<'a>(
+        &'a self,
+        stamp_fn: &'a (dyn Fn() -> BTreeMap<String, Value> + Send + Sync),
+    ) -> MoveRecordFile<'a> {
+        MoveRecordFile::new(&self.dir, &self.locks, Some(stamp_fn))
+    }
+
     /// Says this device can take the move, for `READY_TTL_MS`. Sending ready again keeps the first window; a move
     /// already receiving or accepted stays so, and one already answered otherwise is refused.
     pub async fn prepare(&self, move_id: &str) -> Result<MoveRecord, MoveLedgerError> {
+        self.prepare_for_cwd(move_id, None).await
+    }
+
+    pub async fn prepare_for_cwd(
+        &self,
+        move_id: &str,
+        folder: Option<&str>,
+    ) -> Result<MoveRecord, MoveLedgerError> {
+        let cwd = move_folder(folder);
         self.locked(move_id, || {
-            let Some(record) = self.current(move_id)? else {
-                let expires = chrono::DateTime::from_timestamp_millis((self.now)() + READY_TTL_MS)
-                    .unwrap_or_default();
+            let stamp_fn = || self.stamp();
+            let file = self.record_file(&stamp_fn);
+            let record = self.current(move_id)?;
+            let landing = file.landing(move_id)?;
+            if let (Some(c), Some(l)) = (cwd.as_deref(), landing.cwd.as_deref())
+                && l != c
+            {
+                return Err(MoveFencedError::with_detail(
+                    move_id,
+                    record,
+                    Some(held_elsewhere(&landing)),
+                ));
+            }
+            let Some(record) = record else {
+                let expires =
+                    chrono::DateTime::from_timestamp_millis((self.clock.now)() + READY_TTL_MS)
+                        .unwrap_or_default();
                 let ready = MoveRecord::Ready {
                     expires_at: expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 };
-                self.write(move_id, &ready)?;
+                let initial = Landing {
+                    cwd: cwd.clone(),
+                    ..Landing::default()
+                };
+                file.write(move_id, &ready, &initial)?;
                 return Ok(ready);
             };
-            match record {
+            match &record {
                 MoveRecord::Ready { .. }
                 | MoveRecord::Status(
                     MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked,
-                ) => Ok(record),
-                other => Err(MoveFencedError {
-                    move_id: move_id.to_owned(),
-                    record: other,
+                ) => {
+                    if let Some(c) = cwd.as_deref()
+                        && landing.cwd.is_none()
+                        && !landing.committing
+                    {
+                        let mut updated = landing;
+                        updated.cwd = Some(c.to_owned());
+                        file.write(move_id, &record, &updated)?;
+                    }
+                    Ok(record)
                 }
-                .into()),
+                _ => Err(MoveFencedError::new(move_id, record, None).into()),
             }
         })
         .await
     }
 
+    /// Refuses an import into a folder other than the one a ready move was readied for, without taking a lock.
+    pub async fn require_readied_for(
+        &self,
+        move_id: &str,
+        cwd: &str,
+    ) -> Result<(), MoveLedgerError> {
+        let stamp_fn = || self.stamp();
+        let file = self.record_file(&stamp_fn);
+        let Some(stored) = file.raw(move_id)? else {
+            return Ok(());
+        };
+        let record = parse_record(&stored);
+        let landing = parse_landing(&stored);
+        let expected = move_folder(Some(cwd));
+        if matches!(record, Some(MoveRecord::Ready { .. }))
+            && landing.cwd.is_some()
+            && landing.cwd != expected
+        {
+            return Err(MoveFencedError::with_detail(
+                move_id,
+                record,
+                Some(held_elsewhere(&landing)),
+            ));
+        }
+        Ok(())
+    }
+
     /// Starts receiving a verified bundle. Only a move this device readied (and whose window is still open) may
     /// start; a bundle for a move it never readied is declined for good (`chunk_without_ready`).
     pub async fn begin_receive(&self, move_id: &str, target: &str) -> Result<(), MoveLedgerError> {
+        self.begin_receive_with_cwd(move_id, target, None).await
+    }
+
+    pub async fn begin_receive_with_cwd(
+        &self,
+        move_id: &str,
+        target: &str,
+        folder: Option<&str>,
+    ) -> Result<(), MoveLedgerError> {
+        let cwd = move_folder(folder);
         self.locked(move_id, || {
+            let stamp_fn = || self.stamp();
+            let file = self.record_file(&stamp_fn);
             let record = self.current(move_id)?;
-            let landing = self.landing(move_id)?;
+            let landing = file.landing(move_id)?;
+            let receiving = lands_at(record.as_ref(), &landing, target);
+            if (matches!(record, Some(MoveRecord::Ready { .. })) || receiving)
+                && landing.cwd.is_some()
+                && landing.cwd != cwd
+            {
+                return Err(MoveFencedError::with_detail(
+                    move_id,
+                    record,
+                    Some(held_elsewhere(&landing)),
+                ));
+            }
             if matches!(record, Some(MoveRecord::Ready { .. })) {
-                return self.write_landing(
+                let next_landing = settled_at(
+                    &Landing {
+                        cwd: cwd.clone(),
+                        ..Landing::default()
+                    },
+                    target,
+                );
+                file.write(
                     move_id,
                     &MoveRecord::Status(MoveStatus::Receiving),
-                    &Landing {
-                        target: Some(target.into()),
-                        committing: false,
-                    },
-                );
-            }
-            if lands_at(record.as_ref(), &landing, target) {
+                    &next_landing,
+                )?;
                 return Ok(());
             }
-            let record = match record {
-                Some(record) => record,
-                None => {
-                    let declined = MoveRecord::Status(MoveStatus::Declined {
-                        reason: DeclineReason::ChunkWithoutReady,
-                    });
-                    self.write(move_id, &declined)?;
-                    declined
-                }
-            };
-            Err(MoveFencedError {
-                move_id: move_id.into(),
-                record,
+            if receiving {
+                return Ok(());
             }
-            .into())
+            if matches!(
+                record,
+                Some(MoveRecord::Status(
+                    MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked
+                ))
+            ) {
+                let detail = landed_elsewhere(record.as_ref(), &landing);
+                return Err(MoveFencedError::with_detail(move_id, record, Some(detail)));
+            }
+            if let Some(record) = record {
+                return Err(MoveFencedError::new(move_id, record, None).into());
+            }
+            let declined = MoveRecord::Status(MoveStatus::Declined {
+                reason: DeclineReason::ChunkWithoutReady,
+            });
+            file.write(move_id, &declined, &Landing::default())?;
+            Err(MoveFencedError::new(move_id, declined, None).into())
         })
         .await
+    }
+
+    pub fn assert_held(&self, move_id: &str) -> Result<(), MoveLedgerError> {
+        let path = self.path(move_id)?;
+        self.locks
+            .assert_held(&path)
+            .map_err(MoveLedgerError::Failed)
     }
 
     /// Declines a ready move whose window has passed; any other record is returned unchanged.
@@ -346,24 +495,33 @@ impl MoveLedger {
         landed: Option<LandedReader<'_>>,
     ) -> Result<MoveStatus, MoveLedgerError> {
         self.locked_async(move_id, async {
+            let stamp_fn = || self.stamp();
+            let file = self.record_file(&stamp_fn);
             let mut record = self.current(move_id)?;
-            let landing = self.landing(move_id)?;
+            let stored = file.raw(move_id)?;
+            let landing = stored.as_ref().map(parse_landing).unwrap_or_default();
             let outcome = match (landed, landing.target.as_deref()) {
                 (Some(read), Some(target)) => Some(read(target.to_owned()).await),
                 _ => None,
             };
-            if let (Some(outcome), Some(target)) = (outcome, landing.target.as_deref())
-                && let Some(next) = settled_landing(record.as_ref(), landing.committing, outcome)
-            {
-                self.write_landing(
-                    move_id,
-                    &next,
-                    &Landing {
-                        target: Some(target.into()),
-                        committing: false,
-                    },
-                )?;
-                record = Some(next);
+            if let (Some(outcome), Some(target)) = (outcome, landing.target.as_deref()) {
+                let age = stored.as_ref().and_then(|v| stamp_age(v, &self.clock));
+                if let Some(next) =
+                    settled_landing_with_age(record.as_ref(), landing.committing, outcome, age)
+                {
+                    file.write(
+                        move_id,
+                        &next,
+                        &settled_at(
+                            &Landing {
+                                cwd: landing.cwd.clone(),
+                                ..Landing::default()
+                            },
+                            target,
+                        ),
+                    )?;
+                    record = Some(next);
+                }
             }
             if revoked {
                 return Ok(MoveStatus::AcceptedRevoked);
@@ -384,7 +542,11 @@ impl MoveLedger {
                     let declined = MoveStatus::Declined {
                         reason: DeclineReason::NoRecord,
                     };
-                    self.write(move_id, &MoveRecord::Status(declined.clone()))?;
+                    file.write(
+                        move_id,
+                        &MoveRecord::Status(declined.clone()),
+                        &Landing::default(),
+                    )?;
                     Ok(declined)
                 }
             }
@@ -428,31 +590,60 @@ impl MoveLedger {
         rename: impl Future<Output = Result<T, String>>,
         prepare: impl Future<Output = Result<(), String>>,
     ) -> Result<T, MoveLedgerError> {
+        self.commit_with_stamp(move_id, target, |_| rename, prepare)
+            .await
+    }
+
+    /// Runs the commit giving `rename` a callback that verifies this commit still owns its stamp
+    /// and lock right before landing.
+    pub async fn commit_with_stamp<T, R, RFut>(
+        &self,
+        move_id: &str,
+        target: &str,
+        rename: R,
+        prepare: impl Future<Output = Result<(), String>>,
+    ) -> Result<T, MoveLedgerError>
+    where
+        R: FnOnce(Arc<dyn Fn() -> Result<(), MoveLedgerError> + Send + Sync>) -> RFut,
+        RFut: Future<Output = Result<T, String>>,
+    {
         self.locked_async(move_id, async {
-            let record = self.read(move_id)?;
-            if !lands_at(record.as_ref(), &self.landing(move_id)?, target) {
-                return Err(self.fenced(move_id, record));
-            }
+            let stamp_fn = || self.stamp();
+            let file = self.record_file(&stamp_fn);
+            file.assert_lands_at(move_id, target)?;
             // `prepare` runs before the stamp: whatever it does or refuses lands nothing.
             prepare.await.map_err(MoveLedgerError::Failed)?;
-            self.write_landing(
+            let landing = file.assert_lands_at(move_id, target)?;
+            let mut committing_landing = settled_at(&landing, target);
+            committing_landing.committing = true;
+            let stamp = file.write(
                 move_id,
                 &MoveRecord::Status(MoveStatus::Receiving),
-                &Landing {
-                    target: Some(target.into()),
-                    committing: true,
-                },
+                &committing_landing,
             )?;
             move_step(MoveStep::ImportStamped).map_err(MoveLedgerError::Failed)?;
-            let result = rename.await.map_err(MoveLedgerError::Failed)?;
+            file.assert_stamp_stands(move_id, &stamp)?;
+            self.locks
+                .assert_held(&file.path(move_id)?)
+                .map_err(MoveLedgerError::Failed)?;
+            let stamp_stands: Arc<dyn Fn() -> Result<(), MoveLedgerError> + Send + Sync> = {
+                let dir = self.dir.clone();
+                let locks = Arc::clone(&self.locks);
+                let move_id_owned = move_id.to_owned();
+                let stamp_owned = stamp.clone();
+                Arc::new(move || {
+                    let rf = MoveRecordFile::new(&dir, &locks, None);
+                    rf.assert_stamp_stands(&move_id_owned, &stamp_owned)
+                })
+            };
+            let result = rename(stamp_stands)
+                .await
+                .map_err(MoveLedgerError::Failed)?;
             move_step(MoveStep::ImportRenamed).map_err(MoveLedgerError::Failed)?;
-            self.write_landing(
+            file.write(
                 move_id,
                 &MoveRecord::Status(MoveStatus::Accepted),
-                &Landing {
-                    target: Some(target.into()),
-                    committing: false,
-                },
+                &settled_at(&landing, target),
             )?;
             Ok(result)
         })
@@ -466,8 +657,10 @@ impl MoveLedger {
         revoked: bool,
     ) -> Result<(), MoveLedgerError> {
         self.locked(move_id, || {
-            let record = self.read(move_id)?;
-            let landing = self.landing(move_id)?;
+            let stamp_fn = || self.stamp();
+            let file = self.record_file(&stamp_fn);
+            let record = file.read(move_id)?;
+            let landing = file.landing(move_id)?;
             if record.as_ref().is_some_and(|r| {
                 !matches!(
                     r,
@@ -480,7 +673,8 @@ impl MoveLedger {
                 .as_deref()
                 .is_some_and(|stored| stored != target)
             {
-                return Err(self.fenced(move_id, record));
+                let detail = landed_elsewhere(record.as_ref(), &landing);
+                return Err(MoveFencedError::with_detail(move_id, record, Some(detail)));
             }
             if matches!(
                 record,
@@ -488,25 +682,29 @@ impl MoveLedger {
             ) {
                 return Ok(());
             }
-            self.write_landing(
+            if matches!(record, Some(MoveRecord::Status(MoveStatus::Accepted))) && !revoked {
+                return Ok(());
+            }
+            file.write(
                 move_id,
                 &MoveRecord::Status(if revoked {
                     MoveStatus::AcceptedRevoked
                 } else {
                     MoveStatus::Accepted
                 }),
-                &Landing {
-                    target: Some(target.into()),
-                    committing: false,
-                },
-            )
+                &settled_at(&landing, target),
+            )?;
+            Ok(())
         })
         .await
     }
 
     pub async fn mark_revoked(&self, move_id: &str) -> Result<(), MoveLedgerError> {
         self.locked(move_id, || {
-            if self.read(move_id)?.is_some_and(|r| {
+            let stamp_fn = || self.stamp();
+            let file = self.record_file(&stamp_fn);
+            let record = file.read(move_id)?;
+            if record.as_ref().is_some_and(|r| {
                 !matches!(
                     r,
                     MoveRecord::Status(
@@ -516,13 +714,23 @@ impl MoveLedger {
             }) {
                 return Ok(());
             }
-            let mut landing = self.landing(move_id)?;
-            landing.committing = false;
-            self.write_landing(
+            if matches!(
+                record,
+                Some(MoveRecord::Status(MoveStatus::AcceptedRevoked))
+            ) {
+                return Ok(());
+            }
+            let landing = file.landing(move_id)?;
+            let next_landing = match landing.target.as_deref() {
+                Some(t) => settled_at(&landing, t),
+                None => Landing::default(),
+            };
+            file.write(
                 move_id,
                 &MoveRecord::Status(MoveStatus::AcceptedRevoked),
-                &landing,
-            )
+                &next_landing,
+            )?;
+            Ok(())
         })
         .await
     }
@@ -585,7 +793,7 @@ impl MoveLedger {
         };
         let expires_ms = chrono::DateTime::parse_from_rfc3339(expires_at)
             .map_or(i64::MIN, |at| at.timestamp_millis());
-        if (self.now)() < expires_ms {
+        if (self.clock.now)() < expires_ms {
             return Ok(record);
         }
         let expired = MoveRecord::Status(MoveStatus::Declined {
@@ -602,41 +810,13 @@ impl MoveLedger {
     }
 
     fn read(&self, move_id: &str) -> Result<Option<MoveRecord>, MoveLedgerError> {
-        let path = self.path(move_id)?;
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let parsed: Value = serde_json::from_str(&raw)
-            .map_err(|error| MoveLedgerError::Failed(error.to_string()))?;
-        parse_record(&parsed).map(Some).ok_or_else(|| {
-            MoveLedgerError::Failed(format!(
-                "Move record {} is not a move record",
-                path.display()
-            ))
-        })
-    }
-
-    fn fenced(&self, move_id: &str, record: Option<MoveRecord>) -> MoveLedgerError {
-        match record {
-            Some(record) => MoveFencedError {
-                move_id: move_id.into(),
-                record,
-            }
-            .into(),
-            None => MoveLedgerError::Failed(format!("move_fenced: {move_id} has no record")),
-        }
+        let stamp_fn = || self.stamp();
+        self.record_file(&stamp_fn).read(move_id)
     }
 
     fn landing(&self, move_id: &str) -> Result<Landing, MoveLedgerError> {
-        match std::fs::read_to_string(self.path(move_id)?) {
-            Ok(raw) => serde_json::from_str::<Value>(&raw)
-                .map(|v| parse_landing(&v))
-                .map_err(|e| MoveLedgerError::Failed(e.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Landing::default()),
-            Err(e) => Err(e.into()),
-        }
+        let stamp_fn = || self.stamp();
+        self.record_file(&stamp_fn).landing(move_id)
     }
 
     fn write(&self, move_id: &str, record: &MoveRecord) -> Result<(), MoveLedgerError> {
@@ -649,26 +829,10 @@ impl MoveLedger {
         record: &MoveRecord,
         landing: &Landing,
     ) -> Result<(), MoveLedgerError> {
-        let file = self.path(move_id)?;
-        self.locks
-            .assert_held(&file)
-            .map_err(MoveLedgerError::Failed)?;
-        let temp = PathBuf::from(format!("{}.{}.tmp", file.display(), std::process::id()));
-        let mut body = record.to_json();
-        if let Some(target) = &landing.target {
-            body["target"] = json!(target);
-        }
-        if landing.committing {
-            body["committing"] = json!(true);
-        }
-        body["at"] =
-            Value::String(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-        std::fs::write(&temp, format!("{body}\n"))?;
-        self.locks
-            .assert_held(&file)
-            .map_err(MoveLedgerError::Failed)?;
-        std::fs::rename(&temp, &file)?;
-        Ok(())
+        let stamp_fn = || self.stamp();
+        self.record_file(&stamp_fn)
+            .write(move_id, record, landing)
+            .map(|_| ())
     }
 
     async fn locked<T>(

@@ -57,7 +57,13 @@ pub fn sanitize_binary_output(value: &str) -> String {
         })
         .collect()
 }
-pub use maho_core::utils::shell::get_shell_env;
+pub fn get_user_shell_env() -> std::collections::BTreeMap<String, String> {
+    super::bundled_bun::with_bundled_bun_commands(maho_core::utils::shell::get_user_shell_env())
+}
+
+pub fn get_shell_env() -> std::collections::BTreeMap<String, String> {
+    maho_core::kill_guard::with_kill_guard_runtime(get_user_shell_env())
+}
 async fn find_executable_on_path(executable: &str) -> Option<String> {
     let bytes = super::clipboard_command::run_clipboard_command(
         if cfg!(windows) { "where" } else { "which" },

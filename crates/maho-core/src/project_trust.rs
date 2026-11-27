@@ -8,7 +8,7 @@ use maho_ext_api::{ExtensionFailure, ProjectTrustEventResult, TrustDecision};
 
 use crate::config::{app_name, config_dir_name};
 use crate::trust_manager::{
-    ProjectTrustOption, ProjectTrustStore, get_project_trust_options,
+    ProjectTrustOption, ProjectTrustStore, get_project_trust_options, get_saved_project_trust,
     has_trust_requiring_project_resources,
 };
 
@@ -141,9 +141,9 @@ pub async fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) 
         }
     }
 
-    // senpi `trustStore.get` throws on an unreadable or invalid trust.json: the project is not trusted, and
+    // senpi `getSavedProjectTrust` fails closed on an unreadable or invalid trust.json: the project is not trusted, and
     // neither `defaultProjectTrust` nor the prompt may decide past it.
-    match options.trust_store.get(options.cwd) {
+    match get_saved_project_trust(options.trust_store, options.cwd).await {
         Ok(Some(decision)) => return decision,
         Ok(None) => {}
         Err(error) => {

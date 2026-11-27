@@ -18,6 +18,7 @@ pub mod recall;
 pub mod receipts;
 pub mod reflection;
 pub mod reminders;
+pub mod retention;
 pub mod search;
 pub mod seeds;
 pub mod soul;

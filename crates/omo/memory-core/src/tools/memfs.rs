@@ -7,6 +7,24 @@ use crate::support::paths::normalize;
 
 pub use crate::memfs::frontmatter::{MemoryFrontmatter, ParsedMemoryFile};
 
+/// Returns true when `error` came from a missing YAML frontmatter block (`isMissingFrontmatterError`).
+pub fn is_missing_frontmatter_error(error: &FrontmatterError) -> bool {
+    crate::memfs::frontmatter::is_missing_frontmatter_error(
+        &crate::memfs::frontmatter::FrontmatterError {
+            message: error.0.clone(),
+        },
+    )
+}
+
+/// Returns true when `error` came from frontmatter with no `description` (`isMissingDescriptionError`).
+pub fn is_missing_description_error(error: &FrontmatterError) -> bool {
+    crate::memfs::frontmatter::is_missing_description_error(
+        &crate::memfs::frontmatter::FrontmatterError {
+            message: error.0.clone(),
+        },
+    )
+}
+
 /// Error returned when frontmatter is missing, malformed, or missing required fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontmatterError(pub String);

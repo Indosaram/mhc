@@ -504,3 +504,334 @@ fn tree_usage(root: &Path) -> (u64, u64) {
     }
     (bytes, files)
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSizeUnknownReport {
+    pub budget_ms: u64,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLastCleanupReport {
+    pub at: String,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePastRetentionReport {
+    pub runs: usize,
+    pub journals: usize,
+    pub sidecars: usize,
+    pub unclassified_journals: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStoreSizeReport {
+    pub store: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSizeReport {
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_unknown: Option<RuntimeSizeUnknownReport>,
+    pub max_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u64>,
+    pub stores: Vec<RuntimeStoreSizeReport>,
+    pub past_retention: RuntimePastRetentionReport,
+    pub unclassified_journals: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreflected_bytes: Option<u64>,
+    pub discard_unreflected_journals: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evictable_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspended_since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_cleanup: Option<RuntimeLastCleanupReport>,
+}
+
+pub struct RuntimeSizeCheckInput {
+    pub max_bytes: u64,
+    pub policy: memory_core::retention::RuntimeRetentionPolicy,
+    pub now_ms: i64,
+    pub reflection_enabled: bool,
+    pub discard_unreflected_journals: bool,
+    pub measure_budget_ms: Option<u64>,
+}
+
+pub fn check_runtime_size(
+    identity_paths: &memory_core::identity::layout::MemoryIdentityPaths,
+    input: &RuntimeSizeCheckInput,
+) -> (DoctorCheck, RuntimeSizeReport) {
+    use memory_core::retention::{
+        RuntimeCapEvictableOptions, RuntimeSizeBudgetOutcome, RuntimeSizeStandingLevel,
+        count_runtime_past_retention, format_runtime_bytes, measure_runtime_cap_evictable_bytes,
+        measure_runtime_size_within_budget, measure_unreflected_journal_bytes,
+        read_last_retention_log_entry, read_unreflected_retention_gate, runtime_size_standing,
+    };
+    let deadline = input
+        .measure_budget_ms
+        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let aborted = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+    let measured = measure_runtime_size_within_budget(
+        &identity_paths.runtime,
+        input.measure_budget_ms,
+        input.now_ms,
+        Some(&aborted),
+    );
+    let (mut check, mut report) = match measured {
+        RuntimeSizeBudgetOutcome::Unknown(unknown) => size_unknown_result(
+            unknown.budget_ms,
+            unknown.at,
+            input.max_bytes,
+            input.discard_unreflected_journals,
+        ),
+        RuntimeSizeBudgetOutcome::Size(size) => {
+            let now_fn = || input.now_ms;
+            let past = count_runtime_past_retention(
+                identity_paths,
+                &input.policy,
+                &now_fn,
+                None,
+                input.reflection_enabled,
+                Some(&aborted),
+            );
+            let mut admit = || !aborted();
+            let gate = if input.discard_unreflected_journals {
+                read_unreflected_retention_gate(
+                    &identity_paths.reflection,
+                    input.reflection_enabled,
+                    &mut admit,
+                )
+            } else {
+                None
+            };
+            let suspended_since = gate
+                .as_ref()
+                .filter(|g| !g.open)
+                .and_then(|g| g.newest.as_ref())
+                .map(|newest| newest.at.clone());
+            let standing = runtime_size_standing(size.bytes, input.max_bytes);
+            let over_cap = if input.max_bytes > 0 {
+                size.bytes.saturating_sub(input.max_bytes)
+            } else {
+                0
+            };
+            let unreflected_bytes = if over_cap > 0 && !input.discard_unreflected_journals {
+                measure_unreflected_journal_bytes(identity_paths, &input.policy, Some(&aborted))
+                    .ok()
+            } else {
+                None
+            };
+            let mut cap_policy = input.policy.clone();
+            cap_policy.discard_unreflected_journals = input.discard_unreflected_journals;
+            let evictable_bytes = if over_cap > 0 {
+                measure_runtime_cap_evictable_bytes(&RuntimeCapEvictableOptions {
+                    paths: identity_paths,
+                    policy: cap_policy,
+                    now_ms: &now_fn,
+                    reflection_enabled: input.reflection_enabled,
+                    journal_floor_ms: None,
+                    aborted: Some(&aborted),
+                })
+                .ok()
+            } else {
+                None
+            };
+            let excess = measured_cap_excess(
+                over_cap,
+                evictable_bytes,
+                unreflected_bytes,
+                input.discard_unreflected_journals,
+            );
+            let stores: Vec<RuntimeStoreSizeReport> = size
+                .stores
+                .into_iter()
+                .take(3)
+                .map(|s| RuntimeStoreSizeReport {
+                    store: s.store,
+                    bytes: s.bytes,
+                })
+                .collect();
+            let report = RuntimeSizeReport {
+                bytes: size.bytes,
+                size_unknown: None,
+                max_bytes: input.max_bytes,
+                percent: standing.percent,
+                stores: stores.clone(),
+                past_retention: RuntimePastRetentionReport {
+                    runs: past.runs,
+                    journals: past.journals,
+                    sidecars: past.sidecars,
+                    unclassified_journals: past.unclassified_journals,
+                },
+                unclassified_journals: past.unclassified_journals,
+                unreflected_bytes,
+                discard_unreflected_journals: input.discard_unreflected_journals,
+                evictable_bytes,
+                suspended_since: suspended_since.clone(),
+                last_cleanup: None,
+            };
+            let cap = if input.max_bytes > 0 {
+                format!(
+                    "{}% of the {} cap",
+                    standing.percent.unwrap_or(0),
+                    format_runtime_bytes(input.max_bytes)
+                )
+            } else {
+                "no cap".to_owned()
+            };
+            let largest = stores
+                .iter()
+                .map(|store| format!("{} {}", store.store, format_runtime_bytes(store.bytes)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let past_total = past.runs + past.journals + past.sidecars;
+            let level = match standing.level {
+                RuntimeSizeStandingLevel::Ok => CheckLevel::Ok,
+                RuntimeSizeStandingLevel::Warn => CheckLevel::Warn,
+            };
+            let mut parts = vec![format!("{} ({cap})", format_runtime_bytes(size.bytes))];
+            if !largest.is_empty() {
+                parts.push(format!("largest: {largest}"));
+            }
+            parts.push(format!(
+                "past retention: {} runs, {} journals, {} sidecars",
+                past.runs, past.journals, past.sidecars
+            ));
+            if past.unclassified_journals > 0 {
+                parts.push(format!(
+                    "{} unclassified journals kept",
+                    past.unclassified_journals
+                ));
+            }
+            if let Some(excess_line) = &excess {
+                parts.push(excess_line.clone());
+            }
+            if let Some(since) = &suspended_since {
+                parts.push(format!(
+                    "abandoned-journal retention suspended since {since} (reflection is failing)"
+                ));
+            }
+            if level == CheckLevel::Warn && excess.is_none() {
+                if over_cap > 0
+                    && (evictable_bytes.is_none()
+                        || (!input.discard_unreflected_journals && unreflected_bytes.is_none()))
+                {
+                    parts.push("retention capacity could not be measured".to_owned());
+                } else {
+                    parts.push(format!(
+                        "the next maintenance pass evicts the oldest runtime data down to the cap{}",
+                        if past_total > 0 {
+                            " after retention frees what is past its window"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+            }
+            if level == CheckLevel::Warn {
+                parts.push(
+                    "raise memory.runtime.max_bytes, or set it to 0, to keep more".to_owned(),
+                );
+            }
+            (
+                DoctorCheck {
+                    name: "runtime-size".to_owned(),
+                    level,
+                    detail: parts.join("; "),
+                },
+                report,
+            )
+        }
+    };
+    let last_cleanup = read_last_retention_log_entry(&identity_paths.runtime)
+        .ok()
+        .flatten()
+        .map(|entry| RuntimeLastCleanupReport {
+            at: entry.at,
+            total: entry.total,
+        });
+    let cleanup_text = match &last_cleanup {
+        Some(entry) => format!("last cleanup {} removed {}", entry.at, entry.total),
+        None => "no cleanup recorded".to_owned(),
+    };
+    check.detail = format!("{}; {cleanup_text}", check.detail);
+    report.last_cleanup = last_cleanup;
+    (check, report)
+}
+
+fn measured_cap_excess(
+    over_cap_bytes: u64,
+    evictable_bytes: Option<u64>,
+    unreflected_bytes: Option<u64>,
+    discard_unreflected_journals: bool,
+) -> Option<String> {
+    let evictable_bytes = evictable_bytes?;
+    let unreflected_bytes = if discard_unreflected_journals {
+        unreflected_bytes.unwrap_or(0)
+    } else {
+        unreflected_bytes?
+    };
+    memory_core::retention::describe_runtime_cap_excess(memory_core::retention::RuntimeCapExcess {
+        over_cap_bytes,
+        evictable_bytes,
+        unreflected_bytes,
+        discard_unreflected_journals,
+    })
+}
+
+fn size_unknown_result(
+    budget_ms: u64,
+    at: String,
+    max_bytes: u64,
+    discard_unreflected_journals: bool,
+) -> (DoctorCheck, RuntimeSizeReport) {
+    (
+        DoctorCheck {
+            name: "runtime-size".to_owned(),
+            level: CheckLevel::Warn,
+            detail: format!("size unknown: measurement exceeded {budget_ms} ms on {at}"),
+        },
+        RuntimeSizeReport {
+            bytes: 0,
+            size_unknown: Some(RuntimeSizeUnknownReport { budget_ms, at }),
+            max_bytes,
+            percent: None,
+            stores: Vec::new(),
+            past_retention: RuntimePastRetentionReport {
+                runs: 0,
+                journals: 0,
+                sidecars: 0,
+                unclassified_journals: 0,
+            },
+            unclassified_journals: 0,
+            unreflected_bytes: None,
+            discard_unreflected_journals,
+            evictable_bytes: None,
+            suspended_since: None,
+            last_cleanup: None,
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::measured_cap_excess;
+
+    #[test]
+    fn incomplete_measurements_do_not_claim_a_known_excess_cause() {
+        assert!(measured_cap_excess(10, None, Some(0), false).is_none());
+        assert!(measured_cap_excess(10, Some(0), None, false).is_none());
+        assert!(measured_cap_excess(10, Some(0), Some(0), false).is_some());
+        assert!(measured_cap_excess(10, Some(0), None, true).is_some());
+    }
+}

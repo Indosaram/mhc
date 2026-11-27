@@ -22,7 +22,8 @@ use crate::support::time::now_iso;
 use super::machine::{
     CapturedConversation, CompleteOptions, EvaluationAction, JournalSnapshot, MachineState,
     ReflectionEvent, ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState,
-    ReservedRun, TriggerConfig, complete_transition, evaluate_transitions, reserve_transition,
+    ReservedRun, TriggerConfig, complete_transition, evaluate_transitions, promote_transition,
+    reserve_transition,
 };
 
 /// Resolves the transcript journal for a session id.
@@ -337,6 +338,47 @@ impl ReflectionReservationStore {
         self.locked_with_wait(None, wait_timeout_ms, None, || self.read_state_unlocked())
     }
 
+    /// Promotes a lone `pending.json` (when `active.lock` is absent) under this process as launcher
+    /// (#12517, DESIGN.r2 4.1b).
+    pub fn promote_pending(
+        &self,
+        wait_timeout_ms: Option<u64>,
+    ) -> Result<Option<ReservedRun>, ReservationError> {
+        self.locked_with_wait(None, wait_timeout_ms, None, || {
+            let current = self.read_state_unlocked()?;
+            if current.active.is_some() || current.pending.is_none() {
+                return Ok(None);
+            }
+            let Some(pending) = current.pending.as_ref() else {
+                return Ok(None);
+            };
+            let mut snapshots = BTreeMap::new();
+            for conversation_id in &pending.request.conversation_ids {
+                let journal = (self.get_journal)(conversation_id)?;
+                let state = journal
+                    .get_state()
+                    .map_err(|e| ReservationError::Journal(e.to_string()))?;
+                snapshots.insert(
+                    conversation_id.clone(),
+                    JournalSnapshot {
+                        conversation_id: conversation_id.clone(),
+                        state,
+                        snapshot: None,
+                    },
+                );
+            }
+            let transition = promote_transition(current, &snapshots, &self.config);
+            let mut next_state = transition.state;
+            let mut promoted = transition.launch;
+            if let Some(run) = &mut promoted {
+                self.stamp_launch_owner(run);
+                next_state.active = Some(run.clone());
+            }
+            self.write_state_unlocked(&next_state)?;
+            Ok(promoted)
+        })
+    }
+
     fn stamp_launch_owner(&self, run: &mut ReservedRun) {
         let launcher = (self.launcher_identity)();
         run.reserved_at = Some((self.now_iso)());
@@ -455,7 +497,7 @@ fn read_run(path: &Path) -> Result<Option<ReservedRun>, ReservationError> {
     Ok(Some(parsed))
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -495,6 +537,34 @@ fn default_launcher_identity() -> ReflectionLauncherIdentity {
         hostname: hostname(),
         process_start: get_process_start_identity(pid),
     }
+}
+
+/// Moves a torn `active.lock` aside as `active.lock.torn-<time>`, bytes unchanged (#11976 case E).
+/// Caller holds the scheduler lock and has verified no run is live. Returns the new file name, or
+/// `None` if `active.lock` is gone or changed since inspection.
+pub fn move_torn_reservation_aside(
+    reflection_dir: &Path,
+    expected: &str,
+    at_millis: i64,
+) -> std::io::Result<Option<String>> {
+    let active_path = reflection_dir.join("active.lock");
+    let current = match std::fs::read_to_string(&active_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if current != expected {
+        return Ok(None);
+    }
+    let stamp = crate::support::time::format_rfc3339_millis(at_millis).replace([':', '.'], "-");
+    let name = format!("active.lock.torn-{stamp}");
+    std::fs::rename(&active_path, reflection_dir.join(&name))?;
+    Ok(Some(name))
+}
+
+/// Checks whether a parsed JSON value matches the persisted `ReservedRun` shape.
+pub fn is_reserved_run_value(value: &serde_json::Value) -> bool {
+    serde_json::from_value::<ReservedRun>(value.clone()).is_ok_and(|run| !run.run_id.is_empty())
 }
 
 #[cfg(test)]

@@ -379,6 +379,12 @@ pub struct AgentSessionRuntime {
     project_trust_cache: Option<ProjectTrustCache>,
     /// Decides a replacement project's trust when nothing cheaper did (senpi `resolveProjectTrusted`).
     project_trust_resolver: Option<ProjectTrustResolver>,
+    /// Source of the launch preset (`client` vs `host_default`), stored side-by-side.
+    permission_preset_source: Option<crate::permission_mode::PermissionPresetSource>,
+    /// Per-session caller env (`open_session.env`, senpi#4381), stored side-by-side.
+    session_env: Option<std::collections::BTreeMap<String, String>>,
+    /// Serializes explicit trust changes and Full access syncs (senpi#6176).
+    trust_change_order: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// Test seam: the next replacement fails right after the outgoing session was disposed.
     #[cfg(test)]
     fail_replacement_after_teardown: bool,
@@ -417,6 +423,9 @@ impl AgentSessionRuntime {
             project_trust_override: None,
             project_trust_cache: None,
             project_trust_resolver: None,
+            permission_preset_source: None,
+            session_env: None,
+            trust_change_order: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             fail_replacement_after_teardown: false,
             replacement_entries: Vec::new(),
@@ -440,17 +449,71 @@ impl AgentSessionRuntime {
         self.project_trust_resolver = resolver;
     }
 
+    /// Runs `task` in the runtime's project-trust change order so explicit decisions and
+    /// Full-access syncs never race on stale saved trust (senpi#6176).
+    pub async fn run_in_project_trust_change_order<T, F, Fut>(&self, task: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let _guard = self.trust_change_order.lock().await;
+        task().await
+    }
+
+    pub fn set_permission_preset_source(
+        &mut self,
+        source: Option<crate::permission_mode::PermissionPresetSource>,
+    ) {
+        self.permission_preset_source = source;
+        let session_id = self.session.session_id();
+        let is_host_default =
+            source == Some(crate::permission_mode::PermissionPresetSource::HostDefault);
+        crate::permission_mode::mark_host_default_preset_flag(&session_id, is_host_default);
+        if !is_host_default {
+            let preset = self
+                .launch_profile
+                .as_ref()
+                .and_then(|profile| profile.permission_preset.as_deref());
+            crate::permission_mode::mark_client_permission_preset(&session_id, preset);
+        }
+    }
+
+    pub fn set_session_env(&mut self, env: Option<std::collections::BTreeMap<String, String>>) {
+        self.session.set_session_env(env.clone());
+        self.session_env = env;
+    }
+
+    /// A speculative host session becomes durable only when a caller claims its already-built runtime.
+    pub fn persist_session(&mut self) -> Result<(), String> {
+        self.session
+            .with_session_manager_mut(|manager| manager.enable_persistence_sync())?;
+        let endpoint = self.holder_endpoint.clone();
+        let hold = self.session.with_session_manager(|manager| {
+            hold_active_session(manager, false, endpoint.as_ref())
+        })?;
+        let mut guard = self.lock_hold();
+        if guard.is_none() {
+            *guard = hold;
+        }
+        Ok(())
+    }
+
     /// senpi `setPermissionPreset`: the permission extension enforces it from the next tool call, and
     /// later replacements (switch, new, fork) keep it. A Full-access-only project trust follows the
     /// preset (senpi#3414, #3420); the rebuild that change needs has finished when this returns
     /// (senpi `projectTrustChange`).
     pub async fn set_permission_preset(&mut self, preset: String) {
+        self.permission_preset_source =
+            Some(crate::permission_mode::PermissionPresetSource::Client);
         self.launch_profile
             .get_or_insert_with(|| AgentSessionLaunchProfile {
                 cwd: self.services.cwd.clone(),
                 ..Default::default()
             })
             .permission_preset = Some(preset.clone());
+        let session_id = self.session.session_id();
+        crate::permission_mode::mark_host_default_preset_flag(&session_id, false);
+        crate::permission_mode::mark_client_permission_preset(&session_id, Some(&preset));
         self.session
             .set_extension_flag_value(
                 "permission-preset",
@@ -466,18 +529,15 @@ impl AgentSessionRuntime {
     }
 
     /// senpi `syncFullAccessTrust`: keeps a Full-access-only project trust in step with the preset
-    /// (senpi#3414, #3420). Leaving Full access withdraws it, unless the user has since saved "trust";
-    /// going back restores it, unless the user saved "do not trust". Either way the session's runtime is
-    /// rebuilt so project extensions, skills, hooks and MCP servers load or unload, and nothing can
-    /// cancel that rebuild. The trust is never saved. A failed rebuild is kept as a runtime diagnostic.
+    /// (senpi#3414, #3420, #4388 linked worktrees).
     async fn sync_full_access_trust(&mut self, session: &AgentSession, preset: &str) {
+        let _order = self.trust_change_order.lock().await;
         // The session's own project: a replacement can belong to another project than the retired one.
         let cwd = session.with_session_manager(|manager| manager.cwd().to_owned());
         // Fails closed: a trust store that cannot be read counts as neither "trust" nor "no decision",
         // so it never keeps or restores a Full-access-only trust (senpi throws here).
-        let saved = match crate::trust_manager::ProjectTrustStore::new(&self.services.agent_dir)
-            .get(&cwd)
-        {
+        let store = crate::trust_manager::ProjectTrustStore::new(&self.services.agent_dir);
+        let saved = match crate::trust_manager::get_saved_project_trust(&store, &cwd).await {
             Ok(saved) => Some(saved),
             Err(error) => {
                 self.diagnostics.push(AgentSessionRuntimeDiagnostic {
@@ -703,12 +763,13 @@ impl AgentSessionRuntime {
         {
             return Ok(false);
         }
-        let manager = crate::session_manager::SessionManager::open(
+        let mut manager = crate::session_manager::SessionManager::open(
             session_path,
             None,
             options.cwd_override.as_deref(),
             None,
         )?;
+        manager.adopt_home_session_dir().await;
         self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
@@ -744,7 +805,7 @@ impl AgentSessionRuntime {
             if current.is_persisted() {
                 crate::session_manager::SessionManager::create(
                     &cwd,
-                    Some(current.session_dir()),
+                    Some(current.home_session_dir()),
                     new_options,
                 )
             } else {
@@ -818,7 +879,7 @@ impl AgentSessionRuntime {
                     let manager = if current.is_persisted() {
                         crate::session_manager::SessionManager::create(
                             &self.services.cwd,
-                            Some(current.session_dir()),
+                            Some(current.home_session_dir()),
                             options,
                         )
                     } else {
@@ -836,7 +897,7 @@ impl AgentSessionRuntime {
                         .ok_or("Persisted session is missing a session file")?;
                     let mut manager = crate::session_manager::SessionManager::open(
                         file,
-                        Some(current.session_dir()),
+                        Some(current.home_session_dir()),
                         None,
                         None,
                     )?;
@@ -888,7 +949,7 @@ impl AgentSessionRuntime {
         }
         let directory = self
             .session
-            .with_session_manager(|manager| manager.session_dir().to_owned());
+            .with_session_manager(|manager| manager.home_session_dir().to_owned());
         std::fs::create_dir_all(&directory)?;
         let filename = source.file_name().ok_or("Invalid import filename")?;
         let mut destination = std::path::Path::new(&directory).join(filename);
@@ -1243,6 +1304,16 @@ impl AgentSessionRuntime {
                 })
                 .await;
         }
+        if let Some(env) = self.session_env.clone() {
+            created.session.set_session_env(Some(env));
+        }
+        let session_id = created.session.session_id();
+        let is_host_default = self.permission_preset_source
+            == Some(crate::permission_mode::PermissionPresetSource::HostDefault);
+        crate::permission_mode::mark_host_default_preset_flag(&session_id, is_host_default);
+        if !is_host_default {
+            crate::permission_mode::mark_client_permission_preset(&session_id, preset.as_deref());
+        }
         if let Some(preset) = preset {
             created
                 .session
@@ -1273,7 +1344,28 @@ impl AgentSessionRuntime {
 
     /// `dispose({ processExit })`: `process_exit` arms the runner's total quit budget.
     pub async fn dispose_with(&self, options: DisposeOptions) {
-        let DisposeOptions { process_exit } = options;
+        self.dispose_with_end_run(options.process_exit, false).await;
+    }
+
+    /// `dispose({ processExit, endActiveRun })`: optionally aborts the active run within the quit
+    /// budget before `session_shutdown` runs (senpi#5753).
+    pub async fn dispose_with_end_run(&self, process_exit: bool, end_active_run: bool) {
+        if end_active_run {
+            let budget_ms = self.session.with_settings_manager(|manager| {
+                manager
+                    .get_session_shutdown_quit_budget_ms()
+                    .unwrap_or(2_000)
+            });
+            if budget_ms == 0 {
+                self.session.abort().await;
+            } else {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(budget_ms),
+                    self.session.abort(),
+                )
+                .await;
+            }
+        }
         self.session
             .emit_session_shutdown_for_quit(process_exit)
             .await;

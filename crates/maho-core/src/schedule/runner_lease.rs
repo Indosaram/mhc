@@ -273,7 +273,18 @@ fn hold_session_file_with_identity(
                 }
             }
             let mine = serde_json::to_string(&record_json)?;
-            write_atomic(&path, &mine)?;
+            if let Err(err) = write_atomic(&path, &mine) {
+                match err {
+                    crate::schedule::ScheduleError::Io(io_err)
+                        if io_err.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        // Concurrent move removed the emptied holder dir right before publish (senpi#5618).
+                        ensure_dir(&directory)?;
+                        write_atomic(&path, &mine)?;
+                    }
+                    other => return Err(other),
+                }
+            }
             let record = Arc::new(HolderRecord {
                 path: path.clone(),
                 mine,

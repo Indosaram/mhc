@@ -103,10 +103,16 @@ pub async fn copy_to_clipboard(text: &str) -> Result<(), String> {
             }
         }
     }
-    if (["SSH_CONNECTION", "SSH_CLIENT", "MOSH_CONNECTION"]
+    let headless = cfg!(target_os = "linux")
+        && !present("DISPLAY")
+        && !present("WAYLAND_DISPLAY")
+        && !present("TERMUX_VERSION");
+    let terminal_viewer = copied && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    if (["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"]
         .into_iter()
         .any(present)
-        || !copied)
+        || terminal_viewer
+        || (!copied && headless))
         && let Some(sequence) = osc52_sequence(text)
     {
         use std::io::Write;

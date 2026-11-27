@@ -7,6 +7,41 @@
 use std::fs::File;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// The content fingerprint's own domain (RULING-72 (1)): never a catalog domain (RULING-57 (1)).
+pub const BASE_CONTENT_DOMAIN: &str = "senpi-recovery-base/1/sha256";
+
+/// A base's content fingerprint (RULING-72): SHA-256 over the domain tag, NUL, then each counted
+/// entry line (UTF-8, as read; skipped blank and malformed lines excluded) and LF.
+#[derive(Clone, Debug)]
+pub struct BaseContentHash {
+    hash: Sha256,
+}
+
+impl Default for BaseContentHash {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BaseContentHash {
+    pub fn new() -> Self {
+        let mut hash = Sha256::new();
+        hash.update(BASE_CONTENT_DOMAIN.as_bytes());
+        hash.update(b"\0");
+        Self { hash }
+    }
+
+    pub fn line(&mut self, text: &str) {
+        self.hash.update(text.as_bytes());
+        self.hash.update(b"\n");
+    }
+
+    pub fn digest(self) -> String {
+        hex::encode(self.hash.finalize())
+    }
+}
 
 /// The file a persisted base was read from. A rewrite through rename, or any other file at that path, differs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -158,6 +158,7 @@ fn journal(steps: usize, pending_compaction: Option<bool>) -> JournalSnapshot {
             unreflected_bytes: None,
             consecutive_failures: None,
             next_eligible_at: None,
+            transcript_pruned_at: None,
         },
         snapshot: Some(ReflectionSnapshot {
             start_message_id: "msg-0".to_string(),

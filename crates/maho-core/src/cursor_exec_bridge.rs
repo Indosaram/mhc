@@ -4,14 +4,28 @@
 //! Cursor API owns conversion from `ToolResultMessage` to protobuf results;
 //! bridge handlers therefore deliberately return `ToolResultMessage`s.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use maho_agent::types::{AgentEvent, AgentTool};
+use maho_agent::execution::prepared::executor_pipeline::PreparationSource;
+use maho_agent::execution::prepared::memory_batch_store::open_memory_batch_store;
+use maho_agent::execution::prepared::pipeline_prepared::create_prepared_tool_host;
+use maho_agent::execution::tool_host::{
+    AfterToolFreeze, ExecutionScope, ToolHostCall, ToolHostLocalContext, ToolHostOptions,
+    WitnessRecorder,
+};
+use maho_agent::types::{
+    AfterToolCall, AfterToolCallContext, AgentContext, AgentEvent, AgentMessage, AgentTool,
+    AgentToolCall, BatchStoreFactory, BeforeToolCall, BeforeToolCallContext, BeforeToolCallResult,
+    ToolExecutionMode,
+};
 use maho_ai::api::cursor_agent::r#gen::agent_pb::*;
 use maho_ai::api::cursor_agent::types::{
     CursorExecHandlerResult, CursorExecHandlers, CursorMcpCall, CursorPiCall,
 };
-use maho_ai::types::{ContentBlock, ToolResultMessage};
+use maho_ai::types::{
+    AssistantMessage, ContentBlock, Message, StopReason, ToolCall, ToolResultMessage, Usage,
+};
 use maho_ai::utils::abort::AbortSignal;
 use serde_json::{Map, Value};
 
@@ -34,14 +48,23 @@ pub type Preflight = Arc<
         + Send
         + Sync,
 >;
+pub type SettleToolCall = Arc<dyn Fn(String) + Send + Sync>;
+pub type ScopeGetter = Arc<dyn Fn() -> ExecutionScope + Send + Sync>;
 
 pub struct CursorExecBridgeOptions {
     pub get_tool: ToolResolver,
     pub emit_event: EventEmitter,
     pub emit_tool_result: Option<ResultEmitter>,
+    pub settle_tool_call: Option<SettleToolCall>,
     pub preflight_tool_call: Option<Preflight>,
     pub get_abort_signal: Arc<dyn Fn() -> Option<AbortSignal> + Send + Sync>,
+    pub open_batch_store: Option<BatchStoreFactory>,
+    pub get_execution_scope: Option<ScopeGetter>,
+    pub record_witness: Option<WitnessRecorder>,
+    pub after_tool_freeze: Option<AfterToolFreeze>,
 }
+
+const NO_ACTIVE_RUN: &str = "Tool execution has no active run";
 
 fn error_result(id: String, name: String, message: impl Into<String>) -> ToolResultMessage {
     ToolResultMessage {
@@ -62,10 +85,6 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
-}
-
-fn is_record(value: &Value) -> bool {
-    value.is_object()
 }
 
 fn empty_result(id: String, name: String) -> ToolResultMessage {
@@ -111,22 +130,54 @@ fn empty_result_shape_test_helper() -> ToolResultMessage {
     empty_result("id".into(), "read".into())
 }
 
-fn text_result(
-    id: String,
-    name: String,
-    result: maho_agent::types::AgentToolResult,
-) -> ToolResultMessage {
-    ToolResultMessage {
-        tool_call_id: id,
-        tool_name: name,
-        content: result.content,
-        details: Some(result.details),
-        usage: result.usage,
-        added_tool_names: result.added_tool_names,
-        nested_calls: result.nested_calls,
-        is_error: result.is_error.unwrap_or(false),
+fn issuing_message(tool_call: &AgentToolCall) -> AssistantMessage {
+    AssistantMessage {
+        content: vec![ContentBlock::ToolCall(ToolCall {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            arguments: tool_call.arguments.clone(),
+            thought_signature: tool_call.thought_signature.clone(),
+            error_message: None,
+            incomplete: None,
+            namespace: None,
+        })],
+        prompt_cache_breakpoint: None,
+        prompt_cache_diagnostics: None,
+        api: "cursor-agent".into(),
+        provider: "cursor".into(),
+        model: "cursor-exec".into(),
+        response_model: None,
+        response_id: None,
+        thinking_level: None,
+        provider_thinking_level: None,
+        diagnostics: None,
+        usage: Usage::default(),
+        stop_reason: StopReason::ToolUse,
+        stop_details: None,
+        deferred: None,
+        error_message: None,
+        error_cause: None,
+        provider_diagnostic: None,
+        abort_source: None,
+        failure_source: None,
+        credential_served_recently: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timing: None,
         timestamp: now_ms(),
     }
+}
+
+fn is_tool_result_message_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::MessageStart {
+            message: AgentMessage::Llm(Message::ToolResult(_)),
+            ..
+        } | AgentEvent::MessageEnd {
+            message: AgentMessage::Llm(Message::ToolResult(_)),
+        }
+    )
 }
 
 async fn execute_tool(
@@ -135,11 +186,11 @@ async fn execute_tool(
     id: String,
     args: Value,
 ) -> ToolResultMessage {
-    let Some(signal) = (options.get_abort_signal)() else {
-        return error_result(id, name.to_owned(), "Tool execution has no active run");
+    let Some(run_signal) = (options.get_abort_signal)() else {
+        return error_result(id, name.to_owned(), NO_ACTIVE_RUN);
     };
-    if signal.aborted() {
-        return error_result(id, name.to_owned(), "Tool execution has no active run");
+    if run_signal.aborted() {
+        return error_result(id, name.to_owned(), NO_ACTIVE_RUN);
     }
     let Some(tool) = (options.get_tool)(name) else {
         return error_result(
@@ -156,95 +207,172 @@ async fn execute_tool(
     let Some(args_object) = args.as_object() else {
         return error_result(id, name.to_owned(), "Tool arguments must be an object");
     };
-    // Exec-frame translators produce absent optionals as nulls; a present null fails schema
-    // validation on optional fields even though omitting the key is valid.
     let clean_args = maho_ai::api::cursor_agent::pi_args::omit_undefined_args(args_object.clone());
-    let tool_call = maho_ai::types::ToolCall {
+    let tool_call = AgentToolCall {
         id: id.clone(),
         name: name.to_owned(),
-        arguments: clean_args.clone(),
+        arguments: clean_args,
         ..Default::default()
     };
-    let args = Value::Object(clean_args);
-    let prepared = match maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &tool_call)
-    {
-        Ok(params) => match &tool.prepare_arguments {
-            Some(prepare) => match prepare(params) {
-                Ok(params) => params,
-                Err(error) => return error_result(id, name.to_owned(), error),
-            },
-            None => params,
-        },
-        Err(error) => return error_result(id, name.to_owned(), error.to_string()),
+
+    let signal_check = Arc::clone(&options.get_abort_signal);
+    let owned_signal = run_signal.clone();
+    let orig_execute = Arc::clone(&tool.execute);
+    let owned_tool = AgentTool {
+        execute: Arc::new(move |call_id, params, sig, on_update| {
+            let signal_check = Arc::clone(&signal_check);
+            let owned_signal = owned_signal.clone();
+            let orig_execute = Arc::clone(&orig_execute);
+            Box::pin(async move {
+                if owned_signal.aborted()
+                    || !signal_check().is_some_and(|active| active.same_signal(&owned_signal))
+                {
+                    return maho_agent::types::AgentToolResult {
+                        content: vec![ContentBlock::text(NO_ACTIVE_RUN)],
+                        is_error: Some(true),
+                        ..maho_agent::types::AgentToolResult::text(NO_ACTIVE_RUN)
+                    };
+                }
+                orig_execute(call_id, params, sig, on_update).await
+            })
+        }),
+        ..tool
     };
-    (options.emit_event)(
-        AgentEvent::ToolExecutionStart {
-            tool_call_id: id.clone(),
-            tool_name: name.to_owned(),
-            args: args.clone(),
-            parent_tool_call_id: None,
-        },
-        signal.clone(),
-    )
-    .await;
-    let result = async {
-        if !is_record(&prepared) {
-            return error_result(
-                id.clone(),
-                name.to_owned(),
-                format!("Tool \"{name}\" prepared non-object arguments"),
-            );
-        }
-        if let Some(preflight) = &options.preflight_tool_call
-            && let Some(reason) = preflight(id.clone(), name.to_owned(), prepared.clone()).await
-        {
-            return error_result(id.clone(), name.to_owned(), reason);
-        }
-        if signal.aborted() || (options.get_abort_signal)().is_none() {
-            return error_result(
-                id.clone(),
-                name.to_owned(),
-                "Tool execution has no active run",
-            );
-        }
-        text_result(
-            id.clone(),
-            name.to_owned(),
-            (tool.execute)(id.clone(), prepared.clone(), Some(signal.clone()), None).await,
-        )
+
+    let preflight_fn = options.preflight_tool_call.clone();
+    let preflight_signal_check = Arc::clone(&options.get_abort_signal);
+    let preflight_run_signal = run_signal.clone();
+    let before_tool_call: BeforeToolCall =
+        Arc::new(move |context: BeforeToolCallContext, _signal| {
+            let preflight_fn = preflight_fn.clone();
+            let preflight_signal_check = Arc::clone(&preflight_signal_check);
+            let preflight_run_signal = preflight_run_signal.clone();
+            Box::pin(async move {
+                let blocked_reason = if let Some(preflight) = preflight_fn {
+                    preflight(
+                        context.tool_call.id.clone(),
+                        context.tool_call.name.clone(),
+                        context.args.clone(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+                if preflight_run_signal.aborted()
+                    || !preflight_signal_check()
+                        .is_some_and(|active| active.same_signal(&preflight_run_signal))
+                {
+                    return Some(BeforeToolCallResult {
+                        block: Some(true),
+                        reason: Some(NO_ACTIVE_RUN.to_owned()),
+                        terminate: None,
+                        args: None,
+                    });
+                }
+                blocked_reason.map(|reason| BeforeToolCallResult {
+                    block: Some(true),
+                    reason: Some(reason),
+                    terminate: None,
+                    args: None,
+                })
+            })
+        });
+
+    let emit_result_fn = options.emit_tool_result.clone();
+    let after_tool_call: Option<AfterToolCall> = emit_result_fn.map(|emit| {
+        let cb: AfterToolCall = Arc::new(move |context: AfterToolCallContext, _signal| {
+            let emit = Arc::clone(&emit);
+            let fut: maho_ai::types::BoxFuture<
+                'static,
+                Option<maho_agent::types::AfterToolCallResult>,
+            > = Box::pin(async move {
+                emit(
+                    context.tool_call.id,
+                    context.tool_call.name,
+                    context.args,
+                    context.result,
+                    context.is_error,
+                )
+                .await;
+                None
+            });
+            fut
+        });
+        cb
+    });
+
+    let source = PreparationSource {
+        resolve_unknown_tool_call: None,
+        before_tool_call: Some(before_tool_call),
+        after_tool_call,
+        removed_tool_hints: Some(HashMap::new()),
+        after_tool_freeze: options
+            .after_tool_freeze
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::execution::preflight_carry::carry_preflight_facts)),
+    };
+    let open_store = options
+        .open_batch_store
+        .clone()
+        .unwrap_or_else(open_memory_batch_store);
+    let host = create_prepared_tool_host(source, open_store);
+    let mut scope = options
+        .get_execution_scope
+        .as_ref()
+        .map_or_else(ExecutionScope::default, |getter| getter());
+    if scope.id.is_empty() {
+        scope.id = "cursor-exec".to_owned();
     }
-    .await;
-    (options.emit_event)(
-        AgentEvent::ToolExecutionEnd {
-            tool_call_id: id.clone(),
-            tool_name: name.to_owned(),
-            result: serde_json::to_value(&result).unwrap_or(Value::Null),
-            is_error: result.is_error,
-            parent_tool_call_id: None,
-        },
-        signal.clone(),
-    )
-    .await;
-    if let Some(emit) = &options.emit_tool_result {
-        emit(
-            id,
-            name.to_owned(),
-            prepared,
-            maho_agent::types::AgentToolResult {
-                content: result.content.clone(),
-                details: result.details.clone().unwrap_or(Value::Null),
-                structured_content: None,
-                usage: result.usage,
-                is_error: Some(result.is_error),
-                added_tool_names: result.added_tool_names.clone(),
-                nested_calls: result.nested_calls.clone(),
-                terminate: None,
+    let emit_event = Arc::clone(&options.emit_event);
+    let emit_signal = run_signal.clone();
+    let assistant_message = issuing_message(&tool_call);
+    let call_id = tool_call.id.clone();
+
+    let host_result = host
+        .execute(
+            ToolHostCall {
+                scope,
+                calls: vec![tool_call],
+                mode: ToolExecutionMode::Sequential,
             },
-            result.is_error,
+            ToolHostOptions {
+                signal: Some(run_signal),
+                emit: Arc::new(move |event| {
+                    let emit_event = Arc::clone(&emit_event);
+                    let emit_signal = emit_signal.clone();
+                    Box::pin(async move {
+                        if !is_tool_result_message_event(&event) {
+                            emit_event(event, emit_signal).await;
+                        }
+                    })
+                }),
+                record_witness: options.record_witness.clone(),
+                local: Some(ToolHostLocalContext {
+                    context: AgentContext {
+                        system_prompt: String::new(),
+                        system_prompt_stable_prefix: None,
+                        messages: vec![],
+                        tools: Some(vec![owned_tool]),
+                        declared_tools: None,
+                    },
+                    assistant_message,
+                }),
+            },
         )
         .await;
+
+    if let Some(settle) = &options.settle_tool_call {
+        settle(call_id);
     }
-    result
+
+    match host_result {
+        Ok(res) => res
+            .messages
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| error_result(id, name.to_owned(), NO_ACTIVE_RUN)),
+        Err(err) => error_result(id, name.to_owned(), err),
+    }
 }
 
 /// `args.fileText ?? decode(args.fileBytes)`: mirrors the `write` display block the API
@@ -598,7 +726,7 @@ mod tests {
         let result = empty_result("call".into(), "read".into());
         assert_eq!(result.tool_call_id, "call");
         assert_eq!(result.tool_name, "read");
-        assert!(!result.is_error);
+        assert!(!result.is_error, "unexpected error: {:?}", result.content);
         assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text.is_empty()));
     }
 
@@ -608,7 +736,7 @@ mod tests {
             maho_ai::api::cursor_agent::pi_args::pi_read_args("file", None, Some(0.0)).is_none()
         );
         let result = empty_result("read-zero".into(), "read".into());
-        assert!(!result.is_error);
+        assert!(!result.is_error, "unexpected error: {:?}", result.content);
         assert_eq!(result.tool_call_id, "read-zero");
         assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text.is_empty()));
     }
@@ -665,8 +793,13 @@ mod tests {
                         .push((id, name, args, result, error));
                 })
             })),
+            settle_tool_call: None,
             preflight_tool_call: None,
             get_abort_signal: Arc::new(move || Some(controller.signal())),
+            open_batch_store: None,
+            get_execution_scope: None,
+            record_witness: None,
+            after_tool_freeze: None,
         });
         let result = handlers.read.expect("read handler")(ReadArgs {
             tool_call_id: "call-identity".into(),
@@ -679,7 +812,7 @@ mod tests {
         let CursorExecHandlerResult::ToolResult(result) = result else {
             panic!("expected tool result")
         };
-        assert!(!result.is_error);
+        assert!(!result.is_error, "unexpected error: {:?}", result.content);
         let results = observed.lock().expect("results");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "call-identity");
@@ -732,13 +865,20 @@ mod tests {
             get_tool: Arc::new(move |name| (name == "grep").then(|| tool.clone())),
             emit_event: Arc::new(|_, _| Box::pin(async {})),
             emit_tool_result: None,
+            settle_tool_call: None,
             preflight_tool_call: None,
             get_abort_signal: Arc::new(move || Some(controller.signal())),
+            open_batch_store: None,
+            get_execution_scope: None,
+            record_witness: None,
+            after_tool_freeze: None,
         };
         let result = execute_tool(&options, "grep", "bad-call".into(), json!({"path":"src"})).await;
         assert!(result.is_error);
         assert!(
-            matches!(&result.content[0], ContentBlock::Text(text) if text.text.starts_with("Validation failed for tool \"grep\""))
+            matches!(&result.content[0], ContentBlock::Text(text) if text.text.starts_with("Validation failed for tool \"grep\"")),
+            "unexpected content: {:?}",
+            result.content
         );
         assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
     }
@@ -780,8 +920,13 @@ mod tests {
                     results.lock().expect("results").push(args);
                 })
             })),
+            settle_tool_call: None,
             preflight_tool_call: None,
             get_abort_signal: Arc::new(move || Some(controller.signal())),
+            open_batch_store: None,
+            get_execution_scope: None,
+            record_witness: None,
+            after_tool_freeze: None,
         });
         let args = GrepArgs {
             pattern: "needle".into(),
@@ -796,7 +941,7 @@ mod tests {
         else {
             panic!("expected tool result")
         };
-        assert!(!result.is_error);
+        assert!(!result.is_error, "unexpected error: {:?}", result.content);
         assert_eq!(
             *observed.lock().expect("results"),
             vec![json!({"pattern":"needle","prepared":true})]
@@ -810,8 +955,13 @@ mod tests {
             get_tool: Arc::new(|_| None),
             emit_event: Arc::new(|_, _| Box::pin(async {})),
             emit_tool_result: None,
+            settle_tool_call: None,
             preflight_tool_call: None,
             get_abort_signal: Arc::new(move || Some(controller.signal())),
+            open_batch_store: None,
+            get_execution_scope: None,
+            record_witness: None,
+            after_tool_freeze: None,
         };
         let handlers = create_cursor_exec_bridge(options);
         assert!(

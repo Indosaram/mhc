@@ -3,7 +3,7 @@
 //! `SessionHolder` is `crate::session_holder_records::SessionHolder`; `SessionHolderEndpoint` lives in
 //! maho-rpc (`session_hold_errors.rs`), which owns the host identity.
 
-pub use crate::session_holder_records::SessionHolder;
+pub use crate::session_holder_records::{CheckedSessionHolder, SessionHolder};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]

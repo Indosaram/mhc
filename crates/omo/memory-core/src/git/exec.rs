@@ -118,6 +118,8 @@ pub enum GitPlatform {
     Other,
 }
 
+const NO_FSMONITOR: &[&str] = &["-c", "core.fsmonitor=false"];
+
 impl GitPlatform {
     /// Platform of the running process.
     pub fn current() -> Self {
@@ -145,9 +147,34 @@ struct RuntimeGitExec {
     run_command: Arc<GitRunCommand>,
 }
 
+fn with_no_fsmonitor(caller_argv: &[String]) -> Vec<String> {
+    let mut argv = Vec::with_capacity(NO_FSMONITOR.len() + caller_argv.len());
+    argv.extend(NO_FSMONITOR.iter().map(|s| (*s).to_owned()));
+    argv.extend(caller_argv.iter().cloned());
+    argv
+}
+
 impl GitExec for RuntimeGitExec {
     fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
-        let err = match (self.run_command)("git", argv, options) {
+        let argv = with_no_fsmonitor(argv);
+        let filtered_env = if options.env.is_empty() {
+            BTreeMap::new()
+        } else {
+            super::exec_environment::memory_git_environment(&options.env, self.platform)
+        };
+        let filtered_options;
+        let run_options = if options.env.is_empty() {
+            options
+        } else {
+            filtered_options = GitExecOptions {
+                cwd: options.cwd.clone(),
+                timeout_ms: options.timeout_ms,
+                env: filtered_env,
+                stdin: options.stdin.clone(),
+            };
+            &filtered_options
+        };
+        let err = match (self.run_command)("git", &argv, run_options) {
             Ok(result) => return Ok(result),
             Err(err) => err,
         };
@@ -155,8 +182,8 @@ impl GitExec for RuntimeGitExec {
         if self.platform != GitPlatform::Windows || err.kind() != std::io::ErrorKind::NotFound {
             return Err(err);
         }
-        for candidate in windows_git_candidates(options) {
-            match (self.run_command)(&candidate, argv, options) {
+        for candidate in windows_git_candidates(run_options) {
+            match (self.run_command)(&candidate, &argv, run_options) {
                 Ok(result) => return Ok(result),
                 Err(fallback) if fallback.kind() == std::io::ErrorKind::NotFound => {}
                 Err(fallback) => return Err(fallback),
@@ -173,15 +200,28 @@ impl GitExec for RuntimeGitExec {
         argv: &[String],
         options: &GitExecOptions,
     ) -> std::io::Result<GitExecBytesResult> {
-        let err = match run_git_command_bytes("git", argv, options) {
+        let argv = with_no_fsmonitor(argv);
+        let filtered_options;
+        let run_options = if options.env.is_empty() {
+            options
+        } else {
+            filtered_options = GitExecOptions {
+                cwd: options.cwd.clone(),
+                timeout_ms: options.timeout_ms,
+                env: super::exec_environment::memory_git_environment(&options.env, self.platform),
+                stdin: options.stdin.clone(),
+            };
+            &filtered_options
+        };
+        let err = match run_git_command_bytes("git", &argv, run_options) {
             Ok(result) => return Ok(result),
             Err(err) => err,
         };
         if self.platform != GitPlatform::Windows || err.kind() != std::io::ErrorKind::NotFound {
             return Err(err);
         }
-        for candidate in windows_git_candidates(options) {
-            match run_git_command_bytes(&candidate, argv, options) {
+        for candidate in windows_git_candidates(run_options) {
+            match run_git_command_bytes(&candidate, &argv, run_options) {
                 Ok(result) => return Ok(result),
                 Err(fallback) if fallback.kind() == std::io::ErrorKind::NotFound => {}
                 Err(fallback) => return Err(fallback),
@@ -261,9 +301,11 @@ fn run_git_command_raw(
 
 fn environment_value(options: &GitExecOptions, name: &str) -> Option<String> {
     let value = if options.env.is_empty() {
-        std::env::vars()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v)
+        std::env::vars_os().find_map(|(key, value)| {
+            key.to_str()
+                .filter(|key| key.eq_ignore_ascii_case(name))
+                .and_then(|_| value.into_string().ok())
+        })
     } else {
         options
             .env
@@ -362,11 +404,63 @@ fn spawn_and_capture(
     cmd.args(argv);
     cmd.current_dir(&options.cwd);
 
-    if !options.env.is_empty() {
-        for (key, val) in &options.env {
-            cmd.env(key, val);
+    let (effective_env, native_env) = {
+        let platform = GitPlatform::current();
+        let mut raw = BTreeMap::new();
+        let mut native = Vec::new();
+        for (key, value) in std::env::vars_os() {
+            match (key.to_str(), value.to_str()) {
+                (Some(key), Some(value)) => {
+                    raw.insert(key.to_owned(), value.to_owned());
+                }
+                _ => native.push((key, value)),
+            }
         }
+        for (key, val) in &options.env {
+            raw.insert(key.clone(), val.clone());
+            native.retain(|(name, _)| {
+                name.to_str().is_none_or(|name| {
+                    if platform == GitPlatform::Windows {
+                        !name.eq_ignore_ascii_case(key)
+                    } else {
+                        name != key
+                    }
+                })
+            });
+        }
+        let mut allowed_native = Vec::new();
+        for (key, value) in native {
+            if let Some(name) = key.to_str() {
+                let git_name = if platform == GitPlatform::Windows {
+                    name.to_ascii_uppercase()
+                } else {
+                    name.to_owned()
+                };
+                if git_name.starts_with("GIT_CONFIG_") {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("non-UTF-8 Git configuration environment value: {name}"),
+                    ));
+                }
+                let probe = BTreeMap::from([(name.to_owned(), String::new())]);
+                if !super::exec_environment::memory_git_environment(&probe, platform)
+                    .contains_key(name)
+                {
+                    continue;
+                }
+            }
+            allowed_native.push((key, value));
+        }
+        (
+            super::exec_environment::memory_git_environment(&raw, platform),
+            allowed_native,
+        )
+    };
+    cmd.env_clear();
+    for (key, val) in &effective_env {
+        cmd.env(key, val);
     }
+    cmd.envs(native_env);
     #[cfg(windows)]
     if let Some(ref path_var) = explicit_path {
         cmd.env("PATH", path_var);
@@ -480,6 +574,14 @@ fn spawn_and_capture(
                 Some(status) => break status,
                 None => {
                     if Instant::now() >= deadline {
+                        super::timeout_diagnostics::record_git_timeout(
+                            &effective_env,
+                            Some(child.id()),
+                            argv,
+                            &options.cwd,
+                            timeout_ms,
+                            None,
+                        );
                         #[cfg(unix)]
                         {
                             // SAFETY: child.id() is the live child owned by this function.

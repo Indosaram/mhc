@@ -280,15 +280,13 @@ pub async fn create_agent_session(
     let context = manager.current_context();
     let mut model_fallback_message: Option<String> = None;
     let mut model = options.model.take();
-    // senpi sdk.ts:284-299: a resumed session's model is restored only when its provider has
-    // configured auth; otherwise startup warns and falls back.
+    // senpi sdk.ts:350 (#4410): a resumed session keeps its saved model even if signed out;
+    // the first prompt asks for login.
     if model.is_none()
         && !context.messages.is_empty()
         && let Some((provider, id)) = context.model.as_ref()
     {
-        model = registry
-            .find(provider, id)
-            .filter(|restored| registry.has_configured_auth(restored));
+        model = registry.find(provider, id);
         if model.is_none() {
             model_fallback_message = Some(format!("Could not restore model {provider}/{id}"));
         }
@@ -627,7 +625,14 @@ pub async fn create_agent_session(
         thinking_budgets: settings.get_thinking_budgets(),
         timeout_ms: settings.get_agent_stream_idle_timeout_ms()?,
         stream_start_timeout_ms: settings.get_agent_stream_start_timeout_ms()?,
+        stream_keep_alive_timeout_ms: settings.get_agent_stream_keep_alive_timeout_ms(),
         max_retry_delay_ms: Some(provider_retry_settings.max_retry_delay_ms),
+        on_execution_pipeline: crate::execution::pipeline_witness_sink::resolve_witness_sink(
+            None, None,
+        ),
+        after_tool_freeze: Some(Arc::new(
+            crate::execution::preflight_carry::carry_preflight_facts,
+        )),
         ..Default::default()
     });
     let session_start_event = match options.initial_model_provenance.take() {
@@ -793,6 +798,31 @@ pub async fn create_agent_session(
             )
         }
     }));
+    {
+        let session_id = session.session_id();
+        let parent_session_id = session.with_session_manager(|sm| {
+            sm.header().and_then(|h| {
+                h.get("parentSession")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+        });
+        let flag_session = session.weak_accessor();
+        let entries_session = session.weak_accessor();
+        crate::permission_mode::bind_session_permission_decision(
+            session_id,
+            parent_session_id,
+            Arc::new(move || {
+                flag_session()
+                    .is_some_and(|session| session.flag_value("permission-preset").is_some())
+            }),
+            Arc::new(move || {
+                entries_session().map_or_else(Vec::new, |session| {
+                    session.with_session_manager(|sm| sm.entries())
+                })
+            }),
+        );
+    }
     Ok(CreateAgentSessionResult {
         session,
         model_fallback_message,

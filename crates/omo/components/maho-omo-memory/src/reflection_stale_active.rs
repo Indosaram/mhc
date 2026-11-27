@@ -39,9 +39,10 @@ pub fn classify_active_reflection_holder(
 }
 
 pub fn stale_reflection_lock_notice(reflection_dir: &Path, run_id: &str, reason: &str) -> String {
-    format!(
-        "memory reflection is stuck on a stale lock: run {run_id} still holds it and {reason}, so new reflection requests only queue. Next step: run /doctor; if no reflection run is active, move {} aside (keep a backup) and start a new session.",
-        reflection_dir.join("active.lock").display()
+    crate::reflection_stale_active_sync::stale_reflection_lock_notice(
+        reflection_dir,
+        run_id,
+        reason,
     )
 }
 

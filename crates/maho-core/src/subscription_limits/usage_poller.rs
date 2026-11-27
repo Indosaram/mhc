@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use super::limit_windows::LimitWindow;
 use super::usage_cache::{
-    CachedReading, UsageCacheFile, claimed_by, is_due, read_usage_cache, usage_key, with_claims,
-    with_results, write_usage_cache,
+    CachedReading, UsageCacheFile, claimed_by, is_due_with_min_age, read_usage_cache, usage_key,
+    with_claims, with_results, write_usage_cache,
 };
 use super::usage_endpoints::{UsageError, UsageFetch, UsageProvider, fetch_usage_json, read_usage};
 
@@ -31,6 +31,8 @@ pub const fn poll_interval_ms(provider: UsageProvider) -> i64 {
     }
 }
 const TICK: Duration = Duration::from_secs(30);
+/// A person's turn on a held provider re-reads its accounts' usage at most this often (senpi#6536).
+const REFRESH_MIN_AGE_MS: i64 = 60_000;
 const MAX_BACKOFF_MS: i64 = 60 * 60_000;
 /// Intervals to wait before asking again about a login only `/login` can fix.
 const SIGNED_OUT_INTERVALS: i64 = 5;
@@ -107,6 +109,15 @@ impl UsagePoller {
 
     /// One pass: adopt what siblings already read, fetch what is due and claimed by this process, publish.
     pub async fn poll_once(&self, signal: AbortSignal) {
+        self.poll_once_with_refresh(signal, None).await;
+    }
+
+    /// Like `poll_once`, plus `refresh` makes that provider's accounts due when at least `REFRESH_MIN_AGE_MS` old.
+    pub async fn poll_once_with_refresh(
+        &self,
+        signal: AbortSignal,
+        refresh: Option<UsageProvider>,
+    ) {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -121,9 +132,13 @@ impl UsagePoller {
         self.adopt(&before, &accounts);
         let now = (self.deps.now)();
         let due: Vec<String> = accounts
-            .keys()
-            .filter(|key| is_due(&before, key, now))
-            .cloned()
+            .iter()
+            .filter(|(key, account)| {
+                is_due_with_min_age(&before, key, now, None)
+                    || (refresh == Some(account.provider)
+                        && is_due_with_min_age(&before, key, now, Some(REFRESH_MIN_AGE_MS)))
+            })
+            .map(|(key, _)| key.clone())
             .collect();
         if due.is_empty() {
             return;
@@ -154,7 +169,7 @@ impl UsagePoller {
             let Some(reading) = cache.accounts.get(key) else {
                 continue;
             };
-            if adopted.get(key) == Some(&reading.updated_at) {
+            if reading.pending || adopted.get(key) == Some(&reading.updated_at) {
                 continue;
             }
             adopted.insert(key.clone(), reading.updated_at);
@@ -189,6 +204,7 @@ impl UsagePoller {
                 error: None,
                 updated_at: now,
                 next_at: now,
+                pending: true,
             });
             return CachedReading {
                 next_at: now + interval,
@@ -204,6 +220,7 @@ impl UsagePoller {
                     error: Some(error),
                     updated_at: now,
                     next_at: now + SIGNED_OUT_INTERVALS * interval,
+                    pending: false,
                 };
             }
         };
@@ -214,6 +231,7 @@ impl UsagePoller {
                 error: None,
                 updated_at: now,
                 next_at: now + interval,
+                pending: false,
             },
             Err(error) => {
                 let failure = describe_failure(&error, interval);
@@ -223,6 +241,7 @@ impl UsagePoller {
                     error: Some(failure.error),
                     updated_at: now,
                     next_at: now + failure.wait_ms.min(MAX_BACKOFF_MS),
+                    pending: false,
                 }
             }
         }
@@ -282,6 +301,9 @@ pub struct UsagePollingOptions {
 #[derive(Clone)]
 pub struct UsagePollingHandle {
     stop: tokio::sync::watch::Sender<bool>,
+    poller: Arc<UsagePoller>,
+    signal: AbortSignal,
+    report: Arc<dyn Fn(String) + Send + Sync>,
 }
 
 impl UsagePollingHandle {
@@ -293,9 +315,42 @@ impl UsagePollingHandle {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
     }
+
+    pub async fn refresh(&self, provider: UsageProvider) {
+        let poller = Arc::clone(&self.poller);
+        let signal = self.signal.clone();
+        let report = Arc::clone(&self.report);
+        if let Err(error) = tokio::spawn(async move {
+            poller.poll_once_with_refresh(signal, Some(provider)).await;
+        })
+        .await
+        {
+            report(format!(
+                "maho subscription limits: usage refresh failed: {error}"
+            ));
+        }
+    }
 }
 
 static RUNNING: OnceLock<Mutex<Option<UsagePollingHandle>>> = OnceLock::new();
+
+/// Re-reads `provider`'s account usage now instead of at the next interval, so a limit the provider
+/// lifted early shows on the next turn a person starts (senpi#6536). A no-op where nothing polls.
+pub async fn refresh_subscription_usage(provider: &str) {
+    let parsed = match provider {
+        "anthropic-subscription" => UsageProvider::AnthropicSubscription,
+        "chatgpt-subscription" => UsageProvider::ChatgptSubscription,
+        _ => return,
+    };
+    let handle = RUNNING.get().and_then(|slot| {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    });
+    if let Some(handle) = handle {
+        handle.refresh(parsed).await;
+    }
+}
 
 /// Starts the process's poller once (interactive and RPC modes; never print mode or `--offline`).
 /// Must run inside a tokio runtime; `report` receives a pass that failed as a whole.
@@ -317,15 +372,18 @@ pub fn start_subscription_usage_polling(options: UsagePollingOptions) -> UsagePo
     let (stop, signal) = tokio::sync::watch::channel(false);
     let report = options.report;
     let mut stopped = signal.clone();
+    let task_poller = Arc::clone(&poller);
+    let task_signal = signal.clone();
+    let task_report = Arc::clone(&report);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(TICK);
         loop {
             tokio::select! {
                 _ = stopped.changed() => break,
                 _ = ticker.tick() => {
-                    let poller = Arc::clone(&poller);
-                    let signal = signal.clone();
-                    let report = Arc::clone(&report);
+                    let poller = Arc::clone(&task_poller);
+                    let signal = task_signal.clone();
+                    let report = Arc::clone(&task_report);
                     // A panicking pass is contained in its own task and surfaced like a failed one.
                     tokio::spawn(async move {
                         if let Err(error) = tokio::spawn(async move { poller.poll_once(signal).await }).await {
@@ -336,7 +394,12 @@ pub fn start_subscription_usage_polling(options: UsagePollingOptions) -> UsagePo
             }
         }
     });
-    let handle = UsagePollingHandle { stop };
+    let handle = UsagePollingHandle {
+        stop,
+        poller,
+        signal,
+        report,
+    };
     *running = Some(handle.clone());
     handle
 }

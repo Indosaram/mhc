@@ -6,7 +6,7 @@ pub enum FlagValue {
     Boolean(bool),
     String(String),
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Text,
     Json,
@@ -38,6 +38,7 @@ pub struct Args {
     pub name: Option<String>,
     pub no_session: bool,
     pub session: Option<String>,
+    pub attach: Option<String>,
     pub session_id: Option<String>,
     /// Fresh-session ancestry (`--spawned-by <json>`).
     pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
@@ -70,6 +71,10 @@ pub struct Args {
     pub project_trust_override: Option<bool>,
     pub grok_neo: bool,
     pub multi_session: bool,
+    /// Start the engine as a hand: loopless tool execution for a remote loop on `<agentDir>/rpc/hand.sock`.
+    pub hand: bool,
+    /// Start the headless engine: the machine-owned multi-session host on `<agentDir>/rpc/headless.sock`.
+    pub headless: bool,
     /// `--mcp-presenter-fd 4`: the presenter bootstrap descriptor handed to the shared host.
     pub presenter_bootstrap_fd: Option<u32>,
     pub mcp_presenter_enforcement: bool,
@@ -90,6 +95,9 @@ pub fn normalize_session_name(value: &str) -> Option<&str> {
 }
 pub fn resolve_session_runtime(args: &Args) -> SessionRuntime {
     args.session_runtime.unwrap_or_else(|| {
+        if args.headless && args.listen.is_none() {
+            return SessionRuntime::InProcess;
+        }
         if args.listen.as_deref().is_some_and(|s| s != "stdio://") {
             SessionRuntime::InProcess
         } else {
@@ -165,6 +173,8 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
             "--offline" => result.offline = true,
             "--grok-neo" if grok_neo_enabled => result.grok_neo = true,
             "--multi-session" => result.multi_session = true,
+            "--hand" => result.hand = true,
+            "--headless" => result.headless = true,
             "--mcp-presenter-fd" => {
                 if next == Some("4") {
                     result.presenter_bootstrap_fd = Some(4);
@@ -251,7 +261,7 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
                     None => result.diagnostic(true, "--tool-runtime must be in-process or child"),
                 }
             }
-            "--listen" if result.mode == Some(Mode::Rpc) => {
+            "--listen" if result.mode == Some(Mode::Rpc) || result.hand || result.headless => {
                 if let Some(value) = next.filter(|v| !v.starts_with("--")) {
                     result.listen = Some(value.to_owned());
                     result.multi_session = true;
@@ -404,6 +414,8 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
         }
         i += 1;
     }
+    super::attach_args::apply_attach_args(&mut result);
+    super::engine_mode_args::apply_engine_mode_args(&mut result);
     Ok(result)
 }
 pub fn help_text(grok_neo_enabled: bool, extension_flags: &str) -> String {

@@ -3,18 +3,28 @@
 //! Every step reads and writes through asynchronous I/O so a move never blocks the runtime on a
 //! whole-file read, a directory walk or a copy (senpi v2026.10.27-2, no-sync move path).
 pub mod bundle;
+pub mod copy;
 pub mod export;
 pub mod extension_state;
 pub mod finish;
+pub mod identity;
 pub mod import;
+pub mod inline_bundle;
+pub mod landed_file;
 pub mod move_landing;
 pub mod move_ledger;
 pub mod move_ledger_lock;
+pub mod move_record;
+pub mod move_record_file;
 pub mod move_steps;
+pub mod name_folding;
 pub mod ownership;
+pub mod prepare;
+pub mod repository_check;
 pub mod requeue;
 pub mod revoke;
 pub mod session_lock;
+pub mod staged_layout;
 pub mod write_guard;
 
 use serde_json::{Value, json};

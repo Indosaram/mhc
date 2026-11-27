@@ -36,8 +36,10 @@ globset = "=0.4.20"
 fancy-regex = "=0.16.2"
 semver = "=1.0.27"
 base64 = "=0.22.1"
+gethostname = { workspace = true }
 jiff = { workspace = true }
 photon-rs = { version = "=0.3.3", default-features = false }
+unicode-normalization = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.28.0", features = ["signal", "process", "user", "feature", "fs"] }

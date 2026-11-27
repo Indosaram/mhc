@@ -22,6 +22,8 @@ pub struct ParsedHostArgs {
     pub wait_ms: Option<u64>,
     /// `handoff --when idle ...`: the conditional handover's terms.
     pub handover: Option<super::host_handover_args::IdleHandoverTerms>,
+    /// `handoff --allow-downgrade`: hand the running host over even to an older engine (senpi#7018).
+    pub allow_downgrade: bool,
     /// `status --all`: every endpoint under the agent dir.
     pub all: bool,
     /// `--json`: `shard-path` prints the whole JSON line instead of the bare socket path.
@@ -78,6 +80,7 @@ pub fn parse_host_args(args: &[String]) -> Result<ParsedHostArgs, String> {
         instance_id: None,
         wait_ms: None,
         handover: None,
+        allow_downgrade: false,
         all: false,
         json: false,
         kind: None,
@@ -119,6 +122,7 @@ pub fn parse_host_args(args: &[String]) -> Result<ParsedHostArgs, String> {
                 index += 1;
             }
             "--json" => result.json = true,
+            "--allow-downgrade" if is_handoff => result.allow_downgrade = true,
             "--all" if is_status => result.all = true,
             "--include-workers" => result.include_workers = true,
             "--drain" => result.drain = true,
@@ -219,7 +223,8 @@ const USAGE: &str = "usage: {app} host <ensure|status|stop|handoff|shard-path|gc
   ensure   [--launch-spec <file>] [--policy upgrade|fallback|never] [--socket <path>]
   status   [--include-workers] [--all] [--socket <path>]
   stop     [--drain [--instance <id>] [--wait-ms <n>]] [--force] [--expected-generation <json>] [--socket <path>]
-  handoff  [--launch-spec <file>] [--socket <path>]
+  handoff  [--launch-spec <file>] [--socket <path>] [--allow-downgrade]
+           (a host on a newer engine is refused older_engine unless --allow-downgrade)
   shard-path  --kind <p|i> --owner <id> [--root <dir>] [--json]   (no host contact)
   gc       [--agent-dir <dir>]
   session  <open|close|model|prompt|steer|abort|read|state|list|wait> [...]   (see \"{app} host session\")

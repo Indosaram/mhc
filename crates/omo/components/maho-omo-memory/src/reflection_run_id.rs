@@ -4,57 +4,35 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use memory_core::reflection::run_id_high_water::{
+    REFLECTION_RUN_ID_PREFIX, RunIdHighWaterPaths, read_reflection_run_id_mark,
+    record_reflection_run_id_mark, scan_reflection_run_high_water,
+};
+
 pub fn create_reflection_run_id_factory(
     reflection: PathBuf,
     sessions: PathBuf,
     worktrees: PathBuf,
 ) -> Arc<dyn Fn() -> String + Send + Sync> {
     let high_water = Arc::new(AtomicU64::new(0));
+    let scan_paths = RunIdHighWaterPaths {
+        reflection: reflection.clone(),
+        reflection_sessions: sessions,
+        worktrees,
+    };
     Arc::new(move || {
-        let named = [
-            reflection.join("completions"),
-            reflection.join("runs"),
-            sessions.clone(),
-            worktrees.clone(),
-        ]
-        .into_iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flatten()
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| run_number(&entry.file_name().to_string_lossy()))
-        .max()
-        .unwrap_or(0);
-        let reserved = ["active.lock", "pending.json"]
-            .into_iter()
-            .filter_map(|name| std::fs::read(reflection.join(name)).ok())
-            .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .filter_map(|value| {
-                value
-                    .get("runId")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(run_number)
-            })
-            .max()
-            .unwrap_or(0);
-        let next = named
-            .max(reserved)
+        let scanned = scan_reflection_run_high_water(&scan_paths);
+        let mark = read_reflection_run_id_mark(&reflection).unwrap_or(0);
+        let next = scanned
+            .max(mark)
             .max(high_water.load(Ordering::Relaxed))
             .saturating_add(1);
         let _ = high_water.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.max(next))
         });
-        format!("reflection-run-{next}")
+        let _ = record_reflection_run_id_mark(&reflection, next);
+        format!("{REFLECTION_RUN_ID_PREFIX}{next}")
     })
-}
-
-fn run_number(name: &str) -> Option<u64> {
-    let name = name.rsplit('/').next().unwrap_or(name);
-    let name = name.strip_suffix(".json").unwrap_or(name);
-    let digits = name.rsplit_once("reflection-run-").map(|(_, tail)| tail)?;
-    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -77,8 +55,19 @@ mod tests {
         )
         .unwrap();
         std::fs::write(worktrees.join("1755000000000-reflection-run-9"), "").unwrap();
-        let mint = create_reflection_run_id_factory(reflection, sessions, worktrees);
+        let mint = create_reflection_run_id_factory(
+            reflection.clone(),
+            sessions.clone(),
+            worktrees.clone(),
+        );
         assert_eq!(mint(), "reflection-run-10");
         assert_eq!(mint(), "reflection-run-11");
+
+        // Even after retention removes every visible run trace, a fresh factory never reuses ids.
+        std::fs::remove_file(reflection.join("completions/reflection-run-4.json")).unwrap();
+        std::fs::remove_file(reflection.join("active.lock")).unwrap();
+        std::fs::remove_file(worktrees.join("1755000000000-reflection-run-9")).unwrap();
+        let fresh = create_reflection_run_id_factory(reflection, sessions, worktrees);
+        assert_eq!(fresh(), "reflection-run-12");
     }
 }

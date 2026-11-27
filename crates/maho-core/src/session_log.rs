@@ -24,7 +24,7 @@ fn blocked_key() -> &'static Regex {
 fn allowed_data_key() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^(?:action|attemptId|disposition|stage|error|mode|count|willRetry|deferAdmission|delivered|restored|cause|accepted|skipped|rejectionCause|reason|durationMs|kind|retryable|phase|op|bytes|generation|requestId|tokens|tokensBefore|tokensAfter|contextWindow|attempt|aborted|sessionId|role|provider|model|source|actor|from|to|duringTurn|persistDefault|extension|handlerEvent|queuedId|ageMs)$")
+        Regex::new(r"^(?:action|attemptId|disposition|stage|error|mode|count|willRetry|deferAdmission|delivered|restored|cause|accepted|skipped|rejectionCause|reason|durationMs|kind|retryable|phase|op|bytes|generation|requestId|tokens|tokensBefore|tokensAfter|contextWindow|attempt|aborted|sessionId|role|provider|model|source|actor|from|to|duringTurn|persistDefault|extension|handlerEvent|queuedId|ageMs|seat|until|shared|toolCallId|parentToolCallId|toolName|thresholdMs|elapsedMs|queueDepth|queueHead)$")
             .expect("allowed data key regex")
     })
 }

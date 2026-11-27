@@ -17,8 +17,8 @@ use super::claim_frontmatter::{
     stamp_receipt, stripped_legacy_user_header,
 };
 use super::memfs::{
-    MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
-    validate_memory_path,
+    MemoryFrontmatter, ValidateMemoryPathOptions, is_missing_description_error,
+    is_missing_frontmatter_error, parse_memory_file, render_memory_file, validate_memory_path,
 };
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
@@ -322,8 +322,7 @@ fn run_memory_tool_inner(
                 affected_relative_paths.push(rel.clone());
 
                 let content = read_existing_file(&target, &rel)?;
-                let parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
-                assert_not_readonly(&parsed.frontmatter, &rel)?;
+                let parsed = load_editable(&content, &rel)?;
 
                 if !parsed.body.contains(old_str) {
                     return Err(err(
@@ -356,8 +355,7 @@ fn run_memory_tool_inner(
                 affected_relative_paths.push(rel.clone());
 
                 let content = read_existing_file(&target, &rel)?;
-                let parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
-                assert_not_readonly(&parsed.frontmatter, &rel)?;
+                let parsed = load_editable(&content, &rel)?;
 
                 let mut lines: Vec<&str> = parsed.body.split('\n').collect();
                 let line_idx = if insert_line <= 1 {
@@ -495,15 +493,55 @@ fn run_memory_tool_inner(
                 affected_relative_paths.push(rel.clone());
 
                 let content = read_existing_file(&target, &rel)?;
-                let mut parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
-                assert_not_readonly(&parsed.frontmatter, &rel)?;
+                let parsed = match parse_memory_file(&content) {
+                    Ok(parsed) => Some(parsed),
+                    Err(error) if is_missing_frontmatter_error(&error) => {
+                        let stripped = content.trim_start();
+                        if stripped.len() != content.len()
+                            && (stripped == "---"
+                                || stripped.starts_with("---\n")
+                                || stripped.starts_with("---\r\n"))
+                        {
+                            return Err(err(format!(
+                                "{rel} has blank lines before a --- line, so a frontmatter header below them is not at the top of the file and cannot be trusted. Remove the leading blank lines so the file starts with --- (or, if that --- line is body text, move it below a real frontmatter header), then retry update_description"
+                            )));
+                        }
+                        None
+                    }
+                    Err(error) if is_missing_description_error(&error) => {
+                        return Err(err(format!(
+                            "{} (suggestion: if this note has no frontmatter, its opening --- line is body text, such as a horizontal rule, that was read as a header. Move that opening --- line below a real frontmatter header, then retry update_description)",
+                            error.0
+                        )));
+                    }
+                    Err(error) => return Err(err(error.0)),
+                };
 
-                let previous = parsed.clone();
-                parsed.frontmatter.description = desc_str.to_string();
-                let frontmatter =
-                    stamp_receipt(Some(&previous), &parsed.frontmatter, &parsed.body, claim);
-                let rendered =
-                    render_memory_file(&frontmatter, &parsed.body).map_err(|e| err(e.0))?;
+                let rendered = match parsed {
+                    None => {
+                        let fm = MemoryFrontmatter {
+                            description: desc_str.to_string(),
+                            read_only: None,
+                            kind: None,
+                            aliases: None,
+                            extra: Default::default(),
+                        };
+                        let frontmatter = stamp_receipt(None, &fm, &content, claim);
+                        render_memory_file(&frontmatter, &content).map_err(|e| err(e.0))?
+                    }
+                    Some(mut parsed) => {
+                        assert_not_readonly(&parsed.frontmatter, &rel)?;
+                        let previous = parsed.clone();
+                        parsed.frontmatter.description = desc_str.to_string();
+                        let frontmatter = stamp_receipt(
+                            Some(&previous),
+                            &parsed.frontmatter,
+                            &parsed.body,
+                            claim,
+                        );
+                        render_memory_file(&frontmatter, &parsed.body).map_err(|e| err(e.0))?
+                    }
+                };
                 if stripped_legacy_user_header(Some(&content), &rendered) {
                     stripped_paths.push(rel.clone());
                 }
@@ -675,6 +713,23 @@ fn assert_not_readonly(
         )));
     }
     Ok(())
+}
+
+fn load_editable(
+    content: &str,
+    display_path: &str,
+) -> Result<crate::memfs::ParsedMemoryFile, MemoryToolError> {
+    let parsed = match parse_memory_file(content) {
+        Ok(parsed) => parsed,
+        Err(error) if is_missing_frontmatter_error(&error) => {
+            return Err(err(
+                "frontmatter: target file is missing required frontmatter; add frontmatter with update_description",
+            ));
+        }
+        Err(error) => return Err(err(error.0)),
+    };
+    assert_not_readonly(&parsed.frontmatter, display_path)?;
+    Ok(parsed)
 }
 
 /// Collect every file under a directory as a repository-relative path (pin `collectFiles`).

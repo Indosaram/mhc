@@ -24,6 +24,12 @@ fn main() {
     {
         std::process::exit(code);
     }
+    if let Err(error) =
+        maho_cli::cli::session_of_pid_command::dispatch_session_of_pid_command(&early_args)
+    {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
     #[cfg(feature = "omo")]
     {
         let hook_args: Vec<String> = std::env::args().skip(1).collect();
@@ -671,6 +677,18 @@ fn run() -> Result<(), String> {
     }
     if parsed.diagnostics.iter().any(|d| d.error) {
         return Err("Invalid CLI arguments".to_owned());
+    }
+    if parsed.attach.is_some() && parsed.session.is_some() && !parsed.help {
+        return Err(
+            "Error: --attach TUI mode is not yet available in this build (awaiting S18 attached-TUI port)"
+                .to_owned(),
+        );
+    }
+    if parsed.hand {
+        return Err(
+            "Error: --hand mode is not yet available in this build (awaiting S07 hand runtime port)"
+                .to_owned(),
+        );
     }
     // senpi main.ts:1197-1203: `--tool-runtime`, then the env, then `in-process`; `--version` and `--help` never run a
     // tool, so a bad tool-runtime env value must not block them. The resolved kind replaces the flag on `parsed`, so

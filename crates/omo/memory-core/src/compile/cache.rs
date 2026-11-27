@@ -71,8 +71,7 @@ pub struct MemoryBlockCache {
     stores: Mutex<BTreeMap<PathBuf, Arc<CompiledBlockStore>>>,
     module: Mutex<Option<StoreLoad>>,
     loaded: std::sync::atomic::AtomicBool,
-    computing: Mutex<usize>,
-    settled_signal: std::sync::Condvar,
+    reads: super::InFlightReads,
     entries: Mutex<BTreeMap<String, MemoryBlockCacheEntry>>,
     compile_lock: Mutex<()>,
 }
@@ -166,22 +165,19 @@ impl MemoryBlockCache {
         revision: &str,
         compute: impl FnOnce() -> Result<(String, bool), CompileError>,
     ) -> Result<String, CompileError> {
+        let _read = self.reads.enter();
         let key = self.persist_key(revision, name)?;
         let store = self.store_within(&repo.dir);
         if let Some(value) = store.as_ref().and_then(|store| store.get(&key)) {
             return Ok(value);
         }
-        *self.computing.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         let result = compute();
-        let result = result.map(|(value, persist)| {
+        result.map(|(value, persist)| {
             if persist && let Some(store) = store {
                 store.put(key, value.clone());
             }
             value
-        });
-        *self.computing.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
-        self.settled_signal.notify_all();
-        result
+        })
     }
 
     fn persist_key(&self, revision: &str, name: &str) -> Result<String, CompileError> {
@@ -218,9 +214,8 @@ impl MemoryBlockCache {
                 expiries: stored.expiries,
             });
         }
-        *self.computing.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         let result = compile_memory_block_with_reads(repo, Some(revision), options, as_of_ms);
-        let result = result.map(|compiled| {
+        result.map(|compiled| {
             if !compiled.degraded.is_empty() {
                 if let Some(report) = &self.options.on_degraded {
                     report(&repo.dir, revision, &compiled.degraded);
@@ -239,21 +234,11 @@ impl MemoryBlockCache {
                 block: compiled.block,
                 expiries: compiled.expiries,
             }
-        });
-        *self.computing.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
-        self.settled_signal.notify_all();
-        result
+        })
     }
 
     pub fn settled(&self) {
-        let mut computing = self.computing.lock().unwrap_or_else(|e| e.into_inner());
-        while *computing > 0 {
-            computing = self
-                .settled_signal
-                .wait(computing)
-                .unwrap_or_else(|e| e.into_inner());
-        }
-        drop(computing);
+        self.reads.settled();
         for store in self
             .stores
             .lock()
@@ -279,6 +264,7 @@ impl MemoryBlockCache {
         template: &str,
         options: &CompileMemoryBlockOptions,
     ) -> Result<String, CompileError> {
+        let _read = self.reads.enter();
         let revision = repo.head().map_err(|e| CompileError::Git(e.to_string()))?;
         self.compile_at_head(repo, revision.as_deref(), template, options)
     }
@@ -292,6 +278,7 @@ impl MemoryBlockCache {
         template: &str,
         options: &CompileMemoryBlockOptions,
     ) -> Result<String, CompileError> {
+        let _read = self.reads.enter();
         let key = format!("{}:{}", hash_memory_template(template), options.agent_id);
         Ok(self.compile_keyed(repo, key, head, options, None)?.block)
     }
@@ -321,6 +308,7 @@ impl MemoryBlockCache {
         options: &CompileMemoryBlockOptions,
         as_of_ms: Option<i64>,
     ) -> Result<CompiledBlock, CompileError> {
+        let _read = self.reads.enter();
         let key = format!(
             "{}:{}:pinned",
             hash_memory_template(template),

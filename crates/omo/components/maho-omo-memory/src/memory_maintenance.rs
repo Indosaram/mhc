@@ -1,8 +1,9 @@
 //! Background packing and stale transcript cleanup for identity repositories.
 
 use crate::context::MemoryIdentityContext;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,11 +12,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DEFAULT_DELAY_MS: u64 = 30_000;
 const DEFAULT_INTERVAL_MS: u64 = 12 * 60 * 60 * 1000;
 const DEFAULT_MIN_LOOSE_OBJECTS: usize = 2_000;
+const HOST_SWEEP_INTERVAL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 pub trait MemoryMaintenanceLogger: Send + Sync {
     fn info(&self, message: &str);
     fn warn(&self, message: &str);
 }
+
+pub type MemorySettingsProvider =
+    Arc<dyn Fn(&MemoryIdentityContext) -> serde_json::Value + Send + Sync>;
+pub type ReflectionEnabledPredicate = Arc<dyn Fn(&MemoryIdentityContext) -> bool + Send + Sync>;
 
 #[derive(Clone)]
 pub struct MemoryMaintenanceOptions {
@@ -27,6 +33,14 @@ pub struct MemoryMaintenanceOptions {
     pub executable: Option<PathBuf>,
     pub now: Arc<dyn Fn() -> u64 + Send + Sync>,
     pub is_live_session: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Resolved `memory` settings for this identity's runtime windows & cap.
+    pub memory_settings: Option<MemorySettingsProvider>,
+    /// Whether reflection is enabled for this identity (governs health-gate check).
+    pub reflection_enabled: Option<ReflectionEnabledPredicate>,
+    /// Encoded sidecar directory names owned by live sessions in this process.
+    pub owned_sidecars: Option<Arc<dyn Fn() -> BTreeSet<String> + Send + Sync>>,
+    /// Driver 2 of the host sweep (`None` disables it); returns global settings JSON when enabled.
+    pub host_sweep: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
 }
 
 impl Default for MemoryMaintenanceOptions {
@@ -45,6 +59,10 @@ impl Default for MemoryMaintenanceOptions {
                     .as_millis() as u64
             }),
             is_live_session: Arc::new(|_| false),
+            memory_settings: None,
+            reflection_enabled: None,
+            owned_sidecars: None,
+            host_sweep: None,
         }
     }
 }
@@ -205,6 +223,10 @@ impl MemoryMaintenance {
     }
 
     pub async fn settled(&self) {
+        self.detach_settled().await;
+    }
+
+    pub fn detach_settled(&self) -> impl Future<Output = ()> + Send + 'static {
         let tasks = self
             .tasks
             .lock()
@@ -212,8 +234,10 @@ impl MemoryMaintenance {
             .drain()
             .map(|(_, task)| task)
             .collect::<Vec<_>>();
-        for task in tasks {
-            let _ = task.await;
+        async move {
+            for task in tasks {
+                let _ = task.await;
+            }
         }
     }
 }
@@ -264,32 +288,33 @@ fn sweep_journals(context: &MemoryIdentityContext, options: &MemoryMaintenanceOp
             }
         }
     }
-    sweep_expired_runtime(context, options);
 }
 
-fn sweep_expired_runtime(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions) {
-    let retention = crate::memory_retention::RetentionOptions {
-        now_ms: (options.now)(),
-        is_live_session: options.is_live_session.clone(),
-        ..Default::default()
-    };
-    let paths = crate::memory_retention::RetentionPaths {
-        facts_queue: context.identity_paths.facts_queue.clone(),
-        locks: context.identity_paths.locks.clone(),
-        reflection: context.identity_paths.reflection.clone(),
-        transcripts: context.identity_paths.transcripts.clone(),
-    };
-    let report = crate::memory_retention::prune_runtime(&paths, &retention);
-    let Some(logger) = &options.logger else {
-        return;
-    };
-    for error in &report.errors {
-        logger.warn(&format!("omo-senpi memory retention failed: {error}"));
+fn retention_due(
+    context: &MemoryIdentityContext,
+    repo: &memory_core::git::GitMemoryRepo,
+    now_ms: u64,
+    interval_ms: u64,
+) -> bool {
+    if crate::memory_retention_pass::retention_resume_pending(&context.identity_paths.runtime) {
+        return true;
     }
-    if report.is_empty() {
-        return;
-    }
-    logger.info(&crate::memory_retention::describe(&report, &retention));
+    let stamped = repo
+        .config_get(memory_core::retention::RETENTION_STAMP_CONFIG_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    stamped.is_none_or(|at| now_ms.saturating_sub(at) >= interval_ms)
+}
+
+fn host_sweep_due(memory_root: &std::path::Path, now_ms: u64) -> bool {
+    let state = memory_core::reflection::host_sweep::read_host_sweep_state(memory_root);
+    let last_at = state
+        .completed_at
+        .as_deref()
+        .and_then(memory_core::support::time::parse_rfc3339)
+        .and_then(|ms| u64::try_from(ms).ok());
+    last_at.is_none_or(|at| now_ms.saturating_sub(at) >= HOST_SWEEP_INTERVAL_MS)
 }
 
 fn maintain_locked(
@@ -340,6 +365,91 @@ fn maintain_locked(
         memory_core::git::GitMaintenanceResult::Packed { .. } => {
             if let Some(logger) = &options.logger {
                 logger.info("omo-senpi memory repo packed");
+            }
+        }
+    }
+    if !cancelled.load(Ordering::Acquire)
+        && let Ok(repo) =
+            memory_core::git::GitMemoryRepo::open(&context.identity_paths.repo, &context.identity)
+    {
+        let interval_ms = options.interval.as_millis() as u64;
+        if retention_due(context, &repo, now, interval_ms) {
+            let settings = options.memory_settings.as_ref().map(|f| f(context));
+            let reflection_enabled = options
+                .reflection_enabled
+                .as_ref()
+                .is_none_or(|f| f(context));
+            let owned_sidecars = options
+                .owned_sidecars
+                .as_ref()
+                .map(|f| f())
+                .unwrap_or_default();
+            let info_cb = |msg: &str| {
+                if let Some(logger) = &options.logger {
+                    logger.info(msg);
+                }
+            };
+            let warn_cb = |msg: &str| {
+                if let Some(logger) = &options.logger {
+                    logger.warn(msg);
+                }
+            };
+            let live = |session: &str| (options.is_live_session)(session);
+            let now_i64 = i64::try_from(now).unwrap_or(i64::MAX);
+            if let Err(error) = crate::memory_retention_pass::run_maintenance_retention(
+                crate::memory_retention_pass::MaintenanceRetentionInput {
+                    identity: &context.identity,
+                    paths: &context.identity_paths,
+                    repo: &repo,
+                    aborted: cancelled,
+                    now_ms: now_i64,
+                    policy: None,
+                    max_bytes: None,
+                    settings: settings.as_ref(),
+                    reflection_enabled,
+                    is_live_session: Some(&live),
+                    owned_sidecars: &owned_sidecars,
+                    info: Some(&info_cb),
+                    warn: Some(&warn_cb),
+                },
+            ) && !cancelled.load(Ordering::Acquire)
+                && let Some(logger) = &options.logger
+            {
+                logger.warn(&format!(
+                    "omo-senpi memory runtime retention failed: {error}"
+                ));
+            }
+        }
+        if !cancelled.load(Ordering::Acquire)
+            && let Some(host_sweep) = &options.host_sweep
+            && let Some(foreign_settings) = host_sweep()
+            && let Some(scope) = &context.project_scope
+        {
+            let memory_root = &scope.memory_root;
+            if !memory_root.as_os_str().is_empty() && host_sweep_due(memory_root, now) {
+                let hosted_identity = context.identity.clone();
+                let is_hosted: Arc<dyn Fn(&str) -> bool + Send + Sync> =
+                    Arc::new(move |name: &str| name == hosted_identity);
+                let info_cb = |msg: &str| {
+                    if let Some(logger) = &options.logger {
+                        logger.info(msg);
+                    }
+                };
+                let now_i64 = i64::try_from(now).unwrap_or(i64::MAX);
+                if let Err(error) = crate::memory_retention_pass::run_maintenance_host_sweep(
+                    crate::memory_retention_pass::MaintenanceHostSweepInput {
+                        memory_root,
+                        settings: Some(&foreign_settings),
+                        is_hosted_identity: is_hosted,
+                        aborted: cancelled,
+                        now_ms: now_i64,
+                        info: Some(&info_cb),
+                    },
+                ) && !cancelled.load(Ordering::Acquire)
+                    && let Some(logger) = &options.logger
+                {
+                    logger.warn(&format!("omo-senpi memory host sweep failed: {error}"));
+                }
             }
         }
     }

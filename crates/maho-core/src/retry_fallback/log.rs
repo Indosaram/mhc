@@ -160,7 +160,15 @@ impl FallbackLogger {
         event: &str,
         data: Option<&Map<String, Value>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let text = format!("{}\n", format_line(timestamp, level, event, data)?);
+        retire_unshared_registry_generations_once(&self.path);
+        let line = format_line(timestamp, level, event, data)?;
+        let redacted = crate::sensitive_output::redact_sensitive_output(
+            &crate::config_reference_redaction::redact_resolved_reference_values(
+                &line,
+                "[redacted]",
+            ),
+        );
+        let text = format!("{redacted}\n");
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
             #[cfg(unix)]
@@ -191,6 +199,34 @@ impl FallbackLogger {
         #[cfg(unix)]
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
         Ok(())
+    }
+}
+
+/// Generations written before every engine copy in a process shared one resolved-value registry
+/// (omo#12965) are removed once per agent dir, guarded by `.fallback-log-v2`.
+pub fn retire_unshared_registry_generations_once(file_path: &Path) {
+    let Some(dir) = file_path.parent() else {
+        return;
+    };
+    let marker = dir.join(".fallback-log-v2");
+    if marker.exists() {
+        return;
+    }
+    let _ = fs::remove_file(file_path.with_extension("log.1"));
+    let _ = fs::remove_file(file_path);
+    if fs::create_dir_all(dir).is_ok() {
+        #[cfg(unix)]
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&marker)
+        {
+            let _ = file.write_all(b"");
+            #[cfg(unix)]
+            let _ = fs::set_permissions(&marker, fs::Permissions::from_mode(0o600));
+        }
     }
 }
 

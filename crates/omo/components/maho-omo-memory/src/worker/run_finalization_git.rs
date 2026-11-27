@@ -15,7 +15,7 @@ use memory_core::{
         CompletionValidation, IntegrateValidatedReflectionInput, LegacyAutoRunReceiptProbe,
         ReflectionIntegrationMode, ReflectionIntegrationProbe, ValidatedReflectionTip,
         cleanup_reflection_worktree, describe_dropped_entries, integrate_validated_reflection,
-        preflight_reflection_descriptions, probe_legacy_auto_run_receipt,
+        paths_outside_target, preflight_reflection_descriptions, probe_legacy_auto_run_receipt,
         probe_reflection_integration, read_dropped_trailers, validate_completion,
     },
 };
@@ -588,12 +588,12 @@ fn finalize(
             CompletionValidation::Valid {
                 tip_sha,
                 changed_paths,
+                link_repairs,
                 ..
             } => {
-                if ledger.value()["targetDoc"]
-                    .as_str()
-                    .is_some_and(|target| changed_paths.iter().any(|path| path != target))
-                {
+                if ledger.value()["targetDoc"].as_str().is_some_and(|target| {
+                    !paths_outside_target(&changed_paths, &link_repairs, &[target]).is_empty()
+                }) {
                     let result = decision(
                         "failed",
                         Some("invalid_target"),
@@ -604,7 +604,7 @@ fn finalize(
                     cleanup()?;
                     return Ok(result);
                 }
-                update_run_ledger(&path, serde_json::json!({"finalizePhase":"validated","validatedTipSha":tip_sha,"validatedChangedPaths":changed_paths}).as_object().ok_or("Invalid validation checkpoint")?).map_err(|error| error.to_string())?;
+                update_run_ledger(&path, serde_json::json!({"finalizePhase":"validated","validatedTipSha":tip_sha,"validatedChangedPaths":changed_paths,"validatedLinkRepairs":link_repairs}).as_object().ok_or("Invalid validation checkpoint")?).map_err(|error| error.to_string())?;
                 validated = Some(ValidatedReflectionTip {
                     tip_sha,
                     changed_paths,

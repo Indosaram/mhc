@@ -226,10 +226,13 @@ fn incomplete_primary_is_reclaimed_only_after_grace() {
             create_lock_record("memory-write", CreateLockRecordOptions::default()).unwrap();
 
         // #when
-        let result =
-            acquire_lock_with_clock(&path, &contender, &AcquireLockOptions::default(), || {
-                recovery_now(age_ms)
-            });
+        let result = acquire_lock_with_clock(
+            &path,
+            &contender,
+            &AcquireLockOptions::default(),
+            || recovery_now(age_ms),
+            true,
+        );
 
         // #then
         if age_ms > 5_000 {
@@ -253,9 +256,13 @@ fn doubly_incomplete_locks_are_recovered_in_one_nonwaiting_acquisition() {
     let contender = create_lock_record("memory-write", CreateLockRecordOptions::default()).unwrap();
 
     // #when
-    acquire_lock_with_clock(&path, &contender, &AcquireLockOptions::default(), || {
-        recovery_now(5_001)
-    })
+    acquire_lock_with_clock(
+        &path,
+        &contender,
+        &AcquireLockOptions::default(),
+        || recovery_now(5_001),
+        true,
+    )
     .unwrap();
 
     // #then
@@ -307,9 +314,13 @@ fn proven_dead_recovery_holder_is_reclaimed_without_age_requirement() {
     fs::write(&recovery, serde_json::to_string(&dead).unwrap()).unwrap();
 
     // #when
-    acquire_lock_with_clock(&path, &contender, &AcquireLockOptions::default(), || {
-        recovery_now(5_001)
-    })
+    acquire_lock_with_clock(
+        &path,
+        &contender,
+        &AcquireLockOptions::default(),
+        || recovery_now(5_001),
+        true,
+    )
     .unwrap();
 
     // #then
@@ -345,10 +356,13 @@ fn valid_live_foreign_and_unavailable_identity_records_are_not_reclaimed_by_age(
             }
 
             // #when
-            let result =
-                acquire_lock_with_clock(&path, &contender, &AcquireLockOptions::default(), || {
-                    recovery_now(1_000_000)
-                });
+            let result = acquire_lock_with_clock(
+                &path,
+                &contender,
+                &AcquireLockOptions::default(),
+                || recovery_now(1_000_000),
+                true,
+            );
 
             // #then
             assert!(matches!(result, Err(AcquireLockError::Contention(_))));
@@ -408,4 +422,28 @@ fn recovery_reaper_hands_back_replacement_without_overwriting_another_publisher(
         );
         assert!(!tombstone.exists());
     }
+}
+
+#[test]
+fn dead_owner_fenced_unlink_treats_enoent_as_reclaimed() {
+    let temp = tempfile::tempdir().unwrap();
+    let lock_path = temp.path().join("resource.lock");
+    let dead = LockRecord {
+        pid: 999_999_999,
+        hostname: crate::support::host::hostname(),
+        process_start: "dead-owner".to_string(),
+        purpose: "memory-write".to_string(),
+        run_id: None,
+        created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        nonce: "nonce-1".to_string(),
+        git_activity_lock: None,
+    };
+    let owner_json = format!("{}\n", serde_json::to_string(&dead).unwrap());
+    fs::write(&lock_path, &owner_json).unwrap();
+    let snapshot = read_owner(&lock_path).unwrap().unwrap();
+    // Simulate another contender removing the lock right before the dead owner unlink (#11644).
+    fs::remove_file(&lock_path).unwrap();
+    let contender = create_lock_record("memory-write", CreateLockRecordOptions::default()).unwrap();
+
+    assert!(recover_dead_owner(&lock_path, &snapshot, &contender, recovery_now(5_001)).unwrap());
 }

@@ -4,6 +4,7 @@ pub mod commit_outcome;
 pub mod config_lock;
 pub mod errors;
 pub mod exec;
+pub mod exec_environment;
 pub mod git_activity_lock;
 pub mod local_filesystem;
 pub mod lock_scans;
@@ -24,11 +25,13 @@ pub mod repo_tree;
 pub mod repo_types;
 pub mod secret;
 pub mod stable_log_output;
+pub mod timeout_diagnostics;
 pub mod worktree_mutation_queue;
 
 pub use config_lock::*;
 pub use errors::*;
 pub use exec::*;
+pub use exec_environment::*;
 pub use path_state::*;
 pub use porcelain::*;
 pub use repo::*;
@@ -39,6 +42,7 @@ pub use repo_status::*;
 pub use repo_tree::*;
 pub use repo_types::*;
 pub use secret::*;
+pub use timeout_diagnostics::*;
 
 #[cfg(test)]
 #[path = "exec_tests.rs"]

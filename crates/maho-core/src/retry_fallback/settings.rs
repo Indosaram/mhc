@@ -20,12 +20,13 @@ pub struct ResolvedRetryFallbackSettings {
 }
 
 pub fn default_fallback_chains() -> FallbackChains {
-    let long = ["claude-opus-5-5:max", "claude-opus-5:max"];
+    let fable = ["claude-opus-5-5", "claude-opus-5"];
+    let opus55 = ["claude-fable-5-2:medium", "kimi-k3.1-pro:max"];
     [
-        ("claude-fable-5-2", long.as_slice()),
-        ("claude-fable-5-1", long.as_slice()),
-        ("claude-fable-5", long.as_slice()),
-        ("claude-opus-5-5", &long[1..]),
+        ("claude-fable-5-2", fable.as_slice()),
+        ("claude-fable-5-1", fable.as_slice()),
+        ("claude-fable-5", fable.as_slice()),
+        ("claude-opus-5-5", opus55.as_slice()),
     ]
     .into_iter()
     .map(|(key, values)| {
@@ -38,7 +39,21 @@ pub fn default_fallback_chains() -> FallbackChains {
 }
 
 pub fn resolve_retry_fallback_settings(settings: Option<&Value>) -> ResolvedRetryFallbackSettings {
-    let mut chains = default_fallback_chains();
+    resolve_retry_fallback_settings_with_policy(settings, false)
+}
+
+/// `session_policy`: the chains were supplied by the session's opener (`open_session.retryFallback`,
+/// `set_retry_fallback`), so they are the session's whole policy and the shipped defaults are not merged
+/// back under them (senpi#4673).
+pub fn resolve_retry_fallback_settings_with_policy(
+    settings: Option<&Value>,
+    session_policy: bool,
+) -> ResolvedRetryFallbackSettings {
+    let mut chains = if session_policy {
+        FallbackChains::new()
+    } else {
+        default_fallback_chains()
+    };
     if let Some(value) = settings.and_then(|v| v.get("fallbackChains"))
         && let Ok(overrides) = serde_json::from_value::<FallbackChains>(value.clone())
     {

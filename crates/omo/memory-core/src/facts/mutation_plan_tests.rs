@@ -1,10 +1,11 @@
 use pretty_assertions::assert_eq;
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 use crate::facts::extraction::{FactsBatch, FactsExtractionRecord};
 use crate::facts::mutation_plan::{
     MutationPlanError, facts_records_hash, plan_facts_mutation, render_facts_note,
 };
+use crate::git::{GitMemoryRepo, GitMemoryRepoOptions, GitSeedFile, InitializeGitRepoOptions};
 
 fn sample_records() -> Vec<FactsExtractionRecord> {
     vec![
@@ -144,4 +145,56 @@ fn test_facts_records_hash_is_stable_without_agreements_and_changes_with_them() 
     );
     assert_eq!(plain, legacy);
     assert!(plain != with_agreements);
+}
+
+#[test]
+fn test_plan_facts_mutation_never_reuses_archived_ledger_path() {
+    let temp = TempDir::new().expect("temp");
+    let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
+        dir: temp.path().join("repo"),
+        agent_id: "agent-one".to_string(),
+        exec: None,
+        install_hooks: None,
+    })
+    .expect("open repo");
+    repo.init(InitializeGitRepoOptions {
+        seed_files: vec![
+            GitSeedFile {
+                relative_path: "system/persona.md".to_string(),
+                content: "---\ndescription: Persona\n---\n\nbody\n".to_string(),
+            },
+            GitSeedFile {
+                relative_path: "notes/facts/2026-08.md".to_string(),
+                content: "---\ndescription: August 2026 facts\n---\n\narchived body\n".to_string(),
+            },
+        ],
+        author_name: None,
+        install_hooks: None,
+    })
+    .expect("init repo");
+    std::fs::remove_file(repo.dir.join("notes/facts/2026-08.md")).expect("remove archived ledger");
+    std::fs::write(
+        repo.dir.join("ARCHIVE.md"),
+        "---\ndescription: Archive index\n---\n\n- notes/facts/2026-08.md\n",
+    )
+    .expect("write archive");
+    repo.commit_write(
+        &["notes/facts/2026-08.md", "ARCHIVE.md"],
+        "archive 2026-08 facts",
+        &crate::git::repo_types::GitCommitAuthor {
+            agent_id: "agent-one".to_owned(),
+            author_name: "fixture".to_owned(),
+            author_email: None,
+        },
+    )
+    .expect("commit");
+    let batch = FactsBatch {
+        batch_id: "00000000-0000-4000-8000-000000000003".to_string(),
+        records: sample_records(),
+        agreements: None,
+    };
+
+    let recovery = plan_facts_mutation(&repo, &batch, None, None, &Default::default(), None)
+        .expect("plan succeeds");
+    assert_eq!(recovery.paths[0].path, "notes/facts/2026-08-2.md");
 }
