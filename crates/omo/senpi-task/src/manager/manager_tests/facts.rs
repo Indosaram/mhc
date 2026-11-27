@@ -225,18 +225,9 @@ fn given_listener_registered_before_promotion_when_cleanup_runs_then_handle_unsu
 }
 
 #[test]
-fn streamed_failed_tool_facts_survive_next_message_start_but_clear_after_parent_hop() {
+fn retry_fallback_events_append_model_refusals_with_failed_turn_detail() {
     let harness = default_manager();
     let task = started(harness.manager.start(&base_spec()));
-    harness
-        .store
-        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
-            crate::state::TaskRecord {
-                parent_model: Some("parent/model".into()),
-                ..fresh.clone()
-            }
-        })
-        .unwrap();
     let fake = harness.in_process.wait_handle(&task.task_id);
     fake.emit(&ManagedChildEvent {
         event_type: "message_update".into(),
@@ -248,39 +239,39 @@ fn streamed_failed_tool_facts_survive_next_message_start_but_clear_after_parent_
     let event = ManagedChildEvent {
         event_type: "retry_fallback_applied".into(),
         from: Some("child/model:high".into()),
-        to: Some("parent/model".into()),
+        to: Some("other/model".into()),
         reason: Some("transient".into()),
         ..Default::default()
     };
     fake.emit(&event);
-    let note = harness
+    let refusals = harness
         .store
         .load(&task.task_id)
         .unwrap()
         .unwrap()
-        .parent_model_fallback
+        .model_refusals
         .unwrap();
+    assert_eq!(refusals.len(), 1);
     assert_eq!(
-        note.reason,
-        crate::state::ParentModelFallbackReason::UsageLimit
+        refusals[0].reason,
+        crate::state::ModelRefusalReason::UsageLimit
     );
-    assert_eq!(note.resets.as_deref(), Some("3:20am"));
-    assert_eq!(note.from_model, "child/model");
-    assert_eq!(note.interrupted_tools, Some(vec!["write".into()]));
+    assert_eq!(refusals[0].resets.as_deref(), Some("3:20am"));
+    assert_eq!(refusals[0].model, "child/model");
     fake.emit(&event);
     let second = harness
         .store
         .load(&task.task_id)
         .unwrap()
         .unwrap()
-        .parent_model_fallback
+        .model_refusals
         .unwrap();
+    assert_eq!(second.len(), 2);
     assert_eq!(
-        second.reason,
-        crate::state::ParentModelFallbackReason::Unavailable
+        second[1].reason,
+        crate::state::ModelRefusalReason::Unavailable
     );
-    assert!(second.interrupted_tools.is_none());
-    assert!(second.detail.is_none());
+    assert!(second[1].detail.is_none());
 }
 
 #[test]

@@ -66,6 +66,13 @@ pub trait ReleasableSession: Send + Sync {
     /// `externalAdmission.reopen()`.
     fn admission_reopen(&self);
     fn clear_queue(&self, abort_will_follow: bool) -> ClearedQueue;
+    /// Hands back queued deliveries without dropping user text (`takeQueuedDeliveries`, omo#14169).
+    fn take_queued_deliveries(&self) {
+        let _ = self.clear_queue(false);
+    }
+    fn is_idle(&self) -> bool {
+        !self.activity_snapshot().is_streaming
+    }
     fn abort_bash(&self);
     /// Calls `on_start` on every `agent_start` event until the guard is dropped.
     fn on_agent_start(&self, on_start: Arc<dyn Fn() + Send + Sync>) -> SubscriptionGuard;
@@ -101,8 +108,16 @@ pub trait ReleaseSettlePort: Send + Sync {
 /// Empties both queues. Queued deliveries leave the ledger unwritten, so their sender redelivers them to the
 /// next owner; the user's queued text is returned in enqueue order for the caller to restore.
 pub fn take_queued_input(session: &dyn ReleasableSession) -> ReleaseDropped {
+    take_queued_input_with_abort_will_follow(session, true)
+}
+
+/// Same as [`take_queued_input`], allowing graceful close to pass `abort_will_follow = false`.
+pub fn take_queued_input_with_abort_will_follow(
+    session: &dyn ReleasableSession,
+    abort_will_follow: bool,
+) -> ReleaseDropped {
     let admitted_before = session.admission_pending();
-    let cleared = session.clear_queue(true);
+    let cleared = session.clear_queue(abort_will_follow);
     let still_admitted: HashSet<String> = session.admission_pending().into_iter().collect();
     ReleaseDropped {
         deliveries: admitted_before
@@ -122,13 +137,22 @@ pub async fn abort_and_settle(
     session_id: &str,
     session: &Arc<dyn ReleasableSession>,
 ) {
-    abort_and_settle_within(
+    let _ = abort_and_settle_returning_deliveries(port, session_id, session).await;
+}
+
+/// Aborts the work, waits (bounded) for it to settle, then hands back unwritten deliveries (`omo#14169`).
+pub async fn abort_and_settle_returning_deliveries(
+    port: &dyn ReleaseSettlePort,
+    session_id: &str,
+    session: &Arc<dyn ReleasableSession>,
+) -> Vec<String> {
+    abort_and_settle_within_returning_deliveries(
         port,
         session_id,
         session,
         Duration::from_millis(RELEASE_SETTLE_MS),
     )
-    .await;
+    .await
 }
 
 pub async fn abort_and_settle_within(
@@ -137,6 +161,15 @@ pub async fn abort_and_settle_within(
     session: &Arc<dyn ReleasableSession>,
     deadline: Duration,
 ) {
+    let _ = abort_and_settle_within_returning_deliveries(port, session_id, session, deadline).await;
+}
+
+pub async fn abort_and_settle_within_returning_deliveries(
+    port: &dyn ReleaseSettlePort,
+    session_id: &str,
+    session: &Arc<dyn ReleasableSession>,
+    deadline: Duration,
+) -> Vec<String> {
     session.abort_bash();
     // A prompt still in preflight, or an admitted delivery, may start its run after the abort below.
     let stop_starts = session.on_agent_start({
@@ -157,6 +190,24 @@ pub async fn abort_and_settle_within(
     // `Promise.race([allSettled, expired])`: an expired wait is not an error, the caller re-checks.
     let _ = tokio::time::timeout(deadline, futures::future::join_all(work)).await;
     drop(stop_starts);
+    if session.is_idle() {
+        hand_back_unwritten_deliveries(session.as_ref())
+    } else {
+        Vec::new()
+    }
+}
+
+fn hand_back_unwritten_deliveries(session: &dyn ReleasableSession) -> Vec<String> {
+    let admitted_before = session.admission_pending();
+    if admitted_before.is_empty() {
+        return Vec::new();
+    }
+    session.take_queued_deliveries();
+    let still_admitted: HashSet<String> = session.admission_pending().into_iter().collect();
+    admitted_before
+        .into_iter()
+        .filter(|delivery_id| !still_admitted.contains(delivery_id))
+        .collect()
 }
 
 #[cfg(test)]

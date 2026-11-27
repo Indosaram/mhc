@@ -3,12 +3,11 @@ use std::path::Path;
 use chrono::DateTime;
 
 use super::types::{
-    COMPLETION_CUSTOM_TYPE, CompletionDetails, ParentModelFallback, ParentModelFallbackPhase,
-    ParentModelFallbackReason, ParentNotifierMessage, RunRef, RunRefKind,
+    COMPLETION_CUSTOM_TYPE, CompletionDetails, ParentNotifierMessage, RunRef, RunRefKind,
 };
 use crate::renderer_text::{
     excerpt_renderer_prompt_text, join_renderer_tokens, normalize_renderer_text,
-    optional_renderer_text, renderer_visible_width,
+    renderer_visible_width,
 };
 use crate::shared::{format_run_duration, utf16_prefix};
 use crate::state::{Messageability, TaskRecord, messageability};
@@ -70,11 +69,6 @@ pub fn build_completion_details(
         requested_model: record.requested_model.clone(),
         fallback_models: record.fallback_models.clone(),
         resolved_model: record.resolved_model.clone(),
-        // `record.parent_model` / `record.parent_model_fallback` are carried on the task record in
-        // upstream `state/record-types.ts`; the Rust record has no such fields yet, so a completion
-        // built from a record cannot report the parent-model note.
-        parent_model: None,
-        parent_model_fallback: None,
         duration_ms: duration_ms(record),
         tokens,
         run_stats,
@@ -206,16 +200,6 @@ fn completion_detail_lines(detail: &CompletionDetails, width: Option<usize>) -> 
             excerpt_renderer_prompt_text(&stats, width),
         ],
     };
-    let parent_model_prefix = "model_note:";
-    if let Some(parent_model) = describe_parent_model_fallback(
-        detail.parent_model_fallback.as_ref(),
-        detail.parent_model.as_deref(),
-    ) {
-        lines.push(format!(
-            "{parent_model_prefix}{}",
-            excerpt_for_width(&parent_model, width, parent_model_prefix, "")
-        ));
-    }
     let (response, continuation) = match width {
         None => (
             detail.final_response.clone(),
@@ -308,81 +292,5 @@ fn run_ref_of(record: &TaskRecord) -> RunRef {
             kind: RunRefKind::Task,
             id: record.task_id.clone(),
         },
-    }
-}
-
-/// `parent-model-fallback-text.ts` `REASON_PHRASES`.
-fn parent_model_reason_phrase(reason: ParentModelFallbackReason) -> &'static str {
-    match reason {
-        ParentModelFallbackReason::UsageLimit => "hit its usage limit",
-        ParentModelFallbackReason::NotSignedIn => "is not signed in",
-        ParentModelFallbackReason::Unavailable => "was overloaded or unavailable",
-        ParentModelFallbackReason::Refused => "refused the request",
-        ParentModelFallbackReason::Error => "failed",
-    }
-}
-
-/// `parent-model-fallback-text.ts` `PHASE_LEADS`.
-fn parent_model_phase_lead(phase: ParentModelFallbackPhase) -> &'static str {
-    match phase {
-        ParentModelFallbackPhase::Switching => "switching to",
-        ParentModelFallbackPhase::Unconfirmed => "was never confirmed running on",
-    }
-}
-
-fn parent_model_resets_suffix(fallback: &ParentModelFallback) -> String {
-    match optional_renderer_text(fallback.resets.as_deref()) {
-        Some(resets) => format!(" (resets {resets})"),
-        None => String::new(),
-    }
-}
-
-/// The full sentence for the completion notice: which model it ran on, which model gave out and
-/// why, and any tool call that was cut off and never ran (`parent-model-fallback-text.ts`
-/// `describeParentModelFallback`).
-pub fn describe_parent_model_fallback(
-    fallback: Option<&ParentModelFallback>,
-    parent_model: Option<&str>,
-) -> Option<String> {
-    let fallback = fallback?;
-    let parent = optional_renderer_text(parent_model)
-        .unwrap_or_else(|| "the parent session's model".to_string());
-    let from = optional_renderer_text(Some(fallback.from_model.as_str()))
-        .unwrap_or_else(|| "its category model".to_string());
-    let detail = match fallback.reason {
-        ParentModelFallbackReason::Error | ParentModelFallbackReason::Refused => {
-            optional_renderer_text(fallback.detail.as_deref())
-        }
-        _ => None,
-    };
-    let interrupted: Vec<String> = fallback
-        .interrupted_tools
-        .as_ref()
-        .map(|tools| {
-            tools
-                .iter()
-                .filter_map(|tool| optional_renderer_text(Some(tool.as_str())))
-                .collect()
-        })
-        .unwrap_or_default();
-    let lead = match fallback.phase {
-        Some(phase) => parent_model_phase_lead(phase),
-        None => "ran on",
-    };
-    let mut head = format!(
-        "{lead} the parent session's model {parent}: {from} {}{}",
-        parent_model_reason_phrase(fallback.reason),
-        parent_model_resets_suffix(fallback)
-    );
-    if let Some(detail) = detail {
-        head.push_str(&format!(" ({detail})"));
-    }
-    if interrupted.is_empty() {
-        Some(head)
-    } else {
-        Some(format!(
-            "{head}; interrupted tool call not run: {}",
-            interrupted.join(", ")
-        ))
     }
 }

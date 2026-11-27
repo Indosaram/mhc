@@ -60,6 +60,38 @@ pub trait HostSessionProbe: Send + Sync {
     fn refresh(&self, socket: Option<&str>);
 }
 
+/// Read-only view of the endpoint's daemon state once the serving generation no longer lists a child
+/// (`#11765`). Anything other than absent reads conservatively as `true`.
+pub trait HostGenerationView: Send + Sync {
+    fn generation_present(&self, host_session: &HostSessionIdentity) -> bool;
+    fn parked_entry_present(&self, host_session: &HostSessionIdentity) -> bool;
+}
+
+/// How a daemon-hosted child's end was confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSessionEndVia {
+    CloseSession,
+    GenerationExited,
+    NotListed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostSessionEnd {
+    Ended { via: HostSessionEndVia },
+    NotEnded { reason: String },
+}
+
+pub trait HostSessionCancelSink: Send + Sync {
+    fn ended(&self);
+    fn settle(&self);
+}
+
+#[derive(Clone)]
+pub struct HostSessionCancelPort {
+    pub end: Arc<dyn Fn(&TaskRecord) -> HostSessionEnd + Send + Sync>,
+    pub drive: Arc<dyn Fn(TaskRecord, Arc<dyn HostSessionCancelSink>) + Send + Sync>,
+}
+
 /// The host-owned daemon transport the probe reads (TS HostSessionProbePorts). Assembly-owned:
 /// these are the `runners/rpc-host/liveness` entry points the host owner provides.
 pub type LiveSessionPaths = Arc<dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync>;

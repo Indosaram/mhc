@@ -26,6 +26,9 @@ impl ResidentHandle for ManagedResident {
     fn mark_stopping(&self) {
         self.0.mark_stopping();
     }
+    fn host_end_answered(&self) -> bool {
+        self.0.host_end_answered()
+    }
     fn is_host_session(&self) -> bool {
         self.0.is_host_session()
     }

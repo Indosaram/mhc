@@ -13,10 +13,10 @@
 use serde_json::{Map, Value, json};
 
 use super::context::LifecycleContext;
-use super::destroy::{destroy_resident_task, spawn_spec_cwd};
+use super::destroy::destroy_resident_task;
 use super::errors::LifecycleError;
-use super::host_session::{HostSessionLiveness, is_host_session_record};
-use super::host_session_close::close_host_session_confirmed;
+use super::host_session::{HostSessionEnd, is_host_session_record};
+use super::host_session_end::end_host_session_child;
 use super::port::DestroyCause;
 use super::types::{ReconcileOutcome, ReconcileOutcomeKind};
 use crate::state::{TaskRecord, TaskTransition};
@@ -28,26 +28,12 @@ pub fn finish_pending_cancel(
 ) -> Result<Option<ReconcileOutcome>, LifecycleError> {
     if is_host_session_record(record)
         && context.registry.get(&record.task_id).is_none()
-        && let Some(host_session) = record.host_session.as_ref()
+        && !matches!(
+            end_host_session_child(context, record),
+            HostSessionEnd::Ended { .. }
+        )
     {
-        context
-            .host_session_probe
-            .refresh(Some(&host_session.socket));
-        match context.host_session_probe.session_liveness(host_session) {
-            HostSessionLiveness::Unknown => return Ok(None),
-            HostSessionLiveness::Live => {
-                let cwd = spawn_spec_cwd(record);
-                if !close_host_session_confirmed(
-                    context,
-                    &record.task_id,
-                    host_session,
-                    cwd.as_deref(),
-                ) {
-                    return Ok(None);
-                }
-            }
-            HostSessionLiveness::Gone => {}
-        }
+        return Ok(None);
     }
     let reason = record
         .cancel_requested

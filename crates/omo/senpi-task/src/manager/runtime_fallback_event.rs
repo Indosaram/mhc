@@ -46,7 +46,6 @@ pub fn apply_runtime_fallback_event(
         let Some(restored) = restored else {
             return;
         };
-        without_stale_parent_fallback(&mut record, &restored.provider, &restored.model_id);
         record.model = restored.display.clone();
         record.effective_model = Some(to_effective_record(
             &restored,
@@ -97,7 +96,6 @@ pub fn apply_runtime_fallback_event(
                 effective.service_tier = previous.service_tier.clone();
             }
             record.effective_model = Some(effective);
-            without_stale_parent_fallback(&mut record, provider, id);
             store.replace_record(&record);
         }
         return;
@@ -154,12 +152,6 @@ fn to_effective_record(
         reasoning_effort: model.reasoning_effort.clone(),
         reasoning: model.reasoning.clone(),
         service_tier: model.service_tier.clone(),
-    }
-}
-
-fn without_stale_parent_fallback(record: &mut TaskRecord, provider: &str, model_id: &str) {
-    if record.parent_model.as_deref() != Some(format!("{provider}/{model_id}").as_str()) {
-        record.parent_model_fallback = None;
     }
 }
 

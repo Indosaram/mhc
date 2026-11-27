@@ -293,17 +293,47 @@ pub const COST_REPORT_STATUSES: [CostReportStatus; 4] = [
     CostReportStatus::Invalid,
 ];
 
-pub use crate::completion::{
-    ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason,
-};
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRefusalReason {
+    UsageLimit,
+    NotSignedIn,
+    Refused,
+    Unavailable,
+    Error,
+}
 
-pub const PARENT_MODEL_FALLBACK_REASONS: [ParentModelFallbackReason; 5] = [
-    ParentModelFallbackReason::UsageLimit,
-    ParentModelFallbackReason::NotSignedIn,
-    ParentModelFallbackReason::Unavailable,
-    ParentModelFallbackReason::Refused,
-    ParentModelFallbackReason::Error,
+impl ModelRefusalReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UsageLimit => "usage_limit",
+            Self::NotSignedIn => "not_signed_in",
+            Self::Refused => "refused",
+            Self::Unavailable => "unavailable",
+            Self::Error => "error",
+        }
+    }
+}
+
+pub const MODEL_REFUSAL_REASONS: [ModelRefusalReason; 5] = [
+    ModelRefusalReason::UsageLimit,
+    ModelRefusalReason::NotSignedIn,
+    ModelRefusalReason::Refused,
+    ModelRefusalReason::Unavailable,
+    ModelRefusalReason::Error,
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRefusal {
+    pub model: String,
+    pub reason: ModelRefusalReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets: Option<String>,
+    pub at: String,
+}
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -471,7 +501,6 @@ pub struct TaskRecordInput {
     pub fallback_models: Option<Vec<ResolvedModelRecord>>,
     pub fallback_attempts: Option<Vec<ResolvedModelRecord>>,
     pub resolved_model: Option<ResolvedModelRecord>,
-    pub parent_model: Option<String>,
     pub tool_allow: Option<Vec<String>>,
     pub tool_deny: Option<Vec<String>>,
     pub notify_on_terminal: bool,
@@ -602,9 +631,7 @@ pub struct TaskRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel_requested: Option<CancelRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_model_fallback: Option<ParentModelFallback>,
+    pub model_refusals: Option<Vec<ModelRefusal>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_closing_child: Option<FallbackClosingChild>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -729,6 +756,13 @@ pub enum TaskTransition {
         killed: bool,
         run_stats: Option<TaskRunStats>,
     },
+    /// Ending a `Paused` child when Resume cannot restore its host/child session (`#12249`).
+    FailSessionUnavailable {
+        timestamp: String,
+        error_message: String,
+        killed: bool,
+        run_stats: Option<TaskRunStats>,
+    },
     Cancel {
         timestamp: String,
         error_message: Option<String>,
@@ -768,6 +802,7 @@ impl TaskTransition {
             | Self::Start { timestamp, .. }
             | Self::Complete { timestamp, .. }
             | Self::Fail { timestamp, .. }
+            | Self::FailSessionUnavailable { timestamp, .. }
             | Self::Cancel { timestamp, .. }
             | Self::Interrupt { timestamp, .. }
             | Self::Lose { timestamp, .. }

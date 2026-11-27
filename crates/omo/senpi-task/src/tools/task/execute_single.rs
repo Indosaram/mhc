@@ -25,7 +25,7 @@ use crate::tools::task::foreground_wait::{
 };
 use crate::tools::task::result_details::{
     PartialTaskToolDetails, SingleSpawnParams as DetailsParams, partial_details, record_details,
-    started_details,
+    started_details, with_live_spawn_facts,
 };
 use crate::tools::task::skill_result::append_missing_skills;
 use crate::tools::task::spawn_policy::{
@@ -217,6 +217,7 @@ struct ThrottleState {
 }
 
 struct ProgressEmitter {
+    store: crate::store::TaskRecordStore,
     progress: Mutex<ChildProgress<Clock>>,
     started: StartedSnapshot,
     params: DetailsParams,
@@ -230,10 +231,24 @@ struct ProgressEmitter {
 impl ProgressEmitter {
     fn send(&self, text: String, progress: ToolProgressDetails) {
         if let Some(on_update) = &self.on_update {
+            let live_record = self.store.load(self.started.task_id()).ok().flatten();
+            let mut live_started = StartedSnapshot {
+                task_id: self.started.task_id.clone(),
+                status: self.started.status.clone(),
+                name: self.started.name.clone(),
+                queue_position: self.started.queue_position,
+                resolved_model: with_live_spawn_facts(
+                    self.started.resolved_model.clone(),
+                    live_record.as_ref(),
+                ),
+            };
+            if let Some(record) = &live_record {
+                live_started.status = record.status.as_str().to_string();
+            }
             on_update(TaskToolPartialResult {
                 content: vec![text_block(text)],
                 details: partial_details(
-                    &self.started,
+                    &live_started,
                     &self.params,
                     self.execution_mode,
                     progress,
@@ -406,7 +421,6 @@ pub fn run_spawn(
         &ctx.session_id,
         deps.tool,
         &ctx.cwd,
-        ctx.model.as_ref(),
     );
     let started = match deps
         .tool
@@ -496,6 +510,7 @@ pub fn run_spawn(
         clock,
     );
     let emitter = Arc::new(ProgressEmitter {
+        store: deps.manager.store().clone(),
         progress: Mutex::new(progress),
         started: StartedSnapshot::of(&started),
         params: detail_params.clone(),

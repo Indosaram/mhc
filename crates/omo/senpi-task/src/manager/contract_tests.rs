@@ -18,7 +18,6 @@ fn admitted_spec_preserves_runtime_scope_but_does_not_serialize_it() {
     let barrier = AdmissionBarrier::new();
     let spec = ManagerStartSpec {
         parent_session_id: "parent".into(),
-        parent_model: Some("provider/parent".into()),
         resume_credential: {
             let authority = AdmissionBarrier::new();
             authority.close("parent", 3);
@@ -61,7 +60,7 @@ fn admitted_spec_preserves_runtime_scope_but_does_not_serialize_it() {
         None,
     )
     .expect("record");
-    assert_eq!(record.parent_model.as_deref(), Some("provider/parent"));
+    assert_eq!(record.model, "provider/child");
     let managed = build_managed_spec(
         &record,
         &admitted,

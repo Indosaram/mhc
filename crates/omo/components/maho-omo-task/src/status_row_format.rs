@@ -39,7 +39,7 @@ pub fn task_identity(record: &TaskRecord) -> String {
     })
 }
 fn record_status_target(record: &TaskRecord) -> String {
-    let target = format_status_target(&StatusTargetInput {
+    format_status_target(&StatusTargetInput {
         category: record.category.as_deref(),
         agent_type: record.agent_type.as_deref(),
         resolved_model: record.resolved_model.as_ref(),
@@ -49,11 +49,7 @@ fn record_status_target(record: &TaskRecord) -> String {
             .as_ref()
             .map(|items| u64::try_from(items.len()).unwrap_or(u64::MAX)),
     })
-    .unwrap_or_else(|| "task".into());
-    senpi_task::status_line::format_parent_model_fallback(record).map_or_else(
-        || target.clone(),
-        |fallback| format!("{target} · {fallback}"),
-    )
+    .unwrap_or_else(|| "task".into())
 }
 pub fn format_task_row(record: &TaskRecord, stats: Option<&TaskRunStats>) -> String {
     let identity = task_identity(record);
@@ -213,29 +209,49 @@ fn live_row(
     width: usize,
     stats: Option<TaskRunStats>,
 ) -> String {
+    let suspended = is_suspended(record);
+    // A child its run's Stop paused is not working either: without this it read "running"/"starting"
+    // with a climbing clock from its creation (#12268). Suspended rows retain their golden format.
+    let paused_still = !suspended && record.status == TaskStatus::Paused;
     let started = chrono::DateTime::parse_from_rfc3339(&record.created_at)
         .map_or(now, |date| date.timestamp_millis());
     let seconds = now.saturating_sub(started).max(0) / 1000;
-    let elapsed = if seconds < 60 {
-        format!("{seconds}s")
+    let elapsed = if paused_still {
+        None
+    } else if seconds < 60 {
+        Some(format!("{seconds}s"))
     } else {
-        format!("{}m {}s", seconds / 60, seconds % 60)
+        Some(format!("{}m {}s", seconds / 60, seconds % 60))
     };
     let frame_index = usize::try_from(now.max(0) / 250).unwrap_or(0) % 10;
-    let frame = SPINNER_FRAMES[frame_index];
+    let frame = if paused_still {
+        "⏸"
+    } else {
+        SPINNER_FRAMES[frame_index]
+    };
     let identity = task_status_description(record);
     let target = record_status_target(record);
-    let activity = if is_suspended(record) {
+    let activity = if suspended {
         "suspended".into()
+    } else if paused_still {
+        "paused".into()
     } else {
         normalize_renderer_text(activity)
     };
-    let minimum = format!(
-        "{frame} {} · {} · {} · {elapsed}",
-        excerpt_renderer_text(&identity, Some(12)),
-        excerpt_renderer_text(&target, Some(20)),
-        excerpt_renderer_text(&activity, Some(8))
-    );
+    let minimum = match &elapsed {
+        Some(elapsed) => format!(
+            "{frame} {} · {} · {} · {elapsed}",
+            excerpt_renderer_text(&identity, Some(12)),
+            excerpt_renderer_text(&target, Some(20)),
+            excerpt_renderer_text(&activity, Some(8))
+        ),
+        None => format!(
+            "{frame} {} · {} · {}",
+            excerpt_renderer_text(&identity, Some(12)),
+            excerpt_renderer_text(&target, Some(20)),
+            excerpt_renderer_text(&activity, Some(8))
+        ),
+    };
     let mut remaining = width.saturating_sub(renderer_visible_width(&minimum));
     let mut tokens = Vec::new();
     if let Some(stats) = stats {
@@ -267,10 +283,10 @@ fn live_row(
     let identity_width = 80.min(12 + remaining);
     let mut context = vec![excerpt_renderer_text(&target, Some(target_width))];
     context.extend(tokens);
-    context.extend([
-        excerpt_renderer_text(&activity, Some(activity_width)),
-        elapsed,
-    ]);
+    context.push(excerpt_renderer_text(&activity, Some(activity_width)));
+    if let Some(elapsed) = elapsed {
+        context.push(elapsed);
+    }
     excerpt_renderer_text(
         &format!(
             "{frame} {} · {}",
@@ -279,4 +295,32 @@ fn live_row(
         ),
         Some(width),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use senpi_task::state::{TaskRecordInput, create_task_record};
+
+    #[test]
+    fn paused_widget_row_shows_pause_mark_and_no_running_clock() {
+        let mut paused = create_task_record(
+            TaskRecordInput {
+                model: "faux/faux-1".into(),
+                description: Some("paused child".into()),
+                ..TaskRecordInput::default()
+            },
+            Some(1_000),
+        )
+        .expect("record");
+        paused.status = TaskStatus::Paused;
+        let mut activity = BTreeMap::new();
+        activity.insert(paused.task_id.clone(), "tool bash".to_string());
+        let rows = background_widget_rows(&[paused], &activity, 15_000, &|_| None, Some(220));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].starts_with("⏸ "));
+        assert!(rows[0].contains("paused"));
+        assert!(!rows[0].contains("tool bash"));
+        assert!(!rows[0].contains("14s"));
+    }
 }

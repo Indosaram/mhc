@@ -173,8 +173,28 @@ fn snapshot(
         live.push(path.clone());
     }
     let activity = session.activity_snapshot();
+    let mut state = crate::connection_handler::build_rpc_session_state(session, None);
+    let (archived, settled_state) = session.with_session_manager(|manager| {
+        (
+            maho_core::session_archived::is_session_archived(manager),
+            maho_core::session_settled::read_session_settled(manager),
+        )
+    });
+    let settled_fields = maho_core::session_settled::settled_fields(&settled_state);
+    if let Some(obj) = state.as_object_mut() {
+        obj.insert("archived".into(), serde_json::Value::Bool(archived));
+        obj.insert(
+            "settled".into(),
+            serde_json::Value::Bool(settled_fields.settled),
+        );
+        if let Some(by) = settled_fields.settled_by
+            && let Ok(val) = serde_json::to_value(by)
+        {
+            obj.insert("settledBy".into(), val);
+        }
+    }
     crate::session_worker_protocol::WorkerSnapshot {
-        state: crate::connection_handler::build_rpc_session_state(session, None),
+        state,
         session_path,
         live_session_paths: live,
         busy: session.is_session_busy(),

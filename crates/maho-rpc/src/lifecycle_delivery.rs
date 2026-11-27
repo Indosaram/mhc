@@ -38,7 +38,7 @@ pub fn observe_lifecycle_delivery(record: &mut Value) {
             };
             match command.as_deref() {
                 Some("get_state") => observe_state(data),
-                Some("open_session") => {
+                Some("open_session") | Some("claim_session") => {
                     if let Some(state) = data.get_mut("state").filter(|state| state.is_object()) {
                         observe_state(state);
                     }

@@ -1,10 +1,12 @@
 //! Port of `tools/output/output.ts`.
 
+use std::collections::VecDeque;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::manager::helpers::in_session;
 use crate::manager::types::ListScope;
@@ -141,26 +143,123 @@ pub fn task_output_params_schema() -> Value {
 }
 
 const DEFAULT_TAIL_LINES: usize = 60;
+const MAX_STATUS_READS: usize = 1024;
 const STOP_PENDING_EXPLANATION: &str =
     "cancel requested, child unreachable: it is stopped on its host before it runs anything else";
 const BLOCKING_REMOVED_GUIDANCE: &str =
     "blocking removed - completion arrives as a notification; use mode:\"tail\" to peek.";
 
 pub const TASK_OUTPUT_DESCRIPTION: &str = concat!(
-    "Read one child task, keyed by task_id or name. task_output always returns immediately: mode='status' (default) returns the record snapshot plus the final response once terminal.",
+    "Read one child task, keyed by task_id or name. task_output always returns immediately: mode='status' (default) returns one record snapshot per observed progress state, then a short no_progress result until the task changes.",
     " ",
-    "mode='tail' returns the last tail_lines of the recorded transcript; mode='full' returns the whole transcript (capped, with a head/tail elision marker). Completion notifications already include the final result.",
+    "mode='tail' returns the last tail_lines of the recorded transcript; mode='full' returns the whole transcript (capped, with a head/tail elision marker). These explicit transcript modes do not consume the status peek. Completion notifications already include the final result.",
     " ",
     "READ-ONLY: this never revives, steers, or otherwise touches the child. A lost task returns a status view with a lost explanation and pid/session-dir breadcrumbs.",
     " ",
     "Only the current session's children are visible.",
 );
 
+#[derive(Debug, Default)]
+pub struct TaskOutputStatusCache {
+    reads: Mutex<VecDeque<(String, String, String)>>,
+}
+
+impl TaskOutputStatusCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn forget_session(&self, session_id: &str) {
+        let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+        reads.retain(|(caller, _, _)| caller != session_id);
+    }
+
+    fn check_and_remember(
+        &self,
+        caller_session_id: &str,
+        task_id: &str,
+        fingerprint: &str,
+    ) -> bool {
+        let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(pos) = reads
+            .iter()
+            .position(|(caller, id, _)| caller == caller_session_id && id == task_id)
+        {
+            let matched = reads[pos].2 == fingerprint;
+            if matched {
+                return true;
+            }
+            reads.remove(pos);
+        }
+        reads.push_back((
+            caller_session_id.to_string(),
+            task_id.to_string(),
+            fingerprint.to_string(),
+        ));
+        while reads.len() > MAX_STATUS_READS {
+            reads.pop_front();
+        }
+        false
+    }
+}
+
+fn digest_field<T: Serialize>(value: Option<&T>) -> String {
+    let serialized = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+    let digest = Sha256::digest(serialized.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+fn status_fingerprint(record: &TaskRecord) -> String {
+    json!([
+        record.status.as_str(),
+        record.residency_state.as_str(),
+        record.updated_at,
+        record.notification.run_epoch,
+        record.pid,
+        record.host_pid,
+        record.child_session_id,
+        digest_field(record.final_response.as_ref()),
+        digest_field(record.error_message.as_ref()),
+        record.killed,
+        digest_field(record.run_stats.as_ref()),
+    ])
+    .to_string()
+}
+
+fn no_progress(record: &TaskRecord) -> TaskOutputToolResult {
+    let reason = format!(
+        "Task {} has not changed since the last status read. Await its completion notification; use mode:\"tail\" only for explicit transcript diagnosis.",
+        record.task_id
+    );
+    tool_result(
+        &reason,
+        TaskOutputDetails::NoProgress {
+            task_id: record.task_id.clone(),
+            status: record.status,
+            reason: reason.clone(),
+        },
+    )
+}
+
 /// Transcript reader I/O failures propagate (the TS rejects).
 pub fn run_task_output(
     deps: &TaskOutputDeps,
     params: &TaskOutputInput,
     caller_session_id: Option<&str>,
+) -> io::Result<TaskOutputToolResult> {
+    run_task_output_cached(deps, params, caller_session_id, None)
+}
+
+pub fn run_task_output_cached(
+    deps: &TaskOutputDeps,
+    params: &TaskOutputInput,
+    caller_session_id: Option<&str>,
+    status_cache: Option<&TaskOutputStatusCache>,
 ) -> io::Result<TaskOutputToolResult> {
     if has_legacy_blocking_param(params) {
         return Ok(invalid_arguments(BLOCKING_REMOVED_GUIDANCE));
@@ -172,20 +271,33 @@ pub fn run_task_output(
         ));
     };
 
+    let finish = |record: &TaskRecord| -> io::Result<TaskOutputToolResult> {
+        let mode = params.mode.unwrap_or(TaskOutputMode::Status);
+        if let (Some(cache), Some(session_id), TaskOutputMode::Status) =
+            (status_cache, caller_session_id, mode)
+        {
+            let fingerprint = status_fingerprint(record);
+            if cache.check_and_remember(session_id, &record.task_id, &fingerprint) {
+                return Ok(no_progress(record));
+            }
+        }
+        output_for_record(deps, record, params)
+    };
+
     // Fast path: a task id owned by the caller's session resolves with one record load instead of
     // listing every record in the state dir. Same id-first precedence and fail-closed scope.
     if let Some(session_id) = caller_session_id
         && let Some(record) = deps.manager.get(id_or_name)
         && in_session(&record, session_id)
     {
-        return output_for_record(deps, &record, params);
+        return finish(&record);
     }
 
     // PERF-DIVERGENCE(senpi tools/output/output.ts): upstream lists every record to resolve a name; we early-exit on the name match and build the known-task list only for not_found. Same id-then-name precedence and text.
     if let Some(session_id) = caller_session_id
         && let Some(record) = deps.manager.find_in_session_by_name(session_id, id_or_name)
     {
-        return output_for_record(deps, &record, params);
+        return finish(&record);
     }
 
     let candidates = scoped_candidates(deps.manager.as_ref(), caller_session_id);
@@ -193,7 +305,7 @@ pub fn run_task_output(
         return Ok(not_found(&candidates, id_or_name));
     };
 
-    output_for_record(deps, record, params)
+    finish(record)
 }
 
 fn has_legacy_blocking_param(params: &TaskOutputInput) -> bool {
@@ -385,6 +497,7 @@ pub struct TaskOutputTool {
     pub parameters: Value,
     pub deps: TaskOutputDeps,
     pub resolve_caller: CallerSessionResolver,
+    status_cache: Arc<TaskOutputStatusCache>,
 }
 
 impl TaskOutputTool {
@@ -395,7 +508,20 @@ impl TaskOutputTool {
         ctx: &dyn SessionIdCarrier,
     ) -> io::Result<TaskOutputToolResult> {
         let caller_session_id = (self.resolve_caller)(ctx);
-        run_task_output(&self.deps, params, caller_session_id.as_deref())
+        run_task_output_cached(
+            &self.deps,
+            params,
+            caller_session_id.as_deref(),
+            Some(&self.status_cache),
+        )
+    }
+
+    pub fn forget_session(&self, session_id: &str) {
+        self.status_cache.forget_session(session_id);
+    }
+
+    pub fn status_cache(&self) -> Arc<TaskOutputStatusCache> {
+        Arc::clone(&self.status_cache)
     }
 
     pub fn render_call<'a>(
@@ -432,6 +558,7 @@ pub fn create_task_output_tool(deps: TaskOutputDeps) -> TaskOutputTool {
         parameters: task_output_params_schema(),
         deps,
         resolve_caller,
+        status_cache: Arc::new(TaskOutputStatusCache::new()),
     }
 }
 

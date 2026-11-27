@@ -63,6 +63,32 @@ fn push_unique(refs: &mut Vec<RunRef>, candidate: RunRef) {
 }
 
 /// `readEngineRunHold`: the pause sequence, whether the parent is stopped, and the fenced runs.
+pub fn parse_engine_pause_state(value: &Value) -> Option<EnginePauseState> {
+    let object = value.as_object()?;
+    let pause_seq = object
+        .get("pauseSeq")
+        .or_else(|| object.get("pause_seq"))
+        .and_then(Value::as_u64)?;
+    let holds = object
+        .get("holds")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let obj = entry.as_object()?;
+                    Some(EngineHoldEntry {
+                        kind: obj.get("kind")?.as_str()?.to_string(),
+                        key: obj.get("key")?.as_str()?.to_string(),
+                        data: obj.get("data").cloned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(EnginePauseState { pause_seq, holds })
+}
+
 pub fn read_engine_run_hold(state: &EngineHoldState) -> EngineRunHold {
     let (pause_seq, stopped, refs) = match state {
         EngineHoldState::Native(state) => {

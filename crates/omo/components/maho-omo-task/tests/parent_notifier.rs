@@ -73,8 +73,6 @@ fn completion_message(ids: &[&str]) -> ParentNotifierMessage {
     message.details = ids
         .iter()
         .map(|id| senpi_task::completion::CompletionDetails {
-            parent_model: None,
-            parent_model_fallback: None,
             run_ref: None,
             task_id: (*id).into(),
             name: (*id).into(),
@@ -287,8 +285,6 @@ fn different_runs_keep_their_own_receipts_and_failures() {
     message.details = ["st_a", "st_b"]
         .into_iter()
         .map(|id| senpi_task::completion::CompletionDetails {
-            parent_model: None,
-            parent_model_fallback: None,
             run_ref: None,
             task_id: id.into(),
             name: id.into(),
@@ -359,8 +355,6 @@ fn a_retired_coordinator_refuses_instead_of_claiming_delivery() {
     message.details = ["st_retired"]
         .into_iter()
         .map(|id| senpi_task::completion::CompletionDetails {
-            parent_model: None,
-            parent_model_fallback: None,
             run_ref: None,
             task_id: id.into(),
             name: id.into(),

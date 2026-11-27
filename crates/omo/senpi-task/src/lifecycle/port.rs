@@ -54,6 +54,10 @@ pub trait ResidentHandle: Send + Sync {
     fn dispose(&self) -> Result<(), HostError>;
     fn terminate(&self) -> Result<(), HostError>;
     fn mark_stopping(&self) {}
+    /// Host-session: the host answered this handle's end of its session (`#11765`).
+    fn host_end_answered(&self) -> bool {
+        false
+    }
     fn is_host_session(&self) -> bool {
         false
     }

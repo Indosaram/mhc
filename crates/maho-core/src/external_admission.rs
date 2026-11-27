@@ -13,6 +13,19 @@ struct InputState {
 }
 /// senpi `onEmitted` listener: told the delivery id whose transcript entry was just written.
 pub type EmittedListener = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExternalAdmissionError {
+    #[error("{0}")]
+    Closed(String),
+    #[error("{0}")]
+    Invalid(String),
+    #[error("{0}")]
+    Delivery(String),
+    #[error("delivery is still in progress")]
+    InProgress,
+}
+
 #[derive(Clone, Default)]
 pub struct ExternalAdmission {
     input: Arc<Mutex<InputState>>,
@@ -41,12 +54,44 @@ pub type RestoredOwnership = Arc<dyn Fn() -> bool + Send + Sync>;
 struct AdmissionLedger {
     epoch: u64,
     pending: IndexMap<String, String>,
+    in_flight: IndexSet<String>,
     /// Restored queued deliveries custody will replay, reserved before recovery or gateway admission (senpi#11209).
     restored: IndexMap<String, RestoredOwnership>,
     emitted: IndexSet<String>,
     failed: IndexMap<String, String>,
     file_takes_writes: Option<bool>,
     closed: Option<String>,
+}
+
+struct DeliveryGuard {
+    ledger: Arc<Mutex<AdmissionLedger>>,
+    id: String,
+    finished: bool,
+}
+
+impl DeliveryGuard {
+    fn finish(&mut self, failure: Option<String>) {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.in_flight.shift_remove(&self.id);
+        if let Some(error) = failure
+            && !ledger.emitted.contains(&self.id)
+        {
+            ledger.pending.shift_remove(&self.id);
+            ledger.failed.entry(self.id.clone()).or_insert(error);
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for DeliveryGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish(Some("delivery interrupted".into()));
+        }
+    }
 }
 pub struct InputHold {
     state: Arc<Mutex<InputState>>,
@@ -259,6 +304,19 @@ impl ExternalAdmission {
         stamp: DeliveryStamp,
         deliver: impl FnOnce(Value, &str) -> Result<(), String>,
     ) -> Result<Value, String> {
+        self.admit_classified(input, editor, busy, held_by, stamp, deliver)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn admit_classified(
+        &self,
+        input: &Value,
+        editor: &Value,
+        busy: bool,
+        held_by: &[String],
+        stamp: DeliveryStamp,
+        deliver: impl FnOnce(Value, &str) -> Result<(), String>,
+    ) -> Result<Value, ExternalAdmissionError> {
         let gate = self.gate(editor);
         self.release_restored();
         let mut l = self
@@ -266,10 +324,18 @@ impl ExternalAdmission {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reason) = &l.closed {
-            return Err(reason.clone());
+            return Err(ExternalAdmissionError::Closed(reason.clone()));
         }
-        let id = input["delivery_id"].as_str().ok_or("missing delivery id")?;
+        let id = input["delivery_id"]
+            .as_str()
+            .ok_or_else(|| ExternalAdmissionError::Invalid("missing delivery id".into()))?;
         let result = |kind: &str, epoch: u64| json!({"kind":kind,"turn_epoch":epoch});
+        if let Some(error) = l.failed.get(id) {
+            return Err(ExternalAdmissionError::Delivery(error.clone()));
+        }
+        if l.in_flight.contains(id) && !l.emitted.contains(id) {
+            return Err(ExternalAdmissionError::InProgress);
+        }
         if l.holds(id) {
             return Ok(result("already_admitted", l.epoch));
         }
@@ -309,9 +375,19 @@ impl ExternalAdmission {
         };
         let message = delivery_message_with_stamp(input, &stamp);
         l.pending.insert(id.into(), lane.into());
+        l.in_flight.insert(id.into());
         let epoch = l.epoch;
         drop(l);
-        deliver(message, lane)?;
+        let mut guard = DeliveryGuard {
+            ledger: Arc::clone(&self.ledger),
+            id: id.into(),
+            finished: false,
+        };
+        if let Err(error) = deliver(message, lane) {
+            guard.finish(Some(error.clone()));
+            return Err(ExternalAdmissionError::Delivery(error));
+        }
+        guard.finish(None);
         if kind == "held" {
             Ok(json!({"kind":"held","holds":held_by,"turn_epoch":epoch}))
         } else {
@@ -467,6 +543,76 @@ mod tests {
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+
+    #[test]
+    fn failed_delivery_does_not_turn_retry_into_false_success() {
+        let admission = ExternalAdmission::default();
+        let input = json!({"delivery_id":"retry-after-error","text":"hello","deliverAs":"followUp","whenIdle":"queue"});
+        let failure = admission.admit(&input, &json!({}), false, |_, _| {
+            Err("delivery failed".into())
+        });
+        assert_eq!(failure.unwrap_err(), "delivery failed");
+        let mut calls = 0;
+        let retried = admission.admit(&input, &json!({}), false, |_, _| {
+            calls += 1;
+            Ok(())
+        });
+        assert_eq!(retried.unwrap_err(), "delivery failed");
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn duplicate_during_delivery_is_not_acknowledged_before_outcome() {
+        let admission = ExternalAdmission::default();
+        let input = json!({"delivery_id":"in-flight","text":"hello","deliverAs":"followUp","whenIdle":"queue"});
+        let outcome = admission.admit(&input, &json!({}), false, |_, _| {
+            let duplicate = admission.admit(&input, &json!({}), false, |_, _| {
+                panic!("duplicate must not invoke delivery")
+            });
+            assert!(
+                duplicate.is_err(),
+                "unsettled delivery must not be acknowledged"
+            );
+            Err("delivery failed".into())
+        });
+        assert_eq!(outcome.unwrap_err(), "delivery failed");
+    }
+
+    #[test]
+    fn panicked_delivery_leaves_retry_as_failure() {
+        let admission = ExternalAdmission::default();
+        let input =
+            json!({"delivery_id":"panic","text":"hello","deliverAs":"followUp","whenIdle":"queue"});
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = admission.admit(&input, &json!({}), false, |_, _| panic!("delivery panic"));
+        }));
+        assert!(panic.is_err());
+        let retry = admission.admit(&input, &json!({}), false, |_, _| {
+            panic!("interrupted delivery must not be silently retried")
+        });
+        assert_eq!(retry.unwrap_err(), "delivery interrupted");
+    }
+
+    #[test]
+    fn observed_delivery_stays_deduplicated_if_callback_returns_error() {
+        let admission = ExternalAdmission::default();
+        let input = json!({"delivery_id":"persisted-before-error","text":"hello","deliverAs":"followUp","whenIdle":"queue"});
+        let failed = admission.admit(&input, &json!({}), false, |message, _| {
+            admission.observe_persisted(&message);
+            assert_eq!(
+                admission.list()["emitted"],
+                json!(["persisted-before-error"])
+            );
+            Err("late delivery error".into())
+        });
+        assert_eq!(failed.unwrap_err(), "late delivery error");
+        let retried = admission
+            .admit(&input, &json!({}), false, |_, _| {
+                panic!("persisted message must not be delivered twice");
+            })
+            .expect("deduplicated");
+        assert_eq!(retried["kind"], "already_admitted");
+    }
     #[test]
     fn input_holds_fence_delivery_and_epoch_conflicts_do_not_enqueue() {
         let admission = ExternalAdmission::default();

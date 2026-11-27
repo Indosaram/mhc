@@ -91,6 +91,7 @@ pub fn carries_inline_media(record: &Value) -> bool {
                 | "turn_end"
                 | "agent_end"
                 | "entry_appended"
+                | "resync_required"
         )
     ) || (kind == Some("response")
         && matches!(

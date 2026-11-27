@@ -8,6 +8,9 @@ use crate::host_decision::{
 };
 use crate::host_ensure::{EnsureHostOptions, HostUpgradePolicy};
 use crate::protocol_identity::host_launch_profile;
+use maho_core::engine_build_identity::{
+    EngineBuildIdentity, comparable_engines, engine_build_identity, engine_identity_of,
+};
 
 /// The argv the supervisor gives its host child; the launch profile has to describe THAT host (senpi `hostChildArgv`,
 /// defined once in `host_ensure.rs`).
@@ -22,6 +25,74 @@ fn platform() -> &'static str {
     }
 }
 
+/// Decides what an `ensure_host` caller does with the probed protocol info (`host-ensure-client.ts` `decideEnsureAction`).
+pub fn decide_ensure_action(
+    options: &EnsureHostOptions,
+    protocol: Option<&HostProtocolInfo>,
+    started_by_us: bool,
+) -> HostDecision {
+    if options.upgrade != HostUpgradePolicy::IfEngineDiffers
+        || crate::host_process_role::is_host_generation_process()
+    {
+        return decide_host_action(
+            &ensure_client(options, started_by_us),
+            protocol,
+            HostDecisionPolicy::Never,
+        );
+    }
+    let client = ensure_client(options, started_by_us);
+    let decision = decide_host_action(&client, protocol, HostDecisionPolicy::Upgrade);
+    if !matches!(decision, HostDecision::Handoff { .. }) {
+        report_uncomparable_engine(&client.identity, protocol);
+    }
+    match decision {
+        HostDecision::Fallback { .. } => HostDecision::Reuse {
+            reason: crate::host_decision::ReuseReason::Compatible,
+            upgradeable: false,
+            warning: None,
+        },
+        other => other,
+    }
+}
+
+/// An upgrade that could not be judged is said out loud (senpi#7040): a host whose engine ordinal is not senpi
+/// CalVer (a compiled omo through 5.1.78 advertised its omo version) is never ordered against this build, so it is
+/// kept whichever engine is newer.
+pub fn uncomparable_engine_warning(
+    client: &EngineBuildIdentity,
+    host: Option<&HostProtocolInfo>,
+) -> Option<String> {
+    let host = host?;
+    let ordinal = host.engine_ordinal?;
+    let running = engine_identity_of(
+        host.engine_version.as_deref().unwrap_or(""),
+        ordinal.map(|v| v as i64),
+    );
+    if comparable_engines(client, &running) {
+        return None;
+    }
+    let format_ordinal = |parts: &[i64]| {
+        parts
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    Some(format!(
+        "senpi host: engine order uncomparable: this build {} [{}], the running host {} [{}]; only senpi CalVer ordinals are ordered, so the running host is kept\n",
+        client.text,
+        format_ordinal(&client.ordinal),
+        running.text,
+        format_ordinal(&running.ordinal),
+    ))
+}
+
+fn report_uncomparable_engine(client: &EngineBuildIdentity, host: Option<&HostProtocolInfo>) {
+    if let Some(message) = uncomparable_engine_warning(client, host) {
+        eprint!("{message}");
+    }
+}
+
 /// This build as a client: which protocol it speaks, what it needs from a host, and which build it is.
 pub fn ensure_client(options: &EnsureHostOptions, started_by_us: bool) -> HostDecisionClient {
     let mut required_capabilities: Vec<String> = REQUIRED_HOST_CAPABILITIES
@@ -32,7 +103,7 @@ pub fn ensure_client(options: &EnsureHostOptions, started_by_us: bool) -> HostDe
     HostDecisionClient {
         protocol_version: HOST_PROTOCOL_VERSION,
         required_capabilities,
-        identity: maho_core::engine_build_identity::engine_build_identity().clone(),
+        identity: engine_build_identity().clone(),
         // An ensure that may upgrade has to say what it would launch: the superset rule refuses to
         // hand off to a generation that would drop what the running host loads. An ensure that may
         // not upgrade declares nothing, and therefore can never be the newer candidate.

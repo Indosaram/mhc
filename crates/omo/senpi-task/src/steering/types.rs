@@ -25,6 +25,10 @@ pub trait DestructionPort: Send + Sync {
                     .into(),
         })
     }
+    /// Ends a daemon-hosted child this process holds no handle for (`#11765`).
+    fn host_session_cancel(&self) -> Option<crate::lifecycle::host_session::HostSessionCancelPort> {
+        None
+    }
 }
 
 pub type RunStatsSnapshotFn = dyn Fn(&str) -> Option<TaskRunStats> + Send + Sync;

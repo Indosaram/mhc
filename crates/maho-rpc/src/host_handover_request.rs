@@ -59,11 +59,22 @@ fn serving_pid(socket: &str, agent_dir: &std::path::Path) -> u32 {
         .flatten()
         .map_or(0, |registered| registered.pid)
 }
+#[cfg(test)]
 fn begin_handover_command(
     agent_dir: &std::path::Path,
     options: &crate::host_handoff::HandoffOptions,
     terms: &IdleHandoverTerms,
     mcp_presenter_enforcement: bool,
+) -> std::io::Result<Value> {
+    begin_handover_command_with(agent_dir, options, terms, mcp_presenter_enforcement, false)
+}
+
+fn begin_handover_command_with(
+    agent_dir: &std::path::Path,
+    options: &crate::host_handoff::HandoffOptions,
+    terms: &IdleHandoverTerms,
+    mcp_presenter_enforcement: bool,
+    allow_downgrade: bool,
 ) -> std::io::Result<Value> {
     let platform = if cfg!(windows) {
         "win32"
@@ -90,7 +101,11 @@ fn begin_handover_command(
         }
     }
     let launch = crate::host_launch::default_host_launch(&[])?;
-    let mut command = json!({"type":BEGIN_HANDOVER_COMMAND,"operation_id":terms.operation_id,"if_instance_id":terms.if_instance_id,"if_generation":terms.if_generation,"target_runtime_build_id":terms.target_runtime_build_id,"launch":{"command":launch.command,"args":launch.args},"host_args":options.host_args,"env":env});
+    let engine = maho_core::engine_build_identity::engine_build_identity();
+    let mut command = json!({"type":BEGIN_HANDOVER_COMMAND,"operation_id":terms.operation_id,"if_instance_id":terms.if_instance_id,"if_generation":terms.if_generation,"target_runtime_build_id":terms.target_runtime_build_id,"target_engine":{"text":engine.text,"ordinal":engine.ordinal},"launch":{"command":launch.command,"args":launch.args,"reports_startup":true},"host_args":options.host_args,"env":env});
+    if allow_downgrade {
+        command["allow_downgrade"] = true.into();
+    }
     // The host refuses a request naming another agent dir than its own (#3560).
     command["agent_dir"] = agent_dir.to_string_lossy().into_owned().into();
     if mcp_presenter_enforcement {
@@ -271,10 +286,15 @@ pub async fn idle_handover_outcome_with(
     {
         return Ok(refuse("handover_unsupported", Vec::new()));
     }
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let timeout_ms = crate::host_startup_policy::startup_envelope(Some(
+        crate::host_stalled_evidence::child_stalled_stop_max_ms(&env),
+    ))
+    .handover_reply;
     let reply = crate::host_probe::request_on_socket(
         socket,
-        &begin_handover_command(agent_dir, options, terms, mcp_presenter_enforcement)?,
-        BEGIN_HANDOVER_TIMEOUT_MS,
+        &begin_handover_command_with(agent_dir, options, terms, mcp_presenter_enforcement, false)?,
+        timeout_ms,
     )
     .await;
     let Some(reply) = reply.filter(Value::is_object) else {

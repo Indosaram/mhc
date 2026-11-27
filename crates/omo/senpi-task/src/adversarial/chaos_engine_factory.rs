@@ -66,6 +66,10 @@ impl ResidentHandle for EngineResident {
             Ok(())
         }
     }
+
+    fn host_end_answered(&self) -> bool {
+        self.0.host_end_answered()
+    }
 }
 
 #[derive(Default)]
@@ -119,6 +123,12 @@ impl DestructionPort for EngineDestruction {
             .map_err(|error| HostError {
                 message: error.to_string(),
             })
+    }
+
+    fn host_session_cancel(&self) -> Option<crate::lifecycle::host_session::HostSessionCancelPort> {
+        lock(&self.0)
+            .clone()
+            .map(|lifecycle| lifecycle.host_session_cancel())
     }
 }
 

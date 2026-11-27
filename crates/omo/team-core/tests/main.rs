@@ -3,6 +3,8 @@
 
 #[path = "layout_tmux.rs"]
 mod layout_tmux;
+#[path = "lock_lease.rs"]
+mod lock_lease;
 #[path = "mailbox.rs"]
 mod mailbox;
 #[path = "registry.rs"]

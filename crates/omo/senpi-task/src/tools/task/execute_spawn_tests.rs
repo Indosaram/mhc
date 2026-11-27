@@ -270,13 +270,12 @@ fn given_a_resolved_foreground_record_when_execution_completes_then_resolved_met
 }
 
 #[test]
-fn held_single_spawn_returns_without_wait_and_forwards_parent_model() {
+fn held_single_spawn_returns_without_wait() {
     use crate::manager::{start_admission::HeldStart, types::StartResult};
-    use crate::tools::task::foreground_wait::ParentModel;
     let harness = default_manager();
     let tool = TaskToolDeps {
         start: Some(std::sync::Arc::new(|spec, _| {
-            assert_eq!(spec.parent_model.as_deref(), Some("provider/parent"));
+            assert_eq!(spec.category.as_deref(), Some("quick"));
             StartResult::Held(HeldStart {
                 kind: "held",
                 task_id: "held-one".into(),
@@ -288,13 +287,7 @@ fn held_single_spawn_returns_without_wait_and_forwards_parent_model() {
     };
     let mut input = params("work", "quick", Some(false));
     input.tools = Some(vec!["lookup".into()]);
-    let context = TaskToolContext {
-        model: Some(ParentModel {
-            provider: "provider".into(),
-            id: "parent".into(),
-        }),
-        ..ctx()
-    };
+    let context = ctx();
     let result = build_task_execute(
         TaskExecuteDeps {
             manager: &harness.manager,

@@ -56,7 +56,7 @@ fn build_task_tool_params() -> Value {
             },
             "model": {
                 "type": "string",
-                "description": "Explicit model override, e.g. anthropic/claude-opus-4. Only valid with subagent_type; mutually exclusive with category — category-routed tasks take their model from omo.json (categories.<name>.models)."
+                "description": "Explicit model override, e.g. anthropic/claude-opus-4, for a custom omo.json agent named by subagent_type. Refused with category (categories.<name>.models routes it) and with a builtin agent such as explore, librarian, plan-consultant or plan-reviewer, which runs on its designated chain (agents.<name>.models routes it)."
             },
             "load_skills": {
                 "type": "array",
@@ -109,7 +109,7 @@ fn build_task_tool_params() -> Value {
                         },
                         "model": {
                             "type": "string",
-                            "description": "Model override for this task. Only valid when the item's effective target is subagent_type; rejected with a category target."
+                            "description": "Model override for this task. Only valid when the item's effective target is a custom agent named by subagent_type; rejected with a category target or a builtin agent."
                         },
                         "load_skills": {
                             "type": "array",

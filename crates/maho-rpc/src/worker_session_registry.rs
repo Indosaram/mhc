@@ -165,6 +165,9 @@ impl WorkerSessionRegistry {
             close_grace_ms,
         }
     }
+    pub fn supports_compact(&self) -> bool {
+        true
+    }
     pub fn size(&self) -> usize {
         lock(&self.state).entries.len()
     }
@@ -636,7 +639,22 @@ impl WorkerSessionRegistry {
         lock(&self.state).entries.iter().filter(|(_,entry)|include_workers||entry.identity.kind!=maho_ext_api::SessionKind::Worker).map(|(handle,entry)|{
             let snapshot=entry.worker.snapshot();let state=snapshot.as_ref().map(|snapshot|&snapshot.state);
             let status=match entry.close.state{RpcSessionState::Opening=>"opening",RpcSessionState::Open=>"open",RpcSessionState::Closing|RpcSessionState::Quarantined=>"closing",RpcSessionState::Closed=>"closed"};
-            let mut row=serde_json::json!({"sessionId":handle,"cwd":state.and_then(|state|state["cwd"].as_str()).unwrap_or(entry.cwd.as_str()),"status":status,"attachments":entry.close.attachments.max(0),"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":{"state":"none"}});
+            let extra = crate::session_status_source::session_row_status_fields(None, state);
+            let mut row=serde_json::json!({
+                "sessionId":handle,
+                "cwd":state.and_then(|state|state["cwd"].as_str()).unwrap_or(entry.cwd.as_str()),
+                "status":status,
+                "attachments":entry.close.attachments.max(0),
+                "retain_on_disconnect": entry.close.retain_on_disconnect,
+                "kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},
+                "tool_child":{"state":"none"},
+                "archived": extra.archived,
+                "settled": extra.settled,
+                "activity": extra.activity,
+            });
+            if let Some(settled_by) = extra.settled_by { row["settledBy"] = settled_by; }
+            if let Some(waiting) = extra.waiting { row["waiting"] = waiting; }
+            if let Some((provider, model_id)) = extra.model { row["model"] = serde_json::json!({"provider":provider,"id":model_id}); }
             // senpi: a worker isolate's session has no tool child of its own yet (senpi#3566 todo 4 serves the in-process host), so the row stays `none`.
             if let Some(id)=state.and_then(|state|state["sessionId"].as_str()).map(str::to_owned).or_else(||entry.durable_session_id.clone()){row["durableSessionId"]=id.into();}
             if let Some(path)=state.and_then(|state|state["sessionFile"].as_str()).map(str::to_owned).or_else(||entry.session_path.clone()){row["sessionPath"]=path.into();}

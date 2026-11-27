@@ -71,10 +71,27 @@ pub fn internal_host_transport(
 impl InternalHostTransport {
     /// Authenticates and seals (POSIX key), authenticates (Windows secret), filters (public), or accepts as is.
     /// `None` is a refused connection, already logged and closed.
-    pub async fn admit<S>(&self, mut socket: S) -> Option<BoxedHop>
+    pub async fn admit<S>(&self, socket: S) -> Option<BoxedHop>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
+        self.admit_with_launch_proof(socket)
+            .await
+            .map(|(hop, _)| hop)
+    }
+
+    /// Same as [`Self::admit`], also reporting how the accepted connection proves the launch key (`senpi#5632`).
+    pub async fn admit_with_launch_proof<S>(
+        &self,
+        mut socket: S,
+    ) -> Option<(
+        BoxedHop,
+        Option<crate::delegated_connection::LaunchProofSource>,
+    )>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        use crate::delegated_connection::LaunchProofSource;
         if let Some(key) = &self.key {
             let mut protocol = serde_json::Map::new();
             protocol.insert("protocolVersion".into(), 1.into());
@@ -88,7 +105,10 @@ impl InternalHostTransport {
             return match crate::internal_channel::accept_internal_connection(socket, key, protocol)
                 .await
             {
-                Ok(stream) => Some(Box::new(stream) as BoxedHop),
+                Ok(stream) => Some((
+                    Box::new(stream) as BoxedHop,
+                    Some(LaunchProofSource::InBand),
+                )),
                 Err(error) => {
                     // One line per refused connection: the refusal code only.
                     eprintln!("senpi rpc host: internal connection refused: {}", error.0);
@@ -101,17 +121,25 @@ impl InternalHostTransport {
             return crate::socket_transport::authenticate_socket(&mut socket, secret)
                 .await
                 .ok()
-                .map(|()| Box::new(socket) as BoxedHop);
+                .map(|()| {
+                    (
+                        Box::new(socket) as BoxedHop,
+                        Some(LaunchProofSource::Proven),
+                    )
+                });
         }
         #[cfg(unix)]
         if let Some(endpoint) = &self.public_endpoint {
-            return Some(Box::new(crate::rpc_public_auth::public_rpc_stream(
-                socket,
-                endpoint.clone(),
-                self.require_token,
-            )));
+            return Some((
+                Box::new(crate::rpc_public_auth::public_rpc_stream(
+                    socket,
+                    endpoint.clone(),
+                    self.require_token,
+                )),
+                Some(LaunchProofSource::InBand),
+            ));
         }
-        Some(Box::new(socket))
+        Some((Box::new(socket), None))
     }
 
     /// Publishes the public endpoint's key record after listening. A failure is logged and returned: the host ends

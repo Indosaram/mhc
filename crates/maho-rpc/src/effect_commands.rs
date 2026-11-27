@@ -395,6 +395,7 @@ pub async fn run_queued_input_change(ctx: &EffectCommandContext, command: &Value
                 disposition: Some(status.as_str().into()),
                 outcome: None,
                 answer: answer.clone(),
+                ..Default::default()
             },
         ),
         Some(outcome) => transitioned(
@@ -405,6 +406,7 @@ pub async fn run_queued_input_change(ctx: &EffectCommandContext, command: &Value
                 disposition: None,
                 outcome: Some(outcome.clone()),
                 answer: answer.clone(),
+                ..Default::default()
             },
         ),
     };

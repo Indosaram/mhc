@@ -1,8 +1,27 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 pub fn answered_ui_request_id(frame: &Value) -> Option<&str> {
     frame["uiRequestId"]
         .as_str()
         .or_else(|| frame["id"].as_str())
+}
+/// The one correlated reply to an `extension_ui_progress` record, keyed by its `id` (senpi#5761).
+pub fn extension_ui_progress_reply(id: &str, outcome: &str) -> Value {
+    if outcome == "applied" {
+        json!({
+            "id": id,
+            "type": "response",
+            "command": "extension_ui_progress",
+            "success": true
+        })
+    } else {
+        json!({
+            "id": id,
+            "type": "response",
+            "command": "extension_ui_progress",
+            "success": false,
+            "error": outcome
+        })
+    }
 }
 pub fn settled_question_status(answers: &Value, comment: Option<&str>) -> Option<&'static str> {
     if comment.is_some_and(|comment| !comment.trim().is_empty()) {

@@ -153,7 +153,15 @@ pub fn protocol_identity_for(
     agent_dir: &str,
 ) -> serde_json::Value {
     let build = maho_core::engine_build_identity::engine_build_identity();
-    serde_json::json!({"instanceId":host_instance_id(),"generation":host_generation(env),"engineVersion":build.text,"engineOrdinal":build.ordinal,"launch_profile":profile,"agentDir":agent_dir})
+    serde_json::json!({
+        "instanceId": host_instance_id(),
+        "generation": host_generation(env),
+        "engineVersion": build.text,
+        "engineOrdinal": build.ordinal,
+        "launch_profile": profile,
+        "agentDir": agent_dir,
+        "method_classes": crate::method_classes::describe_rpc_method_classes(),
+    })
 }
 #[cfg(test)]
 mod tests {

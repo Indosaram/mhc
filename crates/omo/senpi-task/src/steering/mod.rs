@@ -1,6 +1,7 @@
 //! Steering: send / interrupt / cancel delivery to child tasks (`steering/` in TypeScript).
 
 mod engine;
+mod host_session_cancel;
 mod types;
 
 pub use engine::SteeringEngine;

@@ -8,11 +8,13 @@ autotests = false
 
 [dependencies]
 async-trait = "=0.1.92"
+anyhow = "=1.0.104"
 maho-core = { path = "../maho-core" }
 maho-agent = { path = "../maho-agent" }
 maho-tools = { path = "../maho-tools" }
 maho-ai = { path = "../maho-ai" }
 maho-ext-api = { path = "../maho-ext-api" }
+maho-machine-ops = { path = "../maho-machine-ops" }
 maho-tool-child = { path = "../maho-tool-child" }
 maho-tui = { path = "../maho-tui" }
 chrono = { workspace = true, features = ["std", "clock"] }
@@ -29,6 +31,7 @@ libc.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+url = { workspace = true }
 thiserror.workspace = true
 futures.workspace = true
 getrandom = "=0.3.4"
@@ -42,7 +45,6 @@ tokio = { workspace = true, features = ["io-util", "io-std", "sync", "rt", "macr
 libproc = "=0.14.11"
 
 [dev-dependencies]
-anyhow = "=1.0.104"
 tempfile.workspace = true
 maho-ext-host = { path = "../maho-ext-host" }
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }

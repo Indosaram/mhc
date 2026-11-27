@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::manager::execution_mode::ExecutionMode;
 use crate::progress::ToolProgressDetails;
-use crate::state::{TaskRecord, TaskRunStats};
+use crate::state::{ResolvedModelRecord, TaskRecord, TaskRunStats};
 use crate::tools::task::start_presentation::StartedView;
 use crate::tools::task::types::{TaskSkillSummary, TaskToolDetails, TaskToolMode};
 
@@ -115,6 +115,15 @@ pub fn started_details(
         skills,
         ..TaskToolDetails::default()
     }
+}
+
+pub fn with_live_spawn_facts(
+    mut resolved_model: Option<ResolvedModelRecord>,
+    record: Option<&TaskRecord>,
+) -> Option<ResolvedModelRecord> {
+    record
+        .and_then(|record| record.resolved_model.clone())
+        .or_else(|| resolved_model.take())
 }
 
 /// `TaskToolDetails & ToolProgressDetails`.

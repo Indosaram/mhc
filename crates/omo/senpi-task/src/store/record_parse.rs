@@ -140,9 +140,7 @@ pub fn parse_task_record(
         runner_kind,
         host_session,
         cancel_requested,
-        parent_model: read_optional_string(record, "parent_model")?,
-        parent_model_fallback:
-            super::parent_model_fallback_parse::parse_optional_parent_model_fallback(value),
+        model_refusals: super::model_refusals_parse::parse_optional_model_refusals(value),
         fallback_closing_child: parse_optional_closing_child(record)?,
         start_queued: parse_optional_start_queued(record)?,
         revive_delivery_uncertain: parse_optional_revive_delivery_uncertainty(record)?,

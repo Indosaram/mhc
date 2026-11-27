@@ -6,6 +6,23 @@ use subtle::ConstantTimeEq;
 
 pub const RPC_AUTH_CAPABILITY: &str = "socket_auth";
 
+/// The record a public-key filter hands the host core, in band and in order, once its client proved the launch key
+/// (senpi#5632). Only a filter writes it: every filter refuses it from a client.
+pub const RPC_LAUNCH_PROOF_RECORD: &str = "launch_proven";
+
+pub fn launch_proof_record_refusal(id: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    if let Some(id) = id {
+        obj.insert("id".into(), id.clone());
+    }
+    obj.insert("type".into(), "response".into());
+    obj.insert("command".into(), RPC_LAUNCH_PROOF_RECORD.into());
+    obj.insert("success".into(), false.into());
+    obj.insert("error".into(), "reserved_record".into());
+    obj.insert("errorCode".into(), "reserved_record".into());
+    serde_json::Value::Object(obj)
+}
+
 /// senpi `RPC_AUTH_HEX`: exactly 64 lowercase hex digits.
 pub fn is_rpc_auth_hex(value: &str) -> bool {
     value.len() == 64

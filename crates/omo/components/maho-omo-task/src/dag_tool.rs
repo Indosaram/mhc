@@ -490,7 +490,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
 pub fn run_dag_tool_in_context(
     deps: &DagToolDeps,
     input: DagToolInput,
-    context: Option<&DagToolContext>,
+    _context: Option<&DagToolContext>,
 ) -> Result<ToolResult, ToolError> {
     if input.action == "start" {
         let Some(definition) = input.definition else {
@@ -516,9 +516,6 @@ pub fn run_dag_tool_in_context(
             },
             parent_session_id: (deps.parent_session_id)(),
             root_session_id: (deps.root_session_id)(),
-            parent_model: context
-                .and_then(|context| context.model.as_ref())
-                .map(|model| format!("{}/{}", model.provider, model.id)),
         }) {
             Ok(result) => result,
             Err(error) => return Ok(manager_failure(error)),

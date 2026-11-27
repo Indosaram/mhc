@@ -665,6 +665,25 @@ impl SteeringEngine {
             });
         }
         let reachable = (self.port.live_handle)(&record.task_id);
+        if reachable.is_none() && crate::lifecycle::is_host_session_record(&record) {
+            let clear_port = self.port.clone();
+            return super::host_session_cancel::cancel_unhandled_host_session(
+                &self.port,
+                &record,
+                reason,
+                expected_run_epoch,
+                |rec, reason_text| CancelOutcome::CancelPending {
+                    task_id: rec.task_id.clone(),
+                    previous_status: rec.status,
+                    reason: reason_text.to_string(),
+                },
+                Arc::new(move |task_id| {
+                    let _ = SteeringEngine::new(clear_port.clone())
+                        .clear_persisted_queue(task_id, None);
+                }),
+                stale_cancel,
+            );
+        }
         let recovering = reachable
             .as_ref()
             .is_some_and(|handle| handle.transport_recovering());

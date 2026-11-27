@@ -186,9 +186,12 @@ fn given_every_configured_model_fails_before_tools_when_chain_exhausts_then_atte
     let terminal = wait_terminal(&harness.manager, &task_id);
     assert_eq!(terminal.status, TaskStatus::Error);
     assert_eq!(terminal.model, "vendor-b/fallback-model");
-    assert_eq!(
-        terminal.error_message.as_deref(),
-        Some("fallback unavailable")
+    let message = terminal.error_message.as_deref().expect("error message");
+    assert_eq!(message.lines().next(), Some("fallback unavailable"));
+    assert!(
+        message.contains(
+            "- vendor-b/fallback-model: overloaded or unavailable (fallback unavailable)"
+        )
     );
     assert_eq!(terminal.fallback_models, Some(Vec::new()));
     assert_eq!(
@@ -392,8 +395,14 @@ fn given_builtin_category_child_on_chain_rung_when_fallback_to_next_rung_then_re
 }
 
 #[test]
-fn start_failure_matrix_does_not_spend_same_account_parent_on_auth_or_quota() {
-    for message in ["401 unauthorized", "weekly limit exhausted"] {
+fn start_failure_matrix_walks_designated_chain_on_auth_or_quota() {
+    for (message, expected_remaining) in [
+        ("401 unauthorized", Vec::<String>::new()),
+        (
+            "weekly limit exhausted",
+            vec!["vendor-a/third-model".to_owned()],
+        ),
+    ] {
         let runner = FakeRunner::new();
         *super::fakes::lock(&runner.hook) = Some(Arc::new(move |_, call| {
             (call == 1).then(|| {
@@ -408,24 +417,24 @@ fn start_failure_matrix_does_not_spend_same_account_parent_on_auth_or_quota() {
         let harness = harness_with(
             fallback_plan(vec![
                 category_record("vendor-b", "fallback-model"),
-                category_record("vendor-a", "parent"),
+                category_record("vendor-a", "third-model"),
             ]),
             &runner,
             ExecutionMode::InProcess,
         );
-        let task = started(harness.manager.start(&ManagerStartSpec {
-            parent_model: Some("vendor-a/parent".into()),
-            ..base_spec()
-        }));
+        let task = started(harness.manager.start(&base_spec()));
         let record = load(&harness, &task.task_id);
         assert_eq!(record.model, "vendor-b/fallback-model");
-        assert!(!displays(record.fallback_models.as_ref()).contains(&"vendor-a/parent".to_owned()));
+        assert_eq!(
+            displays(record.fallback_models.as_ref()),
+            expected_remaining
+        );
         assert_eq!(runner.started_count(), 2);
     }
 }
 
 // auth-failure-fallback.test.ts (#10806): a typed provider_credentials_missing prompt refusal walks
-// the chain past every rung on the refusing provider and records not_signed_in on the parent rung.
+// the chain past every rung on the refusing provider and records not_signed_in on model_refusals.
 #[test]
 fn credentials_refusal_skips_refusing_provider_and_records_not_signed_in() {
     let runner = FakeRunner::new();
@@ -450,21 +459,20 @@ fn credentials_refusal_skips_refusing_provider_and_records_not_signed_in() {
     let harness = harness_with(
         fallback_plan(vec![
             category_record("vendor-a", "sibling"),
-            category_record("vendor-c", "parent"),
+            category_record("vendor-c", "backup"),
         ]),
         &runner,
         ExecutionMode::InProcess,
     );
-    let task = started(harness.manager.start(&ManagerStartSpec {
-        parent_model: Some("vendor-c/parent".into()),
-        ..base_spec()
-    }));
+    let task = started(harness.manager.start(&base_spec()));
     let record = load(&harness, &task.task_id);
-    assert_eq!(record.model, "vendor-c/parent");
+    assert_eq!(record.model, "vendor-c/backup");
     assert_eq!(record.fallback_models, Some(Vec::new()));
+    let refusals = record.model_refusals.expect("model_refusals");
+    assert_eq!(refusals.len(), 1);
     assert_eq!(
-        record.parent_model_fallback.map(|note| note.reason),
-        Some(crate::state::ParentModelFallbackReason::NotSignedIn)
+        refusals[0].reason,
+        crate::state::ModelRefusalReason::NotSignedIn
     );
     assert_eq!(runner.started_count(), 2);
 }

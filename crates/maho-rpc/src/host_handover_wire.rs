@@ -47,6 +47,7 @@ pub fn parse_begin_handover(record: &Map<String, Value>) -> Result<IdleHandoverR
             Some(HandoverLaunch {
                 command: launch.get("command")?.as_str()?.to_owned(),
                 args: string_array(launch.get("args"))?,
+                reports_startup: launch.get("reports_startup") == Some(&Value::Bool(true)),
             })
         })
         .ok_or("launch must be { command, args }")?;
@@ -81,6 +82,12 @@ pub fn parse_begin_handover(record: &Map<String, Value>) -> Result<IdleHandoverR
         Some(Value::String(dir)) if !dir.is_empty() => Some(dir.clone()),
         Some(_) => return Err("agent_dir must be a non-empty string".into()),
     };
+    let target_engine = parse_target_engine(record.get("target_engine"))?;
+    let allow_downgrade = match record.get("allow_downgrade") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err("allow_downgrade must be a boolean".into()),
+    };
     Ok(IdleHandoverRequest {
         operation_id: operation_id.into(),
         if_instance_id: if_instance_id.into(),
@@ -92,7 +99,26 @@ pub fn parse_begin_handover(record: &Map<String, Value>) -> Result<IdleHandoverR
         policy,
         mcp_presenter_enforcement,
         agent_dir,
+        target_engine,
+        allow_downgrade,
     })
+}
+
+fn parse_target_engine(
+    value: Option<&Value>,
+) -> Result<Option<maho_core::engine_build_identity::EngineBuildIdentity>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let invalid = "target_engine must be { text, ordinal: [y, m, d, n, epoch] }";
+    let obj = value.as_object().ok_or(invalid)?;
+    let text = obj.get("text").and_then(Value::as_str).ok_or(invalid)?;
+    let ordinal =
+        crate::host_protocol_info::parse_engine_ordinal_value(obj.get("ordinal")).ok_or(invalid)?;
+    Ok(Some(maho_core::engine_build_identity::engine_identity_of(
+        text,
+        ordinal.map(|v| v as i64),
+    )))
 }
 
 pub fn handover_wire(view: &HandoverView) -> Value {
@@ -282,7 +308,15 @@ pub async fn perform_idle_handover(
     };
     let result = crate::mcp_presenter_bootstrap::with_presenter_launch(
         presenter,
-        crate::host_handoff::handoff_host(socket, agent_dir, options),
+        crate::host_handoff::handoff_host_with_engine(
+            socket,
+            agent_dir,
+            options,
+            crate::host_handoff::HandoffEngineOptions {
+                successor_engine: request.target_engine.clone(),
+                allow_downgrade: request.allow_downgrade,
+            },
+        ),
     )
     .await;
     let successor = match result {
@@ -410,9 +444,12 @@ mod tests {
                 instance_id: "i".into(),
                 generation: 1.,
                 runtime_build_id: None,
+                engine: None,
             }),
             is_idle: Box::new(|| false),
             perform: Box::new(|_| Box::pin(async { Err("never".to_owned()) })),
+            hold_new_work: None,
+            release_new_work: None,
             poll_ms: Some(3_600_000),
             log: None,
         });

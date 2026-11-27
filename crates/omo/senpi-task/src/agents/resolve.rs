@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 
 use super::builtin::agent_fallback_chain;
 use super::types::{AgentDefinition, AgentModelEntry, agent_model_candidates};
+use crate::category::{ModelSelectionSource, ResolveCategoryOptions, missing_chain_providers};
 use crate::delegate_adapter::{
-    DelegateModelResolutionInput, DelegateModelResolutionResult, resolve_model_for_delegate_task,
-    warm_cache_deps,
+    DelegateFallbackEntry, DelegateModelResolutionInput, DelegateModelResolutionResult,
+    resolve_model_for_delegate_task, warm_cache_deps,
 };
 use crate::host::{
     ParsedModel, SenpiModelRegistry, parse_available_models, parse_model, parse_registry_model,
@@ -17,6 +18,7 @@ use crate::model_chain::{
     build_runtime_model_chain, chain_rung_candidates,
 };
 use crate::model_exclusion::without_excluded_models;
+use crate::models_distribution::{ModelDistributor, ModelsDistribution};
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub struct ResolveAgentOptions {
     /// `omoConfig.exclude_models`: the registry is filtered through it before any candidate is read.
     pub exclude_models: Option<Vec<String>>,
     pub omo_config: Option<serde_json::Value>,
+    pub distribute_models: Option<ModelDistributor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +54,7 @@ pub struct AgentPersona {
 pub struct ResolvedAgent {
     pub agent: String,
     pub model: String,
+    pub model_source: ModelSelectionSource,
     pub requested_model: Option<ResolvedModelRecord>,
     pub fallback_models: Option<Vec<ResolvedModelRecord>>,
     pub resolved_model: Option<ResolvedModelRecord>,
@@ -69,6 +73,8 @@ pub enum AgentResolutionResult {
         agent: String,
         attempted_model: Option<String>,
         available_agents: Vec<String>,
+        attempted_chain: Option<Vec<DelegateFallbackEntry>>,
+        missing_providers: Option<Vec<String>>,
     },
 }
 
@@ -141,6 +147,7 @@ pub fn resolve_agent(
         return AgentResolutionResult::Resolved(Box::new(ResolvedAgent {
             agent: name.to_string(),
             model: model.clone(),
+            model_source: ModelSelectionSource::User,
             requested_model: None,
             fallback_models: None,
             resolved_model: None,
@@ -170,6 +177,8 @@ pub fn resolve_agent(
             agent: name.to_string(),
             attempted_model,
             available_agents,
+            attempted_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+            missing_providers: None,
         };
     };
 
@@ -179,6 +188,7 @@ pub fn resolve_agent(
         .and_then(|models| parse_available_models(&models))
         .map(|models| models.into_iter().collect());
     let resolve = |found: ParsedModel,
+                   model_source: ModelSelectionSource,
                    variant: Option<String>,
                    reasoning_effort: Option<String>,
                    chain: RuntimeModelChain,
@@ -191,6 +201,7 @@ pub fn resolve_agent(
         AgentResolutionResult::Resolved(Box::new(ResolvedAgent {
             agent: name.to_string(),
             model: record.display.clone(),
+            model_source,
             requested_model: chain.requested_model,
             fallback_models: chain.fallback_models,
             resolved_model: Some(record),
@@ -199,14 +210,37 @@ pub fn resolve_agent(
         }))
     };
 
+    let direct_source = if super::builtin::builtin_agent(name).is_some_and(|builtin| {
+        builtin.model == definition.model && builtin.models == definition.models
+    }) {
+        ModelSelectionSource::Builtin
+    } else {
+        ModelSelectionSource::User
+    };
     let mut attempted_model = None;
     let entries: Option<&[AgentModelEntry]> = definition.models.as_deref();
-    let direct_models = agent_model_candidates(
-        definition.model.as_deref(),
+    let has_entries = entries.is_some_and(|models| !models.is_empty());
+    let suppress_scalar =
+        definition.models_distribution == Some(ModelsDistribution::RoundRobin) && has_entries;
+    let configured_models = agent_model_candidates(
+        if suppress_scalar {
+            None
+        } else {
+            definition.model.as_deref()
+        },
         entries,
         definition.variant.as_deref(),
         definition.reasoning_effort.as_deref(),
     );
+    let direct_models = match (has_entries, options.distribute_models.as_ref()) {
+        (true, Some(distributor)) => distributor.distribute(
+            &format!("agent:{name}"),
+            &configured_models,
+            definition.models_distribution,
+            |candidate| candidate.model.as_str(),
+        ),
+        _ => configured_models,
+    };
     for candidate in &direct_models {
         attempted_model = Some(candidate.model.clone());
         let Some(found) = find_exact_agent_model(&candidate.model, registry) else {
@@ -225,6 +259,7 @@ pub fn resolve_agent(
         });
         return resolve(
             found,
+            direct_source,
             candidate.variant.clone(),
             candidate.reasoning_effort.clone(),
             chain,
@@ -232,14 +267,15 @@ pub fn resolve_agent(
         );
     }
 
+    let category_options = ResolveCategoryOptions {
+        distribute_models: options.distribute_models.clone(),
+    };
     for category in definition.categories.iter().flatten() {
-        if let Ok(crate::category::CategoryResolutionResult::Resolved { spec, .. }) =
-            crate::category::resolve_category(
-                category,
-                &config,
-                registry,
-                &crate::category::ResolveCategoryOptions::default(),
-            )
+        if let Ok(crate::category::CategoryResolutionResult::Resolved {
+            spec,
+            model_selection,
+            ..
+        }) = crate::category::resolve_category(category, &config, registry, &category_options)
         {
             let found = ParsedModel {
                 provider: spec.provider.clone(),
@@ -252,6 +288,7 @@ pub fn resolve_agent(
                 .or(spec.reasoning_effort.clone());
             return resolve(
                 found,
+                model_selection.source,
                 variant,
                 reasoning,
                 RuntimeModelChain {
@@ -290,6 +327,7 @@ pub fn resolve_agent(
             // Configured tuning wins over the rung's own variant.
             return resolve(
                 found,
+                ModelSelectionSource::Builtin,
                 definition.variant.clone().or(resolution.variant),
                 definition.reasoning_effort.clone(),
                 runtime_chain,
@@ -298,10 +336,19 @@ pub fn resolve_agent(
         }
     }
 
+    let missing_providers =
+        fallback_chain
+            .zip(available_models.as_ref())
+            .map(|(chain, available)| {
+                let list: Vec<String> = available.iter().cloned().collect();
+                missing_chain_providers(chain, &list)
+            });
     AgentResolutionResult::ModelUnavailable {
         agent: name.to_string(),
         attempted_model,
         available_agents,
+        attempted_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+        missing_providers,
     }
 }
 

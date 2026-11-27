@@ -6,8 +6,23 @@ use crate::host_idle_handover::EXPECTED_RUNTIME_BUILD_ID_ENV;
 use crate::host_launch::PINNED_HOST_CLIENT_CAPABILITIES;
 use crate::protocol_identity::{HOST_GENERATION_ENV, HOST_INSTANCE_ID_ENV};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 pub type HostEnvironment = BTreeMap<String, String>;
+
+type TrustHandOffProvider = fn(&str) -> BTreeMap<String, String>;
+static TRUST_HANDOFF_PROVIDER: OnceLock<TrustHandOffProvider> = OnceLock::new();
+
+/// Registers the crate-external trust handoff provider (called by `maho-cli` if adopted trust exists).
+pub fn register_adopted_engine_trust_handoff(provider: TrustHandOffProvider) {
+    let _ = TRUST_HANDOFF_PROVIDER.set(provider);
+}
+
+fn adopted_engine_trust_handoff(platform: &str) -> BTreeMap<String, String> {
+    TRUST_HANDOFF_PROVIDER
+        .get()
+        .map_or_else(BTreeMap::new, |provider| provider(platform))
+}
 
 fn delete_name(env: &mut HostEnvironment, name: &str, platform: &str) {
     if platform == "win32" {
@@ -87,7 +102,12 @@ pub fn initial_host_environment_from(
     options: &InitialHostEnvironment<'_>,
     platform: &str,
 ) -> HostEnvironment {
-    let mut forced = identity(options.paths, options.instance_id, options.generation);
+    let mut forced = adopted_engine_trust_handoff(platform);
+    forced.extend(identity(
+        options.paths,
+        options.instance_id,
+        options.generation,
+    ));
     let agent_dir = options
         .agent_dir
         .map_or_else(maho_core::config::get_agent_dir, str::to_owned);
@@ -116,7 +136,12 @@ pub fn successor_host_environment_from(
     options: &SuccessorHostEnvironment<'_>,
     platform: &str,
 ) -> HostEnvironment {
-    let mut forced = identity(options.paths, options.instance_id, options.generation);
+    let mut forced = adopted_engine_trust_handoff(platform);
+    forced.extend(identity(
+        options.paths,
+        options.instance_id,
+        options.generation,
+    ));
     if let Some(agent_dir) = options.agent_dir.filter(|dir| !dir.is_empty()) {
         forced.insert(maho_core::config::env_agent_dir_var(), agent_dir.to_owned());
     }

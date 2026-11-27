@@ -111,6 +111,18 @@ pub async fn proxy_with_admission<C, I>(
     C: AsyncRead + AsyncWrite + Send + 'static,
     I: AsyncRead + AsyncWrite + Send + 'static,
 {
+    proxy_with_admission_with_proof(client, internal, admission, false).await;
+}
+
+pub async fn proxy_with_admission_with_proof<C, I>(
+    client: C,
+    internal: Option<I>,
+    admission: Arc<HostAdmission>,
+    launch_proven: bool,
+) where
+    C: AsyncRead + AsyncWrite + Send + 'static,
+    I: AsyncRead + AsyncWrite + Send + 'static,
+{
     let (mut client_read, client_write) = tokio::io::split(client);
     let client_write: Writer<C> = Arc::new(tokio::sync::Mutex::new(client_write));
     let state = Arc::new(Mutex::new(Admitted::default()));
@@ -129,6 +141,15 @@ pub async fn proxy_with_admission<C, I>(
         let state = state.clone();
         let admission = admission.clone();
         async move {
+            if let Some(internal) = internal_write.as_mut()
+                && launch_proven
+            {
+                let line = format!(
+                    "{{\"type\":\"{}\"}}\n",
+                    crate::rpc_auth_proof::RPC_LAUNCH_PROOF_RECORD
+                );
+                internal.write_all(line.as_bytes()).await?;
+            }
             let mut lines =
                 JsonlLineReader::new(MAX_RPC_LINE_CHARACTERS).map_err(std::io::Error::other)?;
             let mut chunk = vec![0u8; 16 * 1024];
@@ -150,7 +171,16 @@ pub async fn proxy_with_admission<C, I>(
                     let request = record(line.as_bytes());
                     let kind = request.as_ref().and_then(|request| request.get("type"));
                     let id = request.as_ref().and_then(|request| request.get("id"));
-                    if admission.stopping() && kind == Some(&json!("get_protocol_info")) {
+                    if !launch_proven
+                        && kind.and_then(Value::as_str)
+                            == Some(crate::rpc_auth_proof::RPC_LAUNCH_PROOF_RECORD)
+                    {
+                        reply(
+                            &client,
+                            &line_of(&crate::rpc_auth_proof::launch_proof_record_refusal(id)),
+                        )
+                        .await?;
+                    } else if admission.stopping() && kind == Some(&json!("get_protocol_info")) {
                         let mut response = Map::new();
                         response.insert("id".into(), id.cloned().unwrap_or(Value::Null));
                         response.insert("type".into(), "response".into());

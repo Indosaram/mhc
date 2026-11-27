@@ -75,6 +75,8 @@ pub fn build_task_tool_description(input: &DescriptionInput<'_>) -> String {
             .iter()
             .map(|entry| (entry.name.as_str(), entry.description.as_deref())),
     );
+    // Rules first, catalogue last: Claude Code cuts an MCP tool description at 4096 chars (#14291),
+    // so on the Claude subscription path only the head of this text reaches the model.
     format!(
         r#"Spawn one child task or fan out a batch.
 
@@ -83,16 +85,17 @@ Choose exactly one input form:
 - Batch: tasks (1-16 items); top-level target, model, and skills are inherited when an item omits them. An inherited model is rejected when the item's effective target is a category.
 
 Each spawn MUST provide EITHER category OR subagent_type after inheritance. DO NOT provide both.
-
-- category routes through Sisyphus-Junior. Available categories:
-{category_list}
-- subagent_type invokes a loaded agent directly. Available agents: {agent_names}{gated_line}{momus_notice}
+A subagent_type that names no loaded agent fails with unknown_target; a category name belongs in category, never in subagent_type.
 
 Blank provider padding is normalized automatically; do not add filler values.
 load_skills prepends named skills. run_in_background=true returns task ids for parallel work; false waits for results.
-name is an optional stable handle. model is an explicit override for subagent_type spawns ONLY.
+name is an optional stable handle. model is an explicit override for a custom agent named by subagent_type ONLY; a builtin agent (explore, librarian, plan-consultant, plan-reviewer, the reviewer agents) refuses it with agent_with_model because it runs on its designated chain (agents.<name>.models in omo.json).
 NEVER combine model with category: a category-routed task always takes its model from omo.json (categories.<name>.models), so passing both fails with invalid_arguments.
 task_send continues an existing child; task always spawns.
-Prompts MUST be in English."#
+Prompts MUST be in English.
+
+- subagent_type invokes a loaded agent directly. Available agents: {agent_names}{gated_line}{momus_notice}
+- category routes through Sisyphus-Junior. Available categories:
+{category_list}"#
     )
 }

@@ -13,8 +13,8 @@
 //! the same per-subscription `seq`, and every `session_status` record carries `lastEffect` when the host installed a
 //! provider ([`SessionStatusStream::set_last_effect_provider`]).
 use crate::session_status::{
-    SessionStatusActor, SessionStatusCause, SessionStatusTerminal, SessionView,
-    derive_session_status,
+    SessionStatusActor, SessionStatusCause, SessionStatusExtras, SessionStatusTerminal,
+    SessionView, derive_session_status_with_extras,
 };
 use crate::session_status_subscriptions::{
     SubscriptionOptions, mirrors_record, subscription_matches,
@@ -26,6 +26,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub trait SessionStatusSource: Send + Sync {
     fn session_ids(&self) -> Vec<String>;
     fn view(&self, session_id: &str) -> Option<SessionView>;
+    fn extras(&self, _session_id: &str) -> SessionStatusExtras {
+        SessionStatusExtras::default()
+    }
 }
 
 /// How the stream reaches a connection (senpi `SessionStatusDelivery`).
@@ -128,12 +131,14 @@ impl SessionStatusStream {
             }
             let change = self.last_change_of(&session_id);
             let questions = delivery.pending_questions(&session_id);
+            let extras = source.extras(&session_id);
             snapshot.push(self.record(
                 &id,
                 0,
                 &options,
                 &session_id,
                 &view,
+                &extras,
                 questions,
                 None,
                 change,
@@ -206,6 +211,7 @@ impl SessionStatusStream {
         };
         let questions = delivery.pending_questions(session_id);
         let mut dropped = Vec::new();
+        let extras = source.extras(session_id);
         let ids = self.subscriptions.keys().cloned().collect::<Vec<_>>();
         for id in ids {
             let subscription = &self.subscriptions[&id];
@@ -221,6 +227,7 @@ impl SessionStatusStream {
                 &subscription.options,
                 session_id,
                 &view,
+                &extras,
                 questions,
                 Some(cause),
                 change.clone(),
@@ -431,16 +438,18 @@ impl SessionStatusStream {
         options: &SubscriptionOptions,
         session_id: &str,
         view: &SessionView,
+        extras: &SessionStatusExtras,
         fanout_questions: usize,
         cause: Option<SessionStatusCause>,
         change: Value,
     ) -> Value {
-        let mut derived = derive_session_status(
+        let mut derived = derive_session_status_with_extras(
             &view.entry,
             view.runtime.as_ref(),
             fanout_questions,
             self.terminals.get(session_id),
             cause,
+            extras,
         );
         let context = derived.remove("context");
         let mut record = serde_json::Map::new();

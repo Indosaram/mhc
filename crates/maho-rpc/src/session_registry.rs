@@ -53,6 +53,10 @@ pub struct DurableSessionIdentity {
 }
 pub struct RpcSessionEntry {
     pub close: SessionCloseState,
+    /// Built speculatively: no public identity, attachment, listing, or disk persistence until claimed.
+    pub speculative: bool,
+    /// The session path this host's handover-parked record entry is keyed by.
+    pub recorded_path: Option<String>,
     pub profile: RpcSessionLaunchProfile,
     pub identity: SessionIdentity,
     pub scope: maho_ai::node::provider_scope::ProviderScope,
@@ -118,12 +122,57 @@ pub fn seal_ledgers_on_replace(route: String) -> Arc<dyn Fn() + Send + Sync> {
 }
 impl RpcSessionRegistry {
     pub fn size(&self) -> usize {
-        self.entries.len()
+        self.entries
+            .values()
+            .filter(|entry| !entry.speculative)
+            .count()
     }
     fn size_changed(&self) {
         if let Some(hook) = &self.on_size_change {
-            hook(self.entries.len());
+            hook(self.size());
         }
+    }
+    /// Commit the ledger's exclusive claim after a speculative parked runtime exists (`claimPark`).
+    pub fn claim_park(
+        &mut self,
+        handle: &str,
+        retain_on_disconnect: bool,
+        now: f64,
+    ) -> Result<(String, Option<String>), RpcSessionRegistryError> {
+        let Some(entry) = self.entries.get(handle) else {
+            return Err(RpcSessionRegistryError::new("unknown_session", None, None));
+        };
+        if !entry.speculative || entry.close.state != RpcSessionState::Open {
+            return Err(RpcSessionRegistryError::new("unknown_session", None, None));
+        }
+        let Some(runtime) = entry.runtime.as_ref() else {
+            return Err(RpcSessionRegistryError::new("unknown_session", None, None));
+        };
+        let durable_id = runtime.session().session_id();
+        let collision = self.entries.iter().any(|(other_handle, other)| {
+            other_handle != handle
+                && !other.speculative
+                && other.durable_session_id.as_deref() == Some(durable_id.as_str())
+        });
+        if collision {
+            return Err(RpcSessionRegistryError::new(
+                "session_id_in_use",
+                None,
+                None,
+            ));
+        }
+        let session_path = {
+            let entry = self.entries.get_mut(handle).expect("checked");
+            entry.speculative = false;
+            entry.close.attachments = 1;
+            entry.close.retain_on_disconnect = retain_on_disconnect;
+            entry.durable_session_id = Some(durable_id.clone());
+            entry.last_command_at = now;
+            entry.session_path.clone()
+        };
+        self.sync_runtime_metadata();
+        self.size_changed();
+        Ok((durable_id, session_path))
     }
     pub fn get(&self, handle: &str) -> Option<&RpcSessionEntry> {
         self.entries.get(handle)
@@ -255,6 +304,9 @@ impl RpcSessionRegistry {
     /// senpi `syncRuntimeMetadata`: every entry's reservation and claim follow the file its runtime writes.
     pub fn sync_runtime_metadata(&mut self) {
         for entry in self.entries.values_mut() {
+            if entry.speculative {
+                continue;
+            }
             let Some(runtime) = &entry.runtime else {
                 continue;
             };
@@ -289,10 +341,27 @@ impl RpcSessionRegistry {
     }
     pub fn admit_open_with_policy(
         &mut self,
+        profile: RpcSessionLaunchProfile,
+        retain: bool,
+        now: f64,
+        attach_only: bool,
+    ) -> Result<OpenAdmission, RpcSessionRegistryError> {
+        self.admit_open_with_options(
+            profile,
+            retain,
+            now,
+            attach_only,
+            crate::session_registry_opening::OpeningOptions::default(),
+        )
+    }
+
+    pub fn admit_open_with_options(
+        &mut self,
         mut profile: RpcSessionLaunchProfile,
         retain: bool,
         now: f64,
         attach_only: bool,
+        options: crate::session_registry_opening::OpeningOptions,
     ) -> Result<OpenAdmission, RpcSessionRegistryError> {
         validate_profile_paths(&profile)?;
         if let Some(path) = &profile.session_path {
@@ -309,6 +378,7 @@ impl RpcSessionRegistry {
         let entries = self
             .entries
             .values()
+            .filter(|entry| !entry.speculative)
             .map(|entry| DurableSessionIdentity {
                 state: entry.close.state,
                 durable_session_id: entry.durable_session_id.clone(),
@@ -341,13 +411,14 @@ impl RpcSessionRegistry {
                     },
                 )
                 .collect();
-            return match crate::session_registry_attach::attach_to_open_session(
+            return match crate::session_registry_attach::attach_to_open_session_with_options(
                 candidates,
                 &path,
                 &profile,
                 retain,
                 self.path_reservations.as_mut(),
                 now,
+                options.unattached,
             )? {
                 crate::session_registry_attach::AttachDecision::Attached { session_id, .. } => {
                     Ok(OpenAdmission::Attached(session_id))
@@ -394,7 +465,7 @@ impl RpcSessionRegistry {
         }
         self.next_handle += 1;
         let handle = format!("rpc-{}", self.next_handle);
-        let opening = crate::session_registry_opening::build_opening_entry(
+        let opening = crate::session_registry_opening::build_opening_entry_with_options(
             crate::session_registry_opening::OpeningInput {
                 profile: &profile,
                 session_path: profile.session_path.clone(),
@@ -402,6 +473,7 @@ impl RpcSessionRegistry {
                 retain_on_disconnect: retain,
                 now,
             },
+            options,
         );
         let mut runtime_profile = opening.runtime_profile;
         runtime_profile.session_start_reason = opening
@@ -409,7 +481,9 @@ impl RpcSessionRegistry {
             .as_ref()
             .map(|event| event.reason);
         self.entries.insert(handle.clone(), opening.entry);
-        self.size_changed();
+        if !options.speculative {
+            self.size_changed();
+        }
         self.open_completions.insert(
             handle.clone(),
             (opening.settle_open, opening.open_completion),
@@ -448,7 +522,9 @@ impl RpcSessionRegistry {
             .get_mut(handle)
             .filter(|entry| entry.close.state == RpcSessionState::Opening)
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
-        entry.durable_session_id = Some(runtime.session().session_id());
+        if !entry.speculative {
+            entry.durable_session_id = Some(runtime.session().session_id());
+        }
         entry.session_path = runtime.session().session_file();
         // senpi `openSession`: the lane bootstraps from the manager's journal before admission.
         let compact_updates = self
@@ -522,20 +598,73 @@ impl RpcSessionRegistry {
         }
         if let Some(entry) = self.entries.remove(handle) {
             self.release_reservation(entry.close.reservation_key.as_deref());
-            self.size_changed();
+            if !entry.speculative {
+                self.size_changed();
+            }
         }
         self.settle_open(handle, false);
     }
     pub fn list_sessions(&self, include_workers: bool) -> Vec<serde_json::Value> {
-        self.entries.iter().filter(|(_,entry)|entry.close.state!=RpcSessionState::Quarantined&&(include_workers||entry.identity.kind!=maho_ext_api::SessionKind::Worker)).map(|(handle,entry)|{
-            let status=match entry.close.state{RpcSessionState::Opening=>"opening",RpcSessionState::Open=>"open",RpcSessionState::Closing=>"closing",RpcSessionState::Quarantined=>"quarantined",RpcSessionState::Closed=>"closed"};
-            let mut row=serde_json::json!({"sessionId":handle,"cwd":entry.runtime.as_ref().map_or_else(||entry.profile.runtime.cwd.clone(),|runtime|runtime.session().cwd()),"status":status,"attachments":entry.close.attachments,"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":entry.runtime.as_ref().and_then(|runtime|serde_json::to_value(runtime.session().tool_child_row()).ok()).unwrap_or_else(||serde_json::json!({"state":"none"}))});
-            if let Some(id)=&entry.durable_session_id{row["durableSessionId"]=id.clone().into();}
-            if let Some(path)=&entry.session_path{row["sessionPath"]=path.clone().into();}
-            if let Some(name)=entry.runtime.as_ref().and_then(|runtime|runtime.session().session_name()){row["name"]=name.into();}
-            if include_workers{row["context"]=serde_json::Value::Object(crate::session_context_patch::published_session_context(&entry.identity.context,entry.context_overlay.as_ref()));}
-            row
-        }).collect()
+        self.entries
+            .iter()
+            .filter(|(_, entry)| {
+                !entry.speculative
+                    && entry.close.state != RpcSessionState::Quarantined
+                    && (include_workers || entry.identity.kind != maho_ext_api::SessionKind::Worker)
+            })
+            .map(|(handle, entry)| {
+                let status = match entry.close.state {
+                    RpcSessionState::Opening => "opening",
+                    RpcSessionState::Open => "open",
+                    RpcSessionState::Closing => "closing",
+                    RpcSessionState::Quarantined => "quarantined",
+                    RpcSessionState::Closed => "closed",
+                };
+                let extra = crate::session_status_source::session_row_status_fields(
+                    entry.runtime.as_ref().map(|r| r.session()),
+                    None,
+                );
+                let mut row = serde_json::json!({
+                    "sessionId": handle,
+                    "cwd": entry.runtime.as_ref().map_or_else(|| entry.profile.runtime.cwd.clone(), |runtime| runtime.session().cwd()),
+                    "status": status,
+                    "attachments": entry.close.attachments.max(0),
+                    "retain_on_disconnect": entry.close.retain_on_disconnect,
+                    "kind": if entry.identity.kind == maho_ext_api::SessionKind::Worker { "worker" } else { "interactive" },
+                    "tool_child": entry.runtime.as_ref().and_then(|runtime| serde_json::to_value(runtime.session().tool_child_row()).ok()).unwrap_or_else(|| serde_json::json!({"state": "none"})),
+                    "archived": extra.archived,
+                    "settled": extra.settled,
+                    "activity": extra.activity,
+                });
+                if let Some(settled_by) = extra.settled_by {
+                    row["settledBy"] = settled_by;
+                }
+                if let Some(waiting) = extra.waiting {
+                    row["waiting"] = waiting;
+                }
+                if let Some((provider, model_id)) = extra.model {
+                    row["model"] = serde_json::json!({"provider": provider, "id": model_id});
+                }
+                if let Some(id) = &entry.durable_session_id {
+                    row["durableSessionId"] = id.clone().into();
+                }
+                if let Some(path) = &entry.session_path {
+                    row["sessionPath"] = path.clone().into();
+                }
+                if let Some(name) = entry.runtime.as_ref().and_then(|runtime| runtime.session().session_name()) {
+                    row["name"] = name.into();
+                }
+                if include_workers {
+                    row["context"] = serde_json::Value::Object(
+                        crate::session_context_patch::published_session_context(
+                            &entry.identity.context,
+                            entry.context_overlay.as_ref(),
+                        ),
+                    );
+                }
+                row
+            })
+            .collect()
     }
     pub fn mark_close(
         &mut self,
@@ -584,7 +713,9 @@ impl RpcSessionRegistry {
         };
         if let Some(entry) = self.entries.remove(handle) {
             self.release_reservation(entry.close.reservation_key.as_deref());
-            self.size_changed();
+            if !entry.speculative {
+                self.size_changed();
+            }
         }
         Ok(completion)
     }

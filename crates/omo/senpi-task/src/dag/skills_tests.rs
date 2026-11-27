@@ -325,7 +325,6 @@ fn given_a_run_created_with_a_materializer_when_the_cwd_loses_the_skill_afterwar
     });
     let started = manager
         .start(DagStartParams {
-            parent_model: None,
             definition: definition(vec![node(
                 "build",
                 "ship the feature",
@@ -362,7 +361,6 @@ fn given_a_missing_skill_when_the_run_is_created_then_the_run_exists_with_a_miss
 
     let started = manager
         .start(DagStartParams {
-            parent_model: None,
             definition: definition(vec![node(
                 "build",
                 "ship the feature",
@@ -416,7 +414,6 @@ fn given_a_materialized_run_when_the_same_definition_is_submitted_again_then_the
     });
     let materialized = with_skills
         .start(DagStartParams {
-            parent_model: None,
             definition: nodes.clone(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -425,7 +422,6 @@ fn given_a_materialized_run_when_the_same_definition_is_submitted_again_then_the
 
     let plain = bare
         .start(DagStartParams {
-            parent_model: None,
             definition: nodes,
             parent_session_id: "other-session".to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),

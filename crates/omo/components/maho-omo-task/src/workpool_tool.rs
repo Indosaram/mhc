@@ -55,5 +55,9 @@ pub fn register_workpool_tool(api: &mut ExtensionApi, backend: Arc<dyn WorkpoolT
         }),
     );
     definition.label = tool.label.into();
-    api.register_tool(definition);
+    if let Err(error) =
+        api.try_register_tool_with_runs(definition, Some(maho_ext_api::ExtensionSide::Brain))
+    {
+        maho_ext_api::diagnostic(&format!("workpool tool registration failed: {error}"));
+    }
 }

@@ -3,6 +3,12 @@ use std::{fs, io, path::Path};
 pub const PUBLIC_SOCKET_IDENTITY_FILE: &str = "public-socket.owner";
 pub const SOCKET_IDENTITY_WAIT_MS: u64 = 30000;
 pub const MAX_SOCKET_PATH_BYTES: usize = 103;
+pub const BIND_SCRATCH_INFIX: &str = ".bind-";
+pub const BIND_SCRATCH_SOCKET: &str = "s";
+
+pub fn is_bind_scratch_name(name: &str) -> bool {
+    name.contains(BIND_SCRATCH_INFIX)
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SocketFileIdentity {
     pub dev: u64,
@@ -17,6 +23,21 @@ pub enum EndpointOwnership {
 }
 pub fn generation_bind_path(public_socket: &str, generation: u64) -> String {
     format!("{public_socket}.next-{generation}")
+}
+
+/// `<dev>:<ino>` as the ensure captured it; anything else is no identity at all, never a guess.
+pub fn parse_socket_identity(value: &str) -> Option<SocketFileIdentity> {
+    let (dev, ino) = value.split_once(':')?;
+    if dev.is_empty() || ino.is_empty() {
+        return None;
+    }
+    if !dev.bytes().all(|b| b.is_ascii_digit()) || !ino.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(SocketFileIdentity {
+        dev: dev.parse().ok()?,
+        ino: ino.parse().ok()?,
+    })
 }
 /// What one failed connect says about the process behind a socket entry (senpi `classifyConnectError`). Only a
 /// refusal can mean "nobody": Linux answers a full backlog with EAGAIN, so ECONNREFUSED proves absence there, but
@@ -52,10 +73,34 @@ pub enum ListenerVerdict {
 const HOLDER_PROBE_TIMEOUT_MS: u64 = 5_000;
 #[cfg(unix)]
 const CONNECT_PROBE_TIMEOUT_MS: u64 = 2_000;
-/// Which processes hold the entry open (senpi `lsofSocketHolders`): pids from `lsof -t`, none, or `None` when unknown.
+/// `lsof -- <path>` matches a unix socket by the name it was bound at. An entry published with `link(2)` (`nlink > 1`)
+/// is bound elsewhere (#5319), so a path lookup that finds nobody falls back to matching by inode.
 pub async fn lsof_socket_holders(socket_path: String) -> Option<Vec<u32>> {
+    let by_path = lsof_holders_by_path(&socket_path).await;
+    if !matches!(by_path.as_deref(), Some([])) {
+        return by_path;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(entry) = std::fs::symlink_metadata(&socket_path)
+            && entry.nlink() > 1
+        {
+            return crate::socket_holders_by_identity::socket_holders_by_identity(
+                crate::socket_holders_by_identity::SocketIdentity {
+                    dev: entry.dev(),
+                    ino: entry.ino(),
+                },
+            )
+            .await;
+        }
+    }
+    by_path
+}
+
+async fn lsof_holders_by_path(socket_path: &str) -> Option<Vec<u32>> {
     let run = tokio::process::Command::new("lsof")
-        .args(["-t", "--", &socket_path])
+        .args(["-t", "--", socket_path])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();
@@ -143,11 +188,13 @@ where
         },
     }
 }
+/// Reads the current identity of the entry AT a socket path; `None` once absent. Read with `symlink_metadata` (`lstat`):
+/// a symlink is never followed and answers with its own identity, which can never match a bound socket's.
 pub fn stat_socket_identity(path: &Path) -> io::Result<Option<SocketFileIdentity>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        match fs::metadata(path) {
+        match fs::symlink_metadata(path) {
             Ok(stat) => Ok(Some(SocketFileIdentity {
                 dev: stat.dev(),
                 ino: stat.ino(),

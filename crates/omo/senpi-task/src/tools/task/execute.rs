@@ -178,7 +178,6 @@ impl TaskExecute<'_> {
                 &parent_session_id,
                 deps.tool,
                 &ctx.cwd,
-                ctx.model.as_ref(),
             );
             if let Some(skills) = skills {
                 lock(&skill_summaries).insert(item_key(item), skills);

@@ -96,6 +96,9 @@ impl super::handle_port::HostSessionPort for SessionClientConnection {
     fn detach(&self) -> Result<(), HostError> {
         self.client.detach(&self.routing_id)
     }
+    fn set_permission_preset(&self, preset: &str) -> Result<(), HostError> {
+        self.client.set_permission_preset(&self.routing_id, preset)
+    }
     fn get_pending_inputs(
         &self,
         known_client_message_ids: &[String],

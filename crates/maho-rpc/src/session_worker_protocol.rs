@@ -110,11 +110,43 @@ pub fn closed_by_worker_death(cause: &(dyn std::error::Error + 'static)) -> bool
     )
 }
 
+pub const SESSION_WORKER_SECRET_FRAME_BYTES: usize = 64 * 1024;
+pub const SESSION_WORKER_SECRET_INPUTS: usize = 64;
+pub const SESSION_WORKER_SECRET_IDS: usize = 1024 + 64;
+
+/// Every answer the host writes into a worker's wait signal (senpi `WorkerCreditAnswer`, omo-relay-daemon#307).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerCreditAnswer {
+    Granted,
+    Conflict,
+    Limit,
+    Stale,
+}
+
+impl From<SessionWriteGrant> for WorkerCreditAnswer {
+    fn from(grant: SessionWriteGrant) -> Self {
+        match grant {
+            SessionWriteGrant::Granted => Self::Granted,
+            SessionWriteGrant::Conflict => Self::Conflict,
+            SessionWriteGrant::Limit => Self::Limit,
+        }
+    }
+}
+
 pub const fn worker_credit_code(grant: SessionWriteGrant) -> i32 {
-    match grant {
-        SessionWriteGrant::Granted => 1,
-        SessionWriteGrant::Conflict => 2,
-        SessionWriteGrant::Limit => 3,
+    worker_credit_answer_code(match grant {
+        SessionWriteGrant::Granted => WorkerCreditAnswer::Granted,
+        SessionWriteGrant::Conflict => WorkerCreditAnswer::Conflict,
+        SessionWriteGrant::Limit => WorkerCreditAnswer::Limit,
+    })
+}
+
+pub const fn worker_credit_answer_code(answer: WorkerCreditAnswer) -> i32 {
+    match answer {
+        WorkerCreditAnswer::Granted => 1,
+        WorkerCreditAnswer::Conflict => 2,
+        WorkerCreditAnswer::Limit => 3,
+        WorkerCreditAnswer::Stale => 4,
     }
 }
 /// Wire values the host writes into a worker's wait signal; `conflict` is the generic denial.

@@ -5912,23 +5912,28 @@ impl AgentSession {
         }
     }
 
+    /// Deliver an already admitted external message to its selected session lane.
+    pub fn deliver_external_message(&self, message: Value, lane: &str) -> Result<(), String> {
+        let custom = serde_json::from_value(message)
+            .map_err(|e| format!("invalid external message: {e}"))?;
+        self.send_custom_message_content_inner(
+            custom,
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: lane == "start",
+                deliver_as: Some(if lane == "steer" {
+                    maho_ext_api::DeliverAs::Steer
+                } else {
+                    maho_ext_api::DeliverAs::FollowUp
+                }),
+            },
+        )
+        .map_err(|e| e.message)
+    }
+
     pub fn admit_external_message(&self, input: &Value, editor: &Value) -> Result<Value, String> {
         self.external_admission
             .admit(input, editor, self.is_streaming(), |message, lane| {
-                let custom = serde_json::from_value(message)
-                    .map_err(|e| format!("invalid external message: {e}"))?;
-                self.send_custom_message_content_inner(
-                    custom,
-                    maho_ext_api::SendMessageOptions {
-                        trigger_turn: lane == "start",
-                        deliver_as: Some(if lane == "steer" {
-                            maho_ext_api::DeliverAs::Steer
-                        } else {
-                            maho_ext_api::DeliverAs::FollowUp
-                        }),
-                    },
-                )
-                .map_err(|e| e.message)
+                self.deliver_external_message(message, lane)
             })
     }
 

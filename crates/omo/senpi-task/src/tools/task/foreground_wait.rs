@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::manager::{AbortSignal, TaskManager, WaitError};
+use crate::runners::child_dialogs::foreground_origins::{
+    ForegroundDialogOrigins, shared_foreground_dialog_origins,
+};
 use crate::state::TaskRecord;
 
 pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS";
@@ -33,6 +36,8 @@ pub struct ForegroundWaitOptions {
     pub env: Option<HashMap<String, String>>,
     /// Overrides the real deadline (defaults to the budget in seconds); the `scheduleDeadline` seam.
     pub deadline: Option<Duration>,
+    /// Tracks foreground dialog origin while waiting (`#6189 F2d`).
+    pub dialog_origins: Option<Arc<ForegroundDialogOrigins>>,
 }
 
 pub enum ForegroundWaitResult {
@@ -85,6 +90,19 @@ pub fn resolve_prompt_cache_safe_wait_seconds(
 pub fn wait_for_foreground_task(
     input: &ForegroundWaitInput<'_>,
 ) -> Result<ForegroundWaitResult, WaitError> {
+    struct LeaveGuard<'a>(Option<Box<dyn FnOnce() + Send + 'a>>);
+    impl Drop for LeaveGuard<'_> {
+        fn drop(&mut self) {
+            if let Some(leave) = self.0.take() {
+                leave();
+            }
+        }
+    }
+    let origins = match input.options.dialog_origins.as_deref() {
+        Some(origins) => origins,
+        None => shared_foreground_dialog_origins(),
+    };
+    let _leave = LeaveGuard(Some(origins.enter(input.task_id)));
     let budget = resolve_prompt_cache_safe_wait_seconds(input.ctx, input.options.env.as_ref());
     let Some(budget_seconds) = budget else {
         return input

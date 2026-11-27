@@ -1949,6 +1949,13 @@ fn skip_stream_event(event: &Value) -> bool {
                     | "extension_ui_request"
                     | "session_replaced"
                     | "session_parked"
+                    | "session_released"
+                    | "session_archived_changed"
+                    | "session_settled_changed"
+                    | "secret_input_settled"
+                    | "queued"
+                    | "socket_closing"
+                    | "message_tool_arguments_reset"
             )
         )
 }

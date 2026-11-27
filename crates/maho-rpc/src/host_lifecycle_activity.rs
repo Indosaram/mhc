@@ -56,9 +56,29 @@ pub struct SupervisorActivity {
 impl SupervisorActivity {
     /// Everything `current` reads exists before any client can be accepted.
     pub fn new(idle_exit_ms: f64) -> Self {
+        Self::new_at(idle_exit_ms, 0.0)
+    }
+
+    pub fn new_at(idle_exit_ms: f64, now_ms: f64) -> Self {
+        let first_client_within =
+            crate::host_startup_beacon::startup_hand_off().map(|h| h.budget_ms as f64);
         Self {
-            decider: crate::host_lifecycle::IdleExitDecider::new(idle_exit_ms),
-            runs: Default::default(),
+            decider: crate::host_lifecycle::IdleExitDecider::with_first_client_window(
+                idle_exit_ms,
+                now_ms,
+                first_client_within,
+            ),
+            runs: crate::host_run_activity::SessionRunActivity::new(
+                crate::host_run_activity::SessionRunActivityOptions {
+                    settle_hold_ms: Some(idle_exit_ms.max(0.0) as u64),
+                    now: None,
+                    on_settle_hold_expired: Some(Box::new(|session_id, held_ms| {
+                        crate::host_supervisor_log::supervisor_log(&format!(
+                            "session {session_id} settled {held_ms} ms ago and its agent_settled extension handlers have not finished; idle exit no longer waits for them"
+                        ));
+                    })),
+                },
+            ),
             observer: Default::default(),
             attached: 0,
             unclassified: 0,
@@ -102,14 +122,23 @@ impl SupervisorActivity {
         if current.connections > 0 || current.active_turns > 0 || self.unclassified > 0 {
             on_activity();
         }
-        self.decider
-            .update(current.connections, current.active_turns, now)
+        let decision = self
+            .decider
+            .update(current.connections, current.active_turns, now);
+        if decision == crate::host_lifecycle::IdleExitDecision::Exit
+            && self.runs.settling_sessions() > 0
+        {
+            crate::host_lifecycle::IdleExitDecision::Idle
+        } else {
+            decision
+        }
     }
 
     /// senpi `quiescent`: owner death never turns an unknown observer snapshot into permission to stop a turn.
-    pub fn quiescent(&self) -> bool {
+    pub fn quiescent(&mut self) -> bool {
         self.observer.healthy()
             && self.runs.busy_sessions() == 0
+            && self.runs.settling_sessions() == 0
             && self.attached == 0
             && self.unclassified == 0
     }
@@ -499,7 +528,7 @@ impl SupervisorOwner {
     /// so for `OWNER_EXIT_GRACE_MS`; the record is re-read before authorizing, so a new owner's write wins.
     pub fn should_exit(
         &mut self,
-        quiescent: impl Fn() -> bool,
+        mut quiescent: impl FnMut() -> bool,
         now: f64,
         owner_gone: impl FnOnce(&HostLifetimeOwner) -> bool,
     ) -> bool {
@@ -709,7 +738,9 @@ mod activity_tests {
             IdleExitDecision::Active
         );
         assert!(!activity.quiescent());
-        activity.observe_host_event(r#"{"type":"agent_settled","sessionId":"s"}"#);
+        activity.observe_host_event(
+            r#"{"type":"agent_settled","sessionId":"s","reason":"session_closed"}"#,
+        );
         assert!(activity.quiescent());
         assert_eq!(activity.refresh(600., || held += 1), IdleExitDecision::Idle);
         assert_eq!(

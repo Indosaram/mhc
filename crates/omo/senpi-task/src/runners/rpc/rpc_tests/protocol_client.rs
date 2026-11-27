@@ -235,6 +235,7 @@ fn given_a_malformed_line_when_parsing_then_it_is_reported_and_the_connection_su
                 sink.lock().expect("malformed").push(line.to_string());
             })),
             auto_answer_ui: None,
+            parent: None,
         },
     );
     let events = collect_events(&client);
@@ -282,7 +283,7 @@ fn given_a_verbose_child_stderr_when_chunks_accumulate_then_the_internal_buffer_
 }
 
 #[test]
-fn fallback_capability_refusal_and_expired_probe_never_prevent_the_prompt() {
+fn fallback_chain_holds_on_supported_engine_and_refuses_to_start_when_not_held() {
     for mode in ["supported", "refused", "unsupported", "silent"] {
         let child = Arc::new(RpcChildProcess::spawn_command(fake_command(
             "rpc",
@@ -298,19 +299,33 @@ fn fallback_capability_refusal_and_expired_probe_never_prevent_the_prompt() {
             model_admission: Some(Arc::new(|_| Ok(()))),
             ..Default::default()
         });
-        let handle = runner
-            .start(&RpcRunnerSpec {
-                task_id: "fallback-task".into(),
-                model: Some("p/m".into()),
-                fallback_models: Some(vec!["q/n".into()]),
-                prompt: "answer".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(
-            handle.wait_for_outcome(),
-            crate::runners::RunnerOutcome::completed("answer")
-        );
+        let started = runner.start(&RpcRunnerSpec {
+            task_id: "fallback-task".into(),
+            model: Some("p/m".into()),
+            fallback_models: Some(vec!["q/n".into()]),
+            prompt: "answer".into(),
+            ..Default::default()
+        });
+        if mode == "supported" {
+            let handle = started.expect("supported engine starts");
+            assert_eq!(
+                handle.wait_for_outcome(),
+                crate::runners::RunnerOutcome::completed("answer")
+            );
+        } else {
+            let Err(err) = started else {
+                panic!("unheld chain must refuse start");
+            };
+            let cause = err.cause.expect("chain_not_held cause");
+            assert_eq!(
+                cause.cause_class,
+                crate::manager::start_failure_cause::StartCauseClass::ChainNotHeld
+            );
+            assert_eq!(
+                cause.designated_models.as_deref(),
+                Some(&["p/m".to_string(), "q/n".to_string()][..])
+            );
+        }
     }
 }
 

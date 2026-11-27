@@ -19,9 +19,9 @@ use crate::host_gc_pass_marker::{
     GcPassStoppedBy, HostGcPassMarker, HostGcSkipEntry, next_skip, read_host_gc_pass_marker,
     write_host_gc_pass_marker,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// senpi `OPPORTUNISTIC_GC_BUDGET`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -188,58 +188,40 @@ pub async fn gc_host_endpoints_opportunistically(
     Ok(OpportunisticGcOutcome::Ran(marker))
 }
 
-type PassRegistry = Mutex<HashMap<PathBuf, tokio::sync::watch::Receiver<bool>>>;
-fn passes_running() -> &'static PassRegistry {
-    static RUNNING: std::sync::OnceLock<PassRegistry> = std::sync::OnceLock::new();
-    RUNNING.get_or_init(Default::default)
-}
+use crate::host_gc_pass_registry::{
+    opportunistic_host_gc_running, settled_opportunistic_host_gc as registry_settled_host_gc,
+    track_opportunistic_host_gc,
+};
 
 /// Starts a pass off the caller's path; at most one at a time per agent directory in this process. Needs a tokio
 /// runtime; a caller without one schedules nothing.
 pub fn schedule_opportunistic_host_gc(options: OpportunisticGcOptions) {
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+    let Ok(_runtime) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    let mut running = passes_running()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if running.contains_key(&options.agent_dir) {
+    if opportunistic_host_gc_running(&options.agent_dir) {
         return;
     }
-    let (done, settled) = tokio::sync::watch::channel(false);
-    running.insert(options.agent_dir.clone(), settled);
-    drop(running);
-    runtime.spawn(async move {
-        if let Err(error) = gc_host_endpoints_opportunistically(&options).await {
-            record_pass_failure(&options.agent_dir, &error);
-        }
-        passes_running()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&options.agent_dir);
-        let _ = done.send(true);
-    });
+    let agent_dir = options.agent_dir.clone();
+    track_opportunistic_host_gc(
+        agent_dir,
+        Box::pin(async move {
+            if let Err(error) = gc_host_endpoints_opportunistically(&options).await {
+                record_pass_failure(&options.agent_dir, &error);
+            }
+        }),
+    );
 }
 
 /// Whether a pass this process scheduled for `agent_dir` has not finished yet.
 #[cfg(test)]
 pub(crate) fn opportunistic_host_gc_pending(agent_dir: &Path) -> bool {
-    passes_running()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains_key(agent_dir)
+    opportunistic_host_gc_running(agent_dir)
 }
 
 /// Resolves once the pass this process scheduled for `agent_dir` (if any) has finished; it never fails.
 pub async fn settled_opportunistic_host_gc(agent_dir: &Path) {
-    let settled = passes_running()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(agent_dir)
-        .cloned();
-    if let Some(mut settled) = settled {
-        let _ = settled.wait_for(|done| *done).await;
-    }
+    registry_settled_host_gc(agent_dir).await;
 }
 
 fn gc_candidates(options: &OpportunisticGcOptions) -> Vec<NamedEndpoint> {
@@ -465,7 +447,7 @@ mod tests {
         let target = agent_dir.join("t.sock").to_string_lossy().into_owned();
         let endpoints = dead_endpoints(agent_dir, 2);
         let started_at = 1e12;
-        let clock = Arc::new(Mutex::new(started_at));
+        let clock = Arc::new(std::sync::Mutex::new(started_at));
         let ticking: GcClock = {
             let clock = Arc::clone(&clock);
             Arc::new(move || {

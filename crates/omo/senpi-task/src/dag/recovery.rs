@@ -190,6 +190,36 @@ impl DagRecovery {
         resume_paused_runs(&self.context, parent_session_id, fork_source_session_id)
     }
 
+    /// Claims and installs each eligible paused run and hands it to `adopt` as soon as its
+    /// scheduler is installed (`dag.run.resumed` journaled), returning without awaiting completion.
+    pub fn install_paused_runs<F>(
+        &self,
+        parent_session_id: &str,
+        adopt: F,
+    ) -> Vec<DagRecoveryOutcome>
+    where
+        F: FnMut(InstalledDagRun),
+    {
+        self.install_paused_runs_from(parent_session_id, None, adopt)
+    }
+
+    pub fn install_paused_runs_from<F>(
+        &self,
+        parent_session_id: &str,
+        fork_source_session_id: Option<&str>,
+        adopt: F,
+    ) -> Vec<DagRecoveryOutcome>
+    where
+        F: FnMut(InstalledDagRun),
+    {
+        install_paused_runs(
+            &self.context,
+            parent_session_id,
+            fork_source_session_id,
+            adopt,
+        )
+    }
+
     pub fn install_resumed_run(
         &self,
         run_id: &DagRunId,
@@ -318,6 +348,92 @@ fn resume_paused_runs(
     parent_session_id: &str,
     fork_source: Option<&str>,
 ) -> Vec<DagRecoveryOutcome> {
+    visit_paused_runs(
+        context,
+        parent_session_id,
+        fork_source,
+        |claimed, foreign| {
+            let mut outcome = resume_claimed_run(context, claimed);
+            if foreign
+                && let DagRecoveryOutcome::Resumed {
+                    run_id,
+                    record,
+                    reused_outputs,
+                } = outcome
+            {
+                outcome = DagRecoveryOutcome::Adopted {
+                    run_id,
+                    record,
+                    reused_outputs,
+                };
+            }
+            outcome
+        },
+    )
+}
+
+fn install_paused_runs<F>(
+    context: &RecoveryContext,
+    parent_session_id: &str,
+    fork_source: Option<&str>,
+    mut adopt: F,
+) -> Vec<DagRecoveryOutcome>
+where
+    F: FnMut(InstalledDagRun),
+{
+    visit_paused_runs(
+        context,
+        parent_session_id,
+        fork_source,
+        |claimed, foreign| {
+            let run_id = claimed.record.run_id.clone();
+            match install_resumed_run(context, claimed) {
+                Ok(installed) => {
+                    let record = context
+                        .store
+                        .read_checkpoint::<RecoverableRecord>(&run_id)
+                        .ok()
+                        .flatten()
+                        .map(|r| r.record)
+                        .unwrap_or_else(|| installed.scheduler.snapshot());
+                    adopt(installed);
+                    let reused_outputs = HashMap::new();
+                    if foreign {
+                        DagRecoveryOutcome::Adopted {
+                            run_id,
+                            record: Box::new(record),
+                            reused_outputs,
+                        }
+                    } else {
+                        DagRecoveryOutcome::Resumed {
+                            run_id,
+                            record: Box::new(record),
+                            reused_outputs,
+                        }
+                    }
+                }
+                Err(_) => {
+                    release_lease(context, &run_id);
+                    DagRecoveryOutcome::Skipped {
+                        run_id,
+                        reason: DagRecoverySkipReason::NotPaused,
+                        holder_pid: None,
+                    }
+                }
+            }
+        },
+    )
+}
+
+fn visit_paused_runs<F>(
+    context: &RecoveryContext,
+    parent_session_id: &str,
+    fork_source: Option<&str>,
+    mut recover: F,
+) -> Vec<DagRecoveryOutcome>
+where
+    F: FnMut(RecoverableRecord, bool) -> DagRecoveryOutcome,
+{
     let mut outcomes = Vec::new();
     for observed in list_run_records(&context.store) {
         if observed
@@ -349,21 +465,7 @@ fn resume_paused_runs(
             ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, _) => {}
             ClaimedRun::Skipped(_, _) => {}
             ClaimedRun::Claimed(claimed) => {
-                let mut outcome = resume_claimed_run(context, *claimed);
-                if foreign
-                    && let DagRecoveryOutcome::Resumed {
-                        run_id,
-                        record,
-                        reused_outputs,
-                    } = outcome
-                {
-                    outcome = DagRecoveryOutcome::Adopted {
-                        run_id,
-                        record,
-                        reused_outputs,
-                    };
-                }
-                outcomes.push(outcome);
+                outcomes.push(recover(*claimed, foreign));
             }
         }
     }
@@ -783,6 +885,20 @@ fn reconcile_nodes(
                     started_here = true;
                     task = context.task_manager.get(&started.task_id);
                 }
+                OwnedStartResult::NotStarted(StartResult::StartFailed(failed)) => {
+                    if !failed.task_id.is_empty() {
+                        attach_task(journal, &observed.id, &failed.task_id);
+                    }
+                    fail_node(
+                        journal,
+                        &observed.id,
+                        DagNodeErrorCode::StartFailed,
+                        &failed.error_message,
+                        &context.now,
+                        pending_errors,
+                    );
+                    continue;
+                }
                 other => {
                     let failure = start_failure(&other);
                     fail_node(
@@ -1153,7 +1269,6 @@ fn start_spec(
         task_summary: persisted.task_summary.clone(),
         parent_session_id: record.parent_session_id.clone(),
         root_session_id: Some(record.root_session_id.clone()),
-        parent_model: record.parent_model.clone(),
         depth: session_depth + 1,
         category,
         subagent_type,
@@ -1163,15 +1278,6 @@ fn start_spec(
         run_in_background: true,
         ..ManagerStartSpec::default()
     }
-}
-
-#[cfg(test)]
-pub(crate) fn start_spec_for_tests(
-    record: &DagRunRecordV1,
-    node_id: &DagNodeId,
-    session_depth: u32,
-) -> ManagerStartSpec {
-    start_spec(record, node_id, session_depth)
 }
 
 const MAX_RECOVERY_READMISSIONS: u32 = 3;

@@ -162,10 +162,10 @@ fn given_provider_failure_after_prompt_admission_when_rpc_turn_ends_then_task_is
         other => panic!("expected error outcome, got {other:?}"),
     }
     assert_eq!(terminal.status, TaskStatus::Error);
-    assert_eq!(
-        terminal.error_message.as_deref(),
-        Some("provider unavailable")
-    );
+    let message = terminal.error_message.as_deref().expect("error message");
+    assert_eq!(message.lines().next(), Some("provider unavailable"));
+    assert!(message.contains("Every designated model for this task was refused"));
+    assert!(message.contains("- fixture/model: overloaded or unavailable (provider unavailable)"));
     assert_eq!(
         stored_status(&harness.store, &started.task_id),
         Some(TaskStatus::Error)

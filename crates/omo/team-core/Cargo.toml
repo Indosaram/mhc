@@ -11,6 +11,7 @@ name = "team_core"
 path = "src/lib.rs"
 
 [dependencies]
+maho-memory-core.workspace = true
 maho-tmux-core.workspace = true
 maho-utils.workspace = true
 dirs.workspace = true
