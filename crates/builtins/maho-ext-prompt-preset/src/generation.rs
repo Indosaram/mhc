@@ -59,6 +59,9 @@ mod tests {
                 ("eval".to_owned(), "EVAL_SENTINEL".to_owned()),
             ]),
             prompt_guidelines: vec!["GUIDELINE_SENTINEL".into()],
+            full_tool_prompt: None,
+            shared_sections: Default::default(),
+            native_search_available: false,
             context_files: vec![ContextFile {
                 path: "/fixture/AGENTS.md".into(),
                 content: "CONTEXT_SENTINEL".into(),
@@ -116,7 +119,12 @@ mod tests {
         assert_eq!(forced.name, PromptPresetName::Gpt52);
         assert_eq!(
             automatic.prompt,
-            crate::claude_opus_5_5::build_claude_opus55_prompt(options())
+            crate::claude_opus_5_5::build_claude_opus55_prompt(BuildDynamicSystemPromptOptions {
+                shared_sections: crate::contract::preset_shared_sections(Some(
+                    PromptPresetName::ClaudeOpus55
+                )),
+                ..options()
+            })
         );
         assert_eq!(forced.prompt, crate::gpt_5_2::build_gpt52_prompt(options()));
     }

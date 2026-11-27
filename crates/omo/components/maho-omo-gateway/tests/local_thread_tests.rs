@@ -1348,6 +1348,7 @@ fn native_thread_component_registers_on_brain_only_with_eval_exposure() {
 #[tokio::test]
 async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_and_close() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let store = test_store(tmp.path(), 50_000);
     let sock_path = tmp.path().join("host.sock");
     let listener = UnixListener::bind(&sock_path).expect("bind unix socket");
 
@@ -1357,6 +1358,7 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
         messages: HashMap<String, Vec<Value>>,
         model: Value,
         thinking: String,
+        store: Arc<dyn GatewayStoreApi>,
     }
     let mem = Arc::new(Mutex::new(HostMem {
         sessions: vec![json!({
@@ -1370,6 +1372,7 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
         messages: HashMap::new(),
         model: json!({ "provider": "anthropic", "id": "claude-sonnet-4" }),
         thinking: "low".into(),
+        store: store.clone(),
     }));
 
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
@@ -1412,20 +1415,30 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
                                     "list_sessions" => json!({ "sessions": st.sessions.clone() }),
                                     "open_session" => {
                                         let name = req.get("name").and_then(Value::as_str).unwrap_or("Child");
+                                        let idx = st.sessions.len();
+                                        let sid = format!("rpc-child-{idx}");
+                                        let fallback_did = format!("dur-child-{idx}");
+                                        let durable = req
+                                            .get("durableSessionId")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or(&fallback_did);
                                         let row = json!({
-                                            "sessionId": "rpc-child-1",
-                                            "durableSessionId": "dur-child-1",
+                                            "sessionId": sid,
+                                            "durableSessionId": durable,
                                             "cwd": ws,
                                             "name": name,
-                                            "status": "idle",
-                                            "kind": "child"
+                                            "status": "open",
+                                            "kind": "interactive"
                                         });
-                                        st.sessions.push(row.clone());
-                                        st.messages.insert("rpc-child-1".into(), vec![json!({
+                                        st.sessions.push(row);
+                                        st.messages.insert(sid.clone(), vec![json!({
                                             "role": "assistant",
                                             "text": "ready"
                                         })]);
-                                        row
+                                        json!({
+                                            "sessionId": sid,
+                                            "state": { "sessionId": durable, "isStreaming": false }
+                                        })
                                     }
                                     "set_session_name" => {
                                         let sid = req.get("sessionId").and_then(Value::as_str).unwrap_or("");
@@ -1465,10 +1478,40 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
                                         st.thinking = req.get("level").and_then(Value::as_str).unwrap_or("low").to_owned();
                                         json!({ "level": st.thinking.clone() })
                                     }
-                                    "wake" => json!({
-                                        "accepted": true,
-                                        "routing_id": "rpc-child-1"
-                                    }),
+                                    "wake" => {
+                                        let ids = req
+                                            .get("delivery_ids")
+                                            .and_then(Value::as_array)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        let self_id = maho_omo_gateway::thread::types::ProcessIdentity {
+                                            pid: std::process::id() as i64,
+                                            process_start_time: None,
+                                            instance_id: "mock-host".into(),
+                                            runtime_instance: Some("mock-host".into()),
+                                        };
+                                        let mut admitted = Vec::new();
+                                        for id in ids.iter().filter_map(|v| v.as_str()) {
+                                            let _ = st.store.claim(&maho_omo_gateway::thread::types::ClaimRequest {
+                                                now: 50_000,
+                                                delivery_id: id.to_owned(),
+                                                self_identity: self_id.clone(),
+                                                lane: maho_omo_gateway::thread::types::EffectiveLane::Start,
+                                            });
+                                            let _ = st.store.record_outcome(&maho_omo_gateway::thread::types::RecordOutcomeRequest {
+                                                now: 50_000,
+                                                delivery_id: id.to_owned(),
+                                                self_identity: self_id.clone(),
+                                                outcome: maho_omo_gateway::thread::types::OutcomeRecord::Admitted {
+                                                    admission_kind: "started".into(),
+                                                    turn_epoch: 1,
+                                                    wait_kind: None,
+                                                },
+                                            });
+                                            admitted.push(json!({ "delivery_id": id, "kind": "started" }));
+                                        }
+                                        json!({ "admitted": admitted })
+                                    }
                                     "unload_session" | "release_session" => {
                                         let sid = req.get("sessionId").and_then(Value::as_str).unwrap_or("");
                                         st.sessions.retain(|s| s.get("sessionId").and_then(Value::as_str) != Some(sid));
@@ -1496,7 +1539,6 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
         }
     });
 
-    let store = test_store(tmp.path(), 50_000);
     let sock_str = sock_path.to_string_lossy().into_owned();
     let sock_ep = sock_str.clone();
     let surface_impl = Arc::new(LiveThreadSurface::new(LiveThreadSurfaceOptions {
@@ -1560,13 +1602,14 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
     // 1. thread_create
     let created = call("thread_create", "c-1", json!({ "name": "worker-alpha" })).await;
     assert_eq!(created["kind"], "ok", "created={created}");
-    assert_eq!(created["thread"], "dur-child-1");
+    let child_id = created["thread"].as_str().expect("thread id").to_owned();
+    assert_eq!(created["name"], "worker-alpha", "created={created}");
 
     // 2. thread_list
     let listed = call("thread_list", "c-2", json!({})).await;
     assert_eq!(listed["kind"], "ok", "listed={listed}");
 
-    // 3. thread_send
+    // 3. thread_send (must unwrap wake reply data.admitted & transition delivery row to started)
     let sent = call(
         "thread_send",
         "c-3",
@@ -1574,6 +1617,28 @@ async fn live_unix_socket_drives_thread_create_list_send_read_rename_set_model_a
     )
     .await;
     assert_eq!(sent["kind"], "ok", "sent={sent}");
+    assert_eq!(sent["delivery"]["kind"], "started", "sent={sent}");
+
+    // 3b. thread_create with prompt verifies end-to-end open + rename + wake unwrapping
+    let created_with_prompt = call(
+        "thread_create",
+        "c-3b",
+        json!({ "name": "worker-beta", "prompt": "boot prompt" }),
+    )
+    .await;
+    assert_eq!(
+        created_with_prompt["kind"], "ok",
+        "created_with_prompt={created_with_prompt}"
+    );
+    assert_eq!(
+        created_with_prompt["name"], "worker-beta",
+        "created_with_prompt={created_with_prompt}"
+    );
+    assert_eq!(
+        created_with_prompt["prompt"]["delivery"]["kind"], "started",
+        "created_with_prompt={created_with_prompt}"
+    );
+    let _ = child_id;
 
     // 4. thread_read
     let read = call("thread_read", "c-4", json!({ "thread": "worker-alpha" })).await;

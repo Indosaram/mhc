@@ -5,8 +5,11 @@ use maho_core::dynamic_prompt::{
 };
 
 pub fn build_kimi_k26_prompt(mut options: BuildDynamicSystemPromptOptions<'_>) -> String {
-    let tooling =
-        build_execution_tooling_section(&options.selected_tools, ExecutionToolingDialect::Kimi);
+    let tooling = build_execution_tooling_section(
+        &options.selected_tools,
+        ExecutionToolingDialect::Kimi,
+        options.shared_sections,
+    );
     let tuning = match options.surface { maho_core::dynamic_prompt::PromptSurface::Terminal => "Avoid restating the user's request, do not re-derive facts you already established this turn, and skip filler verification language (\"let me confirm again\", \"to be sure\", \"just to double-check\").\n\nThe intent gate routing line is required every turn. On confirmation turns where the user already chose an option in plain words, acknowledge that choice and execute, not re-litigate alternatives the user already eliminated.", _ => "Avoid restating the user's request, do not re-derive facts you already established this turn, and skip filler verification language (\"let me confirm again\", \"to be sure\", \"just to double-check\").\n\nOn confirmation turns where the user already chose an option in plain words, acknowledge that choice and execute, not re-litigate alternatives the user already eliminated." }.to_owned();
     options.tuning_section = Some(
         [tooling.as_str(), tuning.as_str()]

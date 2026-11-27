@@ -121,6 +121,28 @@ fn context() -> ExtensionContext {
         compaction_signal: Default::default(),
     }
 }
+/// The recording's host projection: pinned workstation facts and no per-run date.
+fn project(text: &str) -> String {
+    let text = match (text.find("<workstation>\n"), text.find("</workstation>")) {
+        (Some(start), Some(end)) => format!(
+            "{}<workstation>\n- OS: darwin (kernel Darwin 27.0.0)\n- Arch: arm64\n- CPU: Apple M3 Pro (12 cores)\n- GPU: Apple M3 Pro\n</workstation>{}",
+            &text[..start],
+            &text[end + "</workstation>".len()..]
+        ),
+        _ => text.to_owned(),
+    };
+    text.split('\n')
+        .map(|line| {
+            if line.starts_with("Current date: ") {
+                "Current date: <date>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[tokio::test]
 async fn prompt_main_hooks_match_pinned_reference() {
     let mut ctx = context();
@@ -189,7 +211,14 @@ async fn prompt_main_hooks_match_pinned_reference() {
         actual.push(match result {
             EventResult::None => serde_json::Value::Null,
             EventResult::BeforeAgentStart(result) => {
-                serde_json::json!({"systemPrompt":result.system_prompt})
+                let mut value = serde_json::json!({"systemPrompt":result.system_prompt});
+                if let Some(parts) = result.system_prompt_parts {
+                    value["systemPromptParts"] = parts
+                        .iter()
+                        .map(|part| serde_json::json!({"name":part.name,"source":part.source,"text":project(&part.text)}))
+                        .collect();
+                }
+                value
             }
             EventResult::ModelSelect(result) => {
                 let mut value = serde_json::json!({"systemPrompt":result.system_prompt.unwrap()});
@@ -206,25 +235,7 @@ async fn prompt_main_hooks_match_pinned_reference() {
             .get_mut("systemPrompt")
             .and_then(|value| value.as_str().map(str::to_owned))
         {
-            let start = prompt.find("<workstation>\n").unwrap();
-            let end = prompt.find("</workstation>").unwrap() + "</workstation>".len();
-            let prompt = format!(
-                "{}<workstation>\n- OS: darwin (kernel Darwin 27.0.0)\n- Arch: arm64\n- CPU: Apple M3 Pro (12 cores)\n- GPU: Apple M3 Pro\n</workstation>{}",
-                &prompt[..start],
-                &prompt[end..]
-            );
-            let normalized = prompt
-                .lines()
-                .map(|line| {
-                    if line.starts_with("Current date: ") {
-                        "Current date: <date>"
-                    } else {
-                        line
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            value["systemPrompt"] = normalized.into();
+            value["systemPrompt"] = project(&prompt).into();
         }
     }
     let expected: serde_json::Value =

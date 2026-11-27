@@ -30,6 +30,9 @@ mod tests {
                 "READ_CAPABILITY_SENTINEL".to_owned(),
             )]),
             prompt_guidelines: vec!["GUIDELINE_SENTINEL".into()],
+            full_tool_prompt: None,
+            shared_sections: Default::default(),
+            native_search_available: false,
             context_files: vec![ContextFile {
                 path: "/synthetic-project/AGENTS.md".into(),
                 content: "CONTEXT_SENTINEL".into(),
@@ -106,7 +109,11 @@ mod tests {
                 public::resolve_preset(model(id, None), public::PromptPresetName::Auto, options())
                     .expect("preset");
             assert_eq!(actual.name, name);
-            assert_eq!(actual.prompt, build(options()), "{id}");
+            let declared = public::BuildDynamicSystemPromptOptions {
+                shared_sections: public::preset_shared_sections(Some(name)),
+                ..options()
+            };
+            assert_eq!(actual.prompt, build(declared), "{id}");
             let built: public::ResolvedPromptPreset =
                 public::build_preset(name, options()).expect("built");
             assert_eq!(built.prompt, actual.prompt, "{id}");

@@ -2652,7 +2652,7 @@ impl HostCore {
                 "interactive" => Some(maho_ext_api::SessionKind::Interactive),
                 _ => None,
             });
-        let parsed_context = context.as_ref().and_then(|c| {
+        let mut parsed_context = context.as_ref().and_then(|c| {
             c.as_object().map(|obj| {
                 obj.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
@@ -2667,6 +2667,23 @@ impl HostCore {
                 "{}: {error}",
                 crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
             )));
+        }
+        let public_host_socket = self.public_socket.get().and_then(|endpoint| {
+            if endpoint.is_empty() || endpoint.starts_with('\0') {
+                return None;
+            }
+            let path = std::path::Path::new(endpoint);
+            let base = path.file_name()?;
+            let dir = path
+                .parent()
+                .map(crate::session_path_key::canonical_session_path)
+                .unwrap_or_default();
+            Some(dir.join(base).to_string_lossy().into_owned())
+        });
+        if let Some(ref hs) = public_host_socket {
+            let ctx = parsed_context.get_or_insert_with(Default::default);
+            ctx.insert("host_socket".to_owned(), hs.clone());
+            ctx.insert("host_instance".to_owned(), instance_id.to_owned());
         }
         let profile = crate::session_registry::RpcSessionLaunchProfile {
             runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
@@ -2696,7 +2713,7 @@ impl HostCore {
             retry_fallback: retry_fallback.clone(),
             holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
                 host_instance: Some(instance_id.to_owned()),
-                host_socket: None,
+                host_socket: public_host_socket,
                 host_daemon_dir: std::env::var(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV)
                     .ok()
                     .filter(|dir| !dir.is_empty()),
@@ -4767,6 +4784,60 @@ mod handoff_tests {
             writer,
         ))
     }
+    #[tokio::test]
+    async fn open_session_stamps_host_socket_and_instance_when_public_socket_is_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<crate::session_registry::RpcSessionLaunchProfile>,
+        ));
+        let cap_clone = captured.clone();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |profile: crate::session_registry::RpcSessionLaunchProfile| {
+                *cap_clone.lock().unwrap() = Some(profile);
+                Box::pin(async { Err("stop after capture".to_owned()) })
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: temp.path().to_path_buf(),
+                cwd: temp.path().to_string_lossy().into_owned(),
+                create_runtime,
+                capabilities: vec![],
+                close_grace_ms: 10_000,
+            },
+            std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+                tokio::io::sink(),
+            )),
+        ));
+        let sock = temp.path().join("rpc/rpc.sock");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        core.install_endpoint_reservations(Some(&sock.to_string_lossy()))
+            .await;
+        let _ = core
+            .handle(
+                None,
+                r#"{"id":"o","type":"open_session","retain_on_disconnect":true,"context":{"role":"worker"}}"#,
+            )
+            .await;
+        let profile = captured.lock().unwrap().clone().expect("profile captured");
+        let ctx = profile.session_context.expect("session_context stamped");
+        assert_eq!(ctx.get("role").map(String::as_str), Some("worker"));
+        let expected_dir = crate::session_path_key::canonical_session_path(sock.parent().unwrap());
+        let expected_sock = expected_dir.join("rpc.sock").to_string_lossy().into_owned();
+        assert_eq!(
+            ctx.get("host_socket").map(String::as_str),
+            Some(expected_sock.as_str())
+        );
+        assert_eq!(
+            ctx.get("host_instance").map(String::as_str),
+            Some(crate::protocol_identity::host_instance_id())
+        );
+        assert_eq!(
+            profile.holder_endpoint.and_then(|h| h.host_socket),
+            Some(expected_sock)
+        );
+    }
+
     #[tokio::test]
     async fn handoff_is_advertised_only_after_its_handler_is_installed() {
         let core = idle_core();

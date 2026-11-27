@@ -5,8 +5,11 @@ use maho_core::dynamic_prompt::{
 };
 
 pub fn build_claude_opus45_prompt(mut options: BuildDynamicSystemPromptOptions<'_>) -> String {
-    let tooling =
-        build_execution_tooling_section(&options.selected_tools, ExecutionToolingDialect::Claude);
+    let tooling = build_execution_tooling_section(
+        &options.selected_tools,
+        ExecutionToolingDialect::Claude,
+        options.shared_sections,
+    );
     options.tuning_section = Some([tooling.as_str(), "Break complex tasks into ordered steps with clear dependencies before executing. When a request covers a set of items, apply it to every item rather than only the first, and state the scope you applied."].into_iter().filter(|section| !section.is_empty()).collect::<Vec<_>>().join("\n\n"));
     options.workstation_dialect = Some(WorkstationDialect::Claude);
     build_dynamic_system_prompt(&options)

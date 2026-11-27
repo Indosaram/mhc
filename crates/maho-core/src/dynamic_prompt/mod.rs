@@ -14,9 +14,8 @@ pub mod working_task;
 pub mod workstation;
 
 pub use build::{
-    BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, DynamicPromptRenderOptions,
-    FullToolPrompt, PROMPT_SURFACE_ENV_VAR, build_dynamic_system_prompt,
-    build_dynamic_system_prompt_parts_with_options, build_dynamic_system_prompt_with_options,
+    BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, FullToolPrompt,
+    PROMPT_SURFACE_ENV_VAR, build_dynamic_system_prompt, build_dynamic_system_prompt_parts,
     resolve_prompt_surface,
 };
 pub use identity::{build_identity_section, build_identity_section_for_sections};

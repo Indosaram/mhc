@@ -13,20 +13,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use maho_ext_api::{
-    BeforeAgentStartEventResult, CustomMessage, DeliverAs, EventKind, EventResult, Extension,
-    ExtensionApi, ExtensionContext, ExtensionFailure, ExtensionHandlerOptions, ExtensionRuntime,
-    ExtensionSide, SendMessageOptions, ToolCallEventResult, ToolContent, ToolDefinition,
-    ToolExposure, ToolResult, diagnostic,
+    BeforeAgentStartEventResult, ControlEndpointRegisterOptions,
+    ControlEndpointRegistrationOutcome, EventKind, EventResult, Extension, ExtensionApi,
+    ExtensionContext, ExtensionFailure, ExtensionHandlerOptions, ExtensionRuntime, ExtensionSide,
+    SessionControlDisposeFn, ToolCallEventResult, ToolDefinition, ToolExposure, ToolResult,
+    diagnostic,
 };
 use serde_json::{Value, json};
 
 use super::adapter::{
     AdmitExternalMessageInput, DrainWakeEvent, ExternalAdmissionKind, RuntimePhase,
-    SessionAdmissionGate, SessionRuntimePort,
+    SessionAdmissionGate, SessionRuntimePort, to_session_control_drain_result,
 };
 use super::completion::{AgentEndFacts, CompletionTracker};
 use super::component::{COMPLETION_SETTLE_WAIT_MS, RunContext};
-use super::constants::SESSION_CONTROL_DELIVERY_TYPE;
 use super::drain::{InboxDrain, InboxDrainOptions};
 use super::endpoint_registry::endpoint_kind_of;
 use super::graceful_close_returns::{returned_at_close, settle_graceful_close};
@@ -49,15 +49,18 @@ use super::tools::monitor_target::{
 };
 use super::tools::ports::{ThreadToolSurfaceOptions, UNKNOWN_CALLER};
 use super::tools::{BuiltLocalTools, build_local_thread_tools};
-use super::types::{AdmissionLedger, GatewayDeliveryMode};
+use super::types::GatewayDeliveryMode;
 use super::wake::host_ensure::{EngineHostEnsureOptions, engine_host_ensure};
-use super::wake::runtime::{RunningThreadWake, ThreadWakeOptions, start_thread_wake_at_session};
+use super::wake::runtime::{
+    RunningThreadWake, ThreadWakeOptions, start_thread_wake_at_session, take_and_run,
+};
 
 pub struct NativeThreadComponent;
 
 struct LiveNativeState {
     agent_dir: PathBuf,
     durable_id: String,
+    host_socket: Option<String>,
     store: Arc<dyn GatewayStoreApi>,
     surface: Arc<ThreadToolSurfaceOptions>,
     built: BuiltLocalTools,
@@ -72,6 +75,17 @@ struct LiveNativeState {
     skill_bodies: Mutex<HashMap<String, String>>,
     warned_skills: Mutex<HashSet<String>>,
     wake: Mutex<Option<Arc<RunningThreadWake>>>,
+    wake_cell: Arc<Mutex<Option<Arc<RunningThreadWake>>>>,
+    control_dispose: Arc<Mutex<Option<SessionControlDisposeFn>>>,
+}
+
+fn native_wake_engine_version() -> String {
+    let raw = maho_core::engine_build_identity::ENGINE_VERSION;
+    if raw == "0.0.0" || raw.trim().is_empty() {
+        "2026.11.19-5".to_owned()
+    } else {
+        raw.to_owned()
+    }
 }
 
 impl LiveNativeState {
@@ -375,7 +389,9 @@ fn initialize_state(
 
     let compacting_p = compacting.clone();
     let oq_p = open_questions.clone();
+    let runtime_gate = runtime.clone();
     let runtime_admit = runtime.clone();
+    let runtime_ledger = runtime.clone();
     let runtime_port = SessionRuntimePort {
         phase: Arc::new(move || {
             if compacting_p.load(std::sync::atomic::Ordering::Acquire) {
@@ -392,48 +408,64 @@ fn initialize_state(
                 RuntimePhase::MidTurn
             }
         }),
-        admission_gate: Arc::new(|| SessionAdmissionGate {
-            can_admit: true,
-            hold_reason: None,
-            editor_revision: 0,
-            turn_epoch: 0,
+        admission_gate: Arc::new(move || {
+            let raw = runtime_gate
+                .session_actions()
+                .map(|a| a.session_control_admission_gate())
+                .unwrap_or_else(
+                    |_| json!({ "can_admit": true, "editor_revision": 0, "turn_epoch": 0 }),
+                );
+            SessionAdmissionGate {
+                can_admit: raw
+                    .get("can_admit")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                hold_reason: raw
+                    .get("hold_reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                editor_revision: raw
+                    .get("editor_revision")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                turn_epoch: raw.get("turn_epoch").and_then(Value::as_i64).unwrap_or(0),
+            }
         }),
         admit_external_message: Arc::new(move |input: AdmitExternalMessageInput| {
             let deliver_as = match input.deliver_as {
-                GatewayDeliveryMode::Steer => DeliverAs::Steer,
-                GatewayDeliveryMode::FollowUp | GatewayDeliveryMode::Auto => DeliverAs::FollowUp,
+                GatewayDeliveryMode::Steer => "steer",
+                GatewayDeliveryMode::FollowUp | GatewayDeliveryMode::Auto => "followUp",
             };
-            let actions = runtime_admit.message_actions().map_err(|e| e.to_string())?;
-            actions
-                .send_message(
-                    CustomMessage {
-                        custom_type: SESSION_CONTROL_DELIVERY_TYPE.to_owned(),
-                        content: vec![ToolContent::Text {
-                            text: input.text,
-                            audience: None,
-                        }],
-                        display: true,
-                        details: Some(json!({
-                            "delivery_id": input.delivery_id,
-                            "sender": input.sender,
-                        })),
-                    },
-                    SendMessageOptions {
-                        trigger_turn: true,
-                        deliver_as: Some(deliver_as),
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-            let kind = match deliver_as {
-                DeliverAs::Steer => ExternalAdmissionKind::Steered,
-                DeliverAs::FollowUp | DeliverAs::NextTurn => ExternalAdmissionKind::Started,
-            };
-            Ok(super::adapter::AdmitResult {
-                kind,
-                turn_epoch: 0,
-            })
+            let mut payload = json!({
+                "delivery_id": input.delivery_id,
+                "text": input.text,
+                "deliverAs": deliver_as,
+                "sender": input.sender,
+            });
+            if let Some(display_text) = input.display_text {
+                payload["display_text"] = Value::String(display_text);
+            }
+            if let Some(expected_turn_id) = input.expected_turn_id {
+                payload["expected_turn_id"] = json!(expected_turn_id);
+            }
+            let actions = runtime_admit.session_actions().map_err(|e| e.to_string())?;
+            let reply = actions.session_control_admit_external_message(payload)?;
+            let kind_raw = reply
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("started");
+            let kind =
+                ExternalAdmissionKind::parse(kind_raw).unwrap_or(ExternalAdmissionKind::Started);
+            let turn_epoch = reply.get("turn_epoch").and_then(Value::as_i64).unwrap_or(0);
+            Ok(super::adapter::AdmitResult { kind, turn_epoch })
         }),
-        list_admitted_deliveries: Arc::new(AdmissionLedger::default),
+        list_admitted_deliveries: Arc::new(move || {
+            let raw = runtime_ledger
+                .session_actions()
+                .map(|a| a.session_control_list_admitted_deliveries())
+                .unwrap_or_else(|_| json!({ "pending": [], "emitted": [] }));
+            serde_json::from_value(raw).unwrap_or_default()
+        }),
     };
 
     let sf_arc = Arc::new(session_file);
@@ -467,6 +499,7 @@ fn initialize_state(
     let state = Arc::new(LiveNativeState {
         agent_dir,
         durable_id,
+        host_socket: host_socket.clone(),
         store,
         surface,
         built,
@@ -481,6 +514,8 @@ fn initialize_state(
         skill_bodies: Mutex::new(HashMap::new()),
         warned_skills: Mutex::new(HashSet::new()),
         wake: Mutex::new(None),
+        wake_cell: wake_cell.clone(),
+        control_dispose: Arc::new(Mutex::new(None)),
     });
 
     // If running inside the thread host daemon socket, start wake eagerly.
@@ -489,9 +524,11 @@ fn initialize_state(
     {
         let ad = state.agent_dir.clone();
         let sess_dir = ad.join("sessions");
-        if let Some(running) =
-            start_thread_wake_at_session("rpc", ad, sess_dir, ThreadWakeOptions::default())
-        {
+        let wake_opts = ThreadWakeOptions {
+            engine_version: Some(native_wake_engine_version()),
+            ..Default::default()
+        };
+        if let Some(running) = start_thread_wake_at_session("rpc", ad, sess_dir, wake_opts) {
             *wake_cell
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(running.clone());
@@ -724,6 +761,101 @@ impl Extension for NativeThreadComponent {
                             st.completions.arm(&did, arm_seq);
                         }
 
+                        // Initial drain pass + register control endpoint when running on a host/TUI.
+                        if let Ok(actions) = rt.session_actions() {
+                            let _ = actions.session_control_persist_header_now().await;
+                            let drain_for_ep = st.drain.clone();
+                            let comp_for_ep = st.completions.clone();
+                            let store_for_ep = st.store.clone();
+                            let did_for_ep = st.durable_id.clone();
+                            let store_for_cb = st.store.clone();
+                            let did_for_cb = st.durable_id.clone();
+                            let inc_for_cb = st.incarnation.clone();
+                            let dispose_slot = st.control_dispose.clone();
+                            let inbox_dir = crate::paths::gateway_inbox_directory(
+                                &st.agent_dir,
+                                &st.durable_id,
+                            );
+                            let drain_cb: maho_ext_api::SessionControlDrainFn =
+                                Arc::new(move |ev| {
+                                    let drain = drain_for_ep.clone();
+                                    let comp = comp_for_ep.clone();
+                                    let store = store_for_ep.clone();
+                                    let did = did_for_ep.clone();
+                                    Box::pin(async move {
+                                        let reason = ev
+                                            .get("reason")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("inbox");
+                                        let delivery_ids: Option<Vec<String>> = ev
+                                            .get("delivery_ids")
+                                            .and_then(Value::as_array)
+                                            .map(|arr| {
+                                                arr.iter()
+                                                    .filter_map(|v| v.as_str().map(str::to_owned))
+                                                    .collect()
+                                            });
+                                        let wake_ev =
+                                            drain_event_from_wake(reason, delivery_ids.as_deref());
+                                        if wake_ev.reason == super::adapter::WakeReason::Command
+                                            && did != UNKNOWN_CALLER
+                                            && let Ok(Some(arm_seq)) =
+                                                store.latest_completion_arm(&did)
+                                        {
+                                            comp.arm(&did, arm_seq);
+                                        }
+                                        let outcome = drain
+                                            .drain_gateway(&wake_ev)
+                                            .map_err(|e| e.message())?;
+                                        let res = to_session_control_drain_result(&outcome);
+                                        Ok(Some(
+                                            serde_json::to_value(res)
+                                                .unwrap_or_else(|_| json!({ "admitted": [] })),
+                                        ))
+                                    })
+                                });
+                            let drain_ref = st.drain.clone();
+                            let ref_cb: maho_ext_api::SessionControlReferencedFn =
+                                Arc::new(move || {
+                                    let d = drain_ref.clone();
+                                    Box::pin(async move { d.is_session_referenced() })
+                                });
+                            let reg_opts = ControlEndpointRegisterOptions {
+                                inbox_dir: inbox_dir.to_string_lossy().into_owned(),
+                                drain: drain_cb,
+                                is_session_referenced: Some(ref_cb),
+                            };
+                            let on_registered: Arc<
+                                dyn Fn(ControlEndpointRegistrationOutcome) + Send + Sync,
+                            > = Arc::new(move |outcome| {
+                                if let ControlEndpointRegistrationOutcome::Registered {
+                                    socket,
+                                    dispose,
+                                } = outcome
+                                {
+                                    *dispose_slot
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                        Some(dispose);
+                                    let kind = endpoint_kind_of(&socket, &[]);
+                                    let _ = store_for_cb.register_incarnation(
+                                        &did_for_cb,
+                                        &inc_for_cb,
+                                        Some(&socket),
+                                        Some(kind.as_str()),
+                                    );
+                                }
+                            });
+                            if st.host_socket.is_some() {
+                                let _ = actions
+                                    .defer_control_endpoint_registration(reg_opts, on_registered)
+                                    .await;
+                            } else {
+                                let outcome = actions.register_control_endpoint(reg_opts).await;
+                                on_registered(outcome);
+                            }
+                        }
+
                         // Initial drain pass.
                         let _ = st.drain.drain(&DrainWakeEvent {
                             reason: super::adapter::WakeReason::Start,
@@ -733,12 +865,17 @@ impl Extension for NativeThreadComponent {
                         // Start background wake carrier if not already started.
                         let ad = st.agent_dir.clone();
                         let sess_dir = ad.join("sessions");
-                        if let Some(running) = start_thread_wake_at_session(
-                            "rpc",
-                            ad,
-                            sess_dir,
-                            ThreadWakeOptions::default(),
-                        ) {
+                        let wake_opts = ThreadWakeOptions {
+                            engine_version: Some(native_wake_engine_version()),
+                            ..Default::default()
+                        };
+                        if let Some(running) =
+                            start_thread_wake_at_session("rpc", ad, sess_dir, wake_opts)
+                        {
+                            *st.wake_cell
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(running.clone());
                             *st.wake
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(running);
@@ -784,15 +921,11 @@ impl Extension for NativeThreadComponent {
                         let mut blocks = Vec::new();
                         for name in names {
                             let Some(skill) = skills.iter().find(|s| s.name == name) else {
-                                let mut warned = st
-                                    .warned_skills
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                if warned.insert(name.clone()) {
+                                warn_initial_skill_once(&st.warned_skills, &name, || {
                                     diagnostic(&format!(
                                         "thread: initial skill {name} is not in this session's skills; it is not applied"
                                     ));
-                                }
+                                });
                                 continue;
                             };
                             let cached = st
@@ -812,15 +945,11 @@ impl Extension for NativeThreadComponent {
                                         b
                                     }
                                     Err(err) => {
-                                        let mut warned = st
-                                            .warned_skills
-                                            .lock()
-                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                        if warned.insert(name.clone()) {
+                                        warn_initial_skill_once(&st.warned_skills, &name, || {
                                             diagnostic(&format!(
                                                 "thread: initial skill {name} could not be read: {err}"
                                             ));
-                                        }
+                                        });
                                         continue;
                                     }
                                 },
@@ -867,6 +996,14 @@ impl Extension for NativeThreadComponent {
                         else {
                             return Ok(EventResult::None);
                         };
+                        if st
+                            .control_dispose
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .is_some()
+                        {
+                            return Ok(EventResult::None);
+                        }
                         if wake_ev.reason == super::adapter::WakeReason::Command
                             && st.durable_id != UNKNOWN_CALLER
                             && let Ok(Some(arm_seq)) =
@@ -1191,6 +1328,15 @@ impl Extension for NativeThreadComponent {
                         };
                         st.alerts.ended(&did);
                         st.completions.dispose();
+                        let control_dispose = st
+                            .control_dispose
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        if let Some(dispose) = control_dispose {
+                            let _ = dispose().await;
+                        }
+                        take_and_run(&st.wake, |wake| wake.stop());
                         (st.built.dispose)();
                         let _ = st.store.clear_endpoint(&st.durable_id, &st.incarnation);
                         let returned = returned_at_close(&entries);
@@ -1202,6 +1348,16 @@ impl Extension for NativeThreadComponent {
                 }),
             );
         }
+    }
+}
+
+fn warn_initial_skill_once(warned: &Mutex<HashSet<String>>, name: &str, report: impl FnOnce()) {
+    let should_report = warned
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(name.to_owned());
+    if should_report {
+        report();
     }
 }
 
@@ -1226,6 +1382,17 @@ fn apply_monitor_resolution(input: &mut Value, resolution: MonitorTargetResoluti
 #[cfg(test)]
 mod monitor_resolution_tests {
     use super::*;
+
+    #[test]
+    fn initial_skill_warning_allows_reentry_and_reports_once() {
+        let warned = Mutex::new(HashSet::new());
+        warn_initial_skill_once(&warned, "missing", || {
+            assert!(warned.try_lock().is_ok(), "warning callback held the mutex");
+        });
+        warn_initial_skill_once(&warned, "missing", || {
+            panic!("the same skill warning must only be reported once");
+        });
+    }
 
     #[test]
     fn resolved_monitor_target_reaches_tool_input() {

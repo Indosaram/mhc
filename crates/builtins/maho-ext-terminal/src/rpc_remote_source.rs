@@ -1,6 +1,6 @@
 //! Port of `rpc-remote-source.ts` (senpi#6151):
 //! Seam for watching RPC sessions on another device (`<device>/<session>`, `<device>/*`).
-//! Cross-device monitor targets are deferred per `docs/dori-sync/backlog.md`, so
+//! Cross-device monitor targets are deferred to a later port, so
 //! `current_rpc_remote_source()` returns `None` in production while preserving the full
 //! target/checkpoint types and watch plumbing.
 
@@ -77,7 +77,7 @@ pub trait RpcRemoteSource: Send + Sync {
 
 pub type SharedRpcRemoteSource = Arc<dyn RpcRemoteSource>;
 
-/// Cross-device `<device>/<session>` remote sources are deferred (`docs/dori-sync/backlog.md`).
+/// Cross-device `<device>/<session>` remote sources are deferred to a later port.
 /// Returns `None` so local monitors run normally and remote targets fail closed with the
 /// upstream refusal message.
 pub fn current_rpc_remote_source() -> Option<SharedRpcRemoteSource> {

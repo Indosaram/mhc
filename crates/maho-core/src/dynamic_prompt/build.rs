@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::handoff::{HandoffSectionOptions, build_handoff_section_for_sections};
+use super::handoff::{HandoffSectionOptions, build_handoff_section};
 use super::identity::build_identity_section_for_sections;
 use super::intent_gate::build_intent_gate_with_options;
 use super::policies::build_policies_section_with_options;
@@ -40,6 +40,10 @@ pub struct DynamicPromptCoreContext {
     pub tools: Vec<AvailableTool>,
     pub tool_section: String,
     pub surface: PromptSurface,
+    /// The wording the shared section builders render for this prompt (senpi#5665).
+    pub shared_sections: SharedSections,
+    /// A provider-native search tool is available even without the builtin `web_search` (senpi#2935).
+    pub native_search_available: bool,
 }
 
 pub type PromptPartsObserver<'a> = &'a dyn Fn(&[DynamicSystemPromptPart]);
@@ -52,6 +56,11 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub selected_tools: Vec<String>,
     pub tool_snippets: HashMap<String, String>,
     pub prompt_guidelines: Vec<String>,
+    /// Tool contributions for `SharedSections::Full`; without it the full render uses the snippets above.
+    pub full_tool_prompt: Option<FullToolPrompt>,
+    /// Wording of the shared section builders; a prompt preset declares it (senpi#5665).
+    pub shared_sections: SharedSections,
+    pub native_search_available: bool,
     pub context_files: Vec<ContextFile>,
     pub skills: Vec<Skill>,
     pub tuning_section: Option<String>,
@@ -77,24 +86,8 @@ pub struct FullToolPrompt {
     pub prompt_guidelines: Vec<String>,
 }
 
-/// Additional prompt-render knobs from senpi#5665 / #2935 kept separate so `BuildDynamicSystemPromptOptions`
-/// remains backwards-compatible for struct literals in downstream crates.
-#[derive(Debug, Clone, Default)]
-pub struct DynamicPromptRenderOptions {
-    pub shared_sections: SharedSections,
-    pub full_tool_prompt: Option<FullToolPrompt>,
-    pub native_search_available: bool,
-}
-
 pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>) -> String {
-    build_dynamic_system_prompt_with_options(options, &DynamicPromptRenderOptions::default())
-}
-
-pub fn build_dynamic_system_prompt_with_options(
-    options: &BuildDynamicSystemPromptOptions<'_>,
-    render: &DynamicPromptRenderOptions,
-) -> String {
-    let parts = build_dynamic_system_prompt_parts_with_options(options, render);
+    let parts = build_dynamic_system_prompt_parts(options);
     if let Some(on_parts) = options.on_parts {
         on_parts(&parts);
     }
@@ -103,13 +96,6 @@ pub fn build_dynamic_system_prompt_with_options(
 
 pub fn build_dynamic_system_prompt_parts(
     options: &BuildDynamicSystemPromptOptions<'_>,
-) -> Vec<DynamicSystemPromptPart> {
-    build_dynamic_system_prompt_parts_with_options(options, &DynamicPromptRenderOptions::default())
-}
-
-pub fn build_dynamic_system_prompt_parts_with_options(
-    options: &BuildDynamicSystemPromptOptions<'_>,
-    render: &DynamicPromptRenderOptions,
 ) -> Vec<DynamicSystemPromptPart> {
     if let Some(custom) = &options.custom_prompt {
         let mut parts = vec![part("custom_prompt", "loader", custom.clone())];
@@ -123,9 +109,9 @@ pub fn build_dynamic_system_prompt_parts_with_options(
         return parts;
     }
     let tools = categorize_tools(&options.selected_tools);
-    let shared_sections = render.shared_sections;
+    let shared_sections = options.shared_sections;
     let tool_prompt = if shared_sections == SharedSections::Full {
-        render.full_tool_prompt.as_ref()
+        options.full_tool_prompt.as_ref()
     } else {
         None
     };
@@ -146,6 +132,8 @@ pub fn build_dynamic_system_prompt_parts_with_options(
             tools: tools.clone(),
             tool_section: tool_section.clone(),
             surface: options.surface,
+            shared_sections,
+            native_search_available: options.native_search_available,
         })],
         None => {
             let mut list = vec![
@@ -165,13 +153,11 @@ pub fn build_dynamic_system_prompt_parts_with_options(
             list.extend([
                 build_policies_section_with_options(None, shared_sections),
                 String::new(),
-                build_handoff_section_for_sections(
-                    HandoffSectionOptions {
-                        surface: options.surface,
-                        ..Default::default()
-                    },
+                build_handoff_section(HandoffSectionOptions {
+                    surface: options.surface,
                     shared_sections,
-                ),
+                    ..Default::default()
+                }),
                 String::new(),
                 build_style_section_for_sections(options.surface, shared_sections),
             ]);
@@ -261,6 +247,9 @@ mod tests {
             selected_tools: vec!["read".to_string()],
             tool_snippets,
             prompt_guidelines: Vec::new(),
+            full_tool_prompt: None,
+            shared_sections: Default::default(),
+            native_search_available: false,
             context_files: Vec::new(),
             skills: Vec::new(),
             tuning_section: None,
@@ -445,13 +434,10 @@ mod tests {
         assert!(!prompt.contains("ts-ignore"));
         assert!(prompt.contains("Targeted edit over file rewrite"));
 
-        let full_prompt = build_dynamic_system_prompt_with_options(
-            &options(),
-            &DynamicPromptRenderOptions {
-                shared_sections: SharedSections::Full,
-                ..Default::default()
-            },
-        );
+        let full_prompt = build_dynamic_system_prompt(&BuildDynamicSystemPromptOptions {
+            shared_sections: SharedSections::Full,
+            ..options()
+        });
         assert!(full_prompt.contains("Hard Blocks"));
         assert!(full_prompt.contains("Prefer a targeted edit"));
     }

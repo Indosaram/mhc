@@ -15,5 +15,7 @@ mod file_operations;
 mod hooks;
 #[path = "main_hooks.rs"]
 mod main_hooks;
+#[path = "native_baseline.rs"]
+mod native_baseline;
 #[path = "routing.rs"]
 mod routing;

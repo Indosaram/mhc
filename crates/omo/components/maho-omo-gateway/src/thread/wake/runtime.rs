@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
 use super::super::intake_admission::IntakeAdmission;
 use super::super::same_device_wake::{CarrierWakeFn, SameDeviceWake};
@@ -44,10 +45,22 @@ pub struct ThreadWakeOptions {
 }
 
 pub struct RunningThreadWake {
+    agent_dir: PathBuf,
     carrier: Arc<Carrier>,
     serving: Mutex<Option<Arc<ServingConsumer>>>,
+    stopped: AtomicBool,
     warn: WakeWarnFn,
     on_wake: Option<OnWakeFn>,
+}
+
+pub(crate) fn take_and_run<T>(slot: &Mutex<Option<T>>, action: impl FnOnce(T)) {
+    let value = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(value) = value {
+        action(value);
+    }
 }
 
 impl RunningThreadWake {
@@ -86,14 +99,20 @@ impl RunningThreadWake {
     }
 
     pub fn stop(&self) {
-        if let Some(s) = self
-            .serving
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        self.stopped.store(true, Ordering::SeqCst);
+        let latch = match process_latch().try_lock() {
+            Ok(latch) => Some(latch),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut latch) = latch
+            && latch
+                .get(&self.agent_dir)
+                .is_some_and(|running| std::ptr::eq(Arc::as_ptr(running), self))
         {
-            s.close();
+            latch.remove(&self.agent_dir);
         }
+        take_and_run(&self.serving, |serving| serving.close());
         self.carrier.stop();
     }
 }
@@ -114,6 +133,7 @@ pub fn process_same_device_wake(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&agent_dir)
+        .filter(|running| !running.stopped.load(Ordering::SeqCst))
         .cloned();
     let carrier_wake: Option<CarrierWakeFn> = running.map(|r| {
         Arc::new(move |id: String| {
@@ -136,6 +156,7 @@ pub async fn process_intake_admission(agent_dir: &PathBuf, device: &str) -> Inta
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(agent_dir)
+        .filter(|running| !running.stopped.load(Ordering::SeqCst))
         .cloned();
     match running {
         Some(r) => r.admit_intake(device).await,
@@ -168,7 +189,10 @@ pub fn start_thread_wake_at_session(
     let mut latch = process_latch()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = latch.get(&agent_dir) {
+    if let Some(existing) = latch
+        .get(&agent_dir)
+        .filter(|running| !running.stopped.load(Ordering::SeqCst))
+    {
         return Some(existing.clone());
     }
 
@@ -281,8 +305,10 @@ pub fn start_thread_wake_at_session(
     });
 
     let running = Arc::new(RunningThreadWake {
+        agent_dir: agent_dir.clone(),
         carrier: carrier.clone(),
         serving: Mutex::new(None),
+        stopped: AtomicBool::new(false),
         warn,
         on_wake: options.on_wake.clone(),
     });
@@ -312,13 +338,162 @@ pub fn start_thread_wake_at_session(
                 same_device: sd_bg,
             };
             if let Some(consumer) = start_delivery_consumer(&input).await {
-                *running_bg
+                let mut serving = running_bg
                     .serving
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(consumer));
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if running_bg.stopped.load(Ordering::SeqCst) {
+                    drop(serving);
+                    consumer.close();
+                } else {
+                    *serving = Some(Arc::new(consumer));
+                }
             }
         });
     }
 
     Some(running)
+}
+
+#[cfg(test)]
+mod callback_lock_tests {
+    use super::super::consumer_start::DeliveryServicePort;
+    use super::*;
+
+    struct TestDeliveryPort {
+        closed: Arc<tokio::sync::Notify>,
+    }
+
+    impl DeliveryServicePort for TestDeliveryPort {
+        fn peer_admitted(&self, _: &str) -> BoxFuture<bool> {
+            Box::pin(async { true })
+        }
+
+        fn report_drained(&self) -> BoxFuture<Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&self) {
+            self.closed.notify_one();
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_closes_consumer_started_after_shutdown() {
+        use tokio::sync::oneshot;
+        use tokio::time::{Duration, timeout};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let gate = Mutex::new(Some((started_tx, release_rx)));
+        let closed = Arc::new(tokio::sync::Notify::new());
+        let port: Arc<dyn DeliveryServicePort> = Arc::new(TestDeliveryPort {
+            closed: Arc::clone(&closed),
+        });
+        let options = ThreadWakeOptions {
+            engine_version: Some("2026.11.15-2".into()),
+            minimum_engine: Some("2026.11.15-2".into()),
+            deliveries: Some(Arc::new(move || {
+                let (started, release) = gate.lock().expect("gate").take().expect("one start");
+                let port = Arc::clone(&port);
+                Box::pin(async move {
+                    started.send(()).expect("start observed");
+                    release.await.expect("release");
+                    Some(port)
+                })
+            })),
+            ..Default::default()
+        };
+        let running = start_thread_wake_at_session(
+            "rpc",
+            tmp.path().to_path_buf(),
+            tmp.path().join("sessions"),
+            options,
+        )
+        .expect("wake starts");
+        timeout(Duration::from_secs(5), started_rx)
+            .await
+            .expect("consumer start timed out")
+            .expect("consumer started");
+        let close_observed = closed.notified();
+        running.stop();
+        release_tx.send(()).expect("release consumer");
+        timeout(Duration::from_secs(5), close_observed)
+            .await
+            .expect("late consumer must be closed");
+        assert!(running.serving.lock().expect("serving").is_none());
+    }
+
+    #[tokio::test]
+    async fn stopped_wake_can_restart_without_stale_stop_removing_replacement() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().to_path_buf();
+        let options = ThreadWakeOptions {
+            engine_version: Some("2026.11.15-2".into()),
+            ..Default::default()
+        };
+        let start = || {
+            start_thread_wake_at_session(
+                "rpc",
+                agent_dir.clone(),
+                agent_dir.join("sessions"),
+                options.clone(),
+            )
+            .expect("wake starts")
+        };
+        let first = start();
+        first.stop();
+        let replacement = start();
+        assert!(!Arc::ptr_eq(&first, &replacement), "stopped wake reused");
+        first.stop();
+        assert!(Arc::ptr_eq(&replacement, &start()), "replacement removed");
+        replacement.stop();
+    }
+
+    #[tokio::test]
+    async fn stop_does_not_wait_for_process_latch() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let options = ThreadWakeOptions {
+            engine_version: Some("2026.11.15-2".into()),
+            ..Default::default()
+        };
+        let start = || {
+            start_thread_wake_at_session(
+                "rpc",
+                tmp.path().to_path_buf(),
+                tmp.path().join("sessions"),
+                options.clone(),
+            )
+            .expect("wake starts")
+        };
+        let first = start();
+        let held = process_latch().lock().expect("latch");
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = Arc::clone(&first);
+        let thread = std::thread::spawn(move || {
+            worker.stop();
+            done_tx.send(()).expect("observer");
+        });
+        let completed = done_rx.recv_timeout(Duration::from_secs(2));
+        drop(held);
+        thread.join().expect("stop thread");
+        completed.expect("stop waited for latch");
+        let replacement = start();
+        assert!(!Arc::ptr_eq(&first, &replacement));
+        replacement.stop();
+    }
+
+    #[test]
+    fn take_and_run_releases_slot_before_callback() {
+        let slot = Mutex::new(Some(7));
+        take_and_run(&slot, |value| {
+            assert_eq!(value, 7);
+            assert!(slot.try_lock().is_ok(), "callback held the slot mutex");
+        });
+        assert!(slot.lock().expect("slot").is_none());
+    }
 }

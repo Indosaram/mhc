@@ -205,6 +205,7 @@ fn unserved_swe2_lanes_are_not_routed() {
 #[test]
 fn upstream_prompt_preset_model_cases_resolve() {
     for (provider, id, preset) in [
+        ("openai", "gpt-6.2-sol", P::Gpt62),
         ("openai", "gpt-6-astra", P::Gpt6Astra),
         ("openai", "gpt-5.6", P::Gpt56),
         ("openai", "gpt-5.5", P::Gpt55),
@@ -228,7 +229,7 @@ fn upstream_prompt_preset_model_cases_resolve() {
         ("deepseek", "deepseek-v4-pro", P::DeepseekV4Pro),
         ("anthropic", "claude-fable-5", P::ClaudeFable5),
         ("anthropic", "claude-fable-5.1", P::ClaudeFable51),
-        ("anthropic", "claude-fable-5-5", P::ClaudeFable55),
+        ("anthropic", "claude-fable-5.2", P::ClaudeFable52),
         ("anthropic", "claude-opus-5.5", P::ClaudeOpus55),
         ("anthropic", "claude-opus-5", P::ClaudeOpus5),
         ("anthropic", "claude-sonnet-5.5", P::ClaudeSonnet55),

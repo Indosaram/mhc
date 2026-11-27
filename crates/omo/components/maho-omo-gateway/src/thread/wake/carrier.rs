@@ -243,12 +243,12 @@ impl Carrier {
     }
 
     fn forget(&self, durable_id: &str) {
-        if let Some(entry) = self
+        let entry = self
             .carried
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(durable_id)
-        {
+            .remove(durable_id);
+        if let Some(entry) = entry {
             entry.connection.close();
         }
     }
@@ -1009,5 +1009,88 @@ impl Carrier {
         for id in entries {
             self.forget(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod callback_lock_tests {
+    use super::*;
+    use std::sync::Weak;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::{Notify, mpsc};
+
+    struct ReentrantConnection {
+        carrier: Weak<Carrier>,
+        closed: Arc<Notify>,
+        called: Arc<AtomicBool>,
+    }
+
+    impl CarrierHostConnection for ReentrantConnection {
+        fn request(
+            &self,
+            _: Map<String, Value>,
+        ) -> super::super::carrier_connection::BoxFuture<Result<Value, String>> {
+            Box::pin(async { Err("unexpected request".into()) })
+        }
+
+        fn subscribe_events(&self) -> mpsc::UnboundedReceiver<Value> {
+            mpsc::unbounded_channel().1
+        }
+
+        fn closed_notify(&self) -> Arc<Notify> {
+            Arc::clone(&self.closed)
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+
+        fn close(&self) {
+            let carrier = self.carrier.upgrade().expect("carrier");
+            assert!(
+                carrier.carried.try_lock().is_ok(),
+                "close held carrier mutex"
+            );
+            self.called.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_closes_connections_after_releasing_carrier_mutex() {
+        use super::super::super::store::{GatewayStoreOptions, create_gateway_store};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = create_gateway_store(GatewayStoreOptions::new(
+            tmp.path().to_string_lossy().into_owned(),
+        ))
+        .expect("store");
+        let carrier = Carrier::new(CarrierOptions {
+            store,
+            sessions_directory: tmp.path().to_path_buf(),
+            ensure_host: Arc::new(|| Box::pin(async {})),
+            connect: Arc::new(|| Box::pin(async { Err("unexpected connect".into()) })),
+            wake_limit: None,
+            same_device: None,
+            remote_wake: None,
+            admit_intake: None,
+            memory_headroom: None,
+            memory_floor: None,
+            on_event: None,
+        });
+        let called = Arc::new(AtomicBool::new(false));
+        carrier.carried.lock().expect("carrier mutex").insert(
+            "thread".into(),
+            Carried {
+                connection: Arc::new(ReentrantConnection {
+                    carrier: Arc::downgrade(&carrier),
+                    closed: Arc::new(Notify::new()),
+                    called: Arc::clone(&called),
+                }),
+                session_id: "session".into(),
+                generation: 1,
+                delivery_refused_since: None,
+            },
+        );
+        carrier.stop();
+        assert!(called.load(Ordering::SeqCst));
     }
 }

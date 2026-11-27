@@ -12,6 +12,9 @@ fn options() -> BuildDynamicSystemPromptOptions<'static> {
         selected_tools: vec!["eval".into(), "read".into()],
         tool_snippets: Default::default(),
         prompt_guidelines: Vec::new(),
+        full_tool_prompt: None,
+        shared_sections: Default::default(),
+        native_search_available: false,
         context_files: Vec::new(),
         skills: Vec::new(),
         tuning_section: None,
@@ -77,7 +80,7 @@ fn all_explicit_presets_dispatch_to_nonempty_prompts() {
     for preset in [
         ClaudeFable5,
         ClaudeFable51,
-        ClaudeFable55,
+        ClaudeFable52,
         ClaudeOpus55,
         ClaudeSonnet55,
         ClaudeHaiku55,
@@ -108,6 +111,7 @@ fn all_explicit_presets_dispatch_to_nonempty_prompts() {
         Gpt55,
         Gpt56,
         Gpt6Astra,
+        Gpt62,
     ] {
         let resolved = resolve_preset(
             ModelMetadata {

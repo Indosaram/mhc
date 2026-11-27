@@ -251,6 +251,11 @@ pub struct ExtensionBindings {
     pub prompt_size_inventory: Option<Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
 }
 
+type PendingControlEndpoint = (
+    maho_ext_api::ControlEndpointRegisterOptions,
+    Arc<dyn Fn(maho_ext_api::ControlEndpointRegistrationOutcome) + Send + Sync>,
+);
+
 /// Builds a session's first extension bindings right before `bind_extensions`, so a mode can
 /// subscribe to the session (for example its extension RPC events) before `session_start` runs.
 pub type ExtensionBindingsFactory = Arc<dyn Fn(&AgentSession) -> ExtensionBindings + Send + Sync>;
@@ -1205,6 +1210,8 @@ pub struct AgentSessionInner {
     /// Installed by the interactive mode before it binds extensions; `pi.session.registerControlEndpoint` needs one.
     control_endpoint_host:
         Mutex<Option<Arc<dyn crate::session_control_actions::ControlEndpointHost>>>,
+    /// Registrations deferred during `SessionStart` when a host binds `control_endpoint_host` right after `bind_extensions`.
+    pending_control_endpoints: Mutex<Vec<PendingControlEndpoint>>,
     /// The current extension generation's `pi.session`: it owns the control endpoints that generation registers,
     /// and a reload retires it (senpi#3246).
     session_control:
@@ -3693,6 +3700,126 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
             Ok(maho_ext_host::exec::exec_command(command, args, cwd, options).await)
         })
     }
+    fn register_control_endpoint(
+        &self,
+        options: maho_ext_api::ControlEndpointRegisterOptions,
+    ) -> maho_ext_api::UiFuture<'_, maho_ext_api::ControlEndpointRegistrationOutcome> {
+        Box::pin(async move {
+            let Ok(session) = self.session() else {
+                return maho_ext_api::ControlEndpointRegistrationOutcome::Failed {
+                    reason: "session disposed".into(),
+                };
+            };
+            let Some(actions) = session.session_control() else {
+                return maho_ext_api::ControlEndpointRegistrationOutcome::Unsupported {
+                    reason: "unsupported_mode".into(),
+                };
+            };
+            let reg = crate::extensions::session_control_types::SessionControlActions::register_control_endpoint(
+                &*actions,
+                to_core_control_endpoint_options(options),
+            )
+            .await;
+            from_core_control_endpoint_registration(reg)
+        })
+    }
+    fn defer_control_endpoint_registration(
+        &self,
+        options: maho_ext_api::ControlEndpointRegisterOptions,
+        on_registered: Arc<dyn Fn(maho_ext_api::ControlEndpointRegistrationOutcome) + Send + Sync>,
+    ) -> maho_ext_api::UiFuture<'_, Option<maho_ext_api::ControlEndpointRegistrationOutcome>> {
+        Box::pin(async move {
+            let Ok(session) = self.session() else {
+                let outcome = maho_ext_api::ControlEndpointRegistrationOutcome::Failed {
+                    reason: "session disposed".into(),
+                };
+                on_registered(outcome.clone());
+                return Some(outcome);
+            };
+            let has_host = lock(&session.control_endpoint_host).is_some();
+            if !has_host {
+                lock(&session.pending_control_endpoints).push((options, on_registered));
+                return None;
+            }
+            let outcome = self.register_control_endpoint(options).await;
+            on_registered(outcome.clone());
+            Some(outcome)
+        })
+    }
+    fn session_control_admission_gate(&self) -> Value {
+        let Ok(session) = self.session() else {
+            return json!({"can_admit": false, "hold_reason": "session disposed"});
+        };
+        if let Some(actions) = session.session_control() {
+            crate::extensions::session_control_types::SessionControlActions::admission_gate(
+                &*actions,
+            )
+        } else {
+            session.external_admission.gate(&json!({}))
+        }
+    }
+    fn session_control_admit_external_message(&self, input: Value) -> Result<Value, String> {
+        let session = self.session().map_err(|e| e.message)?;
+        if let Some(actions) = session.session_control() {
+            crate::extensions::session_control_types::SessionControlActions::admit_external_message(
+                &*actions, input,
+            )
+        } else {
+            session.admit_external_message(&input, &json!({}))
+        }
+    }
+    fn session_control_list_admitted_deliveries(&self) -> Value {
+        let Ok(session) = self.session() else {
+            return json!({"pending": [], "emitted": []});
+        };
+        if let Some(actions) = session.session_control() {
+            crate::extensions::session_control_types::SessionControlActions::list_admitted_deliveries(&*actions)
+        } else {
+            session.external_admission.list()
+        }
+    }
+    fn session_control_persist_header_now(&self) -> maho_ext_api::UiFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let session = self.session().map_err(|e| e.message)?;
+            if let Some(actions) = session.session_control() {
+                crate::extensions::session_control_types::SessionControlActions::persist_header_now(
+                    &*actions,
+                )
+                .await
+            } else {
+                session.with_session_manager_mut(|manager| manager.persist_header_now())
+            }
+        })
+    }
+}
+
+fn to_core_control_endpoint_options(
+    options: maho_ext_api::ControlEndpointRegisterOptions,
+) -> crate::extensions::session_control_types::RegisterControlEndpointOptions {
+    crate::extensions::session_control_types::RegisterControlEndpointOptions {
+        inbox_dir: options.inbox_dir,
+        drain: options.drain,
+        is_session_referenced: options.is_session_referenced,
+    }
+}
+
+fn from_core_control_endpoint_registration(
+    reg: crate::extensions::session_control_types::SessionControlRegistration,
+) -> maho_ext_api::ControlEndpointRegistrationOutcome {
+    match reg {
+        crate::extensions::session_control_types::SessionControlRegistration::Registered {
+            socket,
+            dispose,
+        } => maho_ext_api::ControlEndpointRegistrationOutcome::Registered { socket, dispose },
+        crate::extensions::session_control_types::SessionControlRegistration::Unsupported {
+            reason,
+        } => maho_ext_api::ControlEndpointRegistrationOutcome::Unsupported {
+            reason: reason.as_str().to_owned(),
+        },
+        crate::extensions::session_control_types::SessionControlRegistration::Failed { reason } => {
+            maho_ext_api::ControlEndpointRegistrationOutcome::Failed { reason }
+        }
+    }
 }
 
 impl maho_ext_api::ExtensionCommandContextActions for SessionExtensionActions {
@@ -4864,6 +4991,7 @@ impl AgentSession {
                 ),
                 relocation_host: Mutex::new(None),
                 control_endpoint_host: Mutex::new(None),
+                pending_control_endpoints: Mutex::new(Vec::new()),
                 session_control: Mutex::new(None),
                 tool_barrier: crate::session_work_barrier::ToolBarrier::new({
                     let session_cell = session_cell.clone();
@@ -14178,6 +14306,9 @@ impl AgentSession {
                     selected_tools: active,
                     tool_snippets: snippets,
                     prompt_guidelines: guidelines,
+                    full_tool_prompt: None,
+                    shared_sections: Default::default(),
+                    native_search_available: false,
                     context_files: self.project_context_files(),
                     skills,
                     tuning_section: None,
@@ -17683,6 +17814,31 @@ impl AgentSession {
         *lock(&self.control_endpoint_host) = host;
     }
 
+    pub async fn flush_pending_control_endpoints(&self) {
+        if lock(&self.control_endpoint_host).is_none() {
+            return;
+        }
+        let pending = std::mem::take(&mut *lock(&self.pending_control_endpoints));
+        if pending.is_empty() {
+            return;
+        }
+        if lock(&self.session_control).is_none() {
+            self.install_session_control();
+        }
+        let Some(actions) = self.session_control() else {
+            return;
+        };
+        for (options, callback) in pending {
+            let converted = to_core_control_endpoint_options(options);
+            let reg = crate::extensions::session_control_types::SessionControlActions::register_control_endpoint(
+                &*actions,
+                converted,
+            )
+            .await;
+            callback(from_core_control_endpoint_registration(reg));
+        }
+    }
+
     /// The current extension generation's `pi.session`, created with that generation's runner.
     pub fn session_control(
         &self,
@@ -19179,6 +19335,10 @@ impl AgentSession {
     }
 
     pub fn extension_actions(&self) -> Arc<dyn maho_ext_api::ExtensionActions> {
+        Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))
+    }
+
+    pub fn extension_session_actions(&self) -> Arc<dyn maho_ext_api::ExtensionSessionActions> {
         Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))
     }
 

@@ -46,21 +46,16 @@ pub struct HandoffSectionOptions {
     pub brief_updates_between_handoffs: bool,
     /// The app surface has no routing line, so the block stops referring to one; chat has no block at all.
     pub surface: PromptSurface,
+    /// `full` renders the block as worded before the senpi#5335 diet (senpi#5665).
+    pub shared_sections: SharedSections,
 }
 
 pub fn build_handoff_section(options: HandoffSectionOptions) -> String {
-    build_handoff_section_for_sections(options, SharedSections::Diet)
-}
-
-pub fn build_handoff_section_for_sections(
-    options: HandoffSectionOptions,
-    shared_sections: SharedSections,
-) -> String {
     let surface = options.surface;
     if surface == PromptSurface::Chat {
         return chat_replies_section();
     }
-    if shared_sections == SharedSections::Full {
+    if options.shared_sections == SharedSections::Full {
         return build_full_handoff_section(options);
     }
     let next_rule = if options.turn_end_rule_stated_elsewhere {
@@ -128,13 +123,11 @@ mod tests {
             ..Default::default()
         });
         assert!(terminal.contains("after routing line"));
-        let full = build_handoff_section_for_sections(
-            HandoffSectionOptions {
-                turn_end_rule_stated_elsewhere: true,
-                ..Default::default()
-            },
-            SharedSections::Full,
-        );
+        let full = build_handoff_section(HandoffSectionOptions {
+            turn_end_rule_stated_elsewhere: true,
+            shared_sections: SharedSections::Full,
+            ..Default::default()
+        });
         assert!(full.contains("after the routing line"));
         assert!(app.contains("Between handoffs"));
         assert!(!app.contains("routing line"));

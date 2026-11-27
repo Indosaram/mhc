@@ -2,9 +2,11 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
-export const SENPI_PIN = "59d58cee59d76bbecc83be828b59ff5420eb74df";
-/** senpi v2026.11.19-5: the commit crates/maho-ai/data/models.json is generated from (docs/divergences.md CAT-1). */
+export const SENPI_PIN = "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff";
+/** senpi v2026.11.19-5: matches SENPI_PIN and the commit crates/maho-ai/data/models.json is generated from. */
 export const SENPI_CATALOG_PIN = "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff";
+/** oh-my-openagent v5.1.81: parity baseline matching PINS.md. */
+export const OMO_PIN = "5835a98e88438f28a8ae0ee18039fad4d5fd415b";
 
 /** Returns the absolute SENPI_SRC path, or exits 3 when it is not a checkout at `pin`. */
 export function pinnedSenpiRoot(pin = SENPI_PIN) {

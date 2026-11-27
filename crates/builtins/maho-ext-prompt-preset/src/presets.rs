@@ -24,6 +24,7 @@ pub fn resolve_preset(
     };
     let options = BuildDynamicSystemPromptOptions {
         on_parts: Some(&observer),
+        shared_sections: crate::contract::preset_shared_sections(Some(name)),
         ..options
     };
     let prompt = match name {
@@ -31,8 +32,8 @@ pub fn resolve_preset(
         PromptPresetName::ClaudeFable5 => {
             crate::claude_fable_5::build_claude_fable5_prompt(options)
         }
-        PromptPresetName::ClaudeFable55 => {
-            crate::claude_fable_5_5::build_claude_fable55_prompt(options)
+        PromptPresetName::ClaudeFable52 => {
+            crate::claude_fable_5_2::build_claude_fable52_prompt(options)
         }
         PromptPresetName::ClaudeFable51 => {
             crate::claude_fable_5_1::build_claude_fable51_prompt(options)
@@ -91,6 +92,7 @@ pub fn resolve_preset(
         PromptPresetName::Gpt55 => crate::gpt_5_5::build_gpt55_prompt(options),
         PromptPresetName::Gpt56 => crate::gpt_5_6::build_gpt56_prompt(options),
         PromptPresetName::Gpt6Astra => crate::gpt_6_astra::build_gpt6_astra_prompt(options),
+        PromptPresetName::Gpt62 => crate::gpt_6_2::build_gpt62_prompt(options),
     };
     let mut parts = captured.into_inner();
     for part in &mut parts {
