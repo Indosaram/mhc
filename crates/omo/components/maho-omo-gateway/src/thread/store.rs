@@ -11,9 +11,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::Value;
 
+use super::backlog::TargetBacklog;
 use super::constants::{GATEWAY_BUSY_TIMEOUT_MS, GATEWAY_LOCK_WAIT_MAX_MS};
 use super::extension_registrations::{list_session_ops, read_descriptor};
 use super::extension_session_ops::{SessionCallPhase, SessionCallRequest, session_call};
+use super::session_wait_types::{
+    DrainedOutcome, IntakeMark, IntakePair, OpenIntakeSession, QueuedWaitingOn, SessionWaitState,
+    SessionWork, WriteSessionWaitRequest,
+};
 use super::store_api::GatewayStoreApi;
 use super::store_extension_facade::{ExtensionRegisterReply, ThreadCreationRecord, session_await};
 use super::store_extension_ops::StoreExtensions;
@@ -27,12 +32,16 @@ use super::store_ops::{
 };
 use super::store_relay_ops::{
     AnswerClaim, AnswerClaimRef, AnswerDelivered, BindInput, BindingRecord, BindingsFilter,
-    OutboxPage, PriorAnswer, RelayOutcome, ReportOpRequest, ReportOpResult,
+    OutboxPage, PriorAnswer, RelayOutcome, ReportOpRequest, ReportOpResult, ToolReceiptBegin,
 };
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, ExternalAuthor,
-    GatewayStoreConfig, GatewayStoreStats, ProcessIdentity, ReconcileOutcome, ReconcileRequest,
-    RecordOutcomeRequest, RefusalReason,
+    GatewayStoreConfig, GatewayStoreStats, IntakeOutcome, IntakeRequest, ProcessIdentity,
+    ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest, RefusalReason,
+};
+use super::woken_types::{
+    WakeRequestOutcome, WakeRetryOutcome, WakeStartOutcome, WakeTakeOverOutcome, WokenSessionRow,
+    WokenStateUpdate,
 };
 use crate::paths::gateway_database_path;
 
@@ -293,6 +302,10 @@ impl GatewayStoreApi for SqliteGatewayStore {
         super::store_ops::enqueue(&*self.context()?, request)
     }
 
+    fn intake(&self, request: &IntakeRequest) -> Result<IntakeOutcome, StoreError> {
+        super::store_woken_ops::intake(&*self.context()?, request)
+    }
+
     fn reconcile(&self, request: &ReconcileRequest) -> Result<ReconcileOutcome, StoreError> {
         super::store_ops::reconcile(&*self.context()?, request)
     }
@@ -312,6 +325,15 @@ impl GatewayStoreApi for SqliteGatewayStore {
         reason: RefusalReason,
     ) -> Result<bool, StoreError> {
         super::store_ops::refuse_queued(&*self.context()?, now, delivery_id, reason)
+    }
+
+    fn refuse_returned(
+        &self,
+        now: i64,
+        delivery_id: &str,
+        reason: RefusalReason,
+    ) -> Result<bool, StoreError> {
+        super::store_ops::refuse_returned(&*self.context()?, now, delivery_id, reason)
     }
 
     fn complete_receipt(
@@ -387,6 +409,10 @@ impl GatewayStoreApi for SqliteGatewayStore {
         super::store_ops::is_referenced(&*self.context()?, durable_id)
     }
 
+    fn backlogs(&self, targets: &[String]) -> Result<BTreeMap<String, TargetBacklog>, StoreError> {
+        super::backlog::read_target_backlogs(&*self.context()?, targets, self.now())
+    }
+
     fn journal_mode(&self) -> Result<String, StoreError> {
         super::store_ops::journal_mode(&*self.context()?)
     }
@@ -396,6 +422,233 @@ impl GatewayStoreApi for SqliteGatewayStore {
             .lock()
             .map(|ctx| ctx.stats())
             .unwrap_or_default()
+    }
+
+    fn tool_receipt_begin(
+        &self,
+        now: i64,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+        args_hash: &str,
+    ) -> Result<ToolReceiptBegin, StoreError> {
+        super::store_relay_ops::tool_receipt_begin(
+            &*self.context()?,
+            now,
+            principal,
+            operation,
+            idempotency_key,
+            args_hash,
+        )
+    }
+
+    fn tool_receipt_settle(
+        &self,
+        now: i64,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+        result_or_error: Result<&Value, &str>,
+    ) -> Result<bool, StoreError> {
+        super::store_relay_ops::tool_receipt_settle(
+            &*self.context()?,
+            now,
+            principal,
+            operation,
+            idempotency_key,
+            result_or_error,
+        )
+    }
+
+    fn tool_receipt_revise(
+        &self,
+        now: i64,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+        result: &Value,
+    ) -> Result<bool, StoreError> {
+        super::store_relay_ops::tool_receipt_revise(
+            &*self.context()?,
+            now,
+            principal,
+            operation,
+            idempotency_key,
+            result,
+        )
+    }
+
+    fn tool_receipt_release(
+        &self,
+        principal: &str,
+        operation: &str,
+        idempotency_key: &str,
+    ) -> Result<bool, StoreError> {
+        super::store_relay_ops::tool_receipt_release(
+            &*self.context()?,
+            principal,
+            operation,
+            idempotency_key,
+        )
+    }
+
+    fn woken_request(
+        &self,
+        durable_id: &str,
+        session_file: &str,
+    ) -> Result<WakeRequestOutcome, StoreError> {
+        super::store_woken_ops::woken_request(
+            &*self.context()?,
+            durable_id,
+            session_file,
+            self.now(),
+        )
+    }
+
+    fn woken_start(&self, durable_id: &str) -> Result<WakeStartOutcome, StoreError> {
+        super::store_woken_ops::woken_start(&*self.context()?, durable_id, self.now())
+    }
+
+    fn woken_renew(
+        &self,
+        durable_id: &str,
+        generation: i64,
+    ) -> Result<Option<WokenSessionRow>, StoreError> {
+        super::store_woken_ops::woken_renew(&*self.context()?, durable_id, generation, self.now())
+    }
+
+    fn woken_take_over(&self, durable_id: &str) -> Result<WakeTakeOverOutcome, StoreError> {
+        super::store_woken_ops::woken_take_over(&*self.context()?, durable_id, self.now())
+    }
+
+    fn woken_set_state(
+        &self,
+        update: &WokenStateUpdate,
+    ) -> Result<Option<WokenSessionRow>, StoreError> {
+        super::store_woken_ops::woken_set_state(&*self.context()?, update, self.now())
+    }
+
+    fn woken_record_waiting(
+        &self,
+        durable_id: &str,
+        generation: i64,
+    ) -> Result<Option<WokenSessionRow>, StoreError> {
+        super::store_woken_ops::woken_record_waiting(
+            &*self.context()?,
+            durable_id,
+            generation,
+            self.now(),
+        )
+    }
+
+    fn woken_retry_later(
+        &self,
+        durable_id: &str,
+        generation: i64,
+    ) -> Result<WakeRetryOutcome, StoreError> {
+        super::store_woken_ops::woken_retry_later(
+            &*self.context()?,
+            durable_id,
+            generation,
+            self.now(),
+        )
+    }
+
+    fn woken_clear_waiting(&self, durable_id: &str, generation: i64) -> Result<bool, StoreError> {
+        super::store_woken_ops::woken_clear_waiting(&*self.context()?, durable_id, generation)
+    }
+
+    fn woken_end(&self, durable_id: &str, generation: i64) -> Result<bool, StoreError> {
+        super::store_woken_ops::woken_end(&*self.context()?, durable_id, generation, self.now())
+    }
+
+    fn woken_gated(&self, durable_id: &str) -> Result<bool, StoreError> {
+        super::store_woken_ops::woken_gated(&*self.context()?, durable_id, self.now())
+    }
+
+    fn woken_list(&self) -> Result<Vec<WokenSessionRow>, StoreError> {
+        super::store_woken_ops::woken_list(&*self.context()?)
+    }
+
+    fn woken_count_wake(
+        &self,
+        durable_id: &str,
+        human_input_revision: Option<i64>,
+    ) -> Result<i64, StoreError> {
+        super::store_woken_ops::count_wake(&*self.context()?, durable_id, human_input_revision)
+    }
+
+    fn woken_wake_count(&self, durable_id: &str) -> Result<i64, StoreError> {
+        super::store_woken_ops::wake_count(&*self.context()?, durable_id)
+    }
+
+    fn woken_reset_count(&self, durable_id: &str) -> Result<(), StoreError> {
+        super::store_woken_ops::reset_wake_count(&*self.context()?, durable_id)
+    }
+
+    fn woken_session_work(&self, durable_id: &str) -> Result<SessionWork, StoreError> {
+        super::store_woken_ops::session_work_of(&*self.context()?, durable_id)
+    }
+
+    fn session_wait_write(&self, request: &WriteSessionWaitRequest) -> Result<(), StoreError> {
+        super::store_woken_ops::session_wait_write(&*self.context()?, request, self.now())
+    }
+
+    fn session_wait_read(&self, durable_id: &str) -> Result<Option<SessionWaitState>, StoreError> {
+        super::store_woken_ops::session_wait_read(&*self.context()?, durable_id)
+    }
+
+    fn session_wait_clear(&self, durable_id: &str) -> Result<(), StoreError> {
+        super::store_woken_ops::session_wait_clear(&*self.context()?, durable_id)
+    }
+
+    fn session_waiting_on(&self, durable_id: &str) -> Result<Option<QueuedWaitingOn>, StoreError> {
+        super::store_woken_ops::session_waiting_on(&*self.context()?, durable_id)
+    }
+
+    fn intake_mark_record(
+        &self,
+        sender_device: &str,
+        session_id: &str,
+        command_id: &str,
+        ledger_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        super::store_woken_ops::record_intake_command(
+            &*self.context()?,
+            sender_device,
+            session_id,
+            command_id,
+            ledger_id,
+            self.now(),
+        )
+    }
+
+    fn intake_mark_marked(&self) -> Result<Vec<IntakePair>, StoreError> {
+        super::store_woken_ops::marked_pairs(&*self.context()?)
+    }
+
+    fn intake_mark_pending(&self) -> Result<Vec<IntakeMark>, StoreError> {
+        super::store_woken_ops::pending_marks(&*self.context()?)
+    }
+
+    fn intake_mark_drained(&self, pair: &IntakePair) -> Result<DrainedOutcome, StoreError> {
+        super::store_woken_ops::drained_mark(&*self.context()?, pair)
+    }
+
+    fn intake_command_for(&self, ledger_id: &str) -> Result<Option<String>, StoreError> {
+        super::store_woken_ops::command_for_row(&*self.context()?, ledger_id)
+    }
+
+    fn intake_open_for_command(
+        &self,
+        sender_device: &str,
+        command_id: &str,
+    ) -> Result<bool, StoreError> {
+        super::store_woken_ops::open_for_mark_command(&*self.context()?, sender_device, command_id)
+    }
+
+    fn intake_open_sessions(&self) -> Result<Vec<OpenIntakeSession>, StoreError> {
+        super::store_woken_ops::open_intake_sessions(&*self.context()?)
     }
 
     fn bind(&self, now: i64, input: &BindInput) -> Result<RelayOutcome<BindingRecord>, StoreError> {

@@ -63,7 +63,7 @@ pub fn release_reply(frame: &Value) -> ReleaseSessionReply {
     }
 }
 
-/// `wakeReply`: only well-formed admissions with a known kind survive.
+/// `wakeReply`: only well-formed admissions with a known kind survive (including `held`).
 pub fn wake_reply(data: &Value) -> GatewayWakeReply {
     let admitted = data.get("admitted").and_then(Value::as_array);
     let Some(admitted) = admitted else {

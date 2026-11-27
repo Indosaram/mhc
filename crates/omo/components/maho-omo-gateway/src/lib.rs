@@ -13,6 +13,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod call_budget;
 pub mod index;
 pub mod migrations;
 pub mod paths;
@@ -25,7 +26,7 @@ pub use index::{GatewayComponent, GatewayComponentOptions, has_scopes};
 pub use migrations::{GATEWAY_RULES_EXTENSION_NAME, GATEWAY_RULES_MIGRATIONS};
 pub use paths::{
     gateway_database_path, gateway_inbox_directory, gateway_outbox_marker_path,
-    gateway_root_directory,
+    gateway_root_directory, gateway_wake_marker_path,
 };
 pub use prompt::{
     GatewayRulesPromptHandler, GatewayRulesPromptOptions, GatewayRulesPromptResult,

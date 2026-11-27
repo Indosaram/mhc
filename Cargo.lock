@@ -5625,11 +5625,16 @@ dependencies = [
 name = "maho-omo-gateway"
 version = "0.0.0"
 dependencies = [
+ "chrono",
+ "dirs",
  "futures",
+ "hex",
+ "maho-core",
  "maho-ext-api",
  "maho-omo-agent-home",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
+ "maho-rpc",
  "regex",
  "rusqlite",
  "serde",
@@ -5638,6 +5643,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]

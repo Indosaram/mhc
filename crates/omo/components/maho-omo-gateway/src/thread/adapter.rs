@@ -60,6 +60,7 @@ pub enum ExternalAdmissionKind {
     Steered,
     TurnConflict,
     HeldDraft,
+    Held,
     AlreadyAdmitted,
 }
 
@@ -71,14 +72,15 @@ impl ExternalAdmissionKind {
             "steered" => Some(Self::Steered),
             "turn_conflict" => Some(Self::TurnConflict),
             "held_draft" => Some(Self::HeldDraft),
+            "held" => Some(Self::Held),
             "already_admitted" => Some(Self::AlreadyAdmitted),
             _ => None,
         }
     }
 }
 
-/// The drain reports two omo-only outcomes the host has no member for: `not_steerable` and `expired`
-/// are refusals decided by the gateway before the runtime was asked.
+/// The drain reports omo-only outcomes the host has no member for: `not_steerable`, `expired`, and
+/// `sender_not_admitted` are refusals decided by the gateway before the runtime was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayAdmissionKind {
@@ -87,9 +89,11 @@ pub enum GatewayAdmissionKind {
     Steered,
     TurnConflict,
     HeldDraft,
+    Held,
     AlreadyAdmitted,
     NotSteerable,
     Expired,
+    SenderNotAdmitted,
 }
 
 impl GatewayAdmissionKind {
@@ -100,9 +104,11 @@ impl GatewayAdmissionKind {
             Self::Steered => "steered",
             Self::TurnConflict => "turn_conflict",
             Self::HeldDraft => "held_draft",
+            Self::Held => "held",
             Self::AlreadyAdmitted => "already_admitted",
             Self::NotSteerable => "not_steerable",
             Self::Expired => "expired",
+            Self::SenderNotAdmitted => "sender_not_admitted",
         }
     }
 
@@ -113,6 +119,7 @@ impl GatewayAdmissionKind {
             ExternalAdmissionKind::Steered => Self::Steered,
             ExternalAdmissionKind::TurnConflict => Self::TurnConflict,
             ExternalAdmissionKind::HeldDraft => Self::HeldDraft,
+            ExternalAdmissionKind::Held => Self::Held,
             ExternalAdmissionKind::AlreadyAdmitted => Self::AlreadyAdmitted,
         }
     }
@@ -365,8 +372,11 @@ pub fn to_session_control_drain_result(
             GatewayAdmissionKind::Steered => ExternalAdmissionKind::Steered,
             GatewayAdmissionKind::TurnConflict => ExternalAdmissionKind::TurnConflict,
             GatewayAdmissionKind::HeldDraft => ExternalAdmissionKind::HeldDraft,
+            GatewayAdmissionKind::Held => ExternalAdmissionKind::Held,
             GatewayAdmissionKind::AlreadyAdmitted => ExternalAdmissionKind::AlreadyAdmitted,
-            GatewayAdmissionKind::NotSteerable | GatewayAdmissionKind::Expired => continue,
+            GatewayAdmissionKind::NotSteerable
+            | GatewayAdmissionKind::Expired
+            | GatewayAdmissionKind::SenderNotAdmitted => continue,
         };
         taken.push(Admission {
             delivery_id: delivery_id.clone(),

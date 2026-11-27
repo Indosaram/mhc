@@ -79,6 +79,7 @@ impl DeliveryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveLane {
+    Start,
     Steer,
     FollowUp,
 }
@@ -86,8 +87,18 @@ pub enum EffectiveLane {
 impl EffectiveLane {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Start => "start",
             Self::Steer => "steer",
             Self::FollowUp => "follow_up",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "start" => Some(Self::Start),
+            "steer" => Some(Self::Steer),
+            "follow_up" => Some(Self::FollowUp),
+            _ => None,
         }
     }
 }
@@ -99,6 +110,9 @@ pub enum RefusalReason {
     TurnConflict,
     Expired,
     BindingClosed,
+    SenderNotAdmitted,
+    TargetClosed,
+    Superseded,
 }
 
 impl RefusalReason {
@@ -108,6 +122,9 @@ impl RefusalReason {
             Self::TurnConflict => "turn_conflict",
             Self::Expired => "expired",
             Self::BindingClosed => "binding_closed",
+            Self::SenderNotAdmitted => "sender_not_admitted",
+            Self::TargetClosed => "target_closed",
+            Self::Superseded => "superseded",
         }
     }
 
@@ -117,6 +134,9 @@ impl RefusalReason {
             "turn_conflict" => Some(Self::TurnConflict),
             "expired" => Some(Self::Expired),
             "binding_closed" => Some(Self::BindingClosed),
+            "sender_not_admitted" => Some(Self::SenderNotAdmitted),
+            "target_closed" => Some(Self::TargetClosed),
+            "superseded" => Some(Self::Superseded),
             _ => None,
         }
     }
@@ -174,6 +194,40 @@ impl EnvelopeOrigin {
     }
 }
 
+/// Why `device` is absent: a delivery never omits its sender device silently (`#13004`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceAbsentReason {
+    NoDeviceService,
+    DeviceServiceUnavailable,
+    NoDeviceId,
+}
+
+impl DeviceAbsentReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoDeviceService => "no_device_service",
+            Self::DeviceServiceUnavailable => "device_service_unavailable",
+            Self::NoDeviceId => "no_device_id",
+        }
+    }
+}
+
+/// `creator`: the first prompt of a `thread_create`, sent by the session that created the target (`#14045`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryAuthority {
+    Creator,
+}
+
+impl DeliveryAuthority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Creator => "creator",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Provenance {
     pub workspace: String,
@@ -182,6 +236,10 @@ pub struct Provenance {
     pub lane: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_absent: Option<DeviceAbsentReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +251,8 @@ pub struct DeliveryEnvelope {
     pub root_id: String,
     pub hop: i64,
     pub delivery_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<DeliveryAuthority>,
 }
 
 /// JSON written before provenance was recorded remains readable, never attributed to the receiver.
@@ -206,6 +266,8 @@ pub struct StoredDeliveryEnvelope {
     pub root_id: String,
     pub hop: i64,
     pub delivery_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<DeliveryAuthority>,
 }
 
 impl StoredDeliveryEnvelope {
@@ -218,6 +280,7 @@ impl StoredDeliveryEnvelope {
             root_id: envelope.root_id,
             hop: envelope.hop,
             delivery_id: envelope.delivery_id,
+            authority: envelope.authority,
         }
     }
 }
@@ -241,6 +304,8 @@ pub struct DeliveryRow {
     pub claimed_at: Option<i64>,
     pub attempt: i64,
     pub admission_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_kind: Option<String>,
     pub turn_epoch: Option<i64>,
     pub root_id: String,
     pub hop: i64,
@@ -250,6 +315,65 @@ pub struct DeliveryRow {
     pub binding_id: Option<String>,
     pub binding_revision: Option<i64>,
     pub actor_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim_display_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeSender {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A delivery record another device's service attested.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeRecord {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "deliveryId")]
+    pub delivery_id: String,
+    pub text: String,
+    #[serde(rename = "displayText")]
+    pub display_text: String,
+    pub sender: IntakeSender,
+    #[serde(rename = "deliverAs")]
+    pub deliver_as: String,
+    #[serde(rename = "chainCount")]
+    pub chain_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeRequest {
+    pub now: i64,
+    pub attested_device: String,
+    pub record: IntakeRecord,
+    pub provenance: Provenance,
+    pub target_session_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_count_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IntakeOutcome {
+    Queued {
+        delivery_id: String,
+        row_id: String,
+        ledger_id: String,
+        queue_position: i64,
+        deduplicated: bool,
+    },
+    Refused(StoreRefusal),
+    Busy,
 }
 
 /// Who is sending. Every kind maps to one receipt/budget principal and one causal-graph node.
@@ -266,6 +390,10 @@ pub enum GatewaySender {
         cause_delivery_id: Option<String>,
     },
     Cli {
+        uid: i64,
+        user: String,
+    },
+    Person {
         uid: i64,
         user: String,
     },
@@ -317,6 +445,10 @@ pub struct EnqueueRequest {
     pub sender_node: String,
     pub sender_turn: Option<String>,
     pub cause_delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_hop: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<DeliveryAuthority>,
     pub claimed_root_id: Option<String>,
     pub origin: EnvelopeOrigin,
     pub actor: String,
@@ -326,6 +458,8 @@ pub struct EnqueueRequest {
     pub binding: Option<BindingRef>,
     pub receipt: ReceiptRef,
     pub endpoint_kind: Option<GatewayEndpointKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -340,6 +474,10 @@ pub struct StoreRefusal {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnqueueOutcome {
     Inserted {
+        row: Box<DeliveryRow>,
+        queue_position: i64,
+    },
+    Collapsed {
         row: Box<DeliveryRow>,
         queue_position: i64,
     },
@@ -415,10 +553,14 @@ pub enum OutcomeRecord {
     Admitted {
         admission_kind: String,
         turn_epoch: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_kind: Option<String>,
     },
     Applied {
         admission_kind: String,
         turn_epoch: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_kind: Option<String>,
     },
     Requeue,
     Refused {
@@ -434,13 +576,40 @@ pub struct RecordOutcomeRequest {
     pub outcome: OutcomeRecord,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryWaitKind {
+    Approval,
+    Hold,
+    Wake,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryWait {
+    pub kind: DeliveryWaitKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GatewayDeliveryDelivery {
-    Started { turn_id: String },
-    Steered { turn_id: String },
-    Queued { queue_position: i64 },
-    QueuedOffline { queue_position: i64 },
+    Started {
+        turn_id: String,
+    },
+    Steered {
+        turn_id: String,
+    },
+    Queued {
+        queue_position: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_on: Option<DeliveryWait>,
+    },
+    QueuedOffline {
+        queue_position: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,6 +621,8 @@ pub struct GatewayDeliverySuccess {
     pub effective_mode: String,
     pub endpoint_kind: Option<GatewayEndpointKind>,
     pub deduplicated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -465,6 +636,8 @@ pub enum GatewayDeliveryResult {
         effective_mode: String,
         endpoint_kind: Option<GatewayEndpointKind>,
         deduplicated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collapsed: Option<bool>,
     },
     Error {
         error: ThreadToolFailure,

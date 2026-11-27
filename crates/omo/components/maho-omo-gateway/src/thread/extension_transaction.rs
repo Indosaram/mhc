@@ -206,6 +206,8 @@ pub fn extension_transaction<'a>(
                             project: "extension".to_owned(),
                             lane: None,
                             session: None,
+                            device: None,
+                            device_absent: None,
                         });
                     let enqueue_request = super::types::EnqueueRequest {
                         provenance,
@@ -217,6 +219,8 @@ pub fn extension_transaction<'a>(
                         sender_node: format!("binding:{}", binding.binding_id),
                         sender_turn: None,
                         cause_delivery_id: None,
+                        inbound_hop: None,
+                        authority: None,
                         claimed_root_id: None,
                         origin: EnvelopeOrigin::External {
                             external: super::types::ExternalOrigin {
@@ -244,11 +248,16 @@ pub fn extension_transaction<'a>(
                             )),
                         },
                         endpoint_kind: None,
+                        collapse_key: None,
                     };
                     let outcome = super::store_ops::enqueue(ctx, &enqueue_request)
                         .map_err(|error| error.message())?;
                     match outcome {
                         super::types::EnqueueOutcome::Inserted {
+                            row,
+                            queue_position,
+                        }
+                        | super::types::EnqueueOutcome::Collapsed {
                             row,
                             queue_position,
                         } => Ok(serde_json::to_value(super::result::result_from_row(
@@ -504,5 +513,21 @@ mod tests {
         assert!(single_extension_statement("SELECT 1;").is_ok());
         assert!(single_extension_statement("SELECT 1; DROP TABLE bindings").is_err());
         assert!(single_extension_statement("SELECT ';'").is_ok());
+    }
+
+    #[test]
+    fn single_view_statement_is_allowed_and_quoted_semicolon_is_not_split() {
+        assert!(
+            single_extension_statement(
+                "CREATE VIEW IF NOT EXISTS my_view AS SELECT id FROM my_table WHERE note = ';'"
+            )
+            .is_ok()
+        );
+        assert!(
+            single_extension_statement(
+                "CREATE VIEW my_view AS SELECT 1; CREATE TRIGGER bad AFTER INSERT ON my_table BEGIN SELECT 1; END"
+            )
+            .is_err()
+        );
     }
 }

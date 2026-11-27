@@ -4,7 +4,8 @@
 
 use super::errors::{ThreadToolFailure, thread_tool_failure};
 use super::types::{
-    DeliveryRow, DeliveryState, GatewayDeliveryDelivery, GatewayDeliveryResult, GatewayEndpointKind,
+    DeliveryRow, DeliveryState, DeliveryWait, DeliveryWaitKind, GatewayDeliveryDelivery,
+    GatewayDeliveryResult, GatewayEndpointKind,
 };
 
 /// How a refused row's reason maps onto the tool taxonomy.
@@ -22,12 +23,45 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
             "not_resumable",
             "The target did not take the message within its lifetime; send it again if it still matters.",
         ),
+        Some("sender_not_admitted") => (
+            "not_resumable",
+            "The sending device is no longer admitted to this account; sign it in again, then send again.",
+        ),
+        Some("target_closed") => (
+            "not_resumable",
+            "The thread was closed before it read this message; reopen it (tool.thread_create({ thread }) in an eval cell) and send again if it still matters.",
+        ),
+        Some("superseded") => (
+            "not_resumable",
+            "A newer message from the same sender with the same collapse_key replaced this one before the target read it; nothing to do.",
+        ),
         Some("binding_closed") => (
             "invalid_arguments",
             "The binding this message was queued under was detached or rebound; re-read the binding and send again.",
         ),
-        _ => ("internal_error", "Call thread_list and check the target."),
+        _ => (
+            "internal_error",
+            "Call thread_list (tool.thread_list() in an eval cell) and check the target.",
+        ),
     }
+}
+
+/// What a row the receiver admitted to its queue waits on, if anything: the hold it was kept
+/// under, or the approval its receiver was parked on.
+pub fn admitted_wait(row: &DeliveryRow) -> Option<DeliveryWait> {
+    let device = row
+        .envelope
+        .provenance
+        .as_ref()
+        .and_then(|p| p.device.clone());
+    let wait_kind = if row.admission_kind.as_deref() == Some("held") {
+        Some(DeliveryWaitKind::Hold)
+    } else if row.wait_kind.as_deref() == Some("approval") {
+        Some(DeliveryWaitKind::Approval)
+    } else {
+        None
+    };
+    wait_kind.map(|kind| DeliveryWait { kind, device })
 }
 
 fn error(
@@ -55,6 +89,25 @@ pub fn result_from_row(
     deduplicated: bool,
     offline: bool,
 ) -> GatewayDeliveryResult {
+    result_from_row_with_wait(
+        row,
+        queue_position,
+        endpoint_kind,
+        deduplicated,
+        offline,
+        None,
+    )
+}
+
+/// `resultFromRow` with an optional woken-session wait state read from the store (`#13037`).
+pub fn result_from_row_with_wait(
+    row: &DeliveryRow,
+    queue_position: i64,
+    endpoint_kind: Option<GatewayEndpointKind>,
+    deduplicated: bool,
+    offline: bool,
+    session_wait: Option<DeliveryWait>,
+) -> GatewayDeliveryResult {
     let effective_mode = row
         .mode_effective
         .map(|lane| lane.as_str().to_owned())
@@ -67,7 +120,16 @@ pub fn result_from_row(
         effective_mode: effective_mode.clone(),
         endpoint_kind,
         deduplicated,
+        collapsed: None,
     };
+    if let Some(wait) = session_wait
+        && matches!(row.state, DeliveryState::Queued | DeliveryState::Admitted)
+    {
+        return ok(GatewayDeliveryDelivery::Queued {
+            queue_position: queue_position.max(1),
+            waiting_on: Some(wait),
+        });
+    }
     if matches!(row.state, DeliveryState::Admitted | DeliveryState::Applied) {
         return match row.admission_kind.as_deref() {
             Some("started") => ok(GatewayDeliveryDelivery::Started {
@@ -78,6 +140,7 @@ pub fn result_from_row(
             }),
             _ => ok(GatewayDeliveryDelivery::Queued {
                 queue_position: queue_position.max(1),
+                waiting_on: admitted_wait(row),
             }),
         };
     }
@@ -108,10 +171,12 @@ pub fn result_from_row(
     if offline {
         return ok(GatewayDeliveryDelivery::QueuedOffline {
             queue_position: queue_position.max(1),
+            reason: None,
         });
     }
     ok(GatewayDeliveryDelivery::Queued {
         queue_position: queue_position.max(1),
+        waiting_on: None,
     })
 }
 
@@ -168,6 +233,7 @@ mod tests {
                 root_id: "root".into(),
                 hop: 1,
                 delivery_id: "d-1".into(),
+                authority: None,
             },
             body: "hi".into(),
             bytes: 2,
@@ -180,6 +246,7 @@ mod tests {
             claimed_at: None,
             attempt: 0,
             admission_kind: admission_kind.map(str::to_owned),
+            wait_kind: None,
             turn_epoch,
             root_id: "root".into(),
             hop: 1,
@@ -189,6 +256,10 @@ mod tests {
             binding_id: None,
             binding_revision: None,
             actor_user_id: None,
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: None,
         }
     }
 
@@ -231,7 +302,10 @@ mod tests {
         ) {
             GatewayDeliveryResult::Ok { delivery, .. } => assert_eq!(
                 delivery,
-                GatewayDeliveryDelivery::QueuedOffline { queue_position: 1 }
+                GatewayDeliveryDelivery::QueuedOffline {
+                    queue_position: 1,
+                    reason: None,
+                }
             ),
             other => panic!("expected ok, got {other:?}"),
         }
