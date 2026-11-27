@@ -396,6 +396,7 @@ async fn open_harness(
         tool_execution: None,
         to_provider_messages: None,
         entry_projectors: None,
+        on_execution_pipeline: None,
     };
     create_agent_harness_with_options(options, context)
         .await

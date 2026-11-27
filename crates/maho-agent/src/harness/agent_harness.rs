@@ -229,6 +229,8 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     /// Pinned `entryProjectors`, keyed by custom entry type; defaults to none.
     pub entry_projectors:
         Option<std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>>,
+    /// Receives `{ pipeline: "prepared", tool_call_id }` for every tool call whose body runs.
+    pub on_execution_pipeline: Option<crate::harness::execution::tool_host_call::WitnessSink>,
 }
 
 /// Failure of one `Lane::drive` call: the pinned `Result<DriveOutcome, OperationMismatch | Closed>`.

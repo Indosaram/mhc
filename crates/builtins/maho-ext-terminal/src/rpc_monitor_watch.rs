@@ -4,10 +4,14 @@
 //! restore can report what changed while nothing was watching.
 use crate::rpc_monitor_coalesce::{RpcMonitorCoalescer, js_string};
 use crate::rpc_monitor_observer::{RpcObserver, RpcObserverHandlers};
-use crate::rpc_monitor_render::{RpcMonitorRenderer, session_key};
+use crate::rpc_monitor_remote::{
+    RpcRemoteCheckpoint, RpcRemoteFeed, RpcRemoteFeedHost, RpcRemoteFeedOptions,
+};
+use crate::rpc_monitor_render::{RpcMonitorRenderer, detached_label, session_key};
 use crate::rpc_monitor_targets::{
     RpcEvents, RpcTarget, endpoint_sockets, matches_task, subscription_for, wants_record,
 };
+use crate::rpc_remote_source::{RpcRemoteTarget, SharedRpcRemoteSource, current_rpc_remote_source};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -31,6 +35,8 @@ pub struct RpcHostIdentity {
 pub struct RpcMonitorCheckpoint {
     pub hosts: BTreeMap<String, RpcHostIdentity>,
     pub statuses: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RpcRemoteCheckpoint>,
 }
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -45,6 +51,7 @@ pub type ObserverOpener = Arc<
 >;
 pub type LineSink = Arc<dyn Fn(String) + Send + Sync>;
 pub type CheckpointSink = Arc<dyn Fn(RpcMonitorCheckpoint) + Send + Sync>;
+pub type EndedSink = Arc<dyn Fn(String) + Send + Sync>;
 
 /// Upstream `RpcWatchOptions`.
 pub struct RpcWatchOptions {
@@ -60,6 +67,12 @@ pub struct RpcWatchOptions {
     pub checkpoint: Option<CheckpointSink>,
     /// Defaults to `open_rpc_observer`.
     pub opener: Option<ObserverOpener>,
+    /// Remote source override (tests); defaults to `current_rpc_remote_source()`.
+    pub remote_source: Option<SharedRpcRemoteSource>,
+    /// Saved checkpoint on restore: remote targets resume from its cursor.
+    pub restored_from: Option<RpcMonitorCheckpoint>,
+    /// Remote target's access ended for good: settle monitor with this summary.
+    pub ended: Option<EndedSink>,
 }
 
 type Close = Arc<dyn Fn() + Send + Sync>;
@@ -72,6 +85,7 @@ struct WatchState {
     renderer: RpcMonitorRenderer,
     task_sessions: HashSet<String>,
     rescan: Option<tokio::task::JoinHandle<()>>,
+    remote: Option<RpcRemoteFeed>,
     stopped: bool,
     next_token: u64,
 }
@@ -127,6 +141,7 @@ impl WatchInner {
         RpcMonitorCheckpoint {
             hosts: state.hosts.clone().into_iter().collect(),
             statuses: state.renderer.statuses(),
+            remote: state.remote.as_ref().map(RpcRemoteFeed::checkpoint),
         }
     }
 
@@ -329,6 +344,75 @@ impl WatchInner {
     }
 }
 
+impl RpcRemoteFeedHost for WatchInner {
+    fn seed(&self, device: &str, rows: &[Value]) -> Vec<String> {
+        self.state().renderer.seed(device, rows)
+    }
+
+    fn forget_socket(&self, device: &str) {
+        self.state().renderer.forget_socket(device);
+    }
+
+    fn statuses(&self) -> BTreeMap<String, String> {
+        self.state().renderer.statuses()
+    }
+
+    fn host_identity(&self, device: &str) -> Option<RpcHostIdentity> {
+        self.state().hosts.get(device).cloned()
+    }
+
+    fn set_host_identity(&self, device: &str, identity: RpcHostIdentity) {
+        self.state().hosts.insert(device.to_owned(), identity);
+    }
+
+    fn record(&self, socket: &str, record: &Value) {
+        // Call WatchInner::record via Arc if possible; since RpcRemoteFeedHost only sees &self,
+        // store no extra Arc — Wait: WatchInner::record takes Arc<Self> only to capture Weak for coalescer!
+        // Let's handle coalescer-free or direct render/line here? Wait: let's check how WatchInner::record uses Arc<Self>.
+        let kind = js_string(record.get("type"));
+        if !wants_record(&self.options.events, &self.options.exclude, &kind) {
+            return;
+        }
+        let key = session_key(socket, record);
+        {
+            let state = self.state();
+            if state.stopped {
+                return;
+            }
+        }
+        let label = {
+            let mut state = self.state();
+            let label = state.renderer.label(socket, record);
+            state.renderer.end_batch();
+            label
+        };
+        if self.coalescer.accept(&key, move || label.clone(), record) {
+            return;
+        }
+        let Some(line) = self.state().renderer.render(socket, record) else {
+            return;
+        };
+        (self.options.line)(line);
+        if kind == "session_status" {
+            self.emit_checkpoint();
+        }
+    }
+
+    fn line(&self, line: String) {
+        (self.options.line)(line);
+    }
+
+    fn checkpoint(&self) {
+        self.emit_checkpoint();
+    }
+
+    fn ended(&self, summary: String) {
+        if let Some(ended) = &self.options.ended {
+            ended(summary);
+        }
+    }
+}
+
 impl RpcMonitorWatch {
     pub fn new(options: RpcWatchOptions) -> Self {
         let line = options.line.clone();
@@ -342,8 +426,47 @@ impl RpcMonitorWatch {
     }
 
     /// Joins every endpoint now; resolves to the arm-time RESULT rows (one per matched session),
-    /// then rejoins every `RPC_RESCAN_MS`.
-    pub async fn start(&self) -> Vec<String> {
+    /// then rejoins every `RPC_RESCAN_MS`. Remote targets open the registered `RpcRemoteSource` instead.
+    pub async fn start(&self) -> Result<Vec<String>, String> {
+        if let RpcTarget::Remote { device, session } = &self.inner.options.target {
+            let source = self
+                .inner
+                .options
+                .remote_source
+                .clone()
+                .or_else(current_rpc_remote_source)
+                .ok_or_else(|| {
+                    "remote targets need the omo remote surface; no remote source is registered"
+                        .to_owned()
+                })?;
+            let feed = RpcRemoteFeed::new(
+                RpcRemoteTarget {
+                    device: device.clone(),
+                    session: session.clone(),
+                },
+                RpcRemoteFeedOptions {
+                    events: self.inner.options.events.clone(),
+                    exclude: self.inner.options.exclude.clone(),
+                    source,
+                    saved: self
+                        .inner
+                        .options
+                        .restored_from
+                        .as_ref()
+                        .and_then(|cp| cp.remote.clone()),
+                },
+                self.inner.clone(),
+            );
+            {
+                let mut state = self.inner.state();
+                if state.stopped {
+                    feed.stop();
+                    return Ok(vec![]);
+                }
+                state.remote = Some(feed.clone());
+            }
+            return feed.start().await;
+        }
         let rows = self.inner.clone().join().await;
         let weak = Arc::downgrade(&self.inner);
         let rescan = tokio::spawn(async move {
@@ -364,7 +487,7 @@ impl RpcMonitorWatch {
         } else {
             state.rescan = Some(rescan);
         }
-        rows
+        Ok(rows)
     }
 
     /// The current checkpoint: host identities and last statuses.
@@ -390,17 +513,15 @@ impl RpcMonitorWatch {
         let now = state.renderer.statuses();
         let children = matches!(self.inner.options.target, RpcTarget::Children { .. });
         for (key, status) in &saved.statuses {
-            let (socket, id) = match key.rfind('#') {
-                Some(index) => (&key[..index], &key[index + 1..]),
-                // `lastIndexOf` -1: the whole key labels, the socket drops its last character.
-                None => (
-                    key.char_indices()
-                        .last()
-                        .map_or("", |(index, _)| &key[..index]),
-                    key.as_str(),
-                ),
+            let socket = match key.rfind('#') {
+                Some(index) => &key[..index],
+                // `lastIndexOf` -1: the socket drops its last character.
+                None => key
+                    .char_indices()
+                    .last()
+                    .map_or("", |(index, _)| &key[..index]),
             };
-            let label: String = id.chars().take(8).collect();
+            let label = detached_label(key);
             // Only a host that answered can say a session is gone; otherwise it may be alive but
             // unreachable or no longer matched by the re-resolved target.
             let answered = state.hosts.contains_key(socket);
@@ -418,23 +539,32 @@ impl RpcMonitorWatch {
                 Some(_) => {}
             }
         }
+        let remote = state.remote.clone();
+        drop(state);
+        if let Some(remote) = remote {
+            lines.extend(remote.diff_settled(saved.remote.as_ref()));
+        }
         lines
     }
 
     pub fn stop(&self) {
-        let observers: Vec<Close> = {
+        let (observers, remote) = {
             let mut state = self.inner.state();
             state.stopped = true;
             if let Some(rescan) = state.rescan.take() {
                 rescan.abort();
             }
-            state
+            let observers: Vec<Close> = state
                 .observers
                 .drain()
                 .map(|(_, (_, close))| close)
-                .collect()
+                .collect();
+            (observers, state.remote.take())
         };
         self.inner.coalescer.dispose();
+        if let Some(remote) = remote {
+            remote.stop();
+        }
         for close in observers {
             close();
         }
@@ -502,6 +632,9 @@ mod tests {
             line: Arc::new(move |line| sink.lock().unwrap().push(line)),
             checkpoint: None,
             opener: Some(mock.opener()),
+            remote_source: None,
+            restored_from: None,
+            ended: None,
         })
     }
 
@@ -511,7 +644,7 @@ mod tests {
         let subject = watch(&mock, &lines, RpcTarget::All);
         let started = tokio::spawn({
             let subject = subject.clone();
-            async move { subject.start().await }
+            async move { subject.start().await.unwrap() }
         });
         mock.entered.notified().await;
         subject.stop();
@@ -527,7 +660,7 @@ mod tests {
         let (mock, lines) = (Mock::default(), Arc::<Mutex<Vec<String>>>::default());
         let subject = watch(&mock, &lines, RpcTarget::All);
         mock.release.notify_one();
-        assert_eq!(subject.start().await.len(), 1);
+        assert_eq!(subject.start().await.unwrap().len(), 1);
         {
             let opened = mock.opened.lock().unwrap();
             (opened[0].handlers.closed)("host gone".into());
@@ -583,9 +716,12 @@ mod tests {
                 saved_sink.lock().unwrap().push(checkpoint)
             })),
             opener: Some(mock.opener()),
+            remote_source: None,
+            restored_from: None,
+            ended: None,
         });
         mock.release.notify_one();
-        assert_eq!(subject.start().await, vec!["s1 busy (1 attached)"]);
+        assert_eq!(subject.start().await.unwrap(), vec!["s1 busy (1 attached)"]);
         {
             let opened = mock.opened.lock().unwrap();
             (opened[0].handlers.record)(json!({"type":"agent_idle","sessionId":"s1"}));

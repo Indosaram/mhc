@@ -474,6 +474,13 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
         )),
     ),
     (
+        "kernels/js/kill-guard-bridge.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/kill-guard-bridge.js"
+        )),
+    ),
+    (
         "kernels/js/worker-package-resolve.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

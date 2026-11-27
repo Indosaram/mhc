@@ -201,13 +201,34 @@ pub fn apply_before_tool_decision<TContext>(
     }
 }
 
-pub async fn execute_tool_call<TContext: Clone>(
+pub async fn execute_tool_call<TContext: Clone + Send + Sync + 'static>(
     call: ClearedToolCall<TContext>,
     gate: &Gate,
     on_update: AgentHarnessToolUpdateCallback,
     tool_context: TContext,
     invocation: Arc<dyn AgentHarnessToolInvocation>,
     context: Context,
+) -> Result<ExecutedToolCall, GateRefusal> {
+    execute_tool_call_with_witness(
+        call,
+        gate,
+        on_update,
+        tool_context,
+        invocation,
+        context,
+        None,
+    )
+    .await
+}
+
+pub async fn execute_tool_call_with_witness<TContext: Clone + Send + Sync + 'static>(
+    call: ClearedToolCall<TContext>,
+    gate: &Gate,
+    on_update: AgentHarnessToolUpdateCallback,
+    tool_context: TContext,
+    invocation: Arc<dyn AgentHarnessToolInvocation>,
+    context: Context,
+    record_witness: Option<crate::harness::execution::tool_host_call::WitnessSink>,
 ) -> Result<ExecutedToolCall, GateRefusal> {
     gate.admit(|| ())?;
     let admitted_context = with_abort_signal(gate.signal(), &context);
@@ -230,21 +251,53 @@ pub async fn execute_tool_call<TContext: Clone>(
     let execute = call.tool.execute.clone();
     let tool_call_id = call.tool_call.id.clone();
     let arguments = Value::Object(call.args.clone());
-    let result = execute(
-        tool_call_id,
-        arguments,
-        update_callback,
-        tool_context,
-        invocation,
-        admitted_context,
+    // The harness already prepared, validated and hooked this call, so the host gets only its
+    // identity and cleared arguments: a stream flag such as `incomplete` would make the host
+    // refuse it before the body runs.
+    let host_call = crate::types::AgentToolCall {
+        id: call.tool_call.id.clone(),
+        name: call.tool_call.name.clone(),
+        arguments: call.args.clone(),
+        incomplete: None,
+        error_message: None,
+        thought_signature: None,
+        namespace: None,
+    };
+    let scope_id = invocation.invocation_id().to_owned();
+    let executed = crate::harness::execution::tool_host_call::run_on_prepared_tool_host(
+        host_call,
+        &scope_id,
+        record_witness,
+        move || {
+            Box::pin(async move {
+                let result = execute(
+                    tool_call_id,
+                    arguments,
+                    update_callback,
+                    tool_context,
+                    invocation,
+                    admitted_context,
+                )
+                .await;
+                accepting_updates.store(false, std::sync::atomic::Ordering::SeqCst);
+                let executed = match result {
+                    Ok(result) => ExecutedToolCall {
+                        result,
+                        is_error: false,
+                    },
+                    Err(error) => ExecutedToolCall {
+                        result: create_error_tool_result(&error),
+                        is_error: true,
+                    },
+                };
+                let result_copy = executed.result.clone();
+                (executed, result_copy)
+            })
+        },
     )
     .await;
-    accepting_updates.store(false, std::sync::atomic::Ordering::SeqCst);
-    Ok(match result {
-        Ok(result) => ExecutedToolCall {
-            result,
-            is_error: false,
-        },
+    Ok(match executed {
+        Ok(executed) => executed,
         Err(error) => ExecutedToolCall {
             result: create_error_tool_result(&error),
             is_error: true,

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub fn pty_bash_schema() -> Value {
-    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session: returns a bash_id immediately (read with bash_output, steer with bash_input, stop with kill_bash). A plain & job dies with the call's PTY hangup (native backend), and nohup at best leaves an untracked orphan (no bash_id, no log) that the call's timeout still group-kills. This flag is the only reliable way a job outlives the call."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
+    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session: returns a bash_id immediately (read with bash_output, steer with bash_input, stop with kill_bash). A plain & job dies with the call's PTY hangup (native backend), and nohup at best leaves an untracked orphan (no bash_id, no log) that the call's timeout still group-kills. This flag is the only reliable way a job outlives the call."},"auto_reap_minutes":{"type":"number","description":"Background sessions only: stop this session (TERM, then KILL to its process group) once it has run this many minutes. Defaults to the terminal.backgroundAutoReapMinutes setting, which is off; 0 turns it off for this call."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
 }
 struct ForegroundSessionGuard {
     manager: Arc<Mutex<TerminalManager>>,
@@ -177,6 +177,32 @@ pub async fn execute_configured_bash_with_launch(
     shell: Option<&str>,
     launch: Option<&super::context::TerminalChildLaunch>,
 ) -> Result<TerminalToolResult, String> {
+    execute_configured_bash_with_context(
+        manager,
+        call,
+        foreground_window,
+        settings,
+        shell,
+        launch,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Full execution entry point accepting an optional `TerminalToolContext` (for background start,
+/// exit, and auto-reap tracking) and an optional `ShellTrustAnnotator` for non-zero foreground exits.
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_configured_bash_with_context(
+    manager: Arc<Mutex<TerminalManager>>,
+    call: ToolCall<'_>,
+    foreground_window: Option<&str>,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    shell: Option<&str>,
+    launch: Option<&super::context::TerminalChildLaunch>,
+    tool_ctx: Option<&super::context::TerminalToolContext>,
+    trust_annotator: Option<&maho_tools::bash_core::ShellTrustAnnotator>,
+) -> Result<TerminalToolResult, String> {
     let command = call
         .params
         .get("command")
@@ -311,6 +337,27 @@ pub async fn execute_configured_bash_with_launch(
         }
     }
     if background {
+        let description = call.params.get("description").and_then(Value::as_str);
+        let auto_reap_minutes = call.params.get("auto_reap_minutes").and_then(Value::as_f64);
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        if let Some(ctx) = tool_ctx {
+            let start = super::background_auto_reap::background_start(
+                command,
+                description,
+                auto_reap_minutes,
+                settings.background_auto_reap_minutes,
+                started_at_ms,
+            );
+            super::background_auto_reap::track_background_session(
+                ctx,
+                Arc::clone(&manager),
+                id.clone(),
+                start,
+            );
+        }
         tokio::select! {_=wait_exit(exit)=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}
         let mut manager = manager
             .lock()
@@ -539,9 +586,21 @@ pub async fn execute_configured_bash_with_launch(
         if let Some(code) = exit.exit_code
             && code != 0
         {
-            return Ok(error_result(format!(
-                "{output_prefix}Command exited with code {code}"
-            )));
+            let text = format!("{output_prefix}Command exited with code {code}");
+            if let Some(annotator) = trust_annotator {
+                let full_output = runtime.full_output().unwrap_or_default();
+                if let Some((extra_text, trust)) = annotator(code, &full_output) {
+                    let final_text = match extra_text {
+                        Some(extra) => format!("{text}\n\n{extra}"),
+                        None => text,
+                    };
+                    let mut result = text_result(final_text);
+                    result.details = json!({"trust": trust}).as_object().cloned();
+                    result.is_error = Some(true);
+                    return Ok(result);
+                }
+            }
+            return Ok(error_result(text));
         }
         let mut result = noticed_result(
             if formatted.text.is_empty() {
@@ -559,10 +618,28 @@ pub async fn execute_configured_bash_with_launch(
         );
         return Ok(result);
     }
+    let description = call.params.get("description").and_then(Value::as_str);
+    let auto_reap_minutes = call.params.get("auto_reap_minutes").and_then(Value::as_f64);
     if let Some(delay) = detached_sweep_delay(call.params.get("timeout").and_then(Value::as_f64)) {
-        spawn_detached_sweep(sweep_manager, &id, runtime, spawned_at + delay);
+        spawn_detached_sweep(sweep_manager.clone(), &id, runtime, spawned_at + delay);
     }
     let delta = runtime.read_delta().map_err(|error| error.to_string())?;
+    drop(manager);
+    if let Some(ctx) = tool_ctx {
+        let start = super::background_auto_reap::background_start(
+            command,
+            description,
+            auto_reap_minutes,
+            settings.background_auto_reap_minutes,
+            started_at,
+        );
+        super::background_auto_reap::track_background_session(
+            ctx,
+            Arc::clone(&sweep_manager),
+            id.clone(),
+            start,
+        );
+    }
     let partial = format_terminal_tool_output(&delta.text).text;
     let timeout_note = call
         .params

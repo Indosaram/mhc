@@ -23,13 +23,23 @@ pub fn create_inline_worker_scrubbed(
     parallel_pool_width: u64,
     env_passthrough: Option<&[String]>,
 ) -> Result<WorkerHost, ProcessError> {
+    create_inline_worker_with_env(cwd, parallel_pool_width, env_passthrough, &[])
+}
+
+pub fn create_inline_worker_with_env(
+    cwd: &Path,
+    parallel_pool_width: u64,
+    env_passthrough: Option<&[String]>,
+    extra_env: &[(&str, &str)],
+) -> Result<WorkerHost, ProcessError> {
     let entry = resolve_inline_worker_entry_path(None)
         .map_err(|error| ProcessError::Startup(error.to_string()))?;
-    WorkerHost::spawn_scrubbed(
+    WorkerHost::spawn_scrubbed_with_env(
         &entry,
         cwd,
         parallel_pool_width,
         JavaScriptKernelMode::Inline,
         env_passthrough,
+        extra_env,
     )
 }

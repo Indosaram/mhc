@@ -3414,8 +3414,10 @@ dependencies = [
 name = "maho-agent"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "ignore",
+ "libc",
  "maho-ai",
  "maho-chord",
  "maho-test-support",
@@ -3434,6 +3436,7 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-typescript",
  "unicode-normalization",
+ "uuid",
  "winsafe",
 ]
 
@@ -3626,6 +3629,7 @@ dependencies = [
  "maho-ext-host",
  "maho-ext-html-render",
  "maho-ext-imagegen",
+ "maho-ext-kill-guard",
  "maho-ext-look-at",
  "maho-ext-loop",
  "maho-ext-loop-guard",
@@ -3738,6 +3742,7 @@ dependencies = [
  "hyper-util",
  "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
@@ -4321,6 +4326,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-ext-kill-guard"
+version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-ext-look-at"
 version = "0.0.0"
 dependencies = [
@@ -4775,6 +4792,9 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-bash-timeout",
+ "maho-ext-builtin-loose",
+ "maho-ext-goal",
  "maho-ext-host",
  "maho-pty",
  "maho-rpc",

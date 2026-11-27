@@ -1090,6 +1090,9 @@ impl FileSystem for NodeExecutionEnv {
                             infos.push(info);
                         }
                     }
+                    // Another process can remove an entry after readdir listed it (a released lock
+                    // directory, a renamed staging file); the listing omits it as if readdir had run later.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(error) => return err(to_file_error(&error, Some(&entry_path))),
                 }
             }

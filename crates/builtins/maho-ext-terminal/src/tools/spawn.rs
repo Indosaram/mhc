@@ -1,4 +1,29 @@
 use maho_pty::PtyExit;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+/// Handle returned by a session-spawn attestation hook (`senpi#6972`): `recorded` resolves once
+/// the pid is attested to the session; `release` drops the attestation on exit.
+pub struct SpawnAttestationHandle {
+    pub recorded: Pin<Box<dyn Future<Output = ()> + Send>>,
+    pub release: Box<dyn FnOnce() + Send>,
+}
+
+pub type SpawnAttestFn = dyn Fn(&str, u32) -> SpawnAttestationHandle + Send + Sync;
+
+/// Optional attestation hook invocation used when spawning commands for a known `session_id`.
+/// No-op when `attest` or `session_id` or `pid` is `None`.
+pub async fn maybe_attest_spawn(
+    session_id: Option<&str>,
+    pid: Option<u32>,
+    attest: Option<&Arc<SpawnAttestFn>>,
+) -> Option<Box<dyn FnOnce() + Send>> {
+    let (session_id, pid, attest) = (session_id?, pid?, attest?);
+    let handle = attest(session_id, pid);
+    handle.recorded.await;
+    Some(handle.release)
+}
 /// `spawnCommandSession` shell resolution: `getShellConfig(ctx.shellPath)` picks the shell and its
 /// kind-specific args; stdin-transport shells (legacy WSL bash `-s`) get the command written after start.
 pub fn command_options(

@@ -23,6 +23,9 @@ maho-core = { path = "../../maho-core" }
 maho-rpc = { path = "../../maho-rpc" }
 maho-pty = { path = "../../vendor/maho-pty" }
 maho-ext-host = { path = "../../maho-ext-host" }
+maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
+maho-ext-goal = { path = "../maho-ext-goal" }
+maho-ext-bash-timeout = { path = "../maho-ext-bash-timeout" }
 notify = "=8.2.0"
 thiserror = "=2.0.20"
 tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }

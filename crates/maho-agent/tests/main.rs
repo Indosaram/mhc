@@ -7,6 +7,12 @@ pub mod agent;
 pub mod agent_loop;
 #[path = "agent_message_serde.rs"]
 pub mod agent_message_serde;
+#[path = "conformance_s06.rs"]
+pub mod conformance_s06;
+#[path = "durable_s06.rs"]
+pub mod durable_s06;
+#[path = "execution_s06.rs"]
+pub mod execution_s06;
 #[path = "harness_branch_summarization.rs"]
 pub mod harness_branch_summarization;
 #[path = "harness_compaction.rs"]
@@ -81,6 +87,8 @@ pub mod harness_read_summary_bakeoff;
 pub mod harness_read_tokenizer_identity;
 #[path = "harness_read_tree_sitter.rs"]
 pub mod harness_read_tree_sitter;
+#[path = "harness_s06.rs"]
+pub mod harness_s06;
 #[path = "harness_segmented_read_view.rs"]
 pub mod harness_segmented_read_view;
 #[path = "harness_session_context.rs"]
@@ -105,12 +113,16 @@ pub mod idle_after_completed_tools;
 pub mod jsonl_v3_migration;
 #[path = "jsonl_v3_stream.rs"]
 pub mod jsonl_v3_stream;
+#[path = "loop_s06.rs"]
+pub mod loop_s06;
 #[path = "promote_stop_pending_tools.rs"]
 pub mod promote_stop_pending_tools;
 #[path = "proxy.rs"]
 pub mod proxy;
 #[path = "proxy_events.rs"]
 pub mod proxy_events;
+#[path = "s06_adapters.rs"]
+pub mod s06_adapters;
 #[path = "thrown_provider_error_boundary.rs"]
 pub mod thrown_provider_error_boundary;
 #[path = "tool_argument_purity.rs"]
@@ -119,6 +131,8 @@ pub mod tool_argument_purity;
 pub mod tool_call_name_alias;
 #[path = "tool_inline_is_error.rs"]
 pub mod tool_inline_is_error;
+#[path = "transport_s06.rs"]
+pub mod transport_s06;
 
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "support/mod.rs"]

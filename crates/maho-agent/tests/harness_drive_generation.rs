@@ -271,6 +271,7 @@ async fn fixture_with_storage(
             })
         }),
         entry_projectors: Default::default(),
+        on_execution_pipeline: None,
     });
     let lane = Arc::new_cyclic(|own| Lane {
         own: own.clone(),

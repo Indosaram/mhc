@@ -19,6 +19,15 @@ pub struct RpcMonitorRenderer {
     named_this_batch: HashSet<String>,
 }
 
+/// How a line about a session nobody watched names it: the first 8 characters of its key's session id.
+pub fn detached_label(key: &str) -> String {
+    let tail = match key.rfind('#') {
+        Some(idx) => &key[idx + 1..],
+        None => key,
+    };
+    tail.chars().take(8).collect()
+}
+
 pub fn session_key(socket: &str, record: &Value) -> String {
     format!("{socket}#{}", js_string(record.get("sessionId")))
 }

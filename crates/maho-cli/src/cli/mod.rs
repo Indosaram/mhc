@@ -61,6 +61,7 @@ pub mod kibitzer_child;
 pub mod kibitzer_coordinator;
 #[cfg(feature = "omo")]
 pub mod kibitzer_tools;
+pub mod kill_guard_command;
 pub mod list_models;
 pub mod list_tips;
 #[cfg(not(feature = "omo"))]

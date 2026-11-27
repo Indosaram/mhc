@@ -9,16 +9,31 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 /// What a background exit notice reads: on the tool child it is a summary the child sent, not the live session.
+#[derive(Clone)]
 pub struct TerminalExitView {
     pub exit_result: Option<PtyExit>,
+    /// Set when the opt-in auto-reap stopped the session at this age (`senpi#6201`).
+    pub auto_reaped_after_minutes: Option<u64>,
+    /// Set when `interrupt { background: "stop" }` on turn `turn_id` stopped the session.
+    pub stopped_by_interrupt: Option<String>,
     full_output: String,
 }
 impl TerminalExitView {
     pub fn new(exit_result: Option<PtyExit>, full_output: String) -> Self {
         Self {
             exit_result,
+            auto_reaped_after_minutes: None,
+            stopped_by_interrupt: None,
             full_output,
         }
+    }
+    pub fn with_auto_reaped_after_minutes(mut self, minutes: u64) -> Self {
+        self.auto_reaped_after_minutes = Some(minutes);
+        self
+    }
+    pub fn with_stopped_by_interrupt(mut self, turn_id: String) -> Self {
+        self.stopped_by_interrupt = Some(turn_id);
+        self
     }
     pub fn full_output(&self) -> &str {
         &self.full_output
@@ -30,15 +45,25 @@ impl TerminalExitView {
             runtime.full_output().unwrap_or_default(),
         )
     }
+    /// Snapshot from a completion handle (survives registry eviction / disposal).
+    pub fn of_completion(handle: &crate::runtime_session::TerminalCompletionHandle) -> Self {
+        handle.exit_view()
+    }
 }
 /// Writes bytes into a session's PTY.
 pub type PtyWriteFn = dyn Fn(&[u8]) -> Result<(), String> + Send + Sync;
 /// A PTY session's exit as the launch barrier watches it: unset while running.
 pub type PtyExitState = Option<Result<PtyExit, String>>;
-/// Registers a session (id, command, start time) when it turns background.
-pub type BackgroundStartFn = dyn Fn(&str, &str, f64) + Send + Sync;
+/// Registers a session `(id, description, started_at_ms, command, auto_reap_minutes)` when it turns background.
+pub type BackgroundStartFn = dyn Fn(&str, &str, f64, Option<&str>, Option<u64>) + Send + Sync;
+/// A person or the model wrote to a session's stdin (`bash_input`): it is interactive from now on.
+pub type SessionInputFn = dyn Fn(&str) + Send + Sync;
 /// Notified with a background session's id and exit.
 pub type BackgroundExitFn = dyn Fn(&str, TerminalExitView) + Send + Sync;
+/// The opt-in auto-reap's one stop at `auto_reap_minutes` did not end the session.
+pub type BackgroundReapFailedFn = dyn Fn(&str, u64, &str) + Send + Sync;
+/// Optional warning logger callback `(event_name, fields)` for stalled spawns and auto-reap failures.
+pub type SessionWarnFn = dyn Fn(&str, Value) + Send + Sync;
 
 /// What the launch barrier sees of a started session (upstream passes `{ pid, write, onExit }`): its pid, a writer
 /// into the PTY, and the exit watch `onExit` listens on.
@@ -77,8 +102,14 @@ pub struct TerminalToolContext {
     pub get_env: Arc<dyn Fn() -> BTreeMap<String, String> + Send + Sync>,
     /// Registers a session when it transitions to background liveness.
     pub on_background_start: Option<Arc<BackgroundStartFn>>,
+    /// A person or the model wrote to a session's stdin (`bash_input`): it is interactive from now on.
+    pub on_session_input: Option<Arc<SessionInputFn>>,
     /// Notified when a background session exits, so the notify layer can wake the agent.
     pub on_background_exit: Option<Arc<BackgroundExitFn>>,
+    /// The opt-in auto-reap's one stop at `auto_reap_minutes` did not end the session.
+    pub on_background_reap_failed: Option<Arc<BackgroundReapFailedFn>>,
+    /// Optional warning sink for `bash_spawn_stalled` and `bash_auto_reap_failed`.
+    pub session_logger: Option<Arc<SessionWarnFn>>,
 }
 impl TerminalToolContext {
     pub fn new(
@@ -90,7 +121,10 @@ impl TerminalToolContext {
             session_cwd: Arc::new(Mutex::new(None)),
             get_env,
             on_background_start: None,
+            on_session_input: None,
             on_background_exit: None,
+            on_background_reap_failed: None,
+            session_logger: None,
         }
     }
     /// `state.ctx?.cwd ?? process.cwd()`.

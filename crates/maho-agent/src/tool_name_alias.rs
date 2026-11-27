@@ -3,11 +3,57 @@
 use crate::types::{AgentContext, AgentLoopConfig, AgentTool, AgentToolCall, AgentToolResult};
 use maho_ai::types::BoxFuture;
 
+const DESTRUCTIVE_PREFIX_WORDS: &[&str] = &[
+    "delete",
+    "remove",
+    "rm",
+    "force",
+    "drop",
+    "purge",
+    "wipe",
+    "kill",
+    "reset",
+    "overwrite",
+    "truncate",
+    "destroy",
+];
+
+fn stray_prefix_match(requested: &str, names: &[String]) -> Option<String> {
+    if requested
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("mcp__"))
+        || maho_ai::types::tool_name_match::tool_name_forms(requested).len() > 1
+    {
+        return None;
+    }
+    let mut matches = names.iter().filter(|name| {
+        requested.len() > name.len() + 1 && requested.ends_with(&format!("_{name}"))
+    });
+    let matched = matches.next()?.clone();
+    if matches.next().is_some() {
+        return None;
+    }
+    let prefix = &requested[..requested.len() - matched.len() - 1];
+    let registered: std::collections::BTreeSet<String> = names
+        .iter()
+        .map(|n| maho_ai::types::tool_name_match::fold_tool_name(n))
+        .collect();
+    let meaningful = std::iter::once(prefix)
+        .chain(prefix.split(['-', '_']).filter(|s| !s.is_empty()))
+        .any(|word| {
+            let key = maho_ai::types::tool_name_match::fold_tool_name(word);
+            DESTRUCTIVE_PREFIX_WORDS.contains(&key.as_str()) || registered.contains(&key)
+        });
+    (!meaningful).then_some(matched)
+}
+
 pub fn resolve_tool_name_alias(
     requested: &str,
     available: impl IntoIterator<Item = String>,
 ) -> Option<String> {
-    maho_ai::types::tool_name_match::resolve_tool_name_match(requested, available)
+    let names: Vec<String> = available.into_iter().collect();
+    maho_ai::types::tool_name_match::resolve_tool_name_match(requested, names.iter().cloned())
+        .or_else(|| stray_prefix_match(requested, &names))
 }
 
 pub fn tool_name_correction_notice(requested: &str, resolved: &str) -> String {

@@ -506,6 +506,13 @@
       "sha256": "d45daf431fee5e35f38c33c7f939760506d1e0cec0b7b0b59a188dfa461ee788"
     },
     {
+      "path": "kernels/js/kill-guard-bridge.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "local bridge adapter for worker-kill-guard.js forwarding synchronous kill-guard checks over HTTP /kill_guard_check to maho_core::kill_guard",
+      "sha256": "3d703f9e31e128f85498c3085cb4df43acbea52eda80318af556bfaed9832e27"
+    },
+    {
       "path": "skill/bun/SKILL.md",
       "status": "verbatim",
       "upstreamCommit": "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff",

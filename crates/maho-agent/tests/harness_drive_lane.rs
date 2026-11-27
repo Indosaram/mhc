@@ -659,6 +659,7 @@ async fn options_constructor_installs_custom_provider_messages_and_projectors() 
                 "note".to_owned(),
                 projector,
             )])),
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -1175,6 +1176,7 @@ async fn options_constructor_seeds_lane_configuration_and_drive_config() {
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -1859,6 +1861,7 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -2119,6 +2122,7 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -2307,6 +2311,7 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -2400,6 +2405,7 @@ async fn string_system_prompt_is_used_without_resolving_tool_context() {
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -2533,6 +2539,7 @@ async fn uses_one_stable_provider_session_id_per_lane() {
             tool_execution: None,
             to_provider_messages: None,
             entry_projectors: None,
+            on_execution_pipeline: None,
         },
         &BACKGROUND_CONTEXT,
     )

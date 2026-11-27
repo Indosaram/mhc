@@ -186,6 +186,7 @@ pub fn register_with_loop_remote(
                     extension::runtime_factory::RuntimePreparationOptions {
                         cwd: &context.cwd,
                         home_dir: &options.home_dir,
+                        agent_dir: Some(&context.agent_dir),
                         environment: &options.environment,
                         event: &event,
                         session_file: context.session_manager.session_file(),

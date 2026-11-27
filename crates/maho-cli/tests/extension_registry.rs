@@ -9,13 +9,13 @@ use maho_cli::cli::extension_registry::{
 
 #[test]
 fn pinned_builtin_order_matches_upstream() {
-    // senpi src/core/extensions/builtin/index.ts at v2026.10.27-2 adds schedule, html-render and
-    // vertex-model-garden.
-    assert_eq!(BUILTIN_EXTENSION_IDS.len(), 48);
+    // senpi src/core/extensions/builtin/index.ts at v2026.10.27-2 + v2026.11.19-5 kill-guard.
+    assert_eq!(BUILTIN_EXTENSION_IDS.len(), 49);
     let unique: BTreeSet<&str> = BUILTIN_EXTENSION_IDS.iter().copied().collect();
-    assert_eq!(unique.len(), 48);
+    assert_eq!(unique.len(), 49);
     assert_eq!(BUILTIN_EXTENSION_IDS[0], "loop-guard");
-    assert_eq!(BUILTIN_EXTENSION_IDS[47], "mcp");
+    assert_eq!(BUILTIN_EXTENSION_IDS[1], "kill-guard");
+    assert_eq!(BUILTIN_EXTENSION_IDS[48], "mcp");
     assert_eq!(
         GLOBAL_DEFAULT_EXTENSION_IDS,
         ["diff", "files", "prompt-url-widget", "tps"]

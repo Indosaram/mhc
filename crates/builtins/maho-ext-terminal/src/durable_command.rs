@@ -5,6 +5,43 @@ use crate::{
     terminal_manifest_model::{ManifestMonitor, MonitorRuntimeKind},
 };
 use std::path::Path;
+use std::sync::Arc;
+
+/// Seam mirroring `maho_core::kill_guard::KillGuardVerdict` until Wave 2 merges.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KillGuardVerdict {
+    Allow,
+    Refuse { code: String, message: String },
+}
+
+pub type KillGuardToggle = Arc<dyn Fn() -> bool + Send + Sync>;
+pub type KillGuardJudge = Arc<dyn Fn(&str) -> KillGuardVerdict + Send + Sync>;
+
+/// Optional kill-guard hooks on `RestartableCommandDeps` (`senpi#5349`).
+#[derive(Clone, Default)]
+pub struct RestartableCommandDeps {
+    /// Whether the kill guard is on (user settings); `None` defaults to `true`.
+    pub kill_guard_on: Option<KillGuardToggle>,
+    /// Judge callback for restored commands; `None` defaults to `KillGuardVerdict::Allow`.
+    pub judge: Option<KillGuardJudge>,
+}
+
+fn default_judge_restored(command: &str) -> KillGuardVerdict {
+    let context = maho_core::kill_guard::host_kill_guard_context(
+        maho_core::kill_guard::KillGuardVantage::FreshSession,
+        maho_core::kill_guard::KillGuardShell::Bash,
+    );
+    match maho_core::kill_guard::judge_command(command, &context) {
+        maho_core::kill_guard::KillGuardVerdict::Allow
+        | maho_core::kill_guard::KillGuardVerdict::Defer { .. } => KillGuardVerdict::Allow,
+        maho_core::kill_guard::KillGuardVerdict::Refuse { rule, message } => {
+            KillGuardVerdict::Refuse {
+                code: format!("{rule:?}"),
+                message,
+            }
+        }
+    }
+}
 
 pub fn restore_command(
     monitor: &ManifestMonitor,
@@ -90,12 +127,39 @@ pub fn restore_configured_command_in(
     shell: Option<&str>,
     settings: &crate::settings::ResolvedTerminalSettings,
     context: &RestoreEnvironment,
-    mut register: impl FnMut(
+    register: impl FnMut(
         &str,
         &crate::runtime_session::TerminalRuntimeSession,
         CommandMonitor,
     ) -> Result<(), crate::runtime_session::RuntimeError>,
 ) -> RestoreOutcome {
+    restore_configured_command_in_with_deps(
+        monitor,
+        manager,
+        shell,
+        settings,
+        context,
+        &RestartableCommandDeps::default(),
+        register,
+    )
+    .0
+}
+
+/// Same as `restore_configured_command_in`, additionally honoring `RestartableCommandDeps`
+/// kill-guard hooks and returning any refusal reason on `RestoreOutcome::Lost`.
+pub fn restore_configured_command_in_with_deps(
+    monitor: &ManifestMonitor,
+    manager: &mut TerminalManager,
+    shell: Option<&str>,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    context: &RestoreEnvironment,
+    deps: &RestartableCommandDeps,
+    mut register: impl FnMut(
+        &str,
+        &crate::runtime_session::TerminalRuntimeSession,
+        CommandMonitor,
+    ) -> Result<(), crate::runtime_session::RuntimeError>,
+) -> (RestoreOutcome, Option<String>) {
     // A persistent watch has no deadline; an ephemeral one gets exactly the time it had left.
     let ephemeral_time_left = if monitor.persistent {
         None
@@ -105,29 +169,45 @@ pub fn restore_configured_command_in(
     if monitor.runtime_kind != MonitorRuntimeKind::Command
         || (!monitor.persistent && ephemeral_time_left.is_none())
     {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     }
     let Some(command) = monitor
         .command
         .as_deref()
         .filter(|command| !command.is_empty())
     else {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     };
+    let guard_on = match &deps.kill_guard_on {
+        Some(f) => f(),
+        None => monitor.cwd.as_deref().is_none_or(|cwd| {
+            maho_core::kill_guard::read_kill_guard_setting(Path::new(cwd), None)
+                == maho_core::kill_guard::KillGuardSetting::On
+        }),
+    };
+    if guard_on {
+        let verdict = match &deps.judge {
+            Some(judge) => judge(command),
+            None => default_judge_restored(command),
+        };
+        if let KillGuardVerdict::Refuse { message, .. } = verdict {
+            return (RestoreOutcome::Lost, Some(message));
+        }
+    }
     let Some(cwd) = monitor
         .cwd
         .as_deref()
         .filter(|cwd| Path::new(cwd).is_absolute() && Path::new(cwd).is_dir())
     else {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     };
     let Ok((options, stdin)) =
         crate::tools::spawn::command_options(command, Some(Path::new(cwd)), shell)
     else {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     };
     let Ok(env) = restore_environment(monitor, context) else {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     };
     let mut options = options.size(settings.default_cols as u16, settings.default_rows as u16);
     for (key, value) in env {
@@ -142,14 +222,14 @@ pub fn restore_configured_command_in(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
     let Ok(id) = manager.create(command, options) else {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     };
     if let Some(stdin) = &stdin
         && manager
             .get(&id)
             .is_none_or(|runtime| runtime.write(stdin.as_bytes()).is_err())
     {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     }
     let mut record = CommandMonitor::new(
         MonitorSnapshotEntry {
@@ -180,13 +260,14 @@ pub fn restore_configured_command_in(
     }
     manager.bind_monitor_id(&monitor.monitor_id, &id);
     if register(&id, manager.get(&id).expect("restored runtime"), record).is_err() {
-        return RestoreOutcome::Lost;
+        return (RestoreOutcome::Lost, None);
     }
-    if monitor.delivery_paused {
+    let outcome = if monitor.delivery_paused {
         RestoreOutcome::Muted
     } else {
         RestoreOutcome::Restored
-    }
+    };
+    (outcome, None)
 }
 
 #[cfg(test)]
@@ -427,5 +508,32 @@ mod tests {
         );
         tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="restored"));assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();
         manager.teardown().unwrap();
+    }
+
+    #[test]
+    fn default_kill_guard_refuses_protected_command_on_restore() {
+        let mut saved = monitor();
+        saved.command = Some("kill -9 1".to_owned());
+        let mut manager = TerminalManager::default();
+        let deps = RestartableCommandDeps {
+            kill_guard_on: Some(Arc::new(|| true)),
+            judge: None,
+        };
+        let (outcome, reason) = restore_configured_command_in_with_deps(
+            &saved,
+            &mut manager,
+            None,
+            &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+            &RestoreEnvironment::default(),
+            &deps,
+            |_, _, _| panic!("refused command must not register"),
+        );
+        assert_eq!(outcome, RestoreOutcome::Lost);
+        let msg = reason.expect("refusal reason");
+        assert!(
+            msg.contains("[senpi:kill-guard]"),
+            "unexpected reason: {msg}"
+        );
+        assert_eq!(manager.size(), 0);
     }
 }

@@ -61,13 +61,21 @@ impl WorkerSlot {
             );
             return Ok(());
         }
+        let kill_guard_port = options
+            .kill_guard
+            .map(|_| options.connection.port.to_string());
+        let extra_env_storage: Vec<(&str, &str)> = kill_guard_port
+            .as_deref()
+            .map(|port| vec![("SENPI_KILL_GUARD_BRIDGE_PORT", port)])
+            .unwrap_or_default();
         let primary = explicit_or_resolved_worker_entry(&options).and_then(|entry| {
-            WorkerHost::spawn_scrubbed(
+            WorkerHost::spawn_scrubbed_with_env(
                 &entry,
                 options.cwd,
                 options.parallel_pool_width,
                 JavaScriptKernelMode::Worker,
                 options.env_passthrough,
+                &extra_env_storage,
             )
         });
         if let Ok(worker) = primary {
@@ -91,10 +99,11 @@ impl WorkerSlot {
                 return initialized;
             }
         }
-        self.worker = Some(super::inline_worker::create_inline_worker_scrubbed(
+        self.worker = Some(super::inline_worker::create_inline_worker_with_env(
             options.cwd,
             options.parallel_pool_width,
             options.env_passthrough,
+            &extra_env_storage,
         )?);
         self.mode = JavaScriptKernelMode::Inline;
         if let Err(error) = self

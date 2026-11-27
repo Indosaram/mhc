@@ -2706,6 +2706,7 @@ fn clone_drive_config(config: &Config<()>) -> Config<()> {
         system_prompt: config.system_prompt.clone(),
         to_provider_messages: config.to_provider_messages.clone(),
         entry_projectors: config.entry_projectors.clone(),
+        on_execution_pipeline: config.on_execution_pipeline.clone(),
     }
 }
 

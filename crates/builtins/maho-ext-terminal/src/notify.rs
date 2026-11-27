@@ -1,8 +1,15 @@
+use crate::background_age::terminal_background_age_to_json;
 use crate::output_format::sanitize_terminal_output;
 use crate::settings::NotifyMode;
 use crate::tools::context::TerminalExitView;
 use crate::tools::spawn::describe_exit;
 use maho_ext_api::types::MessageDeliveryReceipt;
+use maho_ext_builtin_loose::monitor_state_event::{
+    TerminalBackgroundAgeEvent, TerminalBackgroundAgeKind,
+};
+use maho_ext_goal::stale_context::STALE_EXTENSION_CONTEXT_ERROR_PREFIX;
+use maho_tools::bash_core::ShellTrustAnnotator;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -128,6 +135,7 @@ pub const NOTICE_TAIL_MAX_CHARS: usize = 2000;
 pub enum NotificationDelivery {
     Steer,
     FollowUp,
+    NextTurn,
 }
 pub fn get_terminal_notification_delivery(
     notify_mode: NotifyMode,
@@ -135,9 +143,35 @@ pub fn get_terminal_notification_delivery(
     has_model: bool,
     force_wake: bool,
 ) -> Option<NotificationDelivery> {
-    let mode = context_mode?;
-    if notify_mode == NotifyMode::Off || NON_INTERACTIVE_MODES.contains(&mode) || !has_model {
+    get_terminal_notification_delivery_with_remote(
+        notify_mode,
+        context_mode,
+        has_model,
+        force_wake,
+        false,
+        false,
+    )
+}
+
+pub fn get_terminal_notification_delivery_with_remote(
+    notify_mode: NotifyMode,
+    context_mode: Option<&str>,
+    has_model: bool,
+    force_wake: bool,
+    loop_remote: bool,
+    next_turn: bool,
+) -> Option<NotificationDelivery> {
+    if notify_mode == NotifyMode::Off {
         return None;
+    }
+    if !loop_remote {
+        let mode = context_mode?;
+        if NON_INTERACTIVE_MODES.contains(&mode) || !has_model {
+            return None;
+        }
+    }
+    if next_turn {
+        return Some(NotificationDelivery::NextTurn);
     }
     Some(if notify_mode == NotifyMode::Wake || force_wake {
         NotificationDelivery::Steer
@@ -145,7 +179,71 @@ pub fn get_terminal_notification_delivery(
         NotificationDelivery::FollowUp
     })
 }
+
+fn format_minutes(count: u64) -> String {
+    format!("{count} minute{}", if count == 1 { "" } else { "s" })
+}
+
+fn kill_call(id: &str) -> String {
+    format!("kill_bash({{ bash_id: \"{id}\" }})")
+}
+
+/// One plain sentence (or two) for the TUI and the model: which session, how old, and how it stops.
+pub fn describe_background_age(event: &TerminalBackgroundAgeEvent) -> String {
+    let label = match event.command.as_deref() {
+        Some(cmd) if cmd != event.description => format!("{}: {cmd}", event.description),
+        _ => event.description.clone(),
+    };
+    let session = format!("Background terminal session {} ({label})", event.id);
+    let age_minutes = event.age_minutes.max(0.0).trunc() as u64;
+    let reap_minutes = event.auto_reap_minutes.map(|m| m.max(0.0).trunc() as u64);
+    match event.kind {
+        TerminalBackgroundAgeKind::Reaped => {
+            let count = reap_minutes.unwrap_or(age_minutes);
+            format!(
+                "{session} was stopped automatically after {} (auto-reap).",
+                format_minutes(count)
+            )
+        }
+        TerminalBackgroundAgeKind::ReapFailed => {
+            let count = reap_minutes.unwrap_or(age_minutes);
+            let reason = event.reason.as_deref().unwrap_or("unknown reason");
+            format!(
+                "{session} is still running: auto-reap at {} failed ({reason}) and will not retry; stop it with {} if it is no longer needed.",
+                format_minutes(count),
+                kill_call(&event.id)
+            )
+        }
+        TerminalBackgroundAgeKind::Running => {
+            let reap = match reap_minutes {
+                None => "Nothing stops it automatically".to_owned(),
+                Some(count) => format!("Auto-reap stops it at {}", format_minutes(count)),
+            };
+            format!(
+                "{session} has been running for {}. {reap}; stop it now with {} if it is no longer needed.",
+                format_minutes(age_minutes),
+                kill_call(&event.id)
+            )
+        }
+    }
+}
+
 pub fn build_notice(id: &str, view: &TerminalExitView) -> String {
+    build_notice_with_trust(id, view, None)
+}
+
+pub fn build_notice_with_trust(
+    id: &str,
+    view: &TerminalExitView,
+    trust_text: Option<&str>,
+) -> String {
+    let reap_text = match view.auto_reaped_after_minutes {
+        Some(reaped) => format!(
+            " It was stopped automatically after {} (auto-reap: the auto_reap_minutes parameter or the terminal.backgroundAutoReapMinutes setting).",
+            format_minutes(reaped)
+        ),
+        None => String::new(),
+    };
     let exit = view.exit_result.as_ref();
     let output = view.full_output();
     let status = describe_exit(exit).unwrap_or_else(|| "exited".to_owned());
@@ -174,8 +272,18 @@ pub fn build_notice(id: &str, view: &TerminalExitView) -> String {
         };
         format!("\nFinal output:\n{shown}{note}")
     };
+    let trust_section = match trust_text {
+        Some(text) => format!("\n{text}"),
+        None => String::new(),
+    };
+    let ended = match view.stopped_by_interrupt.as_deref() {
+        Some(turn_id) => {
+            format!("was stopped when turn {turn_id} was interrupted ({status}{code_text}).")
+        }
+        None => format!("finished: {status}{code_text}."),
+    };
     format!(
-        "<system-reminder>Background terminal session {id} finished: {status}{code_text}.{tail_section}</system-reminder>"
+        "<system-reminder>Background terminal session {id} {ended}{reap_text}{tail_section}{trust_section}</system-reminder>"
     )
 }
 /// Once-only completion notices. An id is `pending` from the send until its receipt settles, then
@@ -184,6 +292,8 @@ pub fn build_notice(id: &str, view: &TerminalExitView) -> String {
 pub struct TerminalNotifier {
     notified: Arc<Mutex<HashSet<String>>>,
     pending: Arc<Mutex<HashSet<String>>>,
+    retired: Arc<Mutex<bool>>,
+    trust_annotator: Option<ShellTrustAnnotator>,
     report: Report,
 }
 impl Default for TerminalNotifier {
@@ -191,6 +301,8 @@ impl Default for TerminalNotifier {
         Self {
             notified: Default::default(),
             pending: Default::default(),
+            retired: Arc::new(Mutex::new(false)),
+            trust_annotator: None,
             report: diagnostic_report(),
         }
     }
@@ -231,6 +343,25 @@ fn settle_notice(
     }
 }
 impl TerminalNotifier {
+    pub fn with_trust_annotator(mut self, annotator: Option<ShellTrustAnnotator>) -> Self {
+        self.trust_annotator = annotator;
+        self
+    }
+
+    pub fn set_trust_annotator(&mut self, annotator: Option<ShellTrustAnnotator>) {
+        self.trust_annotator = annotator;
+    }
+
+    pub fn is_retired(&self) -> bool {
+        *lock(&self.retired)
+    }
+
+    pub fn retire(&self) {
+        *lock(&self.retired) = true;
+        lock(&self.pending).clear();
+        lock(&self.notified).clear();
+    }
+
     pub fn notify_completion(
         &mut self,
         id: &str,
@@ -238,6 +369,30 @@ impl TerminalNotifier {
         view: &TerminalExitView,
         mut send: impl FnMut(String, NotificationDelivery) -> Result<MessageDeliveryReceipt, String>,
     ) {
+        self.notify_completion_with_details(id, delivery, view, |content, mode, _| {
+            send(content, mode)
+        });
+    }
+
+    pub fn notify_completion_with_details(
+        &mut self,
+        id: &str,
+        delivery: Option<NotificationDelivery>,
+        view: &TerminalExitView,
+        mut send: impl FnMut(
+            String,
+            NotificationDelivery,
+            Option<Value>,
+        ) -> Result<MessageDeliveryReceipt, String>,
+    ) {
+        if self.is_retired() {
+            return;
+        }
+        let delivery = if view.stopped_by_interrupt.is_some() {
+            delivery.map(|_| NotificationDelivery::NextTurn)
+        } else {
+            delivery
+        };
         let Some(delivery) = delivery else {
             return;
         };
@@ -248,12 +403,32 @@ impl TerminalNotifier {
             }
             pending.insert(id.to_owned());
         }
+        let annotation = view
+            .exit_result
+            .as_ref()
+            .and_then(|exit| exit.exit_code)
+            .and_then(|code| {
+                self.trust_annotator
+                    .as_ref()
+                    .and_then(|annotator| annotator(code, view.full_output()))
+            });
+        let (trust_text, details) = match annotation {
+            Some((text, trust)) => (text, Some(json!({ "trust": trust }))),
+            None => (None, None),
+        };
         // Once-only means once delivered: a refused notice stays eligible, or the exit is announced
         // nowhere and nothing replays it.
-        let receipt = match send(build_notice(id, view), delivery) {
+        let receipt = match send(
+            build_notice_with_trust(id, view, trust_text.as_deref()),
+            delivery,
+            details,
+        ) {
             Ok(receipt) => receipt,
-            Err(_) => {
+            Err(error) => {
                 lock(&self.pending).remove(id);
+                if error.starts_with(STALE_EXTENSION_CONTEXT_ERROR_PREFIX) {
+                    self.retire();
+                }
                 return;
             }
         };
@@ -276,6 +451,33 @@ impl TerminalNotifier {
                     self.report.clone(),
                 );
             }
+        }
+    }
+
+    /// A still-running session's age notice (`senpi#6201`), delivered like a completion notice.
+    pub fn notify_age(
+        &mut self,
+        event: &TerminalBackgroundAgeEvent,
+        delivery: Option<NotificationDelivery>,
+        mut send: impl FnMut(String, NotificationDelivery, Option<Value>) -> Result<(), String>,
+    ) {
+        if self.is_retired() || lock(&self.notified).contains(&event.id) {
+            return;
+        }
+        let Some(delivery) = delivery else {
+            return;
+        };
+        let content = format!(
+            "<system-reminder>{}</system-reminder>",
+            describe_background_age(event)
+        );
+        let details = Some(json!({
+            "backgroundAge": terminal_background_age_to_json(event)
+        }));
+        if let Err(error) = send(content, delivery, details)
+            && error.starts_with(STALE_EXTENSION_CONTEXT_ERROR_PREFIX)
+        {
+            self.retire();
         }
     }
 }
@@ -625,5 +827,57 @@ mod tests {
         assert_eq!(sent, 1);
         assert!(lock(&notifier.pending).contains("bash_7"));
         assert!(lock(&notifier.notified).is_empty());
+    }
+
+    #[test]
+    fn describe_age_and_interrupt_and_reap_and_stale_retirement() {
+        use crate::background_age::{BackgroundAgeSubject, background_age_event};
+        let event = background_age_event(
+            TerminalBackgroundAgeKind::Running,
+            &BackgroundAgeSubject {
+                id: "bash_1".to_owned(),
+                description: "soak".to_owned(),
+                command: Some("./soak.sh".to_owned()),
+                started_at_ms: 0.0,
+                auto_reap_minutes: Some(45.0),
+            },
+            600_000.0,
+        );
+        let text = describe_background_age(&event);
+        assert!(text.contains(
+            "Background terminal session bash_1 (soak: ./soak.sh) has been running for 10 minutes."
+        ));
+        assert!(text.contains("Auto-reap stops it at 45 minutes"));
+        assert!(text.contains("kill_bash({ bash_id: \"bash_1\" })"));
+
+        let interrupt_view = TerminalExitView::new(None, String::new())
+            .with_auto_reaped_after_minutes(10)
+            .with_stopped_by_interrupt("turn_9".to_owned());
+        let notice = build_notice("bash_1", &interrupt_view);
+        assert!(notice.contains("was stopped when turn turn_9 was interrupted"));
+        assert!(notice.contains("auto-reap"));
+
+        let mut notifier = TerminalNotifier::default();
+        let mut deliveries = Vec::new();
+        notifier.notify_completion_with_details(
+            "bash_1",
+            Some(NotificationDelivery::Steer),
+            &interrupt_view,
+            |_, mode, _| {
+                deliveries.push(mode);
+                Ok(MessageDeliveryReceipt::delivered())
+            },
+        );
+        assert_eq!(deliveries, vec![NotificationDelivery::NextTurn]);
+
+        let mut age_event = event;
+        age_event.id = "bash_2".to_owned();
+        notifier.notify_age(&age_event, Some(NotificationDelivery::Steer), |_, _, _| {
+            Err(format!(
+                "{} context retired",
+                maho_ext_goal::stale_context::STALE_EXTENSION_CONTEXT_ERROR_PREFIX
+            ))
+        });
+        assert!(notifier.is_retired());
     }
 }

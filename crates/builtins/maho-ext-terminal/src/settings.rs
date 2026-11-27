@@ -45,6 +45,8 @@ pub struct ResolvedTerminalSettings {
     pub monitor: MonitorDeliverySettings,
     pub monitor_runaway: MonitorRunawayGuard,
     pub max_durable_monitors: Option<usize>,
+    /// Age in minutes at which a background session is stopped (`senpi#6201`); `None` means never.
+    pub background_auto_reap_minutes: Option<u64>,
 }
 
 pub const TERMINAL_SETTINGS_DEFAULTS: ResolvedTerminalSettings = ResolvedTerminalSettings {
@@ -68,6 +70,7 @@ pub const TERMINAL_SETTINGS_DEFAULTS: ResolvedTerminalSettings = ResolvedTermina
         minutes: crate::shared::DEFAULT_MONITOR_RUNAWAY_MINUTES as f64,
     },
     max_durable_monitors: None,
+    background_auto_reap_minutes: None,
 };
 
 fn positive_int(value: Option<&Value>, fallback: f64, maximum: f64) -> f64 {
@@ -84,6 +87,14 @@ fn non_negative_int(value: Option<&Value>, fallback: f64) -> f64 {
         .filter(|v| v.is_finite() && *v >= 0.0)
         .map(f64::trunc)
         .unwrap_or(fallback)
+}
+
+/// A whole number of minutes >= 1 turns auto-reap on; anything else leaves it off.
+fn auto_reap_minutes(value: Option<&Value>) -> Option<u64> {
+    value
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite() && *v >= 1.0)
+        .map(|v| v.trunc() as u64)
 }
 
 pub fn resolve_terminal_settings(raw: Option<&Value>) -> ResolvedTerminalSettings {
@@ -168,6 +179,7 @@ pub fn resolve_terminal_settings(raw: Option<&Value>) -> ResolvedTerminalSetting
             .and_then(Value::as_f64)
             .filter(|value| value.is_finite() && *value >= 1.0)
             .map(|value| value.trunc() as usize),
+        background_auto_reap_minutes: auto_reap_minutes(raw.get("backgroundAutoReapMinutes")),
     }
 }
 
@@ -199,6 +211,30 @@ pub fn load_session_settings(
     let terminal = load_manager_terminal_settings(&settings);
     let shell = settings.get_shell_path();
     Ok((terminal, shell))
+}
+
+/// Read `reducedMotion` from merged settings layers (`project` overrides `global`); defaults to `false`.
+pub fn load_reduced_motion(ctx: &maho_ext_api::types::ExtensionContext) -> bool {
+    let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+        return false;
+    };
+    let settings = maho_core::settings_manager::SettingsManager::create(
+        &ctx.cwd.to_string_lossy(),
+        &ctx.agent_dir.to_string_lossy(),
+        &home,
+        ctx.is_project_trusted(),
+    );
+    settings
+        .get_project()
+        .get("reducedMotion")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            settings
+                .get_global()
+                .get("reducedMotion")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// Upstream `loadTerminalSettings(settingsManager)`: the merged `terminal` block plus the bash
@@ -338,5 +374,25 @@ mod tests {
             None
         );
         assert_eq!(TERMINAL_SETTINGS_DEFAULTS.max_durable_monitors, None);
+    }
+
+    #[test]
+    fn background_auto_reap_minutes_truncates_positive_whole_minutes() {
+        assert_eq!(
+            TERMINAL_SETTINGS_DEFAULTS.background_auto_reap_minutes,
+            None
+        );
+        assert_eq!(
+            resolve_terminal_settings(Some(&json!({"backgroundAutoReapMinutes": 15.9})))
+                .background_auto_reap_minutes,
+            Some(15)
+        );
+        for invalid in [json!(0), json!(-5), json!(0.5), json!("15"), json!(null)] {
+            assert_eq!(
+                resolve_terminal_settings(Some(&json!({"backgroundAutoReapMinutes": invalid})))
+                    .background_auto_reap_minutes,
+                None
+            );
+        }
     }
 }

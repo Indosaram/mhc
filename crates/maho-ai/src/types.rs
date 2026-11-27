@@ -399,6 +399,7 @@ pub type AsyncOnResponse = std::sync::Arc<
 pub type OnProviderStreamEvent = std::sync::Arc<dyn Fn(&Value, &Model) + Send + Sync>;
 pub type AsyncOnProviderStreamEvent =
     std::sync::Arc<dyn Fn(Value, Model) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+pub type OnTransportActivity = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// `telemetryContext`: the explicit telemetry parent for this logical request. The harness
 /// `TelemetryContext` lives above this crate, so it is carried as an opaque shared handle that
@@ -533,6 +534,8 @@ pub struct StreamOptions {
     /// Observes parsed, adapter-owned events before normalization. Adapter support is explicit.
     pub on_provider_stream_event: Option<OnProviderStreamEvent>,
     pub async_on_provider_stream_event: Option<AsyncOnProviderStreamEvent>,
+    /// Called whenever a response body delivers bytes (keep-alives included).
+    pub on_transport_activity: Option<OnTransportActivity>,
     pub temperature: Option<f64>,
     pub sampling_params: Option<Map<String, Value>>,
     pub max_tokens: Option<u64>,

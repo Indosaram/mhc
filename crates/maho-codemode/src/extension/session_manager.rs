@@ -125,6 +125,44 @@ impl CodemodeSessionManager {
         let completion_session_context = session_context.clone();
         let completion_contexts = contexts.clone();
         let complete = options.complete.clone();
+        let on_kill_guard_check = options.kill_guard.then(|| {
+            let agent_pid = i64::from(std::process::id());
+            #[cfg(unix)]
+            let agent_ppid = Some(i64::from(std::os::unix::process::parent_id()));
+            #[cfg(not(unix))]
+            let agent_ppid = None;
+            let handler: crate::bridge::http_server::BridgeKillGuardCheckHandler =
+                Arc::new(move |body| {
+                    let options = maho_core::kill_guard::request::KillGuardRequestOptions {
+                        agent_pid,
+                        agent_ppid,
+                        platform: None,
+                        view: None,
+                    };
+                    Box::pin(async move {
+                        let verdict = tokio::task::spawn_blocking(move || {
+                            maho_core::kill_guard::request::decide_kill_guard_request(
+                                &body, &options,
+                            )
+                        })
+                        .await
+                        .unwrap_or_else(|error| {
+                            maho_core::kill_guard::verdict::refuse(
+                                maho_core::kill_guard::types::KillGuardRule::R5,
+                                &format!("kill-guard check failed: {error}"),
+                                None,
+                            )
+                        });
+                        serde_json::to_value(&verdict).map_err(|error| {
+                            serde_json::json!({
+                                "name": "Error",
+                                "message": error.to_string(),
+                            })
+                        })
+                    })
+                });
+            handler
+        });
         let bridge = start_bridge_server(BridgeServerOptions {
             token: None,
             body_limit_bytes: None,
@@ -149,7 +187,7 @@ impl CodemodeSessionManager {
                     });
                 complete(request)
             }),
-            on_kill_guard_check: None,
+            on_kill_guard_check,
             on_call: Arc::new(move |request| {
                 let executor = executor.clone();
                 let list_tools = list_tools.clone();
@@ -315,6 +353,7 @@ impl CodemodeSessionManager {
             port: self.bridge.port,
             token: self.bridge.token.clone(),
             shutdown: self.javascript_shutdown.clone(),
+            kill_guard: self.options.kill_guard,
         }
     }
 
@@ -433,6 +472,19 @@ struct JavaScriptLauncher {
     port: u16,
     token: String,
     shutdown: maho_ai::utils::abort::AbortController,
+    kill_guard: bool,
+}
+
+fn kill_guard_bridge_url(port: u16) -> Result<String, String> {
+    let path = crate::kernels::shared::runtime_asset::require_codemode_runtime_asset(
+        None,
+        std::path::Path::new("kernels/js/kill-guard-bridge.js"),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut url = url::Url::from_file_path(&path)
+        .map_err(|()| format!("invalid kill-guard bridge path: {}", path.display()))?;
+    url.set_query(Some(&format!("port={port}")));
+    Ok(url.into())
 }
 
 impl JavaScriptLauncher {
@@ -495,7 +547,11 @@ impl JavaScriptLauncher {
                     memory,
                     env_passthrough: settings.env_passthrough.clone(),
                     inherited_env: self.inherited_env.clone(),
-                    kill_guard: None,
+                    kill_guard: if self.kill_guard {
+                        Some((kill_guard_bridge_url(self.port)?, std::process::id()))
+                    } else {
+                        None
+                    },
                 },
             )
             .await

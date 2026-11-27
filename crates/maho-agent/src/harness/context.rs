@@ -209,6 +209,21 @@ pub async fn await_with_context<T>(
 
 static TELEMETRY_CONTEXT_KEY: LazyLock<ContextKey<TelemetryContext>> =
     LazyLock::new(|| create_context_key("pi.telemetryContext"));
+static SESSION_CWD_CONTEXT_KEY: LazyLock<ContextKey<String>> =
+    LazyLock::new(|| create_context_key("pi.sessionCwd"));
+
+/// Return the session working directory attached to a context, if any.
+pub fn get_session_cwd(context: &Context) -> Option<String> {
+    context.value(&SESSION_CWD_CONTEXT_KEY)
+}
+
+/// Derive a context whose provider requests carry the session working directory.
+pub fn with_session_cwd(cwd: Option<&str>, context: &Context) -> Context {
+    match cwd {
+        Some(cwd) => with_context_value(&SESSION_CWD_CONTEXT_KEY, cwd.to_owned(), context),
+        None => context.clone(),
+    }
+}
 
 /// `getTelemetryContext(context)`: the telemetry parent attached to a context, or the shared no-op.
 pub fn get_telemetry_context(context: &Context) -> TelemetryContext {

@@ -92,7 +92,7 @@ pub fn create_read_tool<T: HasExecutionToolContext>(
         tool: Tool {
             name: "read".into(),
             description: format!(
-                "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to {DEFAULT_MAX_LINES} lines or {}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+                "Read the contents of a file. Supports text files and images (jpg, png, gif, webp; bmp only when an imageProcessor is configured). Images are sent as attachments. For text files, output is truncated to {DEFAULT_MAX_LINES} lines or {}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete. A .js or .json file of 100+ lines read without offset/limit may come back folded: bodies are replaced by markers and a footer lists the offset/limit ranges to reread; markers are not source, so reread those ranges before quoting or editing them.",
                 DEFAULT_MAX_BYTES / 1024
             ),
             parameters: json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}),

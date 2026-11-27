@@ -39,11 +39,12 @@ async fn run_single_tool_call(tool: AgentTool) -> Vec<AgentEvent> {
     let context = AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(vec![tool]),
     };
     let config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
-    let stream = maho_agent::agent_loop::agent_loop(
+    let stream = maho_agent::agent_loop(
         vec![user_message("go")],
         context,
         config,
@@ -129,11 +130,12 @@ async fn the_recording_sink_sees_the_same_event_sequence() {
     let context = AgentContext {
         declared_tools: None,
         system_prompt: String::new(),
+        system_prompt_stable_prefix: None,
         messages: Vec::new(),
         tools: Some(vec![tool]),
     };
     let config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
-    maho_agent::agent_loop::run_agent_loop(
+    let _ = maho_agent::run_agent_loop(
         vec![user_message("go")],
         context,
         config,

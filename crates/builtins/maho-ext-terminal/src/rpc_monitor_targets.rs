@@ -1,5 +1,6 @@
 //! Port of senpi `terminal/rpc-monitor-targets.ts`: what an rpc monitor watches and the
 //! `subscribe_sessions` frame it sends for it.
+use crate::rpc_remote_source::{SharedRpcRemoteSource, current_rpc_remote_source};
 use serde_json::{Map, Value, json};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8,6 +9,7 @@ pub enum RpcTarget {
     All,
     Id { id: String },
     Task { task_id: String },
+    Remote { device: String, session: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,7 +29,27 @@ pub fn endpoint_sockets(agent_dir: &std::path::Path) -> Vec<String> {
 
 const STATUS_KINDS: [&str; 2] = ["session_status", "effect_status"];
 
+fn is_remote_shape(target: &str, device: &str) -> bool {
+    if target.ends_with(".jsonl") {
+        return false;
+    }
+    let bytes = device.as_bytes();
+    !(bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
 pub fn parse_rpc_target(target: &str, self_durable_id: Option<&str>) -> Result<RpcTarget, String> {
+    parse_rpc_target_with_source(
+        target,
+        self_durable_id,
+        current_rpc_remote_source().as_ref(),
+    )
+}
+
+pub(crate) fn parse_rpc_target_with_source(
+    target: &str,
+    self_durable_id: Option<&str>,
+    remote_source: Option<&SharedRpcRemoteSource>,
+) -> Result<RpcTarget, String> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
         return Err(
@@ -47,6 +69,22 @@ pub fn parse_rpc_target(target: &str, self_durable_id: Option<&str>) -> Result<R
     if trimmed.starts_with("st_") {
         return Ok(RpcTarget::Task {
             task_id: trimmed.to_owned(),
+        });
+    }
+    if let Some((device, session)) = trimmed.split_once('/')
+        && !device.is_empty()
+        && !session.is_empty()
+        && !session.contains('/')
+        && is_remote_shape(trimmed, device)
+    {
+        if remote_source.is_none() {
+            return Err(format!(
+                "target \"{trimmed}\" names a session on another device; remote targets need the omo remote surface"
+            ));
+        }
+        return Ok(RpcTarget::Remote {
+            device: device.to_owned(),
+            session: session.to_owned(),
         });
     }
     Ok(RpcTarget::Id {
@@ -172,6 +210,28 @@ mod tests {
         assert_eq!(
             parse_rpc_target("abc", None),
             Ok(RpcTarget::Id { id: "abc".into() })
+        );
+        assert!(parse_rpc_target("laptop/abc", None).is_err());
+        assert_eq!(
+            parse_rpc_target("/tmp/a.jsonl", None),
+            Ok(RpcTarget::Id {
+                id: "/tmp/a.jsonl".into()
+            })
+        );
+        assert_eq!(
+            parse_rpc_target("C:/foo", None),
+            Ok(RpcTarget::Id {
+                id: "C:/foo".into()
+            })
+        );
+        let dummy_source: SharedRpcRemoteSource =
+            std::sync::Arc::new(crate::rpc_remote_source::tests_helper_source());
+        assert_eq!(
+            parse_rpc_target_with_source("laptop/abc", None, Some(&dummy_source)),
+            Ok(RpcTarget::Remote {
+                device: "laptop".into(),
+                session: "abc".into()
+            })
         );
     }
 

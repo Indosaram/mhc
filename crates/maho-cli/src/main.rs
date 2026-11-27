@@ -19,6 +19,11 @@ const POST_SESSION_BLOCKING_GRACE: std::time::Duration = std::time::Duration::fr
 const ENTRY_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 fn main() {
+    let early_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = maho_cli::cli::kill_guard_command::dispatch_kill_guard_command(&early_args)
+    {
+        std::process::exit(code);
+    }
     #[cfg(feature = "omo")]
     {
         let hook_args: Vec<String> = std::env::args().skip(1).collect();
