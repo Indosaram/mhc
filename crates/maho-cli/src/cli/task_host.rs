@@ -230,7 +230,8 @@ impl HostAssembly {
             // Every shard host this assembly starts is bound to the session process's lifetime: without the
             // owner record and pipe the supervisor has no signal that its parent is gone, so a crashed or
             // exited session leaves the host to the 15 minute idle timer alone. A generation that predates
-            // owner records cannot be claimed (its record is `Unknown`); that is reported, not fatal.
+            // owner records is adopted (the claim writes this process as its owner); only a corrupt record
+            // still refuses, and that is reported, not fatal.
             let ensure_with = |owner: bool| {
                 let socket = socket.clone();
                 let agent_dir = agent_dir.clone();

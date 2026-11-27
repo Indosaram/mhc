@@ -148,22 +148,29 @@ pub struct HostLifetimeOwner {
     pub start_time: String,
 }
 
-/// What `owner.json` says: `Unowned` is an explicit `null`; `Unknown` is an unreadable or old generation, never
-/// permission to take over (senpi `readHostOwner`).
+/// What `owner.json` says: `Missing` is a generation that has no record at all, `Unowned` is an explicit `null`, and
+/// `Unknown` is a corrupt or unreadable record, never permission to take over (senpi `readHostOwner`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OwnerRecord {
     Unknown,
+    Missing,
     Unowned,
     Owned(HostLifetimeOwner),
 }
 
-/// senpi `readHostOwner`.
+/// senpi `readHostOwner`, with an absent record as its own answer instead of `Unknown`:
+/// DIVERGENCE(senpi host-daemon-state.ts readHostOwner): upstream maps a missing `owner.json` and a corrupt one to
+/// the same `undefined`, so a generation started before owner records existed can never be claimed. mhc keeps the
+/// two apart and adopts only the absent one (see [`claim_host_owner`]).
 pub fn read_host_owner(generation_dir: &std::path::Path) -> OwnerRecord {
-    let Some(record) = crate::host_daemon_state::parse_json(
-        std::fs::read_to_string(generation_dir.join(OWNER_RECORD_FILE))
-            .ok()
-            .as_deref(),
-    ) else {
+    let text = match crate::host_daemon_state::read_file_or_undefined(
+        &generation_dir.join(OWNER_RECORD_FILE),
+    ) {
+        Ok(Some(text)) => text,
+        Ok(None) => return OwnerRecord::Missing,
+        Err(_) => return OwnerRecord::Unknown,
+    };
+    let Some(record) = crate::host_daemon_state::parse_json(Some(text.as_str())) else {
         return OwnerRecord::Unknown;
     };
     match record.get("owner") {
@@ -269,7 +276,9 @@ pub fn caller_host_owner() -> std::io::Result<HostLifetimeOwner> {
 }
 
 /// senpi `claimHostOwner`, called inside the ensure lock: a live or unknown different owner is never silently
-/// replaced, and an old generation without an owner record does not support owner lifetime.
+/// replaced. A generation with no record at all predates owner records and is adopted by writing the caller;
+/// DIVERGENCE(senpi host-daemon-state.ts claimHostOwner): upstream refuses such a generation forever, which leaves
+/// every host it started unowned for the rest of its life. A corrupt record still refuses.
 pub async fn claim_host_owner(generation_dir: &std::path::Path) -> std::io::Result<()> {
     let previous = read_host_owner(generation_dir);
     if previous == OwnerRecord::Unknown {
@@ -288,6 +297,7 @@ pub async fn claim_host_owner(generation_dir: &std::path::Path) -> std::io::Resu
             "RPC host lifetime owner is still alive or its identity is unknown",
         ));
     }
+    // A missing record and an explicit `null` both land here: the caller becomes the owner.
     write_host_owner(generation_dir, Some(&next))
 }
 
@@ -754,9 +764,9 @@ mod activity_tests {
     }
 
     #[test]
-    fn the_owner_record_distinguishes_unowned_from_unknown() {
+    fn the_owner_record_distinguishes_missing_unowned_and_unknown() {
         let temp = tempfile::tempdir().unwrap();
-        assert_eq!(read_host_owner(temp.path()), OwnerRecord::Unknown);
+        assert_eq!(read_host_owner(temp.path()), OwnerRecord::Missing);
         owner_record(temp.path(), serde_json::Value::Null);
         assert_eq!(read_host_owner(temp.path()), OwnerRecord::Unowned);
         owner_record(temp.path(), serde_json::json!({"pid": 0, "startTime": "1"}));
@@ -887,14 +897,23 @@ mod activity_tests {
     }
 
     #[tokio::test]
-    async fn an_ensure_claims_only_an_unowned_or_its_own_or_a_dead_owner_record() {
+    async fn an_ensure_claims_only_a_missing_unowned_or_its_own_or_a_dead_owner_record() {
         let temp = tempfile::tempdir().unwrap();
-        // An old generation without a record does not support owner lifetime.
+        // A generation that predates owner records is adopted by the first ensure instead of staying unowned.
+        assert_eq!(read_host_owner(temp.path()), OwnerRecord::Missing);
+        claim_host_owner(temp.path()).await.unwrap();
+        let caller = caller_host_owner().unwrap();
+        assert_eq!(
+            read_host_owner(temp.path()),
+            OwnerRecord::Owned(caller.clone())
+        );
+        // A corrupt record still refuses: it may name another owner whose identity cannot be checked.
+        std::fs::write(temp.path().join(OWNER_RECORD_FILE), "{ not a record").unwrap();
+        assert_eq!(read_host_owner(temp.path()), OwnerRecord::Unknown);
         assert!(claim_host_owner(temp.path()).await.is_err());
         write_host_owner(temp.path(), None).unwrap();
         assert_eq!(read_host_owner(temp.path()), OwnerRecord::Unowned);
         claim_host_owner(temp.path()).await.unwrap();
-        let caller = caller_host_owner().unwrap();
         assert_eq!(
             read_host_owner(temp.path()),
             OwnerRecord::Owned(caller.clone())
